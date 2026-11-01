@@ -1,0 +1,110 @@
+name: Validate
+
+on:
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate
+    runs-on: ${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+
+    services:
+      neo4j:
+        image: neo4j:2026.10.1-community@sha256:44ad2a2504fd7d27df1d1e976f2d481e4266a0814d3657f2d5df62124ce657f1
+        env:
+          NEO4J_AUTH: none
+          NEO4J_server_memory_heap_initial__size: 512m
+          NEO4J_server_memory_heap_max__size: 512m
+          NEO4J_server_memory_pagecache_size: 256m
+          NEO4J_db_query_default__language: CYPHER_25
+        ports:
+          - 57687:7687
+        options: >-
+          --health-cmd "wget -q -O /dev/null http://localhost:7474"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 30
+          --health-start-period 15s
+
+    env:
+      GROVE_NEO4J_URI: bolt://127.0.0.1:57687
+      NEO4J_AUTH: none
+      UV_FROZEN: "1"
+
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: hashFiles('web/build.py') != ''
+        with:
+          node-version: "22"
+
+      - name: Install
+        run: uv sync --frozen
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format
+        run: uv run ruff format --check .
+
+      # PR text is untrusted: it reaches the lint through env, never through the script.
+      - name: No-names lint
+        env:
+          BASE_REF: ${{ github.base_ref || 'develop' }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          GITHUB_HEAD_REF: ${{ github.head_ref }}
+        run: uv run python -m grove.lints no-names --base "origin/$BASE_REF"
+
+      - name: Clock lint
+        run: uv run python -m grove.lints clock
+
+      - name: Writer lint
+        run: uv run python -m grove.lints writer
+
+      - name: Migrations on the empty store, twice
+        run: |
+          first="$(uv run python -m grove.writer.migrate --require-empty)"
+          second="$(uv run python -m grove.writer.migrate)"
+          FIRST="$first" SECOND="$second" uv run python -c '
+          import json, os, pathlib
+          first = json.loads(os.environ["FIRST"])
+          second = json.loads(os.environ["SECOND"])
+          files = list(pathlib.Path("migrations").glob("*.cypher"))
+          assert files and len(first["applied"]) == len(files), first
+          assert second["applied"] == [], second
+          '
+
+      - name: Tests
+        env:
+          GROVE_STORE_EXCLUSIVE: "1"
+          GROVE_SLICE_ID: ci
+        run: uv run pytest
+
+      - name: Web checks
+        working-directory: .
+        run: |
+          if [ -f web/build.py ]; then
+            python3 web/build.py
+            for f in web/checks/*.cjs; do node "$f"; done
+          fi
