@@ -15,7 +15,8 @@ WORD = BANNED_WORDS[0]
 ALL_FORMS = [form for word in BANNED_WORDS for form in (word, word.upper(), word.title())]
 
 
-@pytest.mark.parametrize("word", ALL_FORMS)
+# Ids by position: a failing test prints its id, and CI logs go public with the repo.
+@pytest.mark.parametrize("word", ALL_FORMS, ids=[f"form{n}" for n in range(len(ALL_FORMS))])
 def test_word_in_a_new_file(repo, word):
     assert_clean(repo.lint("no-names"))
     repo.plant("docs/fresh.md", f"first line\nwritten by {word} here\n")

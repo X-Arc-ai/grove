@@ -11,6 +11,7 @@ import pytest
 from grove.store.connection import open_driver
 from grove.writer.migrate import run_migrations
 from grove.writer.testing import purge_test_world
+from tests._redact import pytest_make_collect_report, pytest_runtest_makereport  # noqa: F401
 
 _DEV_ENV_FILE = Path.home() / ".grove" / "neo4j-dev.env"
 _SLICE = re.compile(r"[a-z0-9-]+")
