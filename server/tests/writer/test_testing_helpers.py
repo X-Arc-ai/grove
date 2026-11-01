@@ -1,9 +1,11 @@
 import subprocess
-from uuid import uuid4
+from datetime import UTC, datetime
+from uuid import UUID, uuid4
 
 import pytest
 
 import grove.writer.testing as testing
+from grove import clock
 from grove.store.connection import DATABASE
 from grove.writer.testing import plant_link, plant_node, purge_test_world
 from tests import conftest
@@ -62,6 +64,19 @@ def test_plant_link_repeats_the_endpoints_and_stamps_the_world(driver, world):
     assert row["meaning"] == "m1"
 
 
+def test_plant_node_and_link_take_their_ids_from_the_worlds_own_time(driver, world):
+    at = datetime(2030, 1, 2, tzinfo=UTC)
+    per_world = clock.TestClock()
+    per_world.set(at, world)  # no store-wide default: a call with no world id raises
+    with clock.using(per_world):
+        a = plant_node(driver, world, "Item")["id"]
+        b = plant_node(driver, world, "Item")["id"]
+        primitive = plant_node(driver, world, "Meaning", primitive=True, name=f"p {world}")["id"]
+        link = plant_link(driver, world, a, b)["id"]
+    for planted in (a, b, primitive, link):
+        assert UUID(planted).int >> 80 == int(at.timestamp() * 1000), planted
+
+
 def test_plant_link_refuses_a_missing_endpoint(driver, world):
     a = plant_node(driver, world, "Item")["id"]
     with pytest.raises(ValueError):
@@ -94,6 +109,13 @@ def test_make_world_gives_a_name_the_helpers_accept(world):
 def test_slice_id_from_the_env(monkeypatch):
     monkeypatch.setenv("GROVE_SLICE_ID", "ci")
     assert conftest.slice_id() == "ci"
+
+
+@pytest.mark.parametrize("bad", ["my_lane", "Upper", "a b", "lane/x", "lane\n"])
+def test_slice_id_from_the_env_refuses_a_name_purge_would_refuse(monkeypatch, bad):
+    monkeypatch.setenv("GROVE_SLICE_ID", bad)
+    with pytest.raises(ValueError, match="GROVE_SLICE_ID"):
+        conftest.slice_id()
 
 
 @pytest.mark.parametrize(
