@@ -18,8 +18,14 @@ def redact(text: str) -> str:
 
 
 def _clean(report) -> None:
-    if report.longrepr is not None and _WORD.search(str(report.longrepr)):
-        report.longrepr = redact(str(report.longrepr))
+    longrepr = report.longrepr
+    if isinstance(longrepr, tuple):
+        # A skip keeps (path, line, reason): pytest's summary reads that shape.
+        report.longrepr = tuple(
+            redact(part) if isinstance(part, str) else part for part in longrepr
+        )
+    elif longrepr is not None and _WORD.search(str(longrepr)):
+        report.longrepr = redact(str(longrepr))
     report.sections = [(title, redact(content)) for title, content in report.sections]
 
 

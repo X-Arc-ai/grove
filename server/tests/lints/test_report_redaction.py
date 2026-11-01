@@ -37,15 +37,24 @@ def test_no_test_id_holds_a_word():
 
 def _run_planted(tmp_path: Path, *plugin: str) -> subprocess.CompletedProcess:
     (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
+    # The captured line is built at run time, so the source listing of the traceback never
+    # shows it and only the captured-output section can.
     (tmp_path / "test_planted.py").write_text(
+        "import pytest\n"
+        "\n"
+        "\n"
         "def test_planted():\n"
-        f"    print('captured {WORD.title()} line')\n"
-        f"    assert 'planted {WORD}' == 'planted nobody'\n",
+        f"    print('captured', {WORD.title()[:2]!r} + {WORD.title()[2:]!r}, 'line')\n"
+        f"    assert 'planted {WORD}' == 'planted nobody'\n"
+        "\n"
+        "\n"
+        "def test_skipped():\n"
+        f"    pytest.skip('skipped for {WORD}')\n",
         encoding="utf-8",
     )
     return subprocess.run(
         [
-            *(sys.executable, "-m", "pytest", "-p", "no:cacheprovider", *plugin),
+            *(sys.executable, "-m", "pytest", "-p", "no:cacheprovider", "-ra", *plugin),
             *("-c", str(tmp_path / "pytest.ini"), "--rootdir", str(tmp_path)),
             "test_planted.py",
         ],
@@ -66,8 +75,12 @@ def _run_planted(tmp_path: Path, *plugin: str) -> subprocess.CompletedProcess:
 def test_a_failure_report_is_blanked(tmp_path):
     done = _run_planted(tmp_path, "-p", "tests._redact")
     assert done.returncode == 1
+    captured = done.stdout.split("Captured stdout call", 1)[1].split("short test summary", 1)[0]
     assert f"planted {BLANK}" in done.stdout
-    assert f"captured {BLANK}" in done.stdout
+    assert f"captured {BLANK} line" in captured
+    assert f"skipped for {BLANK}" in done.stdout
+    assert "1 failed, 1 skipped" in done.stdout
+    assert "Traceback" not in done.stderr
     assert not _holds_a_word(done.stdout + done.stderr, tmp_path, tmp_path.resolve())
 
 
@@ -75,4 +88,5 @@ def test_the_control_run_shows_the_word(tmp_path):
     done = _run_planted(tmp_path)
     assert done.returncode == 1
     assert f"planted {WORD}" in done.stdout
-    assert f"captured {WORD.title()}" in done.stdout
+    assert f"captured {WORD.title()} line" in done.stdout
+    assert f"skipped for {WORD}" in done.stdout
