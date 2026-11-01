@@ -306,3 +306,79 @@ def test_two_worlds_have_independent_sequences(driver, make_world):
     assert sequences(driver, a) == [1, 2, 3]
     assert sequences(driver, b) == [1]
     assert WorldQuery(driver, b).read("MATCH (c:ChangeEntry) RETURN c.sequence AS s") == [{"s": 1}]
+
+
+# Fix round 2: names spelled like keywords and lone carriage returns hid write clauses.
+
+WRITE_REPROS = [
+    "MATCH (a:Item {id:$id}) WITH a ORDER BY a.ends WITH 1 AS z MATCH (a {id:$bid}) SET a.x=7",
+    "MATCH (a:Item {id:$id}) WITH a, 1 AS ends WITH a, ends WITH 1 AS z MATCH (a {id:$bid}) "
+    "SET a.x=7",
+    "MATCH (a:Item {id:$id}) WITH a, a.n AS Starts WITH a MATCH (b {id:$bid}) SET b.x=7",
+    "WITH 1 AS as MATCH (n {id:$bid}) DETACH DELETE n",
+    "WITH 1 AS AS MATCH (n {id:$bid}) DETACH DELETE n",
+    "with 1 as As match (n {id:$bid}) detach delete n",
+    "WITH 1 AS as CREATE (n:Item {id:$nid, title:'REVIEWNEW'})",
+    "MATCH (n:Item {id:$id}) WITH n, 1 AS as SET n.world_id = 'review-moved'",
+    "MATCH (n:Item {id:$id}) WITH n, 1 AS as REMOVE n.world_id",
+    "MATCH (n:Item {id:$id}) WITH n, 1 AS as SET n = {title: 'x'}",
+    "MATCH (a:Item {id:$id}) WHERE true OR a.as MATCH (b {id:$bid}) SET b.x=7",
+    "MATCH (a:Item {id:$id}) // c\rMATCH (b {id:$bid}) SET b.x=7 //\n",
+    "MATCH (a:Item {id:$id}) // c\rMATCH (b {id:$bid}) DETACH DELETE b",
+    "MATCH (a:Item {id:$id})\t//\tc\rCREATE (n:Item {id:$nid}) SET n.world_id = 'review-moved'",
+]
+
+
+class _RolledBack(Exception):
+    pass
+
+
+def _snapshot(driver, ids):
+    with driver.session(database=DATABASE) as session:
+        rows = session.run(
+            "MATCH (i:Item) WHERE i.id IN $ids RETURN i.id AS id, properties(i) AS p ORDER BY id",
+            ids=ids,
+        )
+        return [(row["id"], row["p"]) for row in rows]
+
+
+@pytest.mark.parametrize("cypher", WRITE_REPROS)
+def test_a_hidden_write_clause_is_refused_and_changes_nothing(driver, make_world, cypher):
+    a, b = make_world(), make_world()
+    mine = plant_node(driver, a, "Item", title="own", n=1)["id"]
+    theirs = plant_node(driver, b, "Item", title="theirs", n=1)["id"]
+    plant_link(driver, b, theirs, plant_node(driver, b, "Item")["id"])
+    fresh = new_id()
+    before = _snapshot(driver, [mine, theirs, fresh])
+
+    def work(tx):
+        tx.run(cypher, id=mine, bid=theirs, nid=fresh)
+        # Reached only when the scoper let the text through: undo it, whatever it did.
+        raise _RolledBack
+
+    with pytest.raises(ScopeError):
+        WorldWriter(driver, a).transaction(work)
+
+    assert _snapshot(driver, [mine, theirs, fresh]) == before
+
+
+def test_the_keywords_still_write_in_the_own_world_only(driver, make_world):
+    a, b = make_world(), make_world()
+    plant_node(driver, a, "Item", title="own heron", n=1)
+    theirs = plant_node(driver, b, "Item", title="own heron", n=1)["id"]
+
+    def work(tx):
+        tx.run("MATCH (i:Item) WHERE i.title STARTS WITH 'own' SET i.x = 1")
+        tx.run("match (i:Item) where i.title ends with 'heron' set i.y = 2")
+        tx.run("MATCH (i:Item) WITH i, i.n AS m WITH i, m SET i.z = m // done\rSET i.w = 3")
+        return tx.run("MATCH (i:Item) RETURN i.x AS x, i.y AS y, i.z AS z, i.w AS w")
+
+    assert WorldWriter(driver, a).transaction(work) == [{"x": 1, "y": 2, "z": 1, "w": 3}]
+    other = raw_one(driver, "MATCH (i:Item {id: $id}) RETURN properties(i) AS p", id=theirs)
+    assert set(other["p"]) == {"id", "world_id", "title", "n"}
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, None, "5", float("nan"), float("inf")])
+def test_a_writer_refuses_a_timeout_that_is_not_a_positive_number(timeout):
+    with pytest.raises(ScopeError, match="timeout"):
+        WorldWriter(object(), "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d", timeout=timeout)

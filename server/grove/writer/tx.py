@@ -6,7 +6,7 @@ from typing import Any, TypeVar
 from neo4j import Driver, ManagedTransaction, unit_of_work
 
 from grove.store.connection import DATABASE
-from grove.store.query import CYPHER_PREFIX, collect
+from grove.store.query import CYPHER_PREFIX, check_timeout, collect
 from grove.store.scope import WORLD_PARAM, check_world_id, refuse_world_param, scope_cypher
 
 T = TypeVar("T")
@@ -51,7 +51,7 @@ class WorldWriter:
     def __init__(self, driver: Driver, world_id: str, *, timeout: float = 30.0) -> None:
         self._driver = driver
         self._world_id = check_world_id(world_id)
-        self._timeout = timeout
+        self._timeout = check_timeout(timeout)
 
     def transaction(self, work: Callable[[WorldTx], T]) -> T:
         """The driver retries a transient failure, so `work` may run twice: it must hold no state

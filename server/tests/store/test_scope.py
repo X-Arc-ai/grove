@@ -1,6 +1,8 @@
 """scope_cypher, with no server. Write snippets hold a `~` that plain() drops, so this file stays
 clean under the writer lint with no exemption for tests."""
 
+import re
+
 import pytest
 
 from grove.store.errors import ScopeError
@@ -697,14 +699,54 @@ def test_unknown_mode_is_refused():
 # World ids and parameters.
 
 
-@pytest.mark.parametrize("world_id", ["a", "A-b_9", "x" * 80])
+UUID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+HEX = UUID.replace("-", "")
+
+
+@pytest.mark.parametrize("world_id", [UUID, f"t_foundation_{UUID}", f"t_a-b-9_{UUID}"])
 def test_good_world_ids(world_id):
     assert check_world_id(world_id) == world_id
 
 
-@pytest.mark.parametrize("world_id", ["", "x" * 81, "a b", "a'b", 'a"b', "a\n", None, 7])
+@pytest.mark.parametrize(
+    "world_id",
+    [
+        "",
+        "a",
+        "A-b_9",
+        "x" * 80,
+        "a b",
+        "a'b",
+        'a"b',
+        "a\n",
+        None,
+        7,
+        f"{UUID}\n",
+        UUID.upper(),
+        f"t_foundation_{UUID.upper()}",
+        f"T_foundation_{UUID}",
+        f"t_Foundation_{UUID}",
+        f"t__{UUID}",
+        f"t_a_b_{UUID}",
+        f"{UUID}-000",
+        f"t_foundation_{UUID}-000",
+        f"x{UUID}",
+        f"t_foundation_{UUID[:-1]}",
+    ],
+)
 def test_bad_world_ids(world_id):
     with pytest.raises(ScopeError):
+        check_world_id(world_id)
+
+
+@pytest.mark.parametrize(
+    "world_id",
+    [f"t_review_{HEX}", f"t_review_{HEX}-000", f"t_review_{HEX.upper()}", f"t_REVIEW_{HEX}"],
+)
+def test_the_world_id_pair_whose_tokens_overlap_is_refused(world_id):
+    """S36: the analyzer splits on hyphens, so t_review_<h> was a token prefix of
+    t_review_<h>-000, and a flood in the second world used up the first world's LIMIT."""
+    with pytest.raises(ScopeError, match="S36"):
         check_world_id(world_id)
 
 
@@ -717,3 +759,259 @@ def test_a_world_id_parameter_is_refused_also_when_nested():
     ):
         with pytest.raises(ScopeError):
             refuse_world_param(params)
+
+
+# Names spelled like the keywords AS, STARTS and ENDS hid the clause after them (fix round 2).
+
+AS_REPROS = [
+    "WITH 1 AS as MATCH (n:Item {title:$t}) RETURN n.title AS t",
+    "MATCH (i:Item {id:$id}) WHERE true OR i.as MATCH (n {title:$t}) RETURN n.title AS t",
+    "WITH 1 AS as CALL db.labels() YIELD label RETURN label LIMIT 1",
+    "MATCH (i:Item {id:$id}) RETURN i.title AS t ORDER BY i.as UNION MATCH (n {title:$t}) "
+    "RETURN n.title AS t",
+]
+STARTS_REPROS = [
+    "MATCH (i:Item {id:$id}) WITH i, i.n AS starts WITH starts MATCH (i {title:$t}) "
+    "RETURN i.title AS t",
+    "MATCH (i:Item {id:$id}) WITH i ORDER BY i.starts WITH 1 AS z MATCH (i {title:$t}) "
+    "RETURN i.title AS t",
+    "MATCH (i:Item {id:$id}) UNWIND [1] AS ends WITH 1 AS z MATCH (i {title:$t}) "
+    "RETURN i.title AS t",
+    "MATCH (i:Item {id:$id}) WITH i, 1 AS ends WITH i, ends WITH 1 AS z MATCH (i {title:$t}) "
+    "RETURN i.title AS t",
+    "MATCH (i:Item {id:$id}) WHERE i.ends WITH 1 AS z MATCH (i {title:$t}) RETURN i.title AS t",
+]
+WRITE_KEYWORD_REPROS = [
+    "MATCH (a:Item {id:$id}) WITH a ORDER BY a.ends WITH 1 AS z MATCH (a {id:$bid}) S~ET a.x=7",
+    "MATCH (a:Item {id:$id}) WITH a, 1 AS ends WITH a, ends WITH 1 AS z MATCH (a {id:$bid}) "
+    "S~ET a.x=7",
+    "WITH 1 AS as MATCH (n {id:$bid}) DET~ACH DEL~ETE n",
+    "WITH 1 AS as CRE~ATE (n:Item {id:$nid, title:'REVIEWNEW'})",
+    "MATCH (n:Item {id:$id}) WITH n, 1 AS as S~ET n.world_id = 'review-moved'",
+    "MATCH (n:Item {id:$id}) WITH n, 1 AS as REM~OVE n.world_id",
+    "MATCH (n:Item {id:$id}) WITH n, 1 AS as S~ET n = {title: 'x'}",
+]
+PLATFORM_KEYWORD_REPROS = [
+    "WITH 1 AS as MATCH (i {id:$bid}) RETURN i",
+    "WITH 1 AS as MATCH (i:Item {id:$bid}) RETURN i",
+    "MATCH (u:User) WITH u, 1 AS ends WITH u, ends WITH 1 AS z MATCH (i {id:$bid}) RETURN i",
+]
+
+
+def cased(cypher, word, spelling):
+    """Respell each standalone `word` (any case) as `spelling`."""
+    return re.sub(rf"(?<![A-Za-z0-9_$]){word}(?![A-Za-z0-9_])", spelling, cypher, flags=re.I)
+
+
+def spellings(cypher):
+    out = {cypher}
+    for word in ("as", "starts", "ends"):
+        for spelling in (word, word.upper(), word.capitalize(), word[:-1] + word[-1].upper()):
+            out.add(cased(cypher, word, spelling))
+    return sorted(out)
+
+
+@pytest.mark.parametrize(
+    "cypher", [form for repro in AS_REPROS + STARTS_REPROS for form in spellings(repro)]
+)
+def test_a_name_spelled_like_a_keyword_is_refused_in_read_mode(cypher):
+    refused(r, cypher)
+
+
+@pytest.mark.parametrize(
+    "cypher", [form for repro in WRITE_KEYWORD_REPROS + STARTS_REPROS for form in spellings(repro)]
+)
+def test_a_name_spelled_like_a_keyword_is_refused_in_write_mode(cypher):
+    refused(w, cypher)
+
+
+@pytest.mark.parametrize(
+    "cypher", [form for repro in PLATFORM_KEYWORD_REPROS for form in spellings(repro)]
+)
+def test_a_name_spelled_like_a_keyword_is_refused_in_platform_mode(cypher):
+    refused(p, cypher)
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (as:Item) RETURN as.id AS x",
+        "MATCH (starts:Item) RETURN starts.id AS x",
+        "MATCH (i:Item) RETURN i AS as",
+        "MATCH (i:Item) RETURN i AS ends",
+        "MATCH (i:Item) RETURN i.as AS x",
+        "MATCH (i:Item) RETURN i.Starts AS x",
+        "MATCH (i:Item) RETURN i {.as} AS x",
+        "MATCH (i:Item {as: 1}) RETURN i",
+        "MATCH (i:Item {ends: 1}) RETURN i",
+        "RETURN {starts: 1} AS m",
+        "MATCH (i:Item:as) RETURN i",
+        "MATCH (i:Item)-[:ENDS]->(j) RETURN j",
+        "MATCH (i:Item)-[as:LINK]->(j) RETURN j",
+        "UNWIND [1] AS as RETURN as AS x",
+        "UNWIND [1] AS starts RETURN 1 AS x",
+        "RETURN [as IN [1] | as] AS l",
+        "RETURN [x IN [1] WHERE x = as] AS l",
+        "RETURN reduce(as = 0, x IN [1] | as + x) AS s",
+        "MATCH as = (i:Item)-[:LINK]->(j) RETURN as",
+        "MATCH (i:Item) WHERE as RETURN i",
+        "MATCH (i:Item) WITH as RETURN 1 AS x",
+        "MATCH (i:Item) WITH i, ends WITH i RETURN i",
+        "MATCH (i:Item) WHERE starts WITH 'a' RETURN i",
+        "MATCH (i:Item) WHERE i.a STARTS 'a' RETURN i",
+        "MATCH (i:Item) WHERE i.a ENDS RETURN i",
+        "MATCH (i:Item) RETURN i.a AS",
+        "MATCH (i:Item) RETURN i.a AS AS x",
+        "MATCH (i:Item) RETURN count(as) AS c",
+        "MATCH (i:Item) CALL (as) { RETURN 1 AS x } RETURN x",
+        "MATCH (i:Item) FOR~EACH (as IN [1] | S~ET i.a = as)",
+        "MATCH (i:Item) RETURN i ORDER BY i.as",
+        "MATCH (i:Item) WHERE i.a = $p AND as RETURN i",
+    ],
+)
+def test_every_position_of_a_name_spelled_like_a_keyword_is_refused(cypher):
+    refused(r, cypher, "keyword")
+
+
+@pytest.mark.parametrize(
+    ("cypher", "expected"),
+    [
+        (
+            "MATCH (i:Item) WHERE i.title STARTS WITH $p RETURN i",
+            f"MATCH (i:Item {W}) WHERE i.title STARTS WITH $p RETURN i",
+        ),
+        (
+            "match (i:Item) where i.title starts with $p and i.title ends with 'x' return i",
+            f"match (i:Item {W}) where i.title starts with $p and i.title ends with 'x' return i",
+        ),
+        (
+            "MATCH (i:Item) WHERE toLower(i.title) Ends With $p RETURN i.title As t",
+            f"MATCH (i:Item {W}) WHERE toLower(i.title) Ends With $p RETURN i.title As t",
+        ),
+        ("RETURN 'a' STARTS WITH 'a' AS x", "RETURN 'a' STARTS WITH 'a' AS x"),
+        ("MATCH (i:Item) RETURN i AS y", f"MATCH (i:Item {W}) RETURN i AS y"),
+        (
+            "MATCH (i:Item) WITH i, i.n AS m WITH m MATCH (j:Item {n: m}) RETURN j",
+            f"MATCH (i:Item {W}) WITH i, i.n AS m WITH m MATCH (j:Item {WC}n: m}}) RETURN j",
+        ),
+        (
+            "MATCH (i:Item) RETURN count(*) AS c, [1] AS l, {a: 1} AS m, $p AS q, null AS z, "
+            "CASE WHEN true THEN 1 END AS e, i.n IS :: STRING AS s, i.title.x AS u",
+            f"MATCH (i:Item {W}) RETURN count(*) AS c, [1] AS l, {{a: 1}} AS m, $p AS q, "
+            "null AS z, CASE WHEN true THEN 1 END AS e, i.n IS :: STRING AS s, i.title.x AS u",
+        ),
+        (
+            "MATCH (n:Item) RETURN n.s~et AS a, n.match AS b, n.limit AS c, n.in AS d",
+            f"MATCH (n:Item {W}) RETURN n.s~et AS a, n.match AS b, n.limit AS c, n.in AS d",
+        ),
+        ("UNWIND $xs AS x RETURN x AS y", "UNWIND $xs AS x RETURN x AS y"),
+    ],
+)
+def test_the_keywords_themselves_still_work(cypher, expected):
+    assert r(cypher) == plain(expected)
+
+
+# A line comment ends at a lone carriage return, as on the server (fix round 2).
+
+
+def test_a_line_comment_ends_at_a_lone_carriage_return():
+    text = "RETURN 1 AS x // note\rMATCH (n) RETURN n"
+    masked = mask(text)
+    assert len(masked) == len(text)
+    assert "note" not in masked
+    assert masked.endswith("\rMATCH (n) RETURN n")
+    assert [kind for _, _, kind in literal_spans(text)] == ["comment"]
+    assert list(literal_spans(text))[0][1] == text.index("\r")
+
+
+@pytest.mark.parametrize(
+    ("scoper", "cypher"),
+    [
+        (
+            r,
+            "MATCH (i:Item {id:$id}) RETURN i.title AS t // note\rUNION MATCH (n {title:$t}) "
+            "RETURN n.title AS t",
+        ),
+        (r, "MATCH (i:Item {id:$id}) // c\rMATCH (n {title:$t}) RETURN n.title AS t //\n"),
+        (w, "MATCH (a:Item {id:$id}) // c\rMATCH (b {id:$bid}) S~ET b.x=7 //\n"),
+        (w, "MATCH (a:Item {id:$id}) // c\r\rMATCH (b {id:$bid}) S~ET b.x=7"),
+        (p, "MATCH (u:User) // c\rMATCH (i {id:$bid}) RETURN i"),
+    ],
+)
+def test_text_after_a_lone_carriage_return_is_scoped(scoper, cypher):
+    refused(scoper, cypher, "no label and no link")
+
+
+def test_a_crlf_line_end_stays_correct():
+    cypher = "MATCH (i:Item {id:$id})\r\n// note (n:User)\r\nRETURN i.title AS t"
+    assert r(cypher) == f"MATCH (i:Item {WC}id:$id}})\r\n// note (n:User)\r\nRETURN i.title AS t"
+    assert r("MATCH (i:Item) // c\r\nMATCH (j:Item) RETURN j") == (
+        f"MATCH (i:Item {W}) // c\r\nMATCH (j:Item {W}) RETURN j"
+    )
+    assert r("MATCH (i:Item) // c\rMATCH (j:Item) RETURN j") == (
+        f"MATCH (i:Item {W}) // c\rMATCH (j:Item {W}) RETURN j"
+    )
+
+
+# Bounds, arithmetic and FOR (fix round 2).
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (i:Item {id:$id})-[:LINK*1e0..2]->(j) RETURN j.title AS t",
+        "MATCH (i:Item)-[:LINK*1.5..2]->(j) RETURN j",
+        "MATCH (i:Item)-[:LINK*1..2.5]->(j) RETURN j",
+        "MATCH (i:Item)-[:LINK*1..2e1]->(j) RETURN j",
+        "MATCH (i:Item)-[:LINK]->{1.5,2}(j) RETURN j",
+        "MATCH (i:Item)-[:LINK]->{1e0,2}(j) RETURN j",
+        "MATCH (i:Item)-[:LINK]->{1,2.5}(j) RETURN j",
+        "MATCH (i:Item) ((x)-[:LINK]->(y)){1.0,3} (j) RETURN j",
+    ],
+)
+def test_a_bound_that_is_not_a_whole_number_is_a_scope_error(cypher):
+    refused(r, cypher, "whole number")
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (a:Item {id:$id}) RETURN a.n - [1][0] AS t",
+        "MATCH (a:Item {id:$id}) RETURN (a.n)-[1][0] AS t",
+        "MATCH (a:Item {id:$id}) WITH collect(a) AS l RETURN [x IN l | x.n][0] - [1,2][1] AS t",
+        "MATCH (a:Item {id:$id}) RETURN a.n <-[1][0] AS t",
+        "MATCH (a:Item {id:$id}) RETURN a.n - [x IN [1] | x][0] AS t",
+        "MATCH (a:Item {id:$id}) RETURN a.n - [{k: 1}][0].k AS t",
+    ],
+)
+def test_subtraction_of_a_list_element_is_arithmetic(cypher):
+    assert r(cypher) == cypher.replace("{id:$id}", f"{WC}id:$id}}", 1)
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (a)-[]->(b) RETURN b",
+        "MATCH (a:Item)-[r]->(b) RETURN b",
+        "MATCH (a:Item) WHERE (a)-[]->() RETURN a",
+        "MATCH (a:Item) WHERE (a)-[r]-(:Item) RETURN a",
+        "MATCH (a:Item) WHERE (a.n)-[r]->(b) RETURN a",
+        "MATCH (a:Item) RETURN a.n - [r]-(b) AS t",
+        "MATCH (a:Item) RETURN a.n <-[r]-(b) AS t",
+    ],
+)
+def test_a_link_with_no_type_stays_refused(cypher):
+    refused(r, cypher)
+
+
+@pytest.mark.parametrize(
+    "cypher",
+    [
+        "MATCH (i:Item {id:$id}) WITH i FOR x IN [1] RETURN x",
+        "MATCH (i:Item) RETURN i FOR x IN [1] RETURN x",
+        "for x IN [1] RETURN x",
+        "MATCH (i:Item) WITH i ORDER BY i.n FOR x IN [1] MATCH (n {id: x}) RETURN n",
+    ],
+)
+def test_for_is_refused_after_a_projection(cypher):
+    refused(r, cypher, "FOR")
