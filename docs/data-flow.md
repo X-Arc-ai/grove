@@ -2,12 +2,12 @@
 
 This is the skeleton of the path-by-path statement. No path below runs yet, so every row is marked
 planned. The `forget` lane replaces this page with a statement generated from the deployed
-configuration.
+configuration. A lane is one work stream of this build.
 
 | Data | Where it goes | Terms | Status |
 |---|---|---|---|
 | Uploads: chats, notes, files, images | Grove's server, where screening in code runs before the `sources` table. There is no local runner. | Stated from configuration by the `forget` lane | Planned |
-| Screened text for extraction, verification, belief revision, audits and read-side sentences | Meta Model API, Spark 1.3 | Stated from configuration by the `forget` lane | Planned |
+| Screened text for extraction, verification, belief revision, audits and read-side sentences | Meta Model API, Spark 1.3, Standard mode | Stated from configuration by the `forget` lane | Planned |
 | Voice notes | Meta Model API, Voice Transcribe | Stated from configuration by the `forget` lane | Planned |
 | Screened text and images for triage, pairwise judgments and the second opinion | Muse Glimmer hosted on Modal | Stated from configuration by the `forget` lane | Planned |
 | Items, links, history, sources | Grove's store on the box | Stated from configuration by the `forget` lane | Planned |

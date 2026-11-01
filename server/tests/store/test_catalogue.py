@@ -11,6 +11,7 @@ from grove.store.catalogue import (
     PLATFORM_LABELS,
     RELATIONSHIP_TYPES,
     TABLES,
+    TYPE_CLASSES,
     WORLD_LABELS,
     table,
 )
@@ -64,7 +65,7 @@ B1_NAMES = [
     "oauth_clients",
 ]
 
-# Line 2561, the homes of free text.
+# Line 2561, the homes of free text, with the status words of S31.
 TEXT_HOMES = {
     ("sources", "content"),
     ("items", "title"),
@@ -73,6 +74,8 @@ TEXT_HOMES = {
     ("items", "properties"),
     ("items", "property_values"),
     ("items", "search_terms"),
+    ("items", "status"),
+    ("kinds", "status_vocabulary"),
     ("aliases", "phrase"),
     ("aliases", "normalised_phrase"),
     ("kinds", "name"),
@@ -87,6 +90,7 @@ PLAIN_TYPES = {
     "ids",
     "value_id",
     "value_ids",
+    "ref",
     "text_home",
     "instant",
     "date",
@@ -329,8 +333,75 @@ def test_rulings_reach_the_columns():
         "connectors",
         "areas",
         "findings",
+        "episodes",
+        "sources",
     ):
         assert {"version", "touched_at"} <= set(props_of(table(name))), name
+
+
+def column(table_name, prop):
+    return next(c for c in table(table_name).columns if prop in c.props)
+
+
+def test_the_type_classes_are_listed_in_the_catalogue():
+    assert set(TYPE_CLASSES) == PLAIN_TYPES | {"enum:<name>"}
+    assert all(TYPE_CLASSES.values())
+
+
+def test_checks_rows_carry_the_real_world_id():
+    """S35: a check's state and value measure one world."""
+    world = column("checks", "world_id")
+    assert "S35" in world.note
+    assert "''" not in world.note and "store-wide" not in world.note
+    assert table("checks").scope == "world"
+
+
+def test_status_words_are_registry_names():
+    """S31: an agent can mint a status word, so it lives in a text home."""
+    assert column("items", "status").type == "text_home"
+    assert column("kinds", "status_vocabulary").type == "json_home"
+
+
+def test_subjects_are_references_and_client_ids_are_locators():
+    """S32: a pair or a word with no row is not one UUIDv7 id."""
+    assert column("judgments", "subject").type == "ref"
+    assert column("audit_grades", "subject").type == "ref"
+    assert column("findings", "subject").type == "id"
+    assert column("oauth_clients", "client_id").type == "locator"
+    assert column("oauth_tokens", "client_id").type == "locator"
+    assert column("authorization_codes", "client_id").type == "locator"
+
+
+def test_connector_outcome_and_verdict_codes():
+    """Line 2391: a read that found items, and the two cases of could not read."""
+    assert ENUMS["connector_outcome"] == ("took_in", "nothing_new", "denied", "failed", "kept_out")
+    assert "not_supported" not in ENUMS["verdict"]  # S33
+    assert ENUMS["verdict"][:3] == ("supports", "contradicts", "not_about_claim")
+
+
+def test_a_hold_promotes_to_a_list():
+    """Line 2191: promoted_to_refs[]."""
+    assert column("holds", "promoted_to").type == "ids"
+
+
+def test_scheduled_role_cites_its_spec_line():
+    note = column("property_names", "scheduled_role").note
+    assert "2067" in note and "2064" not in note
+
+
+def test_no_owner_or_note_points_to_the_private_plan():
+    for t in TABLES:
+        texts = [t.owner, t.notes, *(c.note for c in t.columns)]
+        assert not any("handoff" in s.lower() for s in texts), t.name
+    assert table("worlds").owner == "platform; signin"
+
+
+def test_the_jobs_note_names_the_locked_check():
+    """A filter in MATCH or WHERE reads with no lock, and two runners claim one job."""
+    notes = table("jobs").notes
+    assert "reads with no lock" in notes
+    assert "CASE" in notes and "WITH" in notes
+    assert "claimed by a direct SET" not in notes
 
 
 def test_verifications_hold_the_columns_of_line_985():

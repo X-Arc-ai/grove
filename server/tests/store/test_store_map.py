@@ -9,6 +9,7 @@ from grove.store.catalogue import (
     PLATFORM_LABELS,
     RELATIONSHIP_TYPES,
     TABLES,
+    TYPE_CLASSES,
     WORLD_LABELS,
 )
 from grove.store.storemap import BEGIN, DOC, END, generate, render
@@ -74,3 +75,76 @@ def test_every_property_occurs_under_its_table():
         for c in t.columns:
             for prop in c.props:
                 assert f"`{prop}`" in section, (t.name, prop)
+
+
+REPO = DOC.parents[1]
+
+
+def hand_written():
+    return doc_text().split(BEGIN, 1)[0]
+
+
+def test_every_ruling_from_s1_to_s35_is_written_once():
+    text = hand_written()
+    for n in range(1, 36):
+        assert text.count(f"**S{n}. ") == 1, n
+
+
+def test_the_type_classes_and_text_homes_are_generated():
+    text = generate()
+    assert text.startswith("## Type classes\n")
+    for name in TYPE_CLASSES:
+        assert f"| `{name}` |" in text, name
+    assert "`items.status`" in text and "`kinds.status_vocabulary`" in text
+
+
+def test_the_a5_table_has_backups_restore_and_trigram():
+    text = hand_written()
+    assert "| Backups | A whole-store offline dump each day" in text
+    assert "| Restore | `neo4j-admin database load`" in text
+    assert "| Full text and trigram match |" in text
+    assert "reads with no lock" in text
+
+
+def test_the_constraint_refusal_codes_are_in_probe_order():
+    text = hand_written()
+    assert "refused with 50N11" in text
+    assert "51N27, cause 50N11" not in text
+
+
+def test_facts_the_code_holds():
+    text = hand_written()
+    assert "`entity_type = registry_row`" in text
+    assert "registry row`" not in text
+    assert "spec lines 832, 1238, 1250, 1252, 1264, 1265, 1596, 1630, 1752, 2004, 2067," in text
+
+
+def test_future_code_is_not_stated_as_present():
+    text = hand_written()
+    assert "A ruling states the design." in text
+    assert "the writer checks required properties" not in text
+    assert "are computed in code" not in text
+
+
+def test_public_docs_point_to_no_private_plan():
+    assert "handoff" not in doc_text().lower()
+    flow = (REPO / "docs" / "data-flow.md").read_text(encoding="utf-8")
+    assert "Meta Model API, Spark 1.3, Standard mode" in flow
+    record = (REPO / "HACKATHON.md").read_text(encoding="utf-8")
+    assert record.count("the simulation of the views (the sim)") == 1
+    compose = (REPO / "docker-compose.dev.yml").read_text(encoding="utf-8")
+    assert "lane" not in compose.splitlines()[0]
+
+
+def test_the_open_points_of_review_round_one():
+    points = hand_written().split("## Open points for later lanes", 1)[1].split("\n## ", 1)[0]
+    for phrase in (
+        "The value index must gain the status words",
+        "`why` of a contradiction from `grove.cleanup.v1`",
+        "never from the installed package",
+        "`GROVE_ENV=production` must be set on the box",
+        "The daily dump and the restore have not run on this store.",
+        "no rows for the mail provider, Google sign-in, Calendar and backups",
+        "`history_values.forgotten_at`, `budgets.spent`",
+    ):
+        assert phrase in points, phrase

@@ -4,7 +4,7 @@ This file maps every table of the Grove design to where it lives in Neo4j: its l
 
 The part between the two `generated` markers comes from `server/grove/store/catalogue.py`. Never edit that part by hand. Everything before it is written by hand.
 
-"Spec line" in this file means a line of the architecture decisions document. "B.1" is that document's list of every table. "Handoff" is the build handoff for this repository. S numbers are the rulings below.
+The design comes from two private maintainer documents: the architecture decisions document and the build plan. "Spec line" means a line of the architecture decisions document. Spec lines are references for maintainers, and the map reads without them. "B.1" is that document's list of every table, and A.5 and D1 to D15 are its sections. A lane is one work stream of this build, named in backticks, such as `writer-a`. S numbers are the rulings below.
 
 ## Naming
 
@@ -26,7 +26,7 @@ Every row was checked on `neo4j:2026.10.1-community` (Neo4j Kernel 2026.10.1, Cy
 |---|---|---|
 | One user database. | Confirmed. `CREATE DATABASE` is refused with 51N27, "not supported in community edition". `SHOW DATABASES` lists `neo4j` and `system` only. | https://neo4j.com/docs/operations-manual/current/database-administration/ |
 | No roles or grants. | Confirmed. `CREATE ROLE`, `GRANT ROLE`, `GRANT MATCH` and `SHOW ROLES` are refused with 51N27. Every client that connects has full power, so the application enforces the split between reads and writes. | https://neo4j.com/docs/operations-manual/current/authentication-authorization/manage-roles/ |
-| No property-existence constraints, no key constraints, no property type constraints. | Confirmed. All six forms, on nodes and on relationships, are refused with 51N27, cause 50N11. The writer checks required properties in code (S6). | https://neo4j.com/docs/cypher-manual/current/schema/constraints/ |
+| No property-existence constraints, no key constraints, no property type constraints. | Confirmed. All six forms, on nodes and on relationships, are refused with 50N11 (`Neo.DatabaseError.Schema.ConstraintCreationFailed`), cause 51N27 ("Property existence constraint is not supported in community edition"). A re-probe on 2026-11-01 through the Python driver gave the same order, and the refused statement created nothing. So the writer must check required properties in code; `writer-a` builds it (S6). | https://neo4j.com/docs/cypher-manual/current/schema/constraints/ |
 | Backup is an offline dump, and `STOP DATABASE` is refused. | Confirmed. `STOP DATABASE` and `START DATABASE` are refused with 51N27. `neo4j-admin database` has no `backup` command, and its dump help says a database mounted in a running server cannot be dumped. So the daily backup pauses the runner, stops the server, dumps, and starts it again. The dump itself was not run on the shared store. The manual says a dump does not hold users and roles metadata. | https://neo4j.com/docs/operations-manual/current/backup-restore/offline-backup/ and https://neo4j.com/docs/operations-manual/current/docker/dump-load/ |
 | Heap and page cache are set explicitly. | Partly. The server does start without these settings and computes its own values, so this is the rule of this build, not a rule of the server; the manual only recommends it. The names and the env form are confirmed: `server.memory.heap.initial_size`, `server.memory.heap.max_size` and `server.memory.pagecache.size`, as `NEO4J_server_memory_heap_initial__size`, `NEO4J_server_memory_heap_max__size` and `NEO4J_server_memory_pagecache_size`. The dev store ran with 512 MiB heap and 256 MiB page cache. The manual's Docker page says the image defaults to 512M for both, but the image's entrypoint sets only the page cache; that comes from reading the entrypoint, not from a second container. | https://neo4j.com/docs/operations-manual/current/performance/memory-configuration/ and https://neo4j.com/docs/operations-manual/current/docker/configuration/ |
 
@@ -46,30 +46,41 @@ The build also relies on these facts.
 
 ## What A.5 asks, what Neo4j gives
 
-A.5 sets Postgres as the default and accepts another store with a recorded reason, if it gives the same things. Decision 14 of the handoff is that reason (S1).
+A.5 sets Postgres as the default and accepts another store with a recorded reason, if it gives the same things. S1 records the reason, and this table is the check of the guarantees.
+
+A filter in `MATCH` or `WHERE` reads with no lock. A probe raced two transactions on one row: both passed the same filter, and the second overwrote the first. A `SET` takes the lock on a row, so a check must run after a lock, in one of two tested forms:
+
+1. First write a different property of the row, which takes the lock, then `WITH`, then the check, then the change. The lock write must not touch the checked property. If the check fails, the lock write stays on the row unless the transaction rolls back. So the caller rolls back on a failed check, or the lock write uses a property whose new value does no harm.
+2. Put the check inside a `CASE` on the right side of `SET`, and let the caller compare the returned value, for example the returned owner of a claim.
 
 | A.5 asks for | Neo4j gives |
 |---|---|
 | A batch that is all or nothing | A write transaction. |
-| Optimistic concurrency | The write lock that a direct `SET` takes, plus the version check in the writer. |
+| Optimistic concurrency | A version check in one of the two forms above. `writer-a` must build it, with a two-transaction race test. |
 | Hops and the walk | Variable-length patterns on `:LINK`. |
-| Full text and fuzzy match | Full-text indexes, and `~` in the query. |
+| Full text and trigram match | Full-text indexes, and fuzzy `~` in the query. Neo4j has no trigram similarity, so the trigram thresholds must be computed in code (S17). |
 | Append-only history | `:ChangeEntry`, under the writer rule. |
 | JSON columns | JSON strings. A map cannot be a property (S16). |
-| The job queue | `:Job`, claimed by a direct `SET` under the node's write lock. There is no `SKIP LOCKED`. |
+| The job queue | `:Job`. A claim checks the state in one of the two forms above. There is no `SKIP LOCKED`. `runner` must build the claim, with a two-transaction race test. |
 | Row-level security | The query layer. No store rule exists. |
+| Backups | A whole-store offline dump each day with the server stopped, kept 30 days. A.5 asks for snapshots of the snapshot-only tables; the whole-store dump is a change from A.5 (S21). |
+| Restore | `neo4j-admin database load` into a stopped store, then rebuild the projections from history, replay the forget ledger and compare fingerprints. `writer-b` and `deploy-a` own it. It has not run on this store. |
 
 ## Rulings
+
+A ruling states the design. Where the code does not exist yet, the named owner lane builds it.
+
+**S1. The store** (spec line 3065). A.5 asks a different store for a recorded reason and the same guarantees. The reason: one Community store holds the graph, history, requests, jobs, model calls, sessions and OAuth clients, and a graph store fits items, links and their walks. The table "What A.5 asks, what Neo4j gives" above is the check of the guarantees. S21 records that the whole-store dump is a change from A.5.
 
 **S2. Names** (spec lines 3081, 2098). Spec column names become snake_case, and hyphens drop: `became true` is `became_true`, `re-check by` is `recheck_by`, `normalised phrase` is `normalised_phrase`. A table keeps its spec name in code and tests. Its label is the singular in PascalCase (`items` is `:Item`, `oauth_clients` is `:OAuthClient`, `ontology_change_log` is `:OntologyChange`, `horizon_stats` is `:HorizonStat`, `support_changed` is `:SupportChanged`).
 
 **S3. Clocks** (spec lines 902, 903, 914, 915, 981, 1140, 3081). `became true` and `stopped being true` are world clocks: `<name>_earliest`, `<name>_latest` (ZONED DATETIME, UTC) and `<name>_precision` (enum `precision`). "Unknown" is `became_true_precision = 'unknown'` with both bounds absent. `stopped_being_true_*` are absent while the claim holds. `recorded`, `last_confirmed` and `recheck_by` are single instants. The spec gives no precision list, only `before` at line 1140, so the build fixes one in `enums.py`: instant, minute, hour, day, week, month, quarter, year, before, after, unknown. For lines 914 and 915, evidence adds `source_offset_minutes` and `person_timezone` (an IANA code), and items and links add `became_true_words` and `stopped_being_true_words` (value ids) for the original words.
 
-**S4. Ids** (spec lines 736, 3081). Every id column holds UUIDv7 text from `new_id()`. The exceptions are `requests.id` (S9), the fixed primitive ids, and `sequence`. A receipt prints a short form; the `writer-a` lane picks the length and resolves it.
+**S4. Ids** (spec lines 736, 3081). Every id column holds UUIDv7 text from `new_id()`. The exceptions are `requests.id` (S9), the fixed primitive ids, `sequence`, and `oauth_clients.client_id`, which is a `locator` (S32). A subject reference of type `ref` is not an id (S32). A receipt prints a short form; the `writer-a` lane picks the length and resolves it.
 
-**S5. `world_id`** (spec lines 3081, 3089, 3102). `world_id` is on every row, also `declines`, `area_audits` and the four D13 tables, because line 3081 wins. Empty for primitive rows means the sentinel `''` (`PRIMITIVE_WORLD`), not null: null escapes a composite uniqueness constraint, and `''` does not. Store-wide rows are the primitive rows, the default capabilities and `checks`. Platform nodes carry `user_id`. `:OAuthClient` and `:OAuthToken` carry `world_id` too, and on them it may be absent until consent.
+**S5. `world_id`** (spec lines 3081, 3089, 3102). `world_id` is on every row, also `declines`, `area_audits` and the four D13 tables, because line 3081 wins. Empty for primitive rows means the sentinel `''` (`PRIMITIVE_WORLD`), not null: null escapes a composite uniqueness constraint, and `''` does not. Store-wide rows are the primitive rows and the default capabilities. `checks` rows are per world (S35). Platform nodes carry `user_id`. `:OAuthClient` and `:OAuthToken` carry `world_id` too, and on them it may be absent until consent.
 
-**S6. Keys** (spec lines 3088 to 3092, 3104, 3105, 3130). The handoff's "single-property uniqueness constraints are enough" holds for ids. Each B.1 non-id key is a composite uniqueness constraint, with `world_id` first where the table has it. A composite constraint ignores a row that lacks a property, and Community has no existence constraints, so the writer checks required properties in code.
+**S6. Keys** (spec lines 3088 to 3092, 3104, 3105, 3130). A single-property uniqueness constraint is enough for an id. Each B.1 non-id key is a composite uniqueness constraint, with `world_id` first where the table has it. A composite constraint ignores a row that lacks a property, and Community has no existence constraints, so the writer must check required properties in code. `writer-a` builds that check.
 
 **S7. Links** (spec lines 1270, 1562, 1612 to 1614, 3088, 3130). Links are one relationship type, `:LINK`, from item to item. The meaning is a property that holds the meaning id, never a relationship type: a rename or a merge changes a registry row, and names stay out of code. `from_item` and `to_item` repeat the endpoints for index use. A merge re-points a link by delete and create with the same id. B.1's `unique active (world_id, from item, meaning, to item)` is `active_key`, text of the form `world|from|meaning|to`, present only while the link is active: a uniqueness constraint ignores an absent property, and the rule spans the store, so the key carries the world. A mark is a `:LINK` of the primitive meaning `affected by` from the affected item to the trigger item, plus one `:Impact` keyed by `link_id`. A mark's `active_key` adds its trigger change set, so a second change set on the same item can mark it again. This settles the conflict between lines 3088 and 3130.
 
@@ -81,7 +92,7 @@ A.5 sets Postgres as the default and accepts another store with a recorded reaso
 
 **S11. Status role** (spec lines 648, 3087, 3089). `status_role` on `:Item` (enum `status_role`) is written with `status`, because the index `(world_id, kind, status role)` needs it and the role lives on the kind row.
 
-**S12. Version and touched-at** (spec lines 922, 3081). `version` and `touched_at` are on every row the writer updates in place, also where B.1's list leaves them out: links, kinds, meanings, property_names, aliases, capabilities, evidence, beliefs, holds, unresolved_mentions, contradictions, questions, impacts, cascade_proposals, connectors, areas, findings. Append-only rows have neither.
+**S12. Version and touched-at** (spec lines 922, 3081). `version` and `touched_at` are on every row the writer updates in place, also where B.1's list leaves them out: links, kinds, meanings, property_names, aliases, capabilities, evidence, beliefs, holds, unresolved_mentions, contradictions, questions, impacts, cascade_proposals, connectors, areas, findings, and also episodes and sources (spec lines 761, 2525, 3103). Append-only rows have neither. Other rows that change after they are written are an open point.
 
 **S13. Belief ids** (spec lines 1742, 3105, 3132). A belief's id is its item's id. Evidence that targets a belief uses `target_type = belief` and `target_id = <item id>`.
 
@@ -91,23 +102,23 @@ A.5 sets Postgres as the default and accepts another store with a recorded reaso
 
 **S16. JSON and lists** (spec lines 3087, 3119). A map cannot be a property. `items.properties` and `run_records.proposed_operations` are JSON strings. `items.property_values` is the derived `LIST<STRING>` that the full-text index reads. Lists are homogeneous and never hold null. An empty list is stored as an absent property, because the empty list has the type `LIST<NOTHING>`.
 
-**S17. Lexical search** (spec lines 1386, 1387, 2560, 3087, 3092, 3280). `grove_items_lexical` runs over `:Item` (`world_id`, `title`, `summary`, `body`, `property_values`, `search_terms`). `grove_aliases_lexical` runs over `:Alias` (`world_id`, `phrase`, `normalised_phrase`). `grove_past_values` runs over `:PastValue` (`world_id`, `value`). `grove_value_index` runs over `:Item|Alias|HistoryValue|Kind|Meaning|PropertyName|RunRecord` (`world_id` and every text property that line 2560 names). All use the analyzer `standard-folding`, which folds accents and case and drops 33 English stop words. The text indexes `items_title_text` on `:Item(title)` and `aliases_normalised_phrase_text` on `:Alias(normalised_phrase)` serve substring match. Neo4j has no trigram similarity: typo tolerance is full-text fuzzy `~`, and Appendix C's trigram thresholds (0.3, 0.8) are computed in code over the candidates. Full-text queries use the `SEARCH` clause. Because `SEARCH` filters after `LIMIT`, the world filter sits inside the Lucene query: `+world_id:"<id>" +(<terms>)`. A probe on 2026-11-01 proved it: a world with 1 hit among 60 hits of another world came back with `LIMIT 5`.
+**S17. Lexical search** (spec lines 1386, 1387, 2560, 3087, 3092, 3280). `grove_items_lexical` runs over `:Item` (`world_id`, `title`, `summary`, `body`, `property_values`, `search_terms`). `grove_aliases_lexical` runs over `:Alias` (`world_id`, `phrase`, `normalised_phrase`). `grove_past_values` runs over `:PastValue` (`world_id`, `value`). `grove_value_index` runs over `:Item|Alias|HistoryValue|Kind|Meaning|PropertyName|RunRecord` (`world_id` and every text property that line 2560 names). All use the analyzer `standard-folding`, which folds accents and case and drops 33 English stop words. The text indexes `items_title_text` on `:Item(title)` and `aliases_normalised_phrase_text` on `:Alias(normalised_phrase)` serve substring match. Neo4j has no trigram similarity: typo tolerance is full-text fuzzy `~`, and Appendix C's trigram thresholds (0.3, 0.8) must be computed in code over the candidates. `hosts-b` builds that for the lexical index and `ingest-b` for the deduplication ladder. Full-text queries use the `SEARCH` clause. Because `SEARCH` filters after `LIMIT`, the world filter sits inside the Lucene query: `+world_id:"<id>" +(<terms>)`. A probe on 2026-11-01 proved it: a world with 1 hit among 60 hits of another world came back with `LIMIT 5`.
 
 **S18. Past values** (spec lines 834, 1387). A `:HistoryValue` that holds an old value of an item's content column also has the label `:PastValue` and the property `item_id`. No text is copied, so a forget that replaces the value clears the index.
 
 **S19. The value index and sources** (spec lines 2525, 2560). The value index leaves out `sources`, as line 2560 does. A forget reaches a source span by its locator. So a value the person names inside source text has no index path; see the open points.
 
-**S20. Writes outside the agents** (spec lines 2501, 3120, 3121). `model_calls` and `judgments` are written only by the model-call layer, sessions and OAuth rows by sign-in, job claims and budgets by the runner. Each such write is a function in `server/grove/writer/`, and only its owner calls it. The writer rule of handoff section 4 stands.
+**S20. Writes outside the agents** (spec lines 2501, 3120, 3121). `model_calls` and `judgments` are written only by the model-call layer, sessions and OAuth rows by sign-in, job claims and budgets by the runner. Each such write must be a function in `server/grove/writer/`, and only its owner calls it. `models`, `signin`, `hosts-a` and `runner` build them. The writer rule stands: only `server/grove/writer/` opens write transactions, and the writer lint enforces it.
 
 **S21. Restore groups** (spec lines 806 to 808). Projection: items, links, evidence, kinds, meanings, property_names, aliases, capabilities, beliefs. Snapshot: the 32 others. Ledger: forget_ledger. Platform rows restore as they were, and tokens are stored hashed. A snapshot is the whole-store offline dump, and the rebuild replaces the projection rows after the load. The catalogue records the group per table.
 
-**S22. Seeded rows** (spec lines 802, 806, 3222). Seeded registry rows are projections, so `create_world` writes one change entry per seeded row (`entity_type = registry row`, `field = row`, `new_value_id` = a history value that holds the row as JSON, `actor = seed`). Primitive rows are fixed in code and are not rebuilt from history.
+**S22. Seeded rows** (spec lines 802, 806, 3222). Seeded registry rows are projections, so `create_world` writes one change entry per seeded row (`entity_type = registry_row`, `field = row`, `new_value_id` = a history value that holds the JSON `{"table": ..., "row": ...}`, `actor = seed`). Primitive rows are fixed in code and are not rebuilt from history.
 
 **S23. The forget ledger** (spec lines 808, 3147). `forget_ledger` is `:ForgetLedger` in the store. Its copy outside the dump is the job of the `forget` lane.
 
 **S24. Days and voice** (spec lines 2684, 3120, 3122). `model_calls.day` and `budgets.day` are DATE values taken from the clock provider. Voice calls add `audio_seconds`. The price table is a config file owned by the `models` lane.
 
-**S25. Additions** (spec lines 832, 1238, 1250, 1252, 1264, 1265, 1596, 1630, 1752, 2004, 2064, 2105, 2161, 2376, 2427, 2450, 2527, 3197). The spec needs these columns and B.1 leaves them out, so each has origin `ruling`: `impacts.affected_item`, `impacts.flag`; `cascade_proposals.proposal_type` (enum: cascade, cascade_failed, wide_impact, reopen) and `cascade_proposals.detail` (JSON of ids, codes and counts); `kinds.propagating_fields`; `meanings.generic` (lets code find the generic connection meaning by a declared field); `property_names.scheduled_role` (enum start, due, end); `audit_runs.invalid`; `audit_grades.rationale` (value id); `findings.declined_reason` (value id); `questions.unblocks` (ids) and `questions.withdraw_reason` (value id); `unresolved_mentions.expiry_reason` (code); `beliefs.end_class` (enum `belief_end_class`).
+**S25. Additions** (spec lines 832, 1238, 1250, 1252, 1264, 1265, 1596, 1630, 1752, 2004, 2067, 2105, 2161, 2376, 2427, 2450, 2527, 3197). The spec needs these columns and B.1 leaves them out, so each has origin `ruling`: `impacts.affected_item`, `impacts.flag`; `cascade_proposals.proposal_type` (enum: cascade, cascade_failed, wide_impact, reopen) and `cascade_proposals.detail` (JSON of ids, codes and counts); `kinds.propagating_fields`; `meanings.generic` (lets code find the generic connection meaning by a declared field); `property_names.scheduled_role` (enum start, due, end); `audit_runs.invalid`; `audit_grades.rationale` (value id); `findings.declined_reason` (value id); `questions.unblocks` (ids) and `questions.withdraw_reason` (value id); `unresolved_mentions.expiry_reason` (code); `beliefs.end_class` (enum `belief_end_class`).
 
 **S26. Registry columns** (spec lines 1572, 1573, 3090, 3092). `meanings` carries the registry columns of `kinds` except lifecycle class, status vocabulary, required fields and required links, which do not fit a meaning. `aliases` adds `status`, `origin`, `minted_at` and `minted_by`. `reversed` is false on non-meaning aliases.
 
@@ -115,7 +126,19 @@ A.5 sets Postgres as the default and accepts another store with a recorded reaso
 
 **S28. Area membership** (spec lines 1368, 2145, 3095). `areas` membership has no column in B.1. It stays open for the `cleanup` and `hosts-b` lanes; see the open points.
 
-**S29. Checks and controls** (spec lines 2376, 2424, 2425, 2561). The wording of `checks` (question, measure, bands) is developer config, exempt from the value-id rule. `audit_runs.controls_planted` is a count, and the planted controls stay with the harness.
+**S29. Checks and controls** (spec lines 2376, 2424, 2425, 2561). The wording of `checks` (question, measure, cadence, bands) is developer config, exempt from the value-id rule, and is repeated on each world's row (S35). `audit_runs.controls_planted` is a count, and the planted controls stay with the harness.
+
+**S30. Primitive rows declare their fields** (spec lines 650, 1270, 1757, 1763, 3257). The four primitive meanings all have `direction` `from_to`, `cardinality` `many`, `carries_consequences` false, `decomposition` false, `rolls_up_completion` false, `generic` false and `status` `canonical`, and no `downstream_end` and no `default_horizon`. Endpoints use the seed's JSON form. `describes` goes from `{"kinds": [<id of the belief kind>], "classes": []}` to `{"any": true}`, with temporal class `permanent` (line 1757). `superseded by` and `corrected by` go from any to any, with temporal class `permanent`. `affected by` goes from any to any, from the affected item to the trigger item (line 1270), with temporal class `event`. The belief kind has `lifecycle_class` `lasting_thing`, an empty `status_vocabulary`, empty `required_fields`, `required_links` `[<id of describes>]` (line 1763), empty `propagating_fields`, and `status` `canonical`. The spec states no cardinality or temporal class for the last three meanings. `many` is chosen because it refuses nothing that the writer's own operations allow. The seed writes these fields when it creates a row and also when it finds one, so a change in code reaches a store that holds older rows.
+
+**S31. A status word is a registry name** (spec lines 648, 2092, 2561). A kind's status vocabulary is its own, and an agent can mint a new status word. So a status word is neither a closed enumeration nor developer configuration. Line 2561 lists the registry's names as a home of free text, so `items.status` is `text_home` and `kinds.status_vocabulary` is `json_home`. The value index must gain both; `forget` owns the value index and adds them (see the open points). Until then, a forget of a status word renames the word in the kind.
+
+**S32. Subject references and client ids** (spec lines 1594, 1667, 2426, 3036, 3121, 3148). The type class `ref` is text of the form `<target type>:<id>`. A pair is the two references in sorted order, joined by `|`. A word that has no row yet is `value:<history value id>`, where the history value holds the proposed name. A source event is `event:<connector id>:<message key>`. `judgments.subject` and `audit_grades.subject` are `ref`. `oauth_clients.client_id` is `locator` and is an exception to S4: dynamic registration gives a UUIDv7, and a Client ID Metadata Document gives its URL.
+
+**S33. "Not supported" is not a row verdict** (spec lines 942, 996, 2157, 2627). The verify judge's closed list for a row is `supports`, `contradicts` and `not_about_claim`. When the judge finds that a row does not support the claim, the row gets `contradicts` if it speaks against the claim, and `not_about_claim` if it does not speak to it. The claim is "not supported" when no row supports it. `truth-clock` owns any change.
+
+**S34. No script folding** (spec line 1386). Line 1386 says aliases are normalised for case, accents and script. `normalise_phrase` folds case, accents, underscores, hyphens, punctuation and spacing, but not script: `Москва` and `Moskva` stay different phrases. Transliteration needs a language model or a table that this build does not have. `writer-a` owns the resolver and any change, and the resolver must refuse an empty phrase.
+
+**S35. Checks are per world** (spec lines 2398, 2424, 3081, 3202). Line 3081 puts `world_id` on every table, and a check's state and value measure one world. So there is one `checks` row per check per world, with the real `world_id`. The wording (the person's question, measure, cadence, bands) is developer configuration, repeated on each row. This replaces the store-wide reading of `checks` in S5 and S29.
 
 ## Open points for later lanes
 
@@ -133,8 +156,13 @@ A.5 sets Postgres as the default and accepts another store with a recorded reaso
 | A request row needs its source id before screening has finished. | 750, 2462, 2505 | `screening` |
 | The grade rows of controls, and findings raised by agent runs: their run id and their text. | 2198, 2376, 2427 | `evals`, `cleanup` |
 | The newest-id part of the fingerprint for a table with no id, and whether a rebuild keeps `touched_at`. | 812, 922 | `writer-b` |
-| The belief kind's lifecycle class. D9 names none, and `primitives.py` uses `lasting_thing`. | 639, 1742 | `beliefs` |
-| Rows outside the S12 list that change after they are written (`requests`, `jobs`, `support_changed.taken_at`, `ontology_change_log.undone_by`) carry no version. | 3081 | `writer-a` |
+| Rows outside the S12 list that change after they are written carry no version: `requests`, `jobs`, `support_changed.taken_at`, `ontology_change_log.undone_by`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, `run_records`, and the finished times of `audit_runs` and `area_audits`. | 3081 | `writer-a` |
+| The value index must gain the status words, `items.status` and `kinds.status_vocabulary` (S31). Until then, a forget of a status word renames the word in the kind. | 2560, 2561 | `forget` |
+| `why` of a contradiction from `grove.cleanup.v1` (the `grove.extract.v1` form) has no value-id column in `contradictions`. | 2087, 2199, 3133 | `beliefs` |
+| Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. | none; a build fact | `deploy-a` |
+| `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. | 354, 991 | `deploy-a` |
+| The daily dump and the restore have not run on this store. | 806 to 808, 3065 | `deploy-a`, `writer-b` |
+| `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
 
 ## Added by later lanes
 
@@ -148,6 +176,30 @@ These are not in this slice. Each owner lane adds its rows here and in the catal
 | Eval scripts and their results | `evals` |
 
 <!-- generated:begin -->
+## Type classes
+
+| Class | Meaning |
+|---|---|
+| `id` | UUIDv7 text from new_id(), with the exceptions of S4 |
+| `ids` | a list of ids |
+| `value_id` | the id of a history_values row that holds the text |
+| `value_ids` | a list of value ids |
+| `ref` | S32: a subject reference, `<target type>:<id>`; a pair is two references, sorted, joined by a bar |
+| `text_home` | free text in one of the homes of line 2561 |
+| `json_home` | a JSON string in one of the homes of line 2561 |
+| `json_ids` | a JSON string that holds only ids, codes and numbers |
+| `enum:<name>` | a code of the closed list of that name in enums.py |
+| `instant` | a ZONED DATETIME in UTC |
+| `date` | a DATE from the clock provider |
+| `int` | an integer |
+| `float` | a float |
+| `bool` | a boolean |
+| `locator` | a place in a source, or a URL |
+| `code` | a machine code, not free text |
+| `config` | developer-written configuration |
+
+Text homes, the only columns of type `text_home` or `json_home` (line 2561, and the status words of S31): `items.title`, `items.summary`, `items.body`, `items.properties`, `items.property_values`, `items.search_terms`, `items.status`, `kinds.name`, `kinds.status_vocabulary`, `meanings.name`, `property_names.name`, `aliases.phrase`, `aliases.normalised_phrase`, `sources.content`, `history_values.value`, `run_records.proposed_operations`.
+
 ## The graph and its registry
 
 ### items
@@ -173,7 +225,7 @@ B.1's (world_id, became true) is two indexes, one per bound: a range index leave
 | properties | `properties` | `json_home` | b1 | a JSON string (S16); a state property only on a record, one per record |
 | (none) | `property_values` | `text_home` | ruling | S16: LIST<STRING> derived from properties, read by the full-text indexes |
 | search terms | `search_terms` | `text_home` | b1 | LIST<STRING>, the term text only (D7, D10) |
-| status | `status` | `code` | b1 | a status of the kind's vocabulary |
+| status | `status` | `text_home` | b1 | S31: a status word of the kind's vocabulary, a registry name an agent can mint |
 | status role | `status_role` | `enum:status_role` | ruling | S11: written with status; B.1 names it only in the index |
 | status since | `status_since` | `instant` | b1 |  |
 | became true | `became_true_earliest`, `became_true_latest` | `instant` | b1 | S3: UTC bounds; absent while unknown |
@@ -252,7 +304,7 @@ Full text: `grove_value_index`.
 | name | `name` | `text_home` | b1 |  |
 | description | `description` | `value_id` | b1 |  |
 | lifecycle class | `lifecycle_class` | `enum:lifecycle_class` | b1 |  |
-| status vocabulary with each status's role | `status_vocabulary` | `json_ids` | b1 | ordered list of {status, role}; status words act as codes |
+| status vocabulary with each status's role | `status_vocabulary` | `json_home` | b1 | S31: ordered list of {status, role}; each status word is a registry name |
 | required fields | `required_fields` | `json_ids` | b1 |  |
 | required links | `required_links` | `json_ids` | b1 |  |
 | status | `status` | `enum:registry_status` | b1 | starter rows are canonical at seed (B.4) |
@@ -346,7 +398,7 @@ Full text: `grove_value_index`.
 | minted by | `minted_by` | `code` | convention | line 1579: on all registry rows |
 | version | `version` | `int` | ruling | S12, line 3081 |
 | touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
-| (none) | `scheduled_role` | `enum:scheduled_role` | ruling | S25, lines 832, 2064: marks a property as a scheduled time |
+| (none) | `scheduled_role` | `enum:scheduled_role` | ruling | S25, lines 832, 2067: marks a property as a scheduled time |
 
 ### aliases
 
@@ -475,7 +527,7 @@ S27: parser, locator format, source-type mapping and speaker rules are code, not
 | watermark | `watermark` | `locator` | b1 |  |
 | last attempted read | `last_attempted_read` | `instant` | b1 |  |
 | last successful read | `last_successful_read` | `instant` | b1 |  |
-| last outcome with its reason as a code | `last_outcome` | `enum:connector_outcome` | b1 |  |
+| last outcome with its reason as a code | `last_outcome` | `enum:connector_outcome` | b1 | line 2391: denied and failed are the two cases of could not read |
 | items taken in over 7 days | `items_taken_in_over_7_days` | `int` | b1 |  |
 | oldest unprocessed item | `oldest_unprocessed_item` | `instant` | b1 |  |
 | counters (read, held nothing, extracted, denied, failed) | `read_count`, `held_nothing_count`, `extracted_count`, `denied_count`, `failed_count` | `int` | b1 |  |
@@ -523,7 +575,9 @@ Indexes: `sources_world_id_connector_id_external_locator_idx` (world_id, connect
 | the screened content or a pointer to it | `content_pointer` | `locator` | b1 |  |
 | parser version | `parser_version` | `code` | b1 |  |
 | untrusted | `untrusted` | `bool` | b1 |  |
-| forget state | `forget_state` | `enum:forget_state` | b1 |  |
+| forget state | `forget_state` | `enum:forget_state` | b1 | changed in place by a forget (line 2525) |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 
 ### episodes
 
@@ -532,6 +586,8 @@ Indexes: `sources_world_id_connector_id_external_locator_idx` (world_id, connect
 Keys: `episodes_id_unique` (id); `episodes_world_id_connector_id_first_message_key_unique` (world_id, connector_id, first_message_key).
 
 Indexes: none.
+
+A later cut of the same window keeps the id and extends the range (line 761), so S12 gives the row a version.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -544,6 +600,8 @@ Indexes: none.
 | cut rule | `cut_rule` | `code` | b1 |  |
 | read at | `read_at` | `instant` | b1 |  |
 | run id | `run_id` | `id` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 
 ### evidence
 
@@ -602,7 +660,7 @@ Indexes: `holds_world_id_state_expires_at_idx` (world_id, state, expires_at).
 | created at | `created_at` | `instant` | b1 |  |
 | expires at | `expires_at` | `instant` | b1 |  |
 | state | `state` | `enum:hold_state` | b1 |  |
-| promoted to | `promoted_to` | `id` | b1 | the item, link or evidence row it became |
+| promoted to | `promoted_to` | `ids` | b1 | line 2191, promoted_to_refs[]: the item, link and evidence rows it became |
 | closed at | `closed_at` | `instant` | b1 |  |
 | close reason | `close_reason` | `value_id` | b1 |  |
 | version | `version` | `int` | ruling | S12, line 3081 |
@@ -749,7 +807,7 @@ Keys: `jobs_id_unique` (id).
 
 Indexes: `jobs_world_id_lane_state_priority_run_after_idx` (world_id, lane, state, priority, run_after).
 
-A claim is a direct SET under the node's write lock (S1). There is no SKIP LOCKED.
+There is no SKIP LOCKED. A filter in MATCH or WHERE reads with no lock, so two runners that filter on state = queued both claim one job. A claim must check the state after it holds the node's write lock (S1): first a write to another property of the job, then WITH, then the check, then the change; or the check inside a CASE on the right side of SET, with the caller comparing the returned claimed_by. The runner lane adds a two-transaction race test with its claim.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -836,7 +894,7 @@ Written only by the model-call layer (S20).
 | world_id | `world_id` | `id` | b1 |  |
 | model call id | `model_call_id` | `id` | b1 |  |
 | role | `role` | `enum:judgment_role` | b1 |  |
-| subject | `subject` | `id` | b1 | the claim, belief, word or pair judged |
+| subject | `subject` | `ref` | b1 | S32: the claim, belief, word or pair judged; a word with no row yet is `value:<id>` |
 | the evidence row | `evidence_id` | `id` | b1 | where there is one |
 | verdict | `verdict` | `enum:verdict` | b1 |  |
 | stated confidence | `stated_confidence` | `float` | b1 |  |
@@ -1122,16 +1180,16 @@ Keys: `checks_id_unique` (id).
 
 Indexes: none.
 
-Columns are D13's (line 2424).
+Columns are D13's (line 2424). A check's state and value measure one world (lines 2398, 3202), so each world has its own row (S35).
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
-| id | `id` | `id` | b1 | D13 calls it check id |
-| world_id | `world_id` | `id` | ruling | S5: '' on every row; checks are store-wide |
-| the person's question | `question` | `config` | b1 | S29 |
-| measure | `measure` | `config` | b1 | S29 |
-| cadence | `cadence` | `config` | b1 |  |
-| bands with the reason for each | `bands` | `config` | b1 | S29 |
+| id | `id` | `id` | b1 | D13 calls it check id; one per check per world |
+| world_id | `world_id` | `id` | ruling | S35: the real world id; one row per check per world |
+| the person's question | `question` | `config` | b1 | S29, repeated on each row |
+| measure | `measure` | `config` | b1 | S29, repeated on each row |
+| cadence | `cadence` | `config` | b1 | S29, repeated on each row |
+| bands with the reason for each | `bands` | `config` | b1 | S29, repeated on each row |
 | state | `state` | `enum:check_state` | b1 |  |
 | state | `state_gap` | `float` | b1 | the gap of short of target |
 | value | `value` | `float` | b1 |  |
@@ -1180,7 +1238,7 @@ Columns are D13's (line 2426). Ids and locators only.
 |---|---|---|---|---|
 | world_id | `world_id` | `id` | ruling | S5: line 3081 wins over the table's own list |
 | run id | `run_id` | `id` | b1 |  |
-| subject | `subject` | `id` | b1 | an item, link or question id, or a source event's message key |
+| subject | `subject` | `ref` | b1 | S32: an item, link or question reference, or `event:<connector id>:<message key>` |
 | stratum | `stratum` | `code` | b1 |  |
 | grade | `grade` | `enum:audit_grade` | b1 |  |
 | evidence | `evidence_connector` | `id` | b1 | the connector |
@@ -1251,7 +1309,7 @@ A B.1 table read through the platform query layer: a client exists before any wo
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
-| client id | `client_id` | `id` | b1 |  |
+| client id | `client_id` | `locator` | b1 | S32: a UUIDv7 from dynamic registration, or the URL of a Client ID Metadata Document (lines 3036, 3148) |
 | world_id | `world_id` | `id` | b1 | absent until consent (S5) |
 | (none) | `user_id` | `id` | ruling | S5: absent until consent |
 | host | `host` | `config` | b1 | a host's registration metadata (line 2561) |
@@ -1265,7 +1323,7 @@ A B.1 table read through the platform query layer: a client exists before any wo
 
 ### worlds
 
-`:World`, node. Scope platform. Restore group platform. Owner handoff section 4; signin.
+`:World`, node. Scope platform. Restore group platform. Owner platform; signin.
 
 Keys: `worlds_id_unique` (id).
 
@@ -1283,7 +1341,7 @@ The signin lane owns any further column.
 
 ### users
 
-`:User`, node. Scope platform. Restore group platform. Owner handoff section 4; signin.
+`:User`, node. Scope platform. Restore group platform. Owner platform; signin.
 
 Keys: `users_id_unique` (id); `users_email_hash_unique` (email_hash).
 
@@ -1299,7 +1357,7 @@ The signin lane owns any further column.
 
 ### sessions
 
-`:Session`, node. Scope platform. Restore group platform. Owner handoff section 4; signin.
+`:Session`, node. Scope platform. Restore group platform. Owner platform; signin.
 
 Keys: `sessions_id_unique` (id); `sessions_token_hash_unique` (token_hash).
 
@@ -1318,7 +1376,7 @@ The signin lane owns any further column.
 
 ### oauth_tokens
 
-`:OAuthToken`, node. Scope platform. Restore group platform. Owner handoff section 4; hosts-a.
+`:OAuthToken`, node. Scope platform. Restore group platform. Owner platform; hosts-a.
 
 Keys: `oauth_tokens_id_unique` (id); `oauth_tokens_token_hash_unique` (token_hash).
 
@@ -1329,7 +1387,7 @@ The hosts-a lane owns any further column.
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
 | (none) | `id` | `id` | convention |  |
-| (none) | `client_id` | `id` | convention |  |
+| (none) | `client_id` | `locator` | convention | an oauth_clients client id (S32) |
 | (none) | `user_id` | `id` | convention |  |
 | (none) | `world_id` | `id` | convention | S5: tokens are bound to one world (line 3038) |
 | (none) | `token_hash` | `code` | convention |  |
@@ -1341,7 +1399,7 @@ The hosts-a lane owns any further column.
 
 ### authorization_codes
 
-`:AuthCode`, node. Scope platform. Restore group platform. Owner handoff section 4; hosts-a.
+`:AuthCode`, node. Scope platform. Restore group platform. Owner platform; hosts-a.
 
 Keys: `authorization_codes_id_unique` (id); `authorization_codes_code_hash_unique` (code_hash).
 
@@ -1352,7 +1410,7 @@ The hosts-a lane owns any further column.
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
 | (none) | `id` | `id` | convention |  |
-| (none) | `client_id` | `id` | convention |  |
+| (none) | `client_id` | `locator` | convention | an oauth_clients client id (S32) |
 | (none) | `user_id` | `id` | convention |  |
 | (none) | `world_id` | `id` | convention |  |
 | (none) | `code_hash` | `code` | convention |  |
@@ -1365,7 +1423,7 @@ The hosts-a lane owns any further column.
 
 ### email_codes
 
-`:EmailCode`, node. Scope platform. Restore group platform. Owner handoff section 4; signin.
+`:EmailCode`, node. Scope platform. Restore group platform. Owner platform; signin.
 
 Keys: `email_codes_id_unique` (id).
 
@@ -1385,7 +1443,7 @@ The signin lane owns any further column.
 
 ### upload_tokens
 
-`:UploadToken`, node. Scope platform. Restore group platform. Owner handoff section 4; ingest-a.
+`:UploadToken`, node. Scope platform. Restore group platform. Owner platform; ingest-a.
 
 Keys: `upload_tokens_id_unique` (id); `upload_tokens_token_hash_unique` (token_hash).
 
@@ -1405,7 +1463,7 @@ The ingest-a lane owns any further column.
 
 ### migrations
 
-`:Migration`, node. Scope platform. Restore group platform. Owner handoff section 4; foundation.
+`:Migration`, node. Scope platform. Restore group platform. Owner platform; foundation.
 
 Keys: `migrations_name_unique` (name).
 

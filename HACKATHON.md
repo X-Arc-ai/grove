@@ -1,6 +1,7 @@
 # Hackathon record
 
-This file separates the work done during the event from the material that came before it.
+This file separates the work done during the event from the material that came before it. A lane
+is one work stream of this build.
 
 ## Built during the event
 
@@ -13,7 +14,7 @@ The `submission` lane fills this table from the merged pull requests.
 
 This material predates the event:
 
-- The sim's export-guide screens.
+- The export-guide screens of the simulation of the views (the sim).
 - The graph visualizer that the sim adapted from earlier Grove code.
 - The worker renderer that the sim adapted from earlier Grove code.
 
