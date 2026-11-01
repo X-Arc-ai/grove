@@ -1,0 +1,305 @@
+{
+  "seed_version": "1",
+  "kinds": [
+    {
+      "name": "person",
+      "lifecycle_class": "lasting_thing",
+      "status_vocabulary": [],
+      "description": "A human being; the person's own item is one, created at onboarding."
+    },
+    {
+      "name": "organisation",
+      "lifecycle_class": "lasting_thing",
+      "status_vocabulary": [
+        {"status": "active", "role": "active"},
+        {"status": "closed", "role": "ended"}
+      ],
+      "description": "A group of people that acts as one; a lasting thing that has a state, so its roles are active and ended."
+    },
+    {
+      "name": "place",
+      "lifecycle_class": "lasting_thing",
+      "status_vocabulary": [],
+      "description": "A location that lasts, such as a home, a city or a venue."
+    },
+    {
+      "name": "plan",
+      "lifecycle_class": "work_with_state",
+      "status_vocabulary": [
+        {"status": "proposed", "role": "open"},
+        {"status": "active", "role": "active"},
+        {"status": "waiting", "role": "blocked"},
+        {"status": "fulfilled", "role": "done"},
+        {"status": "dropped", "role": "cancelled"}
+      ],
+      "description": "An intended course of action that moves from proposed to fulfilled or dropped."
+    },
+    {
+      "name": "task",
+      "lifecycle_class": "work_with_state",
+      "status_vocabulary": [
+        {"status": "open", "role": "open"},
+        {"status": "in progress", "role": "active"},
+        {"status": "blocked", "role": "blocked"},
+        {"status": "done", "role": "done"},
+        {"status": "cancelled", "role": "cancelled"}
+      ],
+      "description": "A piece of work that someone can do, and that can be blocked, finished or cancelled."
+    },
+    {
+      "name": "problem",
+      "lifecycle_class": "work_with_state",
+      "status_vocabulary": [
+        {"status": "open", "role": "open"},
+        {"status": "being worked on", "role": "active"},
+        {"status": "resolved", "role": "done"},
+        {"status": "dismissed", "role": "cancelled"}
+      ],
+      "description": "Something wrong that is worked on until it is resolved or dismissed."
+    },
+    {
+      "name": "assumption",
+      "lifecycle_class": "work_with_state",
+      "status_vocabulary": [
+        {"status": "holds", "role": "active"},
+        {"status": "dropped", "role": "cancelled"}
+      ],
+      "description": "Something plans rely on that a source may disprove; it ends as refuted when one does."
+    },
+    {
+      "name": "event",
+      "lifecycle_class": "record",
+      "status_vocabulary": [],
+      "description": "A record of something that happened; a record may hold one measured figure."
+    },
+    {
+      "name": "observation",
+      "lifecycle_class": "record",
+      "status_vocabulary": [],
+      "description": "A record of something seen or noticed."
+    },
+    {
+      "name": "decision",
+      "lifecycle_class": "record",
+      "status_vocabulary": [],
+      "description": "A record of a choice as it was taken; its standing comes from its successor links."
+    },
+    {
+      "name": "trip",
+      "lifecycle_class": "bounded_period",
+      "status_vocabulary": [],
+      "description": "A journey away from home, live only between its start and its end."
+    },
+    {
+      "name": "period",
+      "lifecycle_class": "bounded_period",
+      "status_vocabulary": [],
+      "description": "A bounded stretch of time: a term, a phase, a stay."
+    }
+  ],
+  "meanings": [
+    {
+      "name": "depends on",
+      "from_kinds": {"any": true},
+      "to_kinds": {"any": true},
+      "direction": "from_to",
+      "cardinality": "many",
+      "carries_consequences": true,
+      "downstream_end": "from",
+      "decomposition": false,
+      "rolls_up_completion": false,
+      "temporal_class": "state",
+      "default_horizon": 30,
+      "description": "The first thing needs the second to hold, so a change to the second reaches the first.",
+      "aliases": [
+        {"phrase": "gated on"},
+        {"phrase": "relies on"},
+        {"phrase": "requires"},
+        {"phrase": "needs"},
+        {"phrase": "needed by", "reversed": true}
+      ]
+    },
+    {
+      "name": "blocks",
+      "from_kinds": {"any": true},
+      "to_kinds": {"kinds": [], "classes": ["work_with_state", "bounded_period"]},
+      "direction": "from_to",
+      "cardinality": "many",
+      "carries_consequences": true,
+      "downstream_end": "to",
+      "decomposition": false,
+      "rolls_up_completion": false,
+      "temporal_class": "state",
+      "default_horizon": 30,
+      "description": "The first thing stops the second from moving ahead.",
+      "aliases": [
+        {"phrase": "holds up"},
+        {"phrase": "prevents"},
+        {"phrase": "blocked by", "reversed": true}
+      ]
+    },
+    {
+      "name": "assigned to",
+      "from_kinds": {"kinds": [], "classes": ["work_with_state"]},
+      "to_kinds": {"kinds": ["person"], "classes": []},
+      "direction": "from_to",
+      "cardinality": "one_per_source",
+      "carries_consequences": true,
+      "downstream_end": "from",
+      "decomposition": false,
+      "rolls_up_completion": false,
+      "temporal_class": "state",
+      "default_horizon": 30,
+      "description": "The work is in the hands of this person.",
+      "aliases": [
+        {"phrase": "handled by"},
+        {"phrase": "responsible for", "reversed": true}
+      ]
+    },
+    {
+      "name": "owned by",
+      "from_kinds": {"any": true},
+      "to_kinds": {"kinds": ["person", "organisation"], "classes": []},
+      "direction": "from_to",
+      "cardinality": "many",
+      "carries_consequences": true,
+      "downstream_end": "from",
+      "decomposition": false,
+      "rolls_up_completion": false,
+      "temporal_class": "state",
+      "default_horizon": 180,
+      "description": "The thing belongs to this person or organisation.",
+      "aliases": [
+        {"phrase": "owns", "reversed": true}
+      ]
+    },
+    {
+      "name": "part of",
+      "from_kinds": {"any": true},
+      "to_kinds": {"any": true},
+      "direction": "from_to",
+      "cardinality": "many",
+      "carries_consequences": false,
+      "downstream_end": null,
+      "decomposition": true,
+      "rolls_up_completion": false,
+      "temporal_class": "permanent",
+      "default_horizon": null,
+      "description": "The first thing is a piece of the second.",
+      "aliases": [
+        {"phrase": "within"},
+        {"phrase": "includes", "reversed": true},
+        {"phrase": "contains", "reversed": true}
+      ]
+    },
+    {
+      "name": "step of",
+      "from_kinds": {"kinds": [], "classes": ["work_with_state"]},
+      "to_kinds": {"kinds": [], "classes": ["work_with_state"]},
+      "direction": "from_to",
+      "cardinality": "one_per_source",
+      "carries_consequences": false,
+      "downstream_end": null,
+      "decomposition": true,
+      "rolls_up_completion": true,
+      "temporal_class": "permanent",
+      "default_horizon": null,
+      "description": "The first piece of work is a step of the second, which is done when all its steps are done.",
+      "aliases": [
+        {"phrase": "subtask of"},
+        {"phrase": "has step", "reversed": true}
+      ]
+    },
+    {
+      "name": "lives in",
+      "from_kinds": {"kinds": ["person"], "classes": []},
+      "to_kinds": {"kinds": ["place"], "classes": []},
+      "direction": "from_to",
+      "cardinality": "one_per_source",
+      "carries_consequences": false,
+      "downstream_end": null,
+      "decomposition": false,
+      "rolls_up_completion": false,
+      "temporal_class": "state",
+      "default_horizon": 180,
+      "description": "The person's current home is in this place.",
+      "aliases": [
+        {"phrase": "based in"},
+        {"phrase": "resides in"}
+      ]
+    },
+    {
+      "name": "works at",
+      "from_kinds": {"kinds": ["person"], "classes": []},
+      "to_kinds": {"kinds": ["organisation"], "classes": []},
+      "direction": "from_to",
+      "cardinality": "many",
+      "carries_consequences": false,
+      "downstream_end": null,
+      "decomposition": false,
+      "rolls_up_completion": false,
+      "temporal_class": "state",
+      "default_horizon": 180,
+      "description": "The person does paid or regular work for this organisation.",
+      "aliases": [
+        {"phrase": "works for"},
+        {"phrase": "employed by"}
+      ]
+    },
+    {
+      "name": "member of",
+      "from_kinds": {"kinds": ["person"], "classes": []},
+      "to_kinds": {"kinds": ["organisation"], "classes": []},
+      "direction": "from_to",
+      "cardinality": "many",
+      "carries_consequences": false,
+      "downstream_end": null,
+      "decomposition": false,
+      "rolls_up_completion": false,
+      "temporal_class": "state",
+      "default_horizon": 365,
+      "description": "The person belongs to this organisation.",
+      "aliases": []
+    },
+    {
+      "name": "involves",
+      "from_kinds": {"kinds": [], "classes": ["record"]},
+      "to_kinds": {"kinds": ["person", "organisation"], "classes": []},
+      "direction": "from_to",
+      "cardinality": "many",
+      "carries_consequences": false,
+      "downstream_end": null,
+      "decomposition": false,
+      "rolls_up_completion": false,
+      "temporal_class": "event",
+      "default_horizon": null,
+      "description": "This person or organisation took part in what the record tells.",
+      "aliases": [
+        {"phrase": "attended by"},
+        {"phrase": "attended", "reversed": true},
+        {"phrase": "took part in", "reversed": true}
+      ]
+    },
+    {
+      "name": "related to",
+      "from_kinds": {"any": true},
+      "to_kinds": {"any": true},
+      "direction": "from_to",
+      "cardinality": "many",
+      "carries_consequences": false,
+      "downstream_end": null,
+      "decomposition": false,
+      "rolls_up_completion": false,
+      "temporal_class": "state",
+      "default_horizon": 180,
+      "generic": true,
+      "description": "The generic connection meaning, which keeps the original phrase on the link.",
+      "aliases": [
+        {"phrase": "relates to"},
+        {"phrase": "connected to"},
+        {"phrase": "connected with"},
+        {"phrase": "linked to"}
+      ]
+    }
+  ]
+}
