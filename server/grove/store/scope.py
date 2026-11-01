@@ -18,6 +18,10 @@ reads the text, so it can spell a quote or a bracket that the mask does not see.
 Why shortestPath is refused in a world query: the server rejects a property map inside it, so a
 scoped form does not exist. Use the SHORTEST path selector.
 
+Why no name may be spelled as, starts or ends: the word after the AS keyword is an alias and the
+WITH after STARTS or ENDS is an operator, so a name with that spelling would hide the clause that
+follows it. With the names refused, each of these words is always the keyword.
+
 Out of reach: a query that reads a world's own data and returns it as a plain scalar is correct by
 construction, and the WorldLeak guard does not see scalars.
 """
@@ -32,8 +36,12 @@ from grove.store.errors import ScopeError
 MODES = ("read", "write", "platform")
 WORLD_PARAM = "world_id"
 
-_WORLD_ID = re.compile(r"[A-Za-z0-9_-]{1,80}")
+# Ruling S36: the full-text analyzer splits on hyphens and folds case, and with this form the
+# tokens of one world id never occur inside another's unless both share the UUID.
+_UUID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
+_WORLD_ID = re.compile(rf"(?:t_[a-z0-9-]+_)?{_UUID}")
 _STRING_FILL = '"'
+_LINE_END = re.compile(r"[\r\n]")
 
 _TOKEN = re.compile(
     r"""
@@ -78,7 +86,51 @@ _REFUSED_CLAUSES = {
     "SEARCH": "SEARCH is refused here: use WorldQuery.search",
     "SHOW": "SHOW is refused",
     "TERMINATE": "TERMINATE is refused",
+    "FOR": "FOR is refused: use UNWIND",
 }
+# Words that stand only as keywords; see the module docstring.
+_KEYWORD_ONLY = frozenset({"AS", "STARTS", "ENDS"})
+# Keywords that need an operand after them, so the token before AS or STARTS is never one of them.
+_OPERAND_KEYWORDS = frozenset(
+    {
+        "ALL",
+        "AND",
+        "BY",
+        "CALL",
+        "CASE",
+        "CONTAINS",
+        "CREATE",
+        "DELETE",
+        "DETACH",
+        "DISTINCT",
+        "ELSE",
+        "FOREACH",
+        "IN",
+        "IS",
+        "LIMIT",
+        "MATCH",
+        "MERGE",
+        "NODETACH",
+        "NOT",
+        "OFFSET",
+        "ON",
+        "OPTIONAL",
+        "OR",
+        "ORDER",
+        "REMOVE",
+        "RETURN",
+        "SET",
+        "SKIP",
+        "THEN",
+        "UNION",
+        "UNWIND",
+        "WHEN",
+        "WHERE",
+        "WITH",
+        "XOR",
+        "YIELD",
+    }
+)
 _CLAUSES = frozenset(
     {
         "CALL",
@@ -116,8 +168,9 @@ def literal_spans(text: str) -> Iterator[tuple[int, int, str]]:
     while position < size:
         char = text[position]
         if text.startswith("//", position):
-            end = text.find("\n", position)
-            end, kind = (size if end < 0 else end), "comment"
+            # The server ends a line comment at a lone carriage return too.
+            found = _LINE_END.search(text, position)
+            end, kind = (size if found is None else found.start()), "comment"
         elif text.startswith("/*", position):
             end = text.find("*/", position + 2)
             if end < 0:
@@ -147,7 +200,7 @@ def mask(cypher: str) -> str:
             raise ScopeError("a quoted name is refused: the catalogue has none")
         fill = _STRING_FILL if kind == "string" else " "
         chars[start:end] = [
-            "\n" if char == "\n" and kind == "comment" else fill for char in cypher[start:end]
+            char if char in "\r\n" and kind == "comment" else fill for char in cypher[start:end]
         ]
     return "".join(chars)
 
@@ -222,6 +275,7 @@ class _Scoper:
         self.bound: set[str] = set()
 
     def scoped(self) -> str:
+        self.refuse_keyword_names()
         if self.stamps:
             for token in self.tokens:
                 if token.kind == "param" and token.text[1:] == WORLD_PARAM:
@@ -245,6 +299,33 @@ class _Scoper:
 
     def is_name(self, index: int) -> bool:
         return index < len(self.tokens) and self.tokens[index].kind == "word"
+
+    def ends_operand(self, index: int) -> bool:
+        """Whether the token at index can close an expression, as the token before AS must."""
+        if index < 0:
+            return False
+        token = self.tokens[index]
+        if token.kind in ("string", "number", "param"):
+            return True
+        if token.kind == "punct":
+            return token.text in ")]}"
+        named = index and self.tokens[index - 1].text in ".:"
+        return bool(named) or token.text.upper() not in _OPERAND_KEYWORDS
+
+    def refuse_keyword_names(self) -> None:
+        """AS must sit between an operand and a plain alias, STARTS and ENDS between an operand
+        and WITH. Anything else is a name spelled like the keyword."""
+        for index, token in enumerate(self.tokens):
+            upper = token.text.upper() if token.kind == "word" else ""
+            if upper not in _KEYWORD_ONLY:
+                continue
+            following = self.tokens[index + 1].text.upper() if self.is_name(index + 1) else ""
+            if upper == "AS":
+                keyword = following not in ("", *_KEYWORD_ONLY)
+            else:
+                keyword = following == "WITH"
+            if not (keyword and self.ends_operand(index - 1)):
+                raise ScopeError(f"a name spelled {token.text!r} is refused: it is a keyword")
 
     def word(self, index: int) -> str:
         """The upper-case keyword at index; '' for a property, a label, an alias or a non-word."""
@@ -484,11 +565,21 @@ class _Scoper:
         if self.is_punct(index, "*"):
             raise ScopeError("a zero lower bound on a link is refused: use + or {1,n}")
         if self.is_punct(index, "{"):
+            close = self.closes[index]
             low = self.tokens[index + 1]
-            if low.kind != "number" or int(low.text) == 0:
+            if low.kind != "number" or self.bound_value(index + 1) == 0:
                 raise ScopeError("a zero lower bound on a link is refused")
-            return self.closes[index] + 1
+            for position in range(index + 2, close):
+                if self.tokens[position].kind == "number":
+                    self.bound_value(position)
+            return close + 1
         return index
+
+    def bound_value(self, index: int) -> int:
+        text = self.tokens[index].text
+        if not text.isdigit():
+            raise ScopeError("a bound on a link must be a whole number")
+        return int(text)
 
     def label_expression(self, index: int) -> tuple[tuple[str, ...], int]:
         """Names joined by |, & or :, from the first name; returns the names and the next index."""
@@ -605,12 +696,13 @@ class _Scoper:
 
     def variable_length(self, index: int) -> int:
         if index < len(self.tokens) and self.tokens[index].kind == "number":
-            if int(self.tokens[index].text) == 0:
+            if self.bound_value(index) == 0:
                 raise ScopeError("a zero lower bound on a link is refused")
             index += 1
         if self.is_punct(index, ".") and self.is_punct(index + 1, "."):
             index += 2
             if index < len(self.tokens) and self.tokens[index].kind == "number":
+                self.bound_value(index)
                 index += 1
         return index
 
@@ -694,11 +786,25 @@ class _Scoper:
             elif self.is_punct(index, ":"):
                 index = self.label_test(index)
             elif self.is_punct(index, "-") or self.is_punct(index, "<"):
-                if self.link_at(index) is not None:
+                if not self.subtracts_a_list(index) and self.link_at(index) is not None:
                     raise ScopeError("a link outside a pattern")
                 index += 1
             else:
                 index += 1
+
+    def subtracts_a_list(self, index: int) -> bool:
+        """`-` then a bracket with no type, in an expression: arithmetic on a list element such as
+        `a.n - [1][0]`. A link bracket has a `-` after it, and that shape stays a link."""
+        position = index + 1 if self.is_punct(index, "<") else index
+        if not (self.is_punct(position, "-") and self.is_punct(position + 1, "[")):
+            return False
+        close = self.closes[position + 1]
+        at = position + 2
+        while at < close:
+            if self.is_punct(at, ":"):
+                return False
+            at = self.closes[at] + 1 if at in self.closes else at + 1
+        return not self.is_punct(close + 1, "-")
 
     def group(self, index: int) -> int:
         node = self.node_at(index)
@@ -736,7 +842,7 @@ def scope_cypher(cypher: str, mode: str) -> str:
 
 def check_world_id(world_id: str) -> str:
     if not isinstance(world_id, str) or _WORLD_ID.fullmatch(world_id) is None:
-        raise ScopeError("a world id must match [A-Za-z0-9_-]{1,80}")
+        raise ScopeError("a world id is a lowercase UUID, or t_<slice>_<uuid> for a test (S36)")
     return world_id
 
 

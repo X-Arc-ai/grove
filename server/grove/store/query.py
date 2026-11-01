@@ -4,12 +4,15 @@ Read access mode is a safety rail and not access control: the driver manual give
 for it, and Community has no roles. The real wall is the writer lint plus scope_cypher.
 """
 
+import math
 import re
+import unicodedata
 from typing import Any
 
 from neo4j import Driver, Result, unit_of_work
 from neo4j.graph import Node, Path, Relationship
-from neo4j.time import Date, DateTime
+from neo4j.spatial import Point
+from neo4j.time import Date, DateTime, Duration, Time
 
 from grove.store.catalogue import FULLTEXT_INDEXES
 from grove.store.connection import DATABASE
@@ -24,12 +27,14 @@ _TEXT_FIELDS = {
     index.name: tuple(prop for prop in index.props if prop != WORLD_PARAM)
     for index in FULLTEXT_INDEXES
 }
-# Lucene refuses a query past 1024 clauses, and each term costs one clause per field. Text past
-# this cap is refused rather than cut: a caller must say what it left out.
+# Lucene refuses a query past 1024 clauses, and each analyzed token costs one clause per field.
+# Text past these caps is refused rather than cut: a caller must say what it left out. The length
+# caps keep one fuzzy word from filling the shared server's heap.
 MAX_SEARCH_TERMS = 64
+MAX_SEARCH_TEXT = 1024
+MAX_SEARCH_TERM = 64
 _LUCENE_SPECIAL = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/<>=])')
 _LUCENE_OPERATORS = frozenset({"AND", "OR", "NOT"})
-_TEXT_RUN = re.compile(r"[^\W_]+")
 # The analyzer drops these and all punctuation. A group with nothing left in it would vanish from
 # the Lucene query and match every row of the world.
 _ANALYZER_STOP_WORDS = frozenset(
@@ -61,6 +66,12 @@ def guard(value: Any, world_id: str) -> None:
 
 
 def plain(value: Any) -> Any:
+    # Duration and Point are tuples in the driver, so they come before the list branch.
+    if isinstance(value, Duration):
+        return value.iso_format()
+    if isinstance(value, Point):
+        point = {"srid": value.srid, "x": value[0], "y": value[1]}
+        return point | ({"z": value[2]} if len(value) > 2 else {})
     if isinstance(value, Node | Relationship):
         return {key: plain(item) for key, item in value.items()}
     if isinstance(value, Path):
@@ -72,9 +83,17 @@ def plain(value: Any) -> Any:
         return {key: plain(item) for key, item in value.items()}
     if isinstance(value, list | tuple):
         return [plain(item) for item in value]
-    if isinstance(value, DateTime | Date):
+    if isinstance(value, DateTime | Date | Time):
         return value.to_native()
     return value
+
+
+def check_timeout(timeout: object) -> float:
+    """The driver reads 0 as no timeout at all, so only a positive finite number passes."""
+    valid = isinstance(timeout, int | float) and not isinstance(timeout, bool)
+    if not valid or not math.isfinite(timeout) or timeout <= 0:
+        raise ScopeError("a timeout must be a positive number of seconds")
+    return timeout
 
 
 def collect(result: Result, world_id: str | None) -> list[dict]:
@@ -100,15 +119,45 @@ def _run_read(
         return session.execute_read(work)
 
 
+def _runs(raw: str) -> list[str]:
+    """Runs of letters, marks and decimal digits: the characters the tokenizer keeps."""
+    runs, current = [], ""
+    for char in raw:
+        category = unicodedata.category(char)
+        if category[0] in "LM" or category == "Nd":
+            current += char
+        elif current:
+            runs.append(current)
+            current = ""
+    return [*runs, current] if current else runs
+
+
+def _folded(run: str) -> str:
+    """A run as the analyzer's folding sees it: compatibility forms, accents and case folded."""
+    decomposed = unicodedata.normalize("NFKD", unicodedata.normalize("NFKC", run))
+    return "".join(char for char in decomposed if unicodedata.category(char)[0] != "M").casefold()
+
+
 def lucene_terms(text: str, *, fuzzy: bool) -> list[str]:
     """The user's text as Lucene terms that cannot leave the group they are placed in."""
-    terms = []
+    if not isinstance(text, str):
+        raise ScopeError("search text must be a string")
+    if len(text) > MAX_SEARCH_TEXT:
+        raise ScopeError(f"search text over {MAX_SEARCH_TEXT} characters")
+    terms, tokens = [], 0
     for raw in text.split():
-        runs = [run.casefold() for run in _TEXT_RUN.findall(raw)]
-        if not runs or (not fuzzy and _ANALYZER_STOP_WORDS.issuperset(runs)):
+        if len(raw) > MAX_SEARCH_TERM:
+            raise ScopeError(f"a search term over {MAX_SEARCH_TERM} characters")
+        runs = _runs(raw)
+        words = [folded for folded in map(_folded, runs) if folded]
+        if not words or (not fuzzy and _ANALYZER_STOP_WORDS.issuperset(words)):
             continue
+        # The analyzer splits on punctuation, so `a-b-c` costs three clauses per field.
+        tokens += len(runs)
         word = raw.lower() if raw in _LUCENE_OPERATORS else raw
         terms.append(_LUCENE_SPECIAL.sub(r"\\\1", word) + ("~" if fuzzy else ""))
+    if tokens > MAX_SEARCH_TERMS:
+        raise ScopeError(f"more than {MAX_SEARCH_TERMS} search terms")
     return terms
 
 
@@ -116,7 +165,7 @@ class WorldQuery:
     def __init__(self, driver: Driver, world_id: str, *, timeout: float = 30.0) -> None:
         self._driver = driver
         self._world_id = check_world_id(world_id)
-        self._timeout = timeout
+        self._timeout = check_timeout(timeout)
 
     @classmethod
     def primitives(cls, driver: Driver, *, timeout: float = 30.0) -> "WorldQuery":
@@ -125,7 +174,7 @@ class WorldQuery:
         query = cls.__new__(cls)
         query._driver = driver
         query._world_id = PRIMITIVE_WORLD
-        query._timeout = timeout
+        query._timeout = check_timeout(timeout)
         return query
 
     def read(self, cypher: str, /, **params: Any) -> list[dict]:
@@ -144,14 +193,12 @@ class WorldQuery:
         terms = lucene_terms(text, fuzzy=fuzzy)
         if not terms:
             return []
-        if len(terms) > MAX_SEARCH_TERMS:
-            raise ScopeError(f"more than {MAX_SEARCH_TERMS} search terms")
         # world_id is an indexed field, so a bare term would also match it: every term names the
         # text fields.
         group = " ".join(f"{field}:{term}" for field in _TEXT_FIELDS[index] for term in terms)
         # SEARCH filters after LIMIT, so only a filter inside the Lucene query gives a true top k
-        # (S17). The analyzer splits a world id on hyphens, so the phrase alone is not an exact
-        # match: the WHERE stays as the exact check.
+        # (S17). The world id form of S36 makes the phrase exact in practice; the WHERE stays as
+        # the exact check.
         rows = _run_read(
             self._driver,
             f"MATCH (n) SEARCH n IN (FULLTEXT INDEX {index} FOR $q LIMIT $limit) SCORE AS score "
@@ -173,7 +220,7 @@ class WorldQuery:
 class PlatformQuery:
     def __init__(self, driver: Driver, *, timeout: float = 30.0) -> None:
         self._driver = driver
-        self._timeout = timeout
+        self._timeout = check_timeout(timeout)
 
     def read(self, cypher: str, /, **params: Any) -> list[dict]:
         scoped = scope_cypher(cypher, "platform")
