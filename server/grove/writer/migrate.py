@@ -1,4 +1,8 @@
-"""The migration runner: python -m grove.writer.migrate [--dir <path>] [--require-empty]."""
+"""The migration runner: python -m grove.writer.migrate [--dir <path>] [--require-empty].
+
+Migrations run from the checkout's `server/` folder: the .cypher files are not in the wheel, so the
+default directory exists only in a checkout, and a missing directory is an error, never zero files.
+"""
 
 import argparse
 import hashlib
@@ -23,6 +27,10 @@ class MigrationDrift(RuntimeError):
 
 class StoreNotEmpty(RuntimeError):
     """--require-empty found a node."""
+
+
+class MigrationsMissing(RuntimeError):
+    """The directory does not exist. An existing empty directory is valid."""
 
 
 def split_statements(text: str) -> list[str]:
@@ -66,9 +74,16 @@ def _apply(driver: Driver, statements: list[str], row: dict[str, object]) -> Non
         for statement in statements:
             session.run(f"CYPHER 25 {statement}").consume()
         session.run("CYPHER 25 CALL db.awaitIndexes($seconds)", seconds=AWAIT_SECONDS).consume()
-        session.run(
-            "CYPHER 25 CREATE (m:Migration) SET m = $row", row={**row, "applied_at": clock.now()}
-        ).consume()
+        # Two runs at once both read an empty ledger. MERGE on the unique name lets the second wait
+        # for the first and match its row; a row with another checksum is drift, not a success.
+        recorded = session.run(
+            "CYPHER 25 MERGE (m:Migration {name: $name}) ON CREATE SET m += $row "
+            "RETURN m.checksum AS checksum",
+            name=row["name"],
+            row={**row, "applied_at": clock.now()},
+        ).single()["checksum"]
+    if recorded != row["checksum"]:
+        raise MigrationDrift(f"{row['name']} was applied by another run with another checksum")
 
 
 def run_migrations(
@@ -78,6 +93,8 @@ def run_migrations(
     scope: str = DEFAULT_SCOPE,
     require_empty: bool = False,
 ) -> dict[str, list[str]]:
+    if not directory.is_dir():
+        raise MigrationsMissing(f"no migrations directory at {directory}")
     if require_empty and _store_has_nodes(driver):
         raise StoreNotEmpty("the store holds nodes")
 
@@ -112,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     with open_driver() as driver:
         try:
             result = run_migrations(driver, args.dir, require_empty=args.require_empty)
-        except StoreNotEmpty as refused:
+        except (StoreNotEmpty, MigrationsMissing) as refused:
             print(refused, file=sys.stderr)
             return 2
         except MigrationDrift as drift:

@@ -6,6 +6,9 @@ import os
 import re
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -14,10 +17,12 @@ from grove.config import ConfigError, load_settings
 from grove.store.catalogue import FULLTEXT_INDEXES, TABLES
 from grove.store.connection import DATABASE
 from grove.store.scope import literal_spans
+from grove.writer import migrate
 from grove.writer.migrate import (
     DEFAULT_SCOPE,
     MIGRATIONS_DIR,
     MigrationDrift,
+    MigrationsMissing,
     StoreNotEmpty,
     checksum,
     main,
@@ -172,6 +177,72 @@ def test_a_failed_statement_stops_the_run_and_writes_no_row_for_that_file(driver
     with pytest.raises(Exception, match=r"(?i)invalid|syntax"):
         run_migrations(driver, tmp_path, scope=scope)
     assert [row["name"] for row in ledger_rows(driver, scope)] == [f"{scope}/0001_a.cypher"]
+
+
+def test_runs_at_once_on_one_scope_all_succeed_and_write_one_row_per_file(
+    driver, tmp_path, scope, monkeypatch
+):
+    for number in range(1, 4):
+        (tmp_path / f"000{number}_f.cypher").write_text(f"RETURN {number};")
+    runs = 3
+    # Every run reads the empty ledger before any run writes a row: the race of two lanes that
+    # start tests at once, made certain.
+    all_have_read = threading.Barrier(runs, timeout=30)
+    real_ledger = migrate._ledger
+
+    def ledger_then_wait(*args):
+        rows = real_ledger(*args)
+        all_have_read.wait()
+        return rows
+
+    monkeypatch.setattr(migrate, "_ledger", ledger_then_wait)
+    with ThreadPoolExecutor(max_workers=runs) as pool:
+        results = list(
+            pool.map(lambda _: run_migrations(driver, tmp_path, scope=scope), range(runs))
+        )
+
+    files = ["0001_f.cypher", "0002_f.cypher", "0003_f.cypher"]
+    assert results == [{"applied": files, "skipped": []}] * runs
+    assert [row["name"] for row in ledger_rows(driver, scope)] == [f"{scope}/{f}" for f in files]
+
+
+def test_a_run_that_finds_a_row_with_another_checksum_raises_drift(
+    driver, tmp_path, scope, monkeypatch
+):
+    (tmp_path / "0001_a.cypher").write_text("RETURN 1;")
+    run_migrations(driver, tmp_path, scope=scope)
+    (tmp_path / "0001_a.cypher").write_text("RETURN 2;")
+    # A run that read the ledger before the other run wrote its row.
+    monkeypatch.setattr(migrate, "_ledger", lambda *args: {})
+
+    with pytest.raises(MigrationDrift):
+        run_migrations(driver, tmp_path, scope=scope)
+    assert [row["checksum"] for row in ledger_rows(driver, scope)] == [checksum("RETURN 1;")]
+
+
+def test_a_missing_directory_is_refused_and_an_empty_one_is_not(driver, tmp_path, scope):
+    with pytest.raises(MigrationsMissing):
+        run_migrations(driver, tmp_path / "absent", scope=scope)
+    assert run_migrations(driver, tmp_path, scope=scope) == {"applied": [], "skipped": []}
+
+
+def test_cli_exits_2_on_a_missing_directory_and_prints_no_json(driver, tmp_path):
+    done = subprocess.run(
+        [sys.executable, "-m", "grove.writer.migrate", "--dir", str(tmp_path / "absent")],
+        capture_output=True,
+        text=True,
+    )
+    assert done.returncode == 2, done.stderr
+    assert done.stdout == ""
+    assert len(done.stderr.strip().splitlines()) == 1
+    assert "absent" in done.stderr
+
+
+def test_the_default_directory_is_the_checkouts_migrations_folder():
+    server = Path(__file__).resolve().parents[2]
+    assert MIGRATIONS_DIR == server / "migrations"
+    assert MIGRATIONS_DIR.is_dir()
+    assert sorted(MIGRATIONS_DIR.glob("*.cypher"))
 
 
 def test_require_empty_refuses_a_store_with_a_node(driver, tmp_path, scope, world):
