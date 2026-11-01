@@ -16,6 +16,10 @@ def _is_punctuation(char: str) -> bool:
 def normalise_phrase(phrase: str) -> str:
     """Case, accents, underscores, hyphens, punctuation and spacing fall away (lines 1386, 1589).
 
+    Line 1386 also names script, and this build does not fold it (ruling S34): `Москва` and
+    `Moskva` stay two phrases, because transliteration needs a language model or a table the build
+    does not have. A change belongs to the resolver, which must also refuse an empty phrase.
+
     NFKD runs on both sides of casefold: it can expose a capital (a compatibility character), and
     casefold can expose an accent. One pass of either would leave the result not idempotent.
     """

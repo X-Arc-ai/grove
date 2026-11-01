@@ -10,6 +10,7 @@ from uuid import UUID
 import pytest
 
 from grove import clock
+from grove.ids import new_id
 from grove.store.catalogue import table
 from grove.store.connection import DATABASE
 from grove.store.enums import ENUMS
@@ -29,6 +30,7 @@ from grove.store.primitives import (
 )
 from grove.store.query import PlatformQuery, WorldQuery
 from grove.writer import worlds
+from grove.writer.testing import plant_node, purge_test_world
 from grove.writer.tx import WorldWriter
 from grove.writer.worlds import create_world, load_starter_set, seed_primitives
 
@@ -234,8 +236,22 @@ def test_the_data_file_holds_names_and_declared_fields_and_no_ids():
             assert "id" not in row
             assert set(row) - {"aliases"} <= columns[name]
     aliases = [a for m in starter["meanings"] for a in m["aliases"]]
-    assert all(set(alias) <= {"phrase", "reversed"} for alias in aliases)
-    assert all(alias.get("reversed", True) is True for alias in aliases)
+    assert all(set(alias) == {"phrase", "reversed"} for alias in aliases)
+
+
+def test_every_alias_in_the_data_file_decides_its_reversed_flag():
+    # Line 2760: the flag is decided, never defaulted.
+    aliases = [a for m in load_starter_set()["meanings"] for a in m["aliases"]]
+    assert len(aliases) == ALIAS_COUNT
+    assert all(type(alias["reversed"]) is bool for alias in aliases)
+    stated = {phrase: flag for table in ALIASES.values() for phrase, flag in table.items()}
+    assert {alias["phrase"]: alias["reversed"] for alias in aliases} == stated
+
+
+def test_an_alias_with_no_reversed_key_is_refused():
+    run = worlds._SeedRun(world_id="w", at=AT, reason="r", commit_id="c", change_set_id="s")
+    with pytest.raises(KeyError, match="reversed"):
+        worlds._alias_row({"phrase": "gated on"}, "meaning-id", run)
 
 
 def test_counts_per_label(driver, seeded):
@@ -579,6 +595,122 @@ def test_primitive_rows_exist_once_across_worlds(driver, make_world):
     assert rows[0]["k"]["primitive"] is True
     assert rows[0]["k"]["name"] == PRIMITIVE_KIND_BELIEF["name"]
     assert rows[0]["k"]["lifecycle_class"] == PRIMITIVE_KIND_BELIEF["lifecycle_class"]
+
+
+# Ruling S30, transcribed a second time on purpose: a drift in primitives.py must fail here.
+ANY_END = '{"any": true}'
+S30_MEANINGS = {
+    MEANING_DESCRIBES: (
+        "describes",
+        '{"kinds": ["' + KIND_BELIEF + '"], "classes": []}',
+        ANY_END,
+        "permanent",
+    ),
+    MEANING_SUPERSEDED_BY: ("superseded by", ANY_END, ANY_END, "permanent"),
+    MEANING_CORRECTED_BY: ("corrected by", ANY_END, ANY_END, "permanent"),
+    MEANING_AFFECTED_BY: ("affected by", ANY_END, ANY_END, "event"),
+}
+S30_KIND_BELIEF = {
+    "name": "belief",
+    "lifecycle_class": "lasting_thing",
+    "status_vocabulary": "[]",
+    "required_fields": "[]",
+    "required_links": '["' + MEANING_DESCRIBES + '"]',
+    "propagating_fields": "[]",
+    "status": "canonical",
+}
+PRIMITIVE_FIXED = {"world_id": PRIMITIVE_WORLD, "primitive": True, "version": 1}
+
+
+def s30_meaning(meaning_id):
+    name, from_kinds, to_kinds, temporal_class = S30_MEANINGS[meaning_id]
+    return {
+        "id": meaning_id,
+        **PRIMITIVE_FIXED,
+        "name": name,
+        "from_kinds": from_kinds,
+        "to_kinds": to_kinds,
+        "direction": "from_to",
+        "cardinality": "many",
+        "carries_consequences": False,
+        "decomposition": False,
+        "rolls_up_completion": False,
+        "generic": False,
+        "temporal_class": temporal_class,
+        "status": "canonical",
+    }
+
+
+def test_each_primitive_row_holds_the_fields_s30_declares(driver, migrated):
+    seed_primitives(driver)
+    query = WorldQuery.primitives(driver)
+    for meaning_id in PRIMITIVE_MEANING_IDS:
+        rows = query.read("MATCH (m:Meaning {id: $id}) RETURN m", id=meaning_id)
+        assert len(rows) == 1, meaning_id
+        assert rows[0]["m"] == s30_meaning(meaning_id)
+        assert rows[0]["m"] == {
+            "id": meaning_id,
+            **PRIMITIVE_MEANINGS[meaning_id],
+            **PRIMITIVE_FIXED,
+        }
+    rows = query.read("MATCH (k:Kind {id: $id}) RETURN k", id=KIND_BELIEF)
+    assert len(rows) == 1
+    assert rows[0]["k"] == {"id": KIND_BELIEF, **PRIMITIVE_FIXED, **S30_KIND_BELIEF}
+    assert rows[0]["k"] == {"id": KIND_BELIEF, **PRIMITIVE_KIND_BELIEF, **PRIMITIVE_FIXED}
+
+
+def test_each_primitive_field_is_a_value_its_enum_holds():
+    for fields in PRIMITIVE_MEANINGS.values():
+        assert fields["temporal_class"] in ENUMS["temporal_class"]
+        assert fields["cardinality"] in ENUMS["cardinality"]
+    assert PRIMITIVE_KIND_BELIEF["lifecycle_class"] in ENUMS["lifecycle_class"]
+
+
+def test_seed_primitives_repairs_a_stale_row_and_leaves_the_real_rows(
+    driver, migrated, world, monkeypatch
+):
+    query = WorldQuery.primitives(driver)
+    real_before = {
+        row_id: query.read("MATCH (n:Meaning|Kind {id: $id}) RETURN n", id=row_id)
+        for row_id in PRIMITIVE_IDS
+    }
+    meaning_id, kind_id = new_id(), new_id()
+    meaning = {**PRIMITIVE_MEANINGS[MEANING_DESCRIBES], "name": f"stale meaning {world}"}
+    kind = {**PRIMITIVE_KIND_BELIEF, "name": f"stale kind {world}"}
+    monkeypatch.setattr(worlds, "PRIMITIVE_MEANINGS", {meaning_id: meaning})
+    monkeypatch.setattr(worlds, "KIND_BELIEF", kind_id)
+    monkeypatch.setattr(worlds, "PRIMITIVE_KIND_BELIEF", kind)
+    # A row as an older build wrote it: only some of the declared fields.
+    plant_node(
+        driver, world, "Meaning", primitive=True, id=meaning_id, name=meaning["name"], version=1
+    )
+    plant_node(driver, world, "Kind", primitive=True, id=kind_id, name=kind["name"], version=1)
+
+    seed_primitives(driver)
+
+    planted = {"planted_for": world}
+    rows = query.read("MATCH (m:Meaning {id: $id}) RETURN m", id=meaning_id)
+    assert rows == [{"m": {"id": meaning_id, **meaning, **PRIMITIVE_FIXED, **planted}}]
+    rows = query.read("MATCH (k:Kind {id: $id}) RETURN k", id=kind_id)
+    assert rows == [{"k": {"id": kind_id, **kind, **PRIMITIVE_FIXED, **planted}}]
+    assert {
+        row_id: query.read("MATCH (n:Meaning|Kind {id: $id}) RETURN n", id=row_id)
+        for row_id in PRIMITIVE_IDS
+    } == real_before
+
+    purge_test_world(driver, world)
+    assert query.read("MATCH (m:Meaning {id: $id}) RETURN m", id=meaning_id) == []
+    assert query.read("MATCH (k:Kind {id: $id}) RETURN k", id=kind_id) == []
+
+
+def test_two_worlds_created_at_once_both_seed(driver, make_world):
+    first, second = make_world(), make_world()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        made = list(
+            pool.map(lambda w: create_world(driver, w, owner_user_id=OWNER), (first, second))
+        )
+    assert [result["world_id"] for result in made] == [first, second]
+    assert count(driver, first, "Kind") == count(driver, second, "Kind") == 12
 
 
 def test_the_fixed_ids_are_the_five_named_rows():
