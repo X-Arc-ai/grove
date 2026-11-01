@@ -3,7 +3,8 @@
 The migrations, docs/store-map.md, the world scoping and the schema lint all read this file. A
 change to the store is one new numbered migration plus the matching row here.
 
-Spec lines in notes refer to the architecture decisions document. S numbers are the rulings of
+Spec lines in notes refer to the architecture decisions document, a private maintainer document;
+they are references for maintainers and the notes read without them. S numbers are the rulings of
 docs/store-map.md.
 """
 
@@ -53,6 +54,30 @@ class Table:
     uniques: tuple[Constraint, ...]
     indexes: tuple[Index, ...] = ()
     notes: str = ""
+
+
+# The type classes of Column.type. The schema lint of the forget lane reads them: a text_home or
+# json_home column outside line 2561's homes is a bug.
+TYPE_CLASSES: dict[str, str] = {
+    "id": "UUIDv7 text from new_id(), with the exceptions of S4",
+    "ids": "a list of ids",
+    "value_id": "the id of a history_values row that holds the text",
+    "value_ids": "a list of value ids",
+    "ref": "S32: a subject reference, `<target type>:<id>`; a pair is two references, sorted, "
+    "joined by a bar",
+    "text_home": "free text in one of the homes of line 2561",
+    "json_home": "a JSON string in one of the homes of line 2561",
+    "json_ids": "a JSON string that holds only ids, codes and numbers",
+    "enum:<name>": "a code of the closed list of that name in enums.py",
+    "instant": "a ZONED DATETIME in UTC",
+    "date": "a DATE from the clock provider",
+    "int": "an integer",
+    "float": "a float",
+    "bool": "a boolean",
+    "locator": "a place in a source, or a URL",
+    "code": "a machine code, not free text",
+    "config": "developer-written configuration",
+}
 
 
 def _snake(spec: str) -> str:
@@ -186,7 +211,11 @@ ITEMS = Table(
             "S16: LIST<STRING> derived from properties, read by the full-text indexes",
         ),
         _col("search terms", "text_home", note="LIST<STRING>, the term text only (D7, D10)"),
-        _col("status", "code", note="a status of the kind's vocabulary"),
+        _col(
+            "status",
+            "text_home",
+            note="S31: a status word of the kind's vocabulary, a registry name an agent can mint",
+        ),
         _ruling(
             "status_role",
             "enum:status_role",
@@ -273,9 +302,9 @@ KINDS = Table(
         _col("lifecycle class", "enum:lifecycle_class"),
         _col(
             "status vocabulary with each status's role",
-            "json_ids",
+            "json_home",
             "status_vocabulary",
-            note="ordered list of {status, role}; status words act as codes",
+            note="S31: ordered list of {status, role}; each status word is a registry name",
         ),
         _col("required fields", "json_ids"),
         _col("required links", "json_ids"),
@@ -356,7 +385,7 @@ PROPERTY_NAMES = Table(
         _ruling(
             "scheduled_role",
             "enum:scheduled_role",
-            "S25, lines 832, 2064: marks a property as a scheduled time",
+            "S25, lines 832, 2067: marks a property as a scheduled time",
         ),
     ),
     uniques=_keys("property_names", ("id",), ("world_id", "kind", "name")),
@@ -503,6 +532,7 @@ CONNECTORS = Table(
             "last outcome with its reason as a code",
             "enum:connector_outcome",
             "last_outcome",
+            note="line 2391: denied and failed are the two cases of could not read",
         ),
         _col("items taken in over 7 days", "int"),
         _col("oldest unprocessed item", "instant"),
@@ -572,7 +602,8 @@ SOURCES = Table(
         _col("the screened content or a pointer to it", "locator", "content_pointer"),
         _col("parser version", "code"),
         _col("untrusted", "bool"),
-        _col("forget state", "enum:forget_state"),
+        _col("forget state", "enum:forget_state", note="changed in place by a forget (line 2525)"),
+        *_version_touched(),
     ),
     uniques=_keys("sources", ("id",)),
     indexes=_ranges("sources", ("world_id", "connector_id", "external_locator")),
@@ -600,7 +631,10 @@ EPISODES = Table(
         _col("cut rule", "code"),
         _col("read at", "instant"),
         _col("run id", "id"),
+        *_version_touched(),
     ),
+    notes="A later cut of the same window keeps the id and extends the range (line 761), so S12 "
+    "gives the row a version.",
     uniques=_keys("episodes", ("id",), ("world_id", "connector_id", "first_message_key")),
 )
 
@@ -669,7 +703,11 @@ HOLDS = Table(
         _col("created at", "instant"),
         _col("expires at", "instant"),
         _col("state", "enum:hold_state"),
-        _col("promoted to", "id", note="the item, link or evidence row it became"),
+        _col(
+            "promoted to",
+            "ids",
+            note="line 2191, promoted_to_refs[]: the item, link and evidence rows it became",
+        ),
         _col("closed at", "instant"),
         _col("close reason", "value_id"),
         *_version_touched(),
@@ -865,7 +903,14 @@ JOBS = Table(
     ),
     uniques=_keys("jobs", ("id",)),
     indexes=_ranges("jobs", ("world_id", "lane", "state", "priority", "run_after")),
-    notes="A claim is a direct SET under the node's write lock (S1). There is no SKIP LOCKED.",
+    notes=(
+        "There is no SKIP LOCKED. A filter in MATCH or WHERE reads with no lock, so two runners "
+        "that filter on state = queued both claim one job. A claim must check the state after "
+        "it holds the node's write lock (S1): first a write to another property of the job, "
+        "then WITH, then the check, then the change; or the check inside a CASE on the right "
+        "side of SET, with the caller comparing the returned claimed_by. The runner lane adds a "
+        "two-transaction race test with its claim."
+    ),
 )
 
 RUN_RECORDS = Table(
@@ -963,7 +1008,12 @@ JUDGMENTS = Table(
         _WORLD,
         _col("model call id", "id"),
         _col("role", "enum:judgment_role"),
-        _col("subject", "id", note="the claim, belief, word or pair judged"),
+        _col(
+            "subject",
+            "ref",
+            note="S32: the claim, belief, word or pair judged; a word with no row yet is "
+            "`value:<id>`",
+        ),
         _col("the evidence row", "id", "evidence_id", note="where there is one"),
         _col("verdict", "enum:verdict"),
         _col("stated confidence", "float"),
@@ -1282,12 +1332,14 @@ CHECKS = Table(
     group="snapshot",
     owner="D13",
     columns=(
-        _col("id", "id", note="D13 calls it check id"),
-        _ruling("world_id", "id", "S5: '' on every row; checks are store-wide", spec="world_id"),
-        _col("the person's question", "config", "question", note="S29"),
-        _col("measure", "config", note="S29"),
-        _col("cadence", "config"),
-        _col("bands with the reason for each", "config", "bands", note="S29"),
+        _col("id", "id", note="D13 calls it check id; one per check per world"),
+        _ruling(
+            "world_id", "id", "S35: the real world id; one row per check per world", spec="world_id"
+        ),
+        _col("the person's question", "config", "question", note="S29, repeated on each row"),
+        _col("measure", "config", note="S29, repeated on each row"),
+        _col("cadence", "config", note="S29, repeated on each row"),
+        _col("bands with the reason for each", "config", "bands", note="S29, repeated on each row"),
         _col("state", "enum:check_state"),
         _col("state", "float", "state_gap", note="the gap of short of target"),
         _col("value", "float"),
@@ -1296,7 +1348,10 @@ CHECKS = Table(
         _col("state since", "instant"),
     ),
     uniques=_keys("checks", ("id",)),
-    notes="Columns are D13's (line 2424).",
+    notes=(
+        "Columns are D13's (line 2424). A check's state and value measure one world (lines "
+        "2398, 3202), so each world has its own row (S35)."
+    ),
 )
 
 AUDIT_RUNS = Table(
@@ -1341,7 +1396,12 @@ AUDIT_GRADES = Table(
     columns=(
         _WORLD_S5,
         _col("run id", "id"),
-        _col("subject", "id", note="an item, link or question id, or a source event's message key"),
+        _col(
+            "subject",
+            "ref",
+            note="S32: an item, link or question reference, or "
+            "`event:<connector id>:<message key>`",
+        ),
         _col("stratum", "code"),
         _col("grade", "enum:audit_grade"),
         _col("evidence", "id", "evidence_connector", note="the connector"),
@@ -1413,7 +1473,12 @@ OAUTH_CLIENTS = Table(
     group="snapshot",
     owner="A.3, D14",
     columns=(
-        _col("client id", "id"),
+        _col(
+            "client id",
+            "locator",
+            note="S32: a UUIDv7 from dynamic registration, or the URL of a Client ID Metadata "
+            "Document (lines 3036, 3148)",
+        ),
         _col("world_id", "id", note="absent until consent (S5)"),
         _ruling("user_id", "id", "S5: absent until consent"),
         _col("host", "config", note="a host's registration metadata (line 2561)"),
@@ -1432,7 +1497,7 @@ OAUTH_CLIENTS = Table(
 
 # Platform rows beyond B.1. Each owner lane adds the columns it needs by a new migration and row.
 
-_HANDOFF = "handoff section 4"
+_PLATFORM_OWNER = "platform"
 
 
 def _platform(
@@ -1456,7 +1521,7 @@ def _p(prop: str, type_: str, note: str = "") -> Column:
 WORLDS = _platform(
     "worlds",
     "World",
-    f"{_HANDOFF}; signin",
+    f"{_PLATFORM_OWNER}; signin",
     (
         _p("id", "id", "the world_id of every row in the world"),
         _p("owner_user_id", "id"),
@@ -1472,7 +1537,7 @@ WORLDS = _platform(
 USERS = _platform(
     "users",
     "User",
-    f"{_HANDOFF}; signin",
+    f"{_PLATFORM_OWNER}; signin",
     (
         _p("id", "id"),
         _p("email_hash", "code", "secrets and contact details stay out of the row"),
@@ -1485,7 +1550,7 @@ USERS = _platform(
 SESSIONS = _platform(
     "sessions",
     "Session",
-    f"{_HANDOFF}; signin",
+    f"{_PLATFORM_OWNER}; signin",
     (
         _p("id", "id"),
         _p("user_id", "id"),
@@ -1502,10 +1567,10 @@ SESSIONS = _platform(
 OAUTH_TOKENS = _platform(
     "oauth_tokens",
     "OAuthToken",
-    f"{_HANDOFF}; hosts-a",
+    f"{_PLATFORM_OWNER}; hosts-a",
     (
         _p("id", "id"),
-        _p("client_id", "id"),
+        _p("client_id", "locator", "an oauth_clients client id (S32)"),
         _p("user_id", "id"),
         _p("world_id", "id", "S5: tokens are bound to one world (line 3038)"),
         _p("token_hash", "code"),
@@ -1523,10 +1588,10 @@ OAUTH_TOKENS = _platform(
 AUTHORIZATION_CODES = _platform(
     "authorization_codes",
     "AuthCode",
-    f"{_HANDOFF}; hosts-a",
+    f"{_PLATFORM_OWNER}; hosts-a",
     (
         _p("id", "id"),
-        _p("client_id", "id"),
+        _p("client_id", "locator", "an oauth_clients client id (S32)"),
         _p("user_id", "id"),
         _p("world_id", "id"),
         _p("code_hash", "code"),
@@ -1544,7 +1609,7 @@ AUTHORIZATION_CODES = _platform(
 EMAIL_CODES = _platform(
     "email_codes",
     "EmailCode",
-    f"{_HANDOFF}; signin",
+    f"{_PLATFORM_OWNER}; signin",
     (
         _p("id", "id"),
         _p("email_hash", "code"),
@@ -1562,7 +1627,7 @@ EMAIL_CODES = _platform(
 UPLOAD_TOKENS = _platform(
     "upload_tokens",
     "UploadToken",
-    f"{_HANDOFF}; ingest-a",
+    f"{_PLATFORM_OWNER}; ingest-a",
     (
         _p("id", "id"),
         _p("user_id", "id"),
@@ -1579,7 +1644,7 @@ UPLOAD_TOKENS = _platform(
 MIGRATIONS = _platform(
     "migrations",
     "Migration",
-    f"{_HANDOFF}; foundation",
+    f"{_PLATFORM_OWNER}; foundation",
     (
         _p("name", "code", "scope/file"),
         _p("scope", "code", "the default scope is grove"),

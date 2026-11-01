@@ -34,6 +34,9 @@ ENUMS: dict[str, tuple[str, ...]] = {
     # Line 942 for the verify judge. The other codes serve the other roles of line 986: lines 1594
     # and 1667 (same or different, field fit), line 1841 (contradicts or complements), line 1613
     # (a split's per-link classification, with no list, so the two sides are named here).
+    # S33: "not supported" (lines 996, 2157, 2627) is a verdict on the claim, not on a row. A row
+    # that speaks against the claim is contradicts, a row that does not speak to it is
+    # not_about_claim, and the claim is not supported when no row supports it.
     "verdict": (
         "supports",
         "contradicts",
@@ -76,7 +79,7 @@ ENUMS: dict[str, tuple[str, ...]] = {
     "registry_origin": ("starter", "minted", "merged_from", "split_from"),
     # Line 3092.
     "alias_target_type": ("kind", "meaning", "item", "property_name"),
-    # S25, lines 832, 2064.
+    # S25, lines 832, 2067.
     "scheduled_role": ("start", "due", "end"),
     # Line 3181.
     "ontology_operation": (
@@ -105,8 +108,9 @@ ENUMS: dict[str, tuple[str, ...]] = {
         "person_in_views",
         "scripted",
     ),
-    # Line 3101.
-    "connector_outcome": ("nothing_new", "could_not_read", "kept_out"),
+    # Lines 2391, 3101. took_in is a read that found items. denied and failed are the two cases of
+    # "could not read" (line 2391), so the row keeps the reason as its code.
+    "connector_outcome": ("took_in", "nothing_new", "denied", "failed", "kept_out"),
     # No list for forget state (line 3103). Line 2525 deletes a span or a whole source.
     "forget_state": ("kept", "span_forgotten", "forgotten"),
     # Line 3105.
@@ -123,7 +127,8 @@ ENUMS: dict[str, tuple[str, ...]] = {
     "entity_type": ("item", "link", "evidence", "registry_row", "belief"),
     # Lines 750, 3116.
     "request_status": ("queued", "applying", "saved", "declined", "failed"),
-    # No list for job state (line 3118). A claim moves a job to claimed under the write lock.
+    # No list for job state (line 3118). A claim moves a job to claimed, and it checks the state
+    # only after it holds the node's write lock (S1).
     "job_state": ("queued", "claimed", "done", "failed"),
     # Line 3118. B.1 is the reference over the two lanes of lines 2029 and 2327.
     "job_lane": ("interactive", "maintenance", "backfill"),

@@ -8,7 +8,14 @@ import argparse
 import sys
 from pathlib import Path
 
-from grove.store.catalogue import B1_GROUPS, FULLTEXT_INDEXES, PLATFORM_TABLES, Table
+from grove.store.catalogue import (
+    B1_GROUPS,
+    FULLTEXT_INDEXES,
+    PLATFORM_TABLES,
+    TABLES,
+    TYPE_CLASSES,
+    Table,
+)
 
 BEGIN = "<!-- generated:begin -->"
 END = "<!-- generated:end -->"
@@ -68,9 +75,28 @@ def _table_section(t: Table) -> list[str]:
     return lines
 
 
+def _type_classes() -> list[str]:
+    lines = ["## Type classes", "", "| Class | Meaning |", "|---|---|"]
+    lines += [f"| `{name}` | {_cell(meaning)} |" for name, meaning in TYPE_CLASSES.items()]
+    homes = [
+        f"`{t.name}.{p}`"
+        for t in TABLES
+        for c in t.columns
+        if c.type in {"text_home", "json_home"}
+        for p in c.props
+    ]
+    lines += [
+        "",
+        "Text homes, the only columns of type `text_home` or `json_home` (line 2561, and the "
+        f"status words of S31): {', '.join(homes)}.",
+        "",
+    ]
+    return lines
+
+
 def generate() -> str:
     """Return the generated part of docs/store-map.md, without the markers."""
-    lines: list[str] = []
+    lines: list[str] = _type_classes()
     for title, tables in B1_GROUPS:
         lines += [f"## {title}", ""]
         for t in tables:

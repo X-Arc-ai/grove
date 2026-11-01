@@ -1,4 +1,4 @@
-# The shared dev store. One container for every lane on one machine.
+# The shared dev store. One container serves every checkout on one machine.
 # NEO4J_AUTH comes from the environment; values never live in this file.
 # Start it with:
 #   set -a; . ~/.grove/neo4j-dev.env; set +a
