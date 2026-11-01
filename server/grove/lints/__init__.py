@@ -1,1 +1,1 @@
-"""The three repo lints: run with python -m grove.lints <no-names|clock|writer>."""
+"""The four repo lints: run with python -m grove.lints <no-names|clock|writer|runner>."""
