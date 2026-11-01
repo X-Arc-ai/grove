@@ -2,8 +2,14 @@ name: Validate
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
     branches: [develop, main]
   workflow_dispatch:
+
+# An edit of the PR title or body runs the name check again; the newest run of a PR wins.
+concurrency:
+  group: validate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

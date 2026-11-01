@@ -15,6 +15,8 @@ BANNED_CALLS = [
         "clock_gettime_ns",
         "process_time",
         "process_time_ns",
+        "thread_time",
+        "thread_time_ns",
         "localtime",
         "gmtime",
         "ctime",
@@ -31,6 +33,39 @@ BANNED_CALLS = [
     ("import uuid", "uuid.uuid7()"),
     ("import asyncio", "asyncio.get_event_loop().time()"),
     ("import asyncio", "asyncio.get_running_loop().time()"),
+    ("import asyncio", "asyncio.new_event_loop().time()"),
+    ("import os", "os.times()"),
+]
+
+# Each source binds an alias in a way a plain `name = value` walk does not follow; the number is
+# the line of the read.
+VALUE_ALIASES = [
+    (
+        "import datetime\n"
+        "def build():\n"
+        "    from datetime import datetime\n"
+        "    return datetime(2026, 1, 1)\n"
+        "value = datetime.datetime.now()\n",
+        5,
+    ),
+    ("import datetime\nD: type = datetime.datetime\nvalue = D.now()\n", 3),
+    ("import datetime\nA = B = datetime.datetime\nvalue = A.now()\n", 3),
+    ("import datetime\nif (D := datetime.datetime):\n    value = D.now()\n", 3),
+    ("import datetime\ndef read(cls=datetime.datetime):\n    return cls.now()\n", 3),
+    ("import datetime\nD, E = datetime.datetime, 1\nvalue = D.now()\n", 3),
+    ("import asyncio\nloop = asyncio.new_event_loop()\nvalue = loop.time()\n", 3),
+    ("import datetime\nclass D(datetime.datetime):\n    pass\nvalue = D.now()\n", 4),
+    ("import time\nT: object = time\nvalue = T.time()\n", 3),
+    ("import time\ndef read(*, clock=time):\n    return clock.monotonic()\n", 3),
+    ("def load():\n    global T\n    import time as T\nvalue = T.time()\n", 4),
+]
+
+CLASS_VALUES = [
+    "import datetime\nkept = datetime.datetime\n",
+    "from datetime import date\nkinds = [date]\n",
+    "from datetime import datetime\nrun(datetime)\n",
+    "import datetime\nclass Moment(datetime.date):\n    pass\n",
+    "from datetime import datetime\nsame = kind == datetime\n",
 ]
 
 ALIASED = [
@@ -71,6 +106,18 @@ ALLOWED_PYTHON = [
     "import uuid\nvalue = uuid.UUID(int=1)\n",
     "value = thing.time()\n",
     "def now():\n    return 1\nvalue = now()\n",
+    "from datetime import datetime\nvalue = datetime(2026, 1, 1)\n",
+    "from datetime import date\nvalue = date(2026, 1, 1)\n",
+    "from datetime import date, datetime\n"
+    "def f(a: datetime, b: list[date] | None = None) -> datetime:\n"
+    "    kept: datetime = a\n"
+    "    return kept\n",
+    "from datetime import date, datetime\n"
+    "ok = isinstance(v, datetime) or isinstance(v, (datetime, date)) or issubclass(t, date)\n",
+    "from datetime import datetime\nlow = datetime.min\nvalue = datetime.combine(day, moment)\n",
+    "from datetime import date\nok = type(value) is date\n",
+    "import datetime\ntype Moment = datetime.datetime\n",
+    "import os\nvalue = os.getpid()\n",
 ]
 
 CYPHER_READS = [
@@ -115,6 +162,20 @@ def test_aliased_imports(repo, source):
     assert_red(repo.lint("clock"), "server/tests/fresh.py")
 
 
+@pytest.mark.parametrize(("source", "line"), VALUE_ALIASES)
+def test_aliases_beyond_a_plain_assignment(repo, source, line):
+    assert_clean(repo.lint("clock"))
+    repo.plant("server/grove/fresh.py", source)
+    assert_red(repo.lint("clock"), f"server/grove/fresh.py:{line}: clock/python")
+
+
+@pytest.mark.parametrize("source", CLASS_VALUES)
+def test_a_clock_class_handed_on_as_a_value(repo, source):
+    assert_clean(repo.lint("clock"))
+    repo.plant("server/grove/fresh.py", source)
+    assert_red(repo.lint("clock"), "server/grove/fresh.py:2: clock/class-value")
+
+
 @pytest.mark.parametrize("source", BARE_REFERENCES)
 def test_bare_references(repo, source):
     assert_clean(repo.lint("clock"))
@@ -155,6 +216,31 @@ def test_database_clock_in_a_cypher_comment_or_literal_is_clean(repo):
         "server/migrations/0001_fresh.cypher",
         "// da~tetime()\nRETURN 'da~tetime()', 1 /* ti~mestamp() */;\n",
     )
+    assert_clean(repo.lint("clock"))
+
+
+def test_database_clock_in_a_bytes_literal(repo):
+    assert_clean(repo.lint("clock"))
+    repo.plant("server/grove/fresh.py", 'query = b"RETURN da~tetime() AS t".decode()\n')
+    assert_red(repo.lint("clock"), "server/grove/fresh.py:1: clock/cypher")
+
+
+@pytest.mark.parametrize(
+    ("rel", "source", "line"),
+    [
+        ("tools/grove-tick", "#!/usr/bin/env python3\nimport time\nprint(time.time())\n", 3),
+        ("tools/tick", "#!/usr/bin/python3.12 -u\nimport time\nprint(time.time())\n", 3),
+        ("tools/x.pyw", "import time\nprint(time.time())\n", 2),
+    ],
+)
+def test_a_python_script_without_the_py_suffix(repo, rel, source, line):
+    assert_clean(repo.lint("clock"))
+    repo.plant(rel, source)
+    assert_red(repo.lint("clock"), f"{rel}:{line}: clock/python")
+
+
+def test_a_script_in_another_language_is_not_read_as_python(repo):
+    repo.plant("tools/tick", "#!/bin/bash\necho time.time\n")
     assert_clean(repo.lint("clock"))
 
 

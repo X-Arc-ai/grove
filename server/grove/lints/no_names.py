@@ -3,8 +3,13 @@
 The words are built from parts, so this file and the tests never hold them whole.
 Output never holds a matched word: a path that contains one is printed with the word blanked.
 
-With a base, the diff of every commit in the range is searched too: history goes public with the
-repo, so a word that one commit adds and a later commit removes still counts.
+With a base, the diff and the paths of every commit in the range are searched too: history goes
+public with the repo, so a word that one commit adds and a later commit removes or renames away
+still counts.
+
+A merge that GitHub commits carries the account's login as the author name and the email that
+GitHub picks: the noreply form, or the account's verified address (seen on this repo's test merge).
+Every other commit carries the noreply form for author and committer.
 
 Evasions this lint cannot close: a word split, encoded (base64, UTF-16) or spelled with
 look-alike letters; text on GitHub that no event passes to the job, such as a PR comment.
@@ -24,6 +29,7 @@ _WORD = re.compile(_PATTERN, re.IGNORECASE)
 
 ACCOUNT = ("anas-xarc", "261762116+anas-xarc@users.noreply.github.com")
 GITHUB_MERGE_COMMITTER = ("GitHub", "noreply@github.com")
+GITHUB_MERGE_AUTHORS = frozenset({ACCOUNT, ("anas-xarc", "anas@x-arc.ai")})
 
 _ENV_NAMES = ("PR_TITLE", "PR_BODY", "GITHUB_HEAD_REF")
 _LOG_FIELDS = 7
@@ -71,11 +77,11 @@ def _commits(root: Path, base: str) -> list[Finding]:
         sha, parents, *people, message = fields[start : start + _LOG_FIELDS]
         where = f"commit/{sha[:12]}"
         author, committer = tuple(people[:2]), tuple(people[2:])
-        is_merge = len(parents.split()) >= 2
+        by_github = len(parents.split()) >= 2 and committer == GITHUB_MERGE_COMMITTER
 
-        if author != ACCOUNT:
+        if author not in (GITHUB_MERGE_AUTHORS if by_github else {ACCOUNT}):
             findings.append(Finding(where, 1, "no-names/commit-author"))
-        if committer != ACCOUNT and not (is_merge and committer == GITHUB_MERGE_COMMITTER):
+        if committer != ACCOUNT and not by_github:
             findings.append(Finding(where, 1, "no-names/commit-committer"))
         for number, line in enumerate(message.splitlines(), start=1):
             if _WORD.search(line):
@@ -95,6 +101,21 @@ def _diffs(root: Path, base: str) -> list[Finding]:
     ]
 
 
+def _history_paths(root: Path, base: str) -> list[Finding]:
+    """-G reads diff text only, so a path that a later commit renames away needs its own walk."""
+    out = git(
+        root,
+        *("log", "--format=", "--name-only", "--no-renames", "-z"),
+        *("--end-of-options", f"{base}..HEAD"),
+    )
+    paths = {path.strip("\n") for path in out.decode(errors="replace").split("\0")}
+    return [
+        Finding(_blank(path), 1, "no-names/commit-path")
+        for path in sorted(paths)
+        if path and _WORD.search(path)
+    ]
+
+
 def _environment() -> list[Finding]:
     findings = []
     for name in _ENV_NAMES:
@@ -107,5 +128,5 @@ def _environment() -> list[Finding]:
 def check(root: Path, base: str | None = None) -> list[Finding]:
     findings = _content(root) + _paths(root) + _environment()
     if base:
-        findings += _commits(root, base) + _diffs(root, base)
+        findings += _commits(root, base) + _diffs(root, base) + _history_paths(root, base)
     return findings
