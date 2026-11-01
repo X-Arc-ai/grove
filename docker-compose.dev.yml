@@ -1,0 +1,32 @@
+# The shared dev store. One container serves every checkout on one machine.
+# NEO4J_AUTH comes from the environment; values never live in this file.
+# Start it with:
+#   set -a; . ~/.grove/neo4j-dev.env; set +a
+#   docker compose -f docker-compose.dev.yml up -d
+name: grove-dev
+
+services:
+  neo4j:
+    container_name: grove-dev-neo4j
+    # Multi-arch index digest of neo4j:2026.10.1-community.
+    image: neo4j:2026.10.1-community@sha256:44ad2a2504fd7d27df1d1e976f2d481e4266a0814d3657f2d5df62124ce657f1
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${NEO4J_AUTH:?source the dev env file first}
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 512m
+      NEO4J_server_memory_pagecache_size: 256m
+      NEO4J_db_query_default__language: CYPHER_25
+    ports:
+      - "127.0.0.1:57687:7687"
+    volumes:
+      - grove-dev-neo4j-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+
+volumes:
+  grove-dev-neo4j-data:
