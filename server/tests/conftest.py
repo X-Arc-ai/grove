@@ -29,6 +29,9 @@ def _load_dev_auth() -> None:
 def slice_id() -> str:
     explicit = os.environ.get("GROVE_SLICE_ID")
     if explicit:
+        # A world named from a bad slice commits, and then purge refuses it and it leaks.
+        if _SLICE.fullmatch(explicit) is None:
+            raise ValueError("GROVE_SLICE_ID must match [a-z0-9-]+, for example foundation")
         return explicit
     done = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"], capture_output=True, text=True

@@ -1,4 +1,5 @@
 import os
+import threading
 from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
@@ -121,6 +122,76 @@ def test_using_restores_the_previous_clock_after_an_error():
             with clock.using(inner):
                 raise RuntimeError("boom")
         assert clock.now() == T0
+
+
+def test_serial_nesting_restores_each_clock_in_order():
+    outer, inner = TestClock(), TestClock()
+    outer.set(T0)
+    inner.set(T0 + timedelta(days=1))
+    with clock.using(outer):
+        with clock.using(inner):
+            assert clock.now() == T0 + timedelta(days=1)
+        assert clock.now() == T0
+        with clock.using(inner):
+            assert clock.now() == T0 + timedelta(days=1)
+        assert clock.now() == T0
+    assert isinstance(clock._provider, SystemClock)
+
+
+def test_a_second_thread_cannot_enter_while_another_holds_a_block():
+    held, tried = threading.Event(), threading.Event()
+    seen = {}
+
+    def thread_a():
+        test = TestClock()
+        test.set(T0)
+        with clock.using(test):
+            held.set()
+            tried.wait(timeout=10)
+            seen["a_inside"] = clock.now()
+
+    def thread_b():
+        held.wait(timeout=10)
+        try:
+            with clock.using(TestClock()):
+                seen["b"] = "entered"
+        except RuntimeError as refused:
+            seen["b"] = refused
+        finally:
+            tried.set()
+
+    threads = [threading.Thread(target=thread_a), threading.Thread(target=thread_b)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=20)
+
+    assert isinstance(seen["b"], RuntimeError), seen["b"]
+    assert "another thread" in str(seen["b"])
+    assert seen["a_inside"] == T0
+    assert isinstance(clock._provider, SystemClock)
+    with clock.using(TestClock()):
+        pass
+    assert isinstance(clock._provider, SystemClock)
+
+
+def test_a_refused_install_leaves_no_owner(monkeypatch):
+    monkeypatch.setenv("GROVE_ENV", "production")
+    with pytest.raises(RuntimeError, match="production"):
+        with clock.using(TestClock()):
+            pass
+    monkeypatch.delenv("GROVE_ENV")
+    done = {}
+
+    def other_thread():
+        with clock.using(TestClock()):
+            done["entered"] = True
+
+    thread = threading.Thread(target=other_thread)
+    thread.start()
+    thread.join(timeout=10)
+    assert done == {"entered": True}
+    assert isinstance(clock._provider, SystemClock)
 
 
 def test_install_of_a_test_clock_is_refused_in_production(monkeypatch):

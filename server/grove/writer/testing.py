@@ -35,7 +35,7 @@ def plant_node(
     if labels == [_WORLD_LABEL]:
         row = {**props, "id": world_id}
     elif set(labels) <= WORLD_LABELS:
-        row = {"id": new_id(), **props, "world_id": world_id}
+        row = {"id": new_id(world_id), **props, "world_id": world_id}
         if primitive:
             row |= {"world_id": PRIMITIVE_WORLD, _PLANTED_FOR: world_id}
     else:
@@ -59,7 +59,7 @@ def plant_link(
     _refuse_real_world(world_id)
     _refuse_real_world(to_world or world_id)
     row = {
-        "id": new_id(),
+        "id": new_id(world_id),
         **props,
         "world_id": world_id,
         "from_item": from_id,

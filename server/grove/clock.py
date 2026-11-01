@@ -1,6 +1,7 @@
 """The one clock provider (R2, A.6). Nothing else in the repo reads a clock."""
 
 import os
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -69,6 +70,11 @@ class TestClock:
 
 
 _provider: Clock = SystemClock()
+# using() swaps the one process-wide provider, so two threads in two blocks would restore each
+# other's clock out of order. The owner thread and its depth say who may enter.
+_using_lock = threading.Lock()
+_using_owner: int | None = None
+_using_depth = 0
 
 
 def now(world_id: str | None = None) -> datetime:
@@ -92,9 +98,26 @@ def install(clock: Clock) -> None:
 
 @contextmanager
 def using(clock: Clock) -> Iterator[Clock]:
-    previous = _provider
-    install(clock)
+    """Install `clock` for the block, then restore the previous provider.
+
+    The provider is process-wide: every thread reads the clock of the block, which is what a pool
+    worker under the block needs. One thread holds blocks at a time. It may nest them, and they
+    restore in order; another thread that enters while a block is held gets RuntimeError.
+    """
+    global _using_owner, _using_depth
+    me = threading.get_ident()
+    with _using_lock:
+        if _using_owner is not None and _using_owner != me:
+            raise RuntimeError("clock.using is process-wide and another thread holds a block")
+        previous = _provider
+        install(clock)
+        _using_owner = me
+        _using_depth += 1
     try:
         yield clock
     finally:
-        install(previous)
+        with _using_lock:
+            _using_depth -= 1
+            if _using_depth == 0:
+                _using_owner = None
+            install(previous)
