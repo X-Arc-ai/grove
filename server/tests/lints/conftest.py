@@ -17,6 +17,10 @@ REPO_ROOT = SERVER.parent
 
 ACCOUNT = ("anas-xarc", "261762116+anas-xarc@users.noreply.github.com")
 GITHUB = ("GitHub", "noreply@github.com")
+# GitHub's test merge of PR 1 on this repo carries this author: the login and the verified address.
+GITHUB_MERGE_AUTHOR = ("anas-xarc", "anas@x-arc.ai")
+# git's regex in this locale skips a line with an invalid UTF-8 byte, unless the lint resets it.
+UTF8_LOCALE = {"LANG": "en_US.UTF-8", "LC_ALL": "en_US.UTF-8"}
 
 # Spelled apart from the lint on purpose: a neutered word list in the lint must not neuter these.
 BANNED_WORDS = ("ha" + "mza", "ha" + "mpy", "aat" + "ar")

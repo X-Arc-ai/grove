@@ -35,6 +35,15 @@ WRITES = [
     "DR~OP CONSTRAINT c",
     "DR~OP INDEX i",
     "MATCH (n:Item)\n  SE~T n.x = 1\nRETURN n",
+    "MATCH p = (a:Item)-[:LINK]->(b) SE~T b.x = 1",
+    "MATCH p=(n:Item {id: $id}) DET~ACH DE~LETE n",
+    "CRE~ATE p = (a:Item {id: $a})-[:LINK]->(b:Item {id: $b})",
+    "ME~RGE p = (a:Item {id: $a})",
+    "MATCH SHORTEST 1 (a:Item)-[:LINK]-+(b) SE~T b.seen = true",
+    "MATCH ANY (a)-->(b) DE~LETE b",
+    "MATCH REPEATABLE ELEMENTS p = ANY SHORTEST (a)-->(b) DE~LETE b",
+    "MATCH DIFFERENT RELATIONSHIPS ALL SHORTEST PATHS (a)-->(b) DE~LETE b",
+    "MATCH SHORTEST 2 PATH GROUPS (a)-->(b) DE~LETE b",
 ]
 
 PROSE = [
@@ -43,6 +52,8 @@ PROSE = [
     "create a new item",
     "Delete the row, then merge the two lists and drop the rest.",
     "Detach the sheet and set it aside.",
+    "Match the forms, then remove them (all of them).",
+    "The matches = (1, 2) set stays.",
 ]
 
 READS = [
@@ -91,6 +102,47 @@ def test_neo4j_import_in_a_new_module(repo, source, rel):
     assert_clean(repo.lint("writer"))
     repo.plant(rel, source)
     assert_red(repo.lint("writer"), f"{rel}:1: writer/neo4j-import")
+
+
+@pytest.mark.parametrize(
+    ("rel", "source", "line"),
+    [
+        ("tools/grove-wipe", "#!/usr/bin/env python3\nimport neo4j\n", 2),
+        ("tools/x.pyw", "import neo4j\n", 1),
+    ],
+)
+def test_a_python_script_without_the_py_suffix(repo, rel, source, line):
+    assert_clean(repo.lint("writer"))
+    repo.plant(rel, source)
+    assert_red(repo.lint("writer"), f"{rel}:{line}: writer/neo4j-import")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from tests.writer.zz_helper import wipe\n",
+        "import tests.writer.zz_helper\n",
+        "import tests\n",
+        "from tests import writer as helpers\n",
+    ],
+)
+@pytest.mark.parametrize("rel", ["server/grove/zz_api/use.py", "server/grove/writer/fresh.py"])
+def test_production_code_may_not_import_the_tests(repo, source, rel):
+    assert_clean(repo.lint("writer"))
+    repo.plant(rel, source)
+    assert_red(repo.lint("writer"), f"{rel}:1: writer/tests-import")
+
+
+@pytest.mark.parametrize(
+    ("rel", "source"),
+    [
+        ("server/tests/store/test_fresh.py", "from tests.writer.helper import plant\n"),
+        ("server/grove/fresh.py", "from .tests import thing\nimport testsuite\n"),
+    ],
+)
+def test_other_imports_of_a_tests_name_stay_clean(repo, rel, source):
+    repo.plant(rel, source)
+    assert_clean(repo.lint("writer"))
 
 
 def test_neo4j_import_is_allowed_in_the_store(repo):
@@ -154,6 +206,12 @@ def test_folded_constants(repo, source):
     assert_red(repo.lint("writer"), "server/grove/fresh.py")
 
 
+def test_cypher_write_in_a_bytes_literal(repo):
+    assert_clean(repo.lint("writer"))
+    repo.plant("server/grove/fresh.py", 'query = b"MATCH (n) SE~T n.x = 1".decode()\n')
+    assert_red(repo.lint("writer"), "server/grove/fresh.py:1: writer/cypher")
+
+
 def test_a_string_inside_an_f_string_hole_is_walked(repo):
     repo.plant("server/grove/fresh.py", """query = f"{run('ME~RGE (n)')}"\n""")
     assert_red(repo.lint("writer"), "server/grove/fresh.py:1: writer/cypher")
@@ -184,6 +242,8 @@ def test_read_only_cypher_file_stays_clean(repo):
         "cypher-shell <<'CYPHER'\nMATCH (n)\nDE~LETE n;\nCYPHER\n",
         "cypher-shell <<-CYPHER\n\tME~RGE (n:Item);\n\tCYPHER\n",
         "cypher-shell \"MATCH (n:Item {id: 'x'}) SE~T n.x = 1\"\n",
+        "cypher-shell <<'CY-1'\nMATCH (n:Item {id: 'a'}) SE~T n.y = 1\nCY-1\n",
+        "cypher-shell <<-\"q.1\"\n\tMATCH (n:Item {id: 'a'}) SE~T n.y = 1\n\tq.1\n",
     ],
 )
 def test_shell_file(repo, suffix, body):
@@ -191,6 +251,16 @@ def test_shell_file(repo, suffix, body):
     rel = f"deploy/fresh.{suffix}"
     repo.plant(rel, f"#!/bin/bash\nset -euo pipefail\n{body}")
     assert_red(repo.lint("writer"), rel)
+
+
+@pytest.mark.parametrize("opening", ["<<'CY-1'", "<<\\EOF", '<<-"q.1"', "<< \\'CY.2'"])
+def test_heredoc_with_a_delimiter_beyond_word_letters(repo, opening):
+    # No other shell line here: a `set -e` line would pair with the query and hide the gap.
+    delimiter = opening.lstrip("<- \\").strip("'\"")
+    body = f"cypher-shell {opening}\nMATCH (n:Item {{id: 'a'}}) SE~T n.y = 1\n{delimiter}\n"
+    assert_clean(repo.lint("writer"))
+    repo.plant("deploy/zz/x.sh", body)
+    assert_red(repo.lint("writer"), "deploy/zz/x.sh:2: writer/cypher")
 
 
 @pytest.mark.parametrize(
@@ -201,6 +271,8 @@ def test_shell_file(repo, suffix, body):
         "cypher-shell <<'CYPHER'\nMATCH (n:Item) RETURN n;\nCYPHER\nse~t -x\n",
         'echo "remove the file, then set the value"\nrm -f file\n',
         "# ME~RGE (n) lives in a comment\ncypher-shell 'MATCH (n) RETURN n'\n",
+        "cypher-shell <<'CY-1'\nMATCH (n:Item) RETURN n;\nCY-1\nse~t -x\n",
+        "cypher-shell <<\\EOF\nMATCH (n:Item) RETURN n;\nEOF\nse~t -x\n",
     ],
 )
 def test_shell_file_with_no_write_stays_clean(repo, body):

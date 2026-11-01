@@ -1,12 +1,20 @@
 """What the lints share: the file walk, Python string folding, the Cypher mask."""
 
 import ast
+import os
+import re
 import subprocess
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 CYPHER_SUFFIXES = (".cypher", ".cql")
+PYTHON_SUFFIXES = (".py", ".pyw")
+
+_PYTHON_SHEBANG = re.compile(rb"#![^\n]*\bpython")
+
+# In a UTF-8 locale git's regex skips a line that holds an invalid UTF-8 byte; the words are ASCII.
+_GIT_ENV = {**os.environ, "LC_ALL": "C", "LANG": "C"}
 
 
 class LintError(RuntimeError):
@@ -24,7 +32,7 @@ class Finding:
 
 
 def git(root: Path, *args: str, ok: tuple[int, ...] = (0,)) -> bytes:
-    done = subprocess.run(["git", "-C", str(root), *args], capture_output=True)
+    done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, env=_GIT_ENV)
     if done.returncode not in ok:
         detail = done.stderr.decode(errors="replace").strip()
         raise LintError(f"git {args[0]} exited {done.returncode}: {detail}")
@@ -49,6 +57,14 @@ def source_files(root: Path) -> Iterator[str]:
             yield rel
 
 
+def is_python(root: Path, rel: str) -> bool:
+    """A .py or .pyw file, or a script of any other name whose first line runs python."""
+    if rel.endswith(PYTHON_SUFFIXES):
+        return True
+    with (root / rel).open("rb") as handle:
+        return bool(_PYTHON_SHEBANG.match(handle.readline(256)))
+
+
 def read_text(root: Path, rel: str) -> str:
     return (root / rel).read_text(encoding="utf-8", errors="replace")
 
@@ -67,7 +83,7 @@ def line_of(start: int, text: str, position: int) -> int:
 
 def _is_string_expression(node: ast.AST) -> bool:
     if isinstance(node, ast.Constant):
-        return isinstance(node.value, str)
+        return isinstance(node.value, str | bytes)
     if isinstance(node, ast.JoinedStr):
         return True
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
@@ -78,6 +94,8 @@ def _is_string_expression(node: ast.AST) -> bool:
 def _fold(node: ast.AST, holes: list[ast.AST]) -> str:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    if isinstance(node, ast.Constant) and isinstance(node.value, bytes):
+        return node.value.decode(errors="replace")
     if isinstance(node, ast.JoinedStr):
         return "".join(_fold(part, holes) for part in node.values)
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):

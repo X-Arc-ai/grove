@@ -73,3 +73,20 @@ def test_every_action_is_pinned_by_a_full_sha():
 def test_no_secret_is_used_and_the_token_is_read_only():
     assert "secrets." not in WORKFLOW
     assert re.search(r"^permissions:\n  contents: read$", WORKFLOW, re.MULTILINE)
+
+
+def test_an_edit_of_the_pr_text_runs_the_check_again():
+    trigger = (
+        r"^on:\n"
+        r"  pull_request:\n"
+        r"    types: \[opened, synchronize, reopened, edited\]\n"
+        r"    branches: \[develop, main\]\n"
+        r"  workflow_dispatch:$"
+    )
+    assert re.search(trigger, WORKFLOW, re.MULTILINE)
+
+
+def test_a_newer_run_of_the_same_pr_cancels_the_older_one():
+    group = re.escape("validate-${{ github.event.pull_request.number || github.ref }}")
+    block = rf"^concurrency:\n  group: {group}\n  cancel-in-progress: true$"
+    assert re.search(block, WORKFLOW, re.MULTILINE)

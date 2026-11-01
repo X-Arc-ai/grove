@@ -1,14 +1,22 @@
 """The writer rule: outside the writer's folders nothing opens a write path to the store.
 
-Neo4j Community has no roles, so this lint stands where a grant would. A string counts as Cypher
-when a clause pattern matches it after its literals are blanked; then any write word in it is a
-finding. Prose has no clause pattern, so prose stays clean.
+Neo4j Community has no roles, so this lint stands where a grant would. A string (text or bytes)
+counts as Cypher when a clause pattern matches it after its literals are blanked; then any write
+word in it is a finding. Prose has no clause pattern, so prose stays clean. A clause pattern
+allows a path variable (`MATCH p = (`) and the Cypher 25 match modes and selectors (ANY, ALL,
+SHORTEST, REPEATABLE ELEMENTS, DIFFERENT RELATIONSHIPS, with their counts) before the pattern.
+
+Production code under server/grove/ may not import the tests package, so it cannot reach a write
+helper in server/tests/writer/.
+
+Python means a .py or .pyw file, or a file of any other name whose first line runs python.
 
 Evasions this lint cannot close: getattr, importlib or __import__ with a name built at run time;
 exec or eval of built text; Cypher assembled by join, format, % or +=, or held in named constants
 that are joined later; a write word cut in two by an f-string hole; a fragment that has a write
-word and no clause pattern of its own; a shell script with no .sh or .bash suffix; Cypher in a
-file type outside the walk, such as YAML; the query of a procedure that writes.
+word and no clause pattern of its own; a shell script with no .sh or .bash suffix and no python
+first line; Cypher in a file type outside the walk, such as YAML; the query of a procedure that
+writes; a tests module reached through a symlink, which the walk skips.
 """
 
 import ast
@@ -19,6 +27,7 @@ from pathlib import Path
 from grove.lints._scan import (
     CYPHER_SUFFIXES,
     Finding,
+    is_python,
     line_of,
     mask_cypher,
     parse_python,
@@ -29,6 +38,8 @@ from grove.lints._scan import (
 
 ALLOWED_PREFIXES = ("server/grove/writer/", "server/migrations/", "server/tests/writer/")
 NEO4J_PREFIX = "server/grove/store/"
+PRODUCTION_PREFIX = "server/grove/"
+TESTS_PACKAGE = "tests"
 
 _SHELL_SUFFIXES = (".sh", ".bash")
 _ENTRY_POINTS = frozenset(
@@ -36,11 +47,14 @@ _ENTRY_POINTS = frozenset(
     for parts in (("execute", "write"), ("execute", "query"), ("begin", "transaction"))
 )
 
+_MODE_WORDS = r"any|all|shortest|repeatable|different|elements?|relationships?|paths?|groups?|\d+"
+_PATH = r"\s+\w+\s*="
+_MATCH_HEAD = rf"(?:\s+(?:{_MODE_WORDS})\b|{_PATH})*"
 _SHAPE = re.compile(
     "|".join(
         (
-            r"\b(?:optional\s+)?match\s*\(",
-            r"\b(?:create|merge)\s*\(",
+            rf"\b(?:optional\s+)?match{_MATCH_HEAD}\s*\(",
+            rf"\b(?:create|merge)(?:{_PATH})?\s*\(",
             r"\bcreate\s+(?:constraint|index|fulltext|text|range|point|lookup|vector|or\s+replace)\b",
             r"\bdrop\s+(?:constraint|index)\b",
             r"\bunwind\b.+\bas\b",
@@ -54,7 +68,7 @@ _SHAPE = re.compile(
 _WRITE_WORD = re.compile(
     r"\b(?:create|merge|set|delete|remove|detach|foreach|drop)\b", re.IGNORECASE
 )
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+_HEREDOC = re.compile(r"<<-?\s*\\?(['\"]?)([^\s'\"<>|;&()]+)\1")
 
 
 def _writes(start: int, text: str, *, whole_file: bool = False) -> set[int]:
@@ -82,6 +96,25 @@ def _imports_neo4j(node: ast.AST) -> bool:
     if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
         return node.module.split(".")[0] == "neo4j"
     return False
+
+
+def _imports_tests(node: ast.AST) -> bool:
+    if isinstance(node, ast.Import):
+        return any(alias.name.split(".")[0] == TESTS_PACKAGE for alias in node.names)
+    if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+        return node.module.split(".")[0] == TESTS_PACKAGE
+    return False
+
+
+def _check_tests_imports(root: Path, rel: str) -> list[Finding]:
+    tree = parse_python(root, rel)
+    if tree is None:
+        return [Finding(rel, 1, "writer/unparsable")]
+    return [
+        Finding(rel, node.lineno, "writer/tests-import")
+        for node in ast.walk(tree)
+        if _imports_tests(node)
+    ]
 
 
 def _check_python(root: Path, rel: str) -> list[Finding]:
@@ -133,7 +166,8 @@ def _shell_chunks(text: str) -> Iterator[tuple[int, str]]:
         elif heredoc:
             yield plain, text[plain:position]
             body = text.find("\n", heredoc.end()) + 1 or len(text)
-            close = re.compile(rf"^\t*{heredoc.group(2)}[ \t]*$", re.MULTILINE).search(text, body)
+            delimiter = re.escape(heredoc.group(2))
+            close = re.compile(rf"^\t*{delimiter}[ \t]*$", re.MULTILINE).search(text, body)
             yield body, text[body : close.start() if close else len(text)]
             plain = position = close.end() if close else len(text)
         else:
@@ -152,13 +186,16 @@ def _check_shell(rel: str, text: str) -> list[Finding]:
 def check(root: Path, base: str | None = None) -> list[Finding]:
     findings: list[Finding] = []
     for rel in source_files(root):
+        python = not rel.endswith(CYPHER_SUFFIXES) and is_python(root, rel)
+        if python and rel.startswith(PRODUCTION_PREFIX):
+            findings += _check_tests_imports(root, rel)
         if rel.startswith(ALLOWED_PREFIXES):
             continue
-        if rel.endswith(".py"):
-            findings += _check_python(root, rel)
-        elif rel.endswith(CYPHER_SUFFIXES):
+        if rel.endswith(CYPHER_SUFFIXES):
             lines = _writes(1, read_text(root, rel), whole_file=True)
             findings += [Finding(rel, line, "writer/cypher") for line in lines]
+        elif python:
+            findings += _check_python(root, rel)
         elif rel.endswith(_SHELL_SUFFIXES):
             findings += _check_shell(rel, read_text(root, rel))
     return findings
