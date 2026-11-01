@@ -112,10 +112,10 @@
       "default_horizon": 30,
       "description": "The first thing needs the second to hold, so a change to the second reaches the first.",
       "aliases": [
-        {"phrase": "gated on"},
-        {"phrase": "relies on"},
-        {"phrase": "requires"},
-        {"phrase": "needs"},
+        {"phrase": "gated on", "reversed": false},
+        {"phrase": "relies on", "reversed": false},
+        {"phrase": "requires", "reversed": false},
+        {"phrase": "needs", "reversed": false},
         {"phrase": "needed by", "reversed": true}
       ]
     },
@@ -133,8 +133,8 @@
       "default_horizon": 30,
       "description": "The first thing stops the second from moving ahead.",
       "aliases": [
-        {"phrase": "holds up"},
-        {"phrase": "prevents"},
+        {"phrase": "holds up", "reversed": false},
+        {"phrase": "prevents", "reversed": false},
         {"phrase": "blocked by", "reversed": true}
       ]
     },
@@ -152,7 +152,7 @@
       "default_horizon": 30,
       "description": "The work is in the hands of this person.",
       "aliases": [
-        {"phrase": "handled by"},
+        {"phrase": "handled by", "reversed": false},
         {"phrase": "responsible for", "reversed": true}
       ]
     },
@@ -187,7 +187,7 @@
       "default_horizon": null,
       "description": "The first thing is a piece of the second.",
       "aliases": [
-        {"phrase": "within"},
+        {"phrase": "within", "reversed": false},
         {"phrase": "includes", "reversed": true},
         {"phrase": "contains", "reversed": true}
       ]
@@ -206,7 +206,7 @@
       "default_horizon": null,
       "description": "The first piece of work is a step of the second, which is done when all its steps are done.",
       "aliases": [
-        {"phrase": "subtask of"},
+        {"phrase": "subtask of", "reversed": false},
         {"phrase": "has step", "reversed": true}
       ]
     },
@@ -224,8 +224,8 @@
       "default_horizon": 180,
       "description": "The person's current home is in this place.",
       "aliases": [
-        {"phrase": "based in"},
-        {"phrase": "resides in"}
+        {"phrase": "based in", "reversed": false},
+        {"phrase": "resides in", "reversed": false}
       ]
     },
     {
@@ -242,8 +242,8 @@
       "default_horizon": 180,
       "description": "The person does paid or regular work for this organisation.",
       "aliases": [
-        {"phrase": "works for"},
-        {"phrase": "employed by"}
+        {"phrase": "works for", "reversed": false},
+        {"phrase": "employed by", "reversed": false}
       ]
     },
     {
@@ -275,7 +275,7 @@
       "default_horizon": null,
       "description": "This person or organisation took part in what the record tells.",
       "aliases": [
-        {"phrase": "attended by"},
+        {"phrase": "attended by", "reversed": false},
         {"phrase": "attended", "reversed": true},
         {"phrase": "took part in", "reversed": true}
       ]
@@ -295,10 +295,10 @@
       "generic": true,
       "description": "The generic connection meaning, which keeps the original phrase on the link.",
       "aliases": [
-        {"phrase": "relates to"},
-        {"phrase": "connected to"},
-        {"phrase": "connected with"},
-        {"phrase": "linked to"}
+        {"phrase": "relates to", "reversed": false},
+        {"phrase": "connected to", "reversed": false},
+        {"phrase": "connected with", "reversed": false},
+        {"phrase": "linked to", "reversed": false}
       ]
     }
   ]

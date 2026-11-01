@@ -39,10 +39,11 @@ _NO_FIELDS = "[]"
 _SEED_TIMEOUT = 120.0
 
 # The primitive rows carry no time: S22 fixes them in code, S12 asks a time only of a row the writer
-# updates, and no operation updates these. ON CREATE keeps a second run from touching one, and a
+# updates, and no operation updates these. The SET runs on create and on match, so a field added
+# in code reaches a store that holds an older row (S30); a second run writes the same values. A
 # MERGE on the unique id alone is what stays safe when two callers race.
-_ENSURE_PRIMITIVE_MEANING = CYPHER_PREFIX + "MERGE (m:Meaning {id: $id}) ON CREATE SET m += $row"
-_ENSURE_PRIMITIVE_KIND = CYPHER_PREFIX + "MERGE (k:Kind {id: $id}) ON CREATE SET k += $row"
+_ENSURE_PRIMITIVE_MEANING = CYPHER_PREFIX + "MERGE (m:Meaning {id: $id}) SET m += $row"
+_ENSURE_PRIMITIVE_KIND = CYPHER_PREFIX + "MERGE (k:Kind {id: $id}) SET k += $row"
 # MERGE on the unique id makes a second caller wait for the first to commit, and then see its seed.
 _ENSURE_WORLD = CYPHER_PREFIX + (
     "MERGE (w:World {id: $world_id}) ON CREATE SET w.owner_user_id = $owner_user_id, "
@@ -210,7 +211,7 @@ def _alias_row(declared: dict[str, Any], meaning_id: str, run: _SeedRun) -> dict
         "normalised_phrase": normalise_phrase(declared["phrase"]),
         "target_type": _TARGET_TYPE,
         "target_id": meaning_id,
-        "reversed": declared.get("reversed", False),
+        "reversed": declared["reversed"],
         "added_at": run.at,
     }
 
