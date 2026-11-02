@@ -5,7 +5,11 @@ description = "Grove: a live, time-aware representation of your world, built on 
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
+    "fastapi>=0.120",
+    "httpx>=0.28,<0.29",
+    "jsonschema>=4.25",
     "neo4j>=6.4,<7",
+    "uvicorn>=0.38",
 ]
 
 [dependency-groups]
