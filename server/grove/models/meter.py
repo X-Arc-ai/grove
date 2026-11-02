@@ -78,12 +78,13 @@ class Meter:
         row = rows[0]
         return BudgetState(spent=row["spent"], ceiling=row.get("ceiling"), state=row["state"])
 
-    def gate(self, world_id: str, job: Job) -> Gate:
-        """Refuse a deferrable job once the day's ceiling is reached. Nothing is sent then."""
+    def gate(self, world_id: str, job: Job, *, every_job: bool = False) -> Gate:
+        """Refuse a deferrable job once the day's ceiling is reached. Nothing is sent then. The
+        gateway passes every_job: an agent call stops at the ceiling, whatever its token names."""
         now = self.now(world_id)
         day = now.date()
         budget = self.budget(world_id, day)
-        if job.at_ceiling == "defer" and reached(budget):
+        if (every_job or job.at_ceiling == "defer") and reached(budget):
             wait = math.ceil((resets_at(day) - now).total_seconds())
             raise BudgetReached(
                 "the daily budget is reached; this job waits for the reset",

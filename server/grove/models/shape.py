@@ -21,7 +21,11 @@ _MESSAGE_KEYS = ("role", "content", "name", "tool_calls", "tool_call_id")
 _FUNCTION_KEYS = ("name", "description", "parameters", "strict")
 _RESPONSE_FORMATS = frozenset({"text", "json_object", "json_schema"})
 # Raster formats only: an SVG can name a remote resource.
-_DATA_IMAGES = tuple(f"data:image/{kind}" for kind in ("png", "jpeg", "jpg", "webp", "gif"))
+_DATA_IMAGE = re.compile(r"data:image/(?:png|jpeg|jpg|webp|gif)[;,]")
+# Every way a JSON schema names another schema. A validator or a provider follows these.
+REF_KEYS = ("$ref", "$dynamicRef", "$recursiveRef")
+# A count past this is no count of tokens, and the store's integers end at 2^63.
+_MAX_COUNT = 10**12
 _BEARER = re.compile(r"(?i)bearer\s+\S+")
 # Under this length a part of a key could match ordinary words.
 _MIN_SECRET_PART = 8
@@ -44,7 +48,8 @@ def _list(value: object) -> list:
 
 
 def _count(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+    counted = isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _MAX_COUNT
+    return value if counted else 0
 
 
 def estimate_usage(input_chars: int, output_chars: int = 0) -> Usage:
@@ -133,7 +138,7 @@ def redact(text: str, secrets: tuple[str | None, ...]) -> str:
 
 
 def _data_image(url: object) -> bool:
-    return isinstance(url, str) and url.startswith(_DATA_IMAGES)
+    return isinstance(url, str) and _DATA_IMAGE.match(url) is not None
 
 
 def _chat_part(part: object) -> dict:
@@ -187,11 +192,12 @@ def clean_messages(messages: object) -> list[dict]:
 
 
 def refuse_remote_refs(node: Any) -> None:
-    """A schema may refer inside itself. A `$ref` that names anything else is a URL to fetch."""
+    """A schema may refer inside itself. A reference that names anything else is a URL to fetch."""
     if isinstance(node, dict):
-        ref = node.get("$ref")
-        if ref is not None and not (isinstance(ref, str) and ref.startswith("#")):
-            raise ModelRefused("a schema may refer only inside itself")
+        for key in REF_KEYS:
+            ref = node.get(key)
+            if ref is not None and not (isinstance(ref, str) and ref.startswith("#")):
+                raise ModelRefused("a schema may refer only inside itself")
         for value in node.values():
             refuse_remote_refs(value)
     elif isinstance(node, list):

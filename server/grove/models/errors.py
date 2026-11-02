@@ -91,6 +91,11 @@ class NotConfigured(ModelError):
     status = 503
 
 
+class BodyTooLarge(ModelError):
+    code = "invalid_arguments"
+    status = 413
+
+
 class Unauthenticated(ModelError):
     code = "unauthenticated"
     status = 401

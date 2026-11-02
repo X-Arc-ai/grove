@@ -14,6 +14,7 @@ and the gateway use Chat Completions, which an OpenAI-compatible server speaks.
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -47,6 +48,7 @@ from grove.models.errors import (
 from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, NOT_SENT, reset_after, send
 from grove.models.meter import Meter
 from grove.models.shape import (
+    REF_KEYS,
     Usage,
     chat_answer,
     chat_usage,
@@ -66,6 +68,7 @@ from grove.writer.model_calls import BudgetState, ModelCall
 MAX_SCHEMA_DEPTH = 10
 MAX_SCHEMA_PROPERTIES = 5000
 BACKGROUND_DEADLINE = 900.0
+POLL_MISSES = 4
 _TERMINAL = frozenset({"completed", "failed", "cancelled", "incomplete"})
 _PROVIDER_MESSAGE = 300
 _TIMEOUT = httpx.Timeout(300.0, connect=10.0)
@@ -101,19 +104,24 @@ def check_schema(schema: dict) -> Draft202012Validator:
 
     def walk(node: object, depth: int) -> None:
         nonlocal count
-        if depth > MAX_SCHEMA_DEPTH:
-            raise ModelRefused(f"a schema may nest at most {MAX_SCHEMA_DEPTH} levels")
         if isinstance(node, dict):
-            if "$ref" in node or "$defs" in node or "definitions" in node:
+            # A reference is refused whole: Meta returns 400 for it, and the validator below
+            # would open its own socket to fetch one that names a URL.
+            if any(key in node for key in (*REF_KEYS, "$defs", "definitions")):
                 raise ModelRefused("a schema with references is refused: Meta returns 400")
             properties = node.get("properties")
             if isinstance(properties, dict):
                 count += len(properties)
+            # Meta's limit counts nested schemas, not the JSON wrappers between them.
+            if isinstance(properties, dict) or "items" in node:
+                depth += 1
+            if depth > MAX_SCHEMA_DEPTH:
+                raise ModelRefused(f"a schema may nest at most {MAX_SCHEMA_DEPTH} levels")
             for value in node.values():
-                walk(value, depth + 1)
+                walk(value, depth)
         elif isinstance(node, list):
             for value in node:
-                walk(value, depth + 1)
+                walk(value, depth)
 
     walk(schema, 0)
     if count > MAX_SCHEMA_PROPERTIES:
@@ -128,9 +136,9 @@ def check_schema(schema: dict) -> Draft202012Validator:
 def parse_structured(text: str, validator: Draft202012Validator) -> Any:
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as exc:
+        errors = sorted(validator.iter_errors(data), key=lambda error: list(map(str, error.path)))
+    except (ValueError, RecursionError) as exc:
         raise InvalidOutput("the answer is not JSON") from exc
-    errors = sorted(validator.iter_errors(data), key=lambda error: list(error.path))
     if errors:
         raise InvalidOutput(
             "the answer does not fit the schema",
@@ -151,11 +159,22 @@ def _structured(
         return None, misfit
 
 
-def default_cache_key(job: str, prefix: str | None) -> str | None:
-    """One key per shared prefix (D15): the job and a digest of the stable instructions."""
+def _audio_seconds(stated: object, sent: float) -> float:
+    """The provider's duration in milliseconds as seconds, when it can be true of the audio sent.
+    An infinite or absurd value would lose the row or close the day's budget."""
+    known = isinstance(stated, int | float) and not isinstance(stated, bool)
+    if known and math.isfinite(stated) and 0 < stated <= sent * 2000:
+        return stated / 1000
+    return sent
+
+
+def default_cache_key(job: str, prefix: str | None, world_id: str = "") -> str | None:
+    """One key per shared prefix (D15): the job and a digest of the stable instructions. The world
+    goes into the digest, so a call cannot learn from `cached_tokens` what another world sent."""
     if not prefix:
         return None
-    return f"grove:{job}:{hashlib.sha256(prefix.encode('utf-8')).hexdigest()[:24]}"
+    digest = hashlib.sha256(f"{world_id}\0{prefix}".encode()).hexdigest()[:24]
+    return f"grove:{job}:{digest}"
 
 
 def glimmer_effort_fields(effort: str | None) -> dict[str, Any]:
@@ -391,7 +410,7 @@ class ModelLayer:
             )
         try:
             doc = response.json()
-        except ValueError:
+        except (ValueError, RecursionError):
             doc = None
         if not isinstance(doc, dict):
             self._record(
@@ -447,7 +466,7 @@ class ModelLayer:
         }
         if instructions:
             body["instructions"] = instructions
-        key = cache_key or default_cache_key(job, instructions)
+        key = cache_key or default_cache_key(job, instructions, world_id)
         if key:
             body["prompt_cache_key"] = key
         if background:
@@ -494,7 +513,7 @@ class ModelLayer:
                 )
                 if isinstance(exc, ProviderError):
                     raise
-                raise ProviderError("polling a background response failed") from exc
+                raise ProviderError("polling a background response failed") from None
         text = responses_text(doc)
         usage = usage_or_estimate(responses_usage(doc), request_chars, len(text))
         status = doc.get("status")
@@ -541,35 +560,50 @@ class ModelLayer:
             raise ProviderError("a background response came back with no id")
         deadline = clock.monotonic() + BACKGROUND_DEADLINE
         pause = 1.0
+        misses = 0
         try:
             while doc.get("status") not in _TERMINAL:
                 if clock.monotonic() > deadline:
                     raise ProviderError("a background response did not finish in time")
                 self._sleep(pause)
                 pause = min(pause * 2, 5.0)
-                polled = send(
-                    self._http,
-                    lambda: self._http.build_request(
-                        "GET", f"{base}/responses/{response_id}", headers=headers
-                    ),
-                    sleep=self._sleep,
-                )
-                if polled.status_code >= 300:
-                    raise ProviderError(
-                        "polling a background response failed",
-                        details={"status": polled.status_code},
-                    )
-                try:
-                    doc = polled.json()
-                except ValueError:
-                    doc = None
-                if not isinstance(doc, dict):
-                    raise ProviderError("a background poll answered with no JSON object")
+                polled = self._poll(base, response_id, headers)
+                if polled is not None:
+                    doc, misses = polled, 0
+                    continue
+                # A GET is safe to repeat, so one passing failure does not end a paid run.
+                misses += 1
+                if misses >= POLL_MISSES:
+                    raise ProviderError("polling a background response failed")
         except (ProviderError, httpx.RequestError):
             # A response left running bills at Meta with no row to show it: stop it.
             self._cancel(base, response_id, headers)
             raise
         return doc
+
+    def _poll(self, base: str, response_id: str, headers: dict[str, str]) -> dict | None:
+        """The polled document, or None for a failure that may pass. A 4xx will not pass."""
+        try:
+            polled = send(
+                self._http,
+                lambda: self._http.build_request(
+                    "GET", f"{base}/responses/{response_id}", headers=headers
+                ),
+                sleep=self._sleep,
+            )
+        except httpx.RequestError:
+            return None
+        if 300 <= polled.status_code < 500 and polled.status_code != 429:
+            raise ProviderError(
+                "polling a background response failed", details={"status": polled.status_code}
+            )
+        if polled.status_code >= 300:
+            return None
+        try:
+            doc = polled.json()
+        except (ValueError, RecursionError):
+            return None
+        return doc if isinstance(doc, dict) else None
 
     def _cancel(self, base: str, response_id: str, headers: dict[str, str]) -> None:
         try:
@@ -656,7 +690,7 @@ class ModelLayer:
             head = messages[0] if messages else {}
             prefix = head.get("content") if head.get("role") == "system" else None
             prefix = prefix if isinstance(prefix, str) else None
-            key = cache_key or default_cache_key(job.name, prefix)
+            key = cache_key or default_cache_key(job.name, prefix, world_id)
             if key:
                 body["prompt_cache_key"] = key
         else:
@@ -761,8 +795,7 @@ class ModelLayer:
                 audio_seconds=piece.seconds,
             )
             stated = doc.get("audioDurationMs")
-            stated_ok = isinstance(stated, int | float) and stated > 0
-            seconds = stated / 1000 if stated_ok else piece.seconds
+            seconds = _audio_seconds(stated, piece.seconds)
             text = doc.get("transcript")
             ok = isinstance(text, str)
             call_id, _, cost = self._record(

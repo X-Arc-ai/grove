@@ -189,8 +189,9 @@ def token(world: str, job: str = "update_pass", run_id: str = RUN, **kwargs) -> 
     return mint(SECRET, CATALOG, world_id=world, run_id=run_id, job=job, **kwargs)
 
 
-def cache_key(job: str, prefix: str) -> str:
-    return f"grove:{job}:{hashlib.sha256(prefix.encode('utf-8')).hexdigest()[:24]}"
+def cache_key(job: str, prefix: str, world: str = "") -> str:
+    digest = hashlib.sha256(f"{world}\0{prefix}".encode()).hexdigest()[:24]
+    return f"grove:{job}:{digest}"
 
 
 def sse(event: dict) -> bytes:
@@ -534,7 +535,7 @@ def test_spark_call_is_shaped_sent_with_the_server_key_and_metered(driver, world
         "tools": [READ_TOOL],
         "tool_choice": "auto",
         "reasoning_effort": "low",
-        "prompt_cache_key": cache_key("update_pass", SYSTEM),
+        "prompt_cache_key": cache_key("update_pass", SYSTEM, world),
     }
     assert_rows(
         read_rows(driver, world),
@@ -611,7 +612,7 @@ def test_a_glimmer_job_on_spark_gets_spark_lowest_effort(driver, world, make_rig
     assert response.status_code == 200
     [body] = rig.upstream.bodies()
     assert body["reasoning_effort"] == "minimal"
-    assert body["prompt_cache_key"] == cache_key("second_opinion", SYSTEM)
+    assert body["prompt_cache_key"] == cache_key("second_opinion", SYSTEM, world)
     assert [row["effort"] for row in read_rows(driver, world)] == ["minimal"]
 
 
@@ -738,7 +739,7 @@ def test_opencode_stream_reaches_the_client_byte_for_byte(driver, world, make_ri
         "stream": True,
         "stream_options": {"include_usage": True},
         "reasoning_effort": "low",
-        "prompt_cache_key": cache_key("update_pass", SYSTEM),
+        "prompt_cache_key": cache_key("update_pass", SYSTEM, world),
     }
     assert_rows(
         read_rows(driver, world),
@@ -967,7 +968,6 @@ def test_deferred_job_waits_once_the_ceiling_is_reached(driver, world, make_rig,
     rig = make_rig(answer(200, GLIMMER_DOC if model == GLIMMER else SPARK_DOC))
 
     waits = rig.post(token(world, job=job), {"model": model, "messages": MESSAGES})
-    runs_on = rig.post(token(world, job="extraction"), {"model": SPARK, "messages": MESSAGES})
 
     assert waits.status_code == 429
     error = error_of(waits)
@@ -982,34 +982,35 @@ def test_deferred_job_waits_once_the_ceiling_is_reached(driver, world, make_rig,
     }
     # An OpenAI client reads the wait from the header.
     assert waits.headers["retry-after"] == "54000"
-    assert runs_on.status_code == 200
-    assert "retry-after" not in runs_on.headers
-    assert [str(request.url) for request in rig.upstream.requests] == [META_URL]
-    assert [row["job"] for row in read_rows(driver, world)] == ["extraction"]
+    assert rig.upstream.requests == []
+    assert read_rows(driver, world) == []
 
 
 @pytest.mark.parametrize(
-    ("job", "model", "effort", "route"),
+    ("job", "model"),
     [
-        ("triage", GLIMMER, "low", "modal"),
-        ("triage_fallback", SPARK, "minimal", "meta"),
-        ("extraction", SPARK, "minimal", "meta"),
+        ("triage", GLIMMER),
+        ("triage", SPARK),
+        ("triage_fallback", SPARK),
+        ("extraction", SPARK),
+        ("transcription", SPARK),
     ],
 )
-def test_continuing_job_runs_on_past_the_ceiling(
-    driver, world, make_rig, job, model, effort, route
+def test_every_gateway_call_stops_at_the_ceiling_whatever_job_its_token_names(
+    driver, world, make_rig, job, model
 ):
+    # Build plan section 4: an agent call stops at the ceiling. The jobs that continue past it are
+    # the ones code runs through the layer, and an agent token must not reach that exemption.
     set_budget_ceiling(driver, world, DAY, 0.0)
     rig = make_rig(answer(200, GLIMMER_DOC if model == GLIMMER else SPARK_DOC))
 
     response = rig.post(token(world, job=job), {"model": model, "messages": MESSAGES})
 
-    assert response.status_code == 200
-    assert len(rig.upstream.requests) == 1
-    [row] = read_rows(driver, world)
-    assert (row["job"], row["model"], row["effort"], row["route"]) == (job, model, effort, route)
-    [budget] = read_budgets(driver, world)
-    assert (budget["ceiling"], budget["state"]) == (0.0, "reached")
+    assert response.status_code == 429
+    assert error_of(response)["code"] == "budget_reached"
+    assert error_of(response)["details"]["job"] == job
+    assert rig.upstream.requests == []
+    assert read_rows(driver, world) == []
 
 
 def test_spend_that_reaches_the_ceiling_defers_the_next_cleanup_pass(driver, world, make_rig):

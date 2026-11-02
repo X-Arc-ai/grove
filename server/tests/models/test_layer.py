@@ -78,8 +78,9 @@ JUDGE_MESSAGES = [
 ]
 
 
-def digest_key(job: str, prefix: str) -> str:
-    return f"grove:{job}:{hashlib.sha256(prefix.encode('utf-8')).hexdigest()[:24]}"
+def digest_key(job: str, prefix: str, world: str) -> str:
+    digest = hashlib.sha256(f"{world}\0{prefix}".encode()).hexdigest()[:24]
+    return f"grove:{job}:{digest}"
 
 
 def settings(**changes) -> ModelSettings:
@@ -319,7 +320,7 @@ def test_respond_sends_the_responses_body_and_writes_one_ok_row(driver, world, m
             "max_output_tokens": 2048,
             "store": False,
             "instructions": INSTRUCTIONS,
-            "prompt_cache_key": digest_key("extraction", INSTRUCTIONS),
+            "prompt_cache_key": digest_key("extraction", INSTRUCTIONS, world),
             "text": {
                 "format": {
                     "type": "json_schema",
@@ -404,10 +405,10 @@ def test_respond_cache_key_is_a_stable_digest_of_the_instructions(driver, world,
 
     keys = [body.get("prompt_cache_key") for body in provider.bodies()]
     assert keys == [
-        digest_key("extraction", INSTRUCTIONS),
-        digest_key("extraction", INSTRUCTIONS),
-        digest_key("extraction", other),
-        digest_key("verification", INSTRUCTIONS),
+        digest_key("extraction", INSTRUCTIONS, world),
+        digest_key("extraction", INSTRUCTIONS, world),
+        digest_key("extraction", other, world),
+        digest_key("verification", INSTRUCTIONS, world),
         "orchard-key",
     ]
     assert keys[0] != keys[2] and keys[0] != keys[3]
@@ -669,7 +670,7 @@ def test_respond_background_polls_until_completed_and_writes_one_row(driver, wor
         "max_output_tokens": 8192,
         "store": True,
         "instructions": INSTRUCTIONS,
-        "prompt_cache_key": digest_key("consolidation", INSTRUCTIONS),
+        "prompt_cache_key": digest_key("consolidation", INSTRUCTIONS, world),
         "background": True,
     }
     assert provider.sleeps == [1.0, 2.0]
@@ -921,7 +922,7 @@ def test_chat_spark_job_goes_to_meta_with_effort_cache_key_and_tools(driver, wor
             "messages": messages,
             "max_tokens": 4096,
             "reasoning_effort": "low",
-            "prompt_cache_key": digest_key("verification", system),
+            "prompt_cache_key": digest_key("verification", system, world),
             "tools": tools,
             "tool_choice": "auto",
         }

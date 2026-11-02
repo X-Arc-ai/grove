@@ -1261,7 +1261,7 @@ def test_verify_refuses_a_signed_payload_that_is_not_base64_json(frozen_clock, c
 
 
 def _chain(levels: int, *, enum: bool = False) -> dict:
-    """An object schema `levels` properties deep; the deepest value sits at 2*levels+1 (+1)."""
+    """An object schema `levels` objects deep."""
     node: dict = {"type": "string"}
     if enum:
         node["enum"] = ["orchard"]
@@ -1298,9 +1298,10 @@ def test_check_schema_refuses_references(schema):
 
 def test_check_schema_takes_ten_levels_and_refuses_eleven():
     assert MAX_SCHEMA_DEPTH == 10
-    check_schema(_chain(4, enum=True))
+    # The limit counts nested schemas, as Meta's does, not the JSON wrappers between them.
+    check_schema(_chain(10, enum=True))
     with pytest.raises(ModelRefused, match="nest at most 10 levels"):
-        check_schema(_chain(5))
+        check_schema(_chain(11))
     with pytest.raises(ModelRefused, match="nest at most 10 levels"):
         check_schema(_chain(12))
 
@@ -1432,7 +1433,10 @@ def test_default_cache_key_is_stable_per_job_and_prefix():
     prefix = "You read notes about the orchard and return facts."
     key = default_cache_key("extraction", prefix)
     assert key == default_cache_key("extraction", prefix)
-    assert key == "grove:extraction:" + hashlib.sha256(prefix.encode("utf-8")).hexdigest()[:24]
+    assert key == "grove:extraction:" + hashlib.sha256(f"\0{prefix}".encode()).hexdigest()[:24]
+    salted = default_cache_key("extraction", prefix, "world-a")
+    assert salted == default_cache_key("extraction", prefix, "world-a")
+    assert salted != key and salted != default_cache_key("extraction", prefix, "world-b")
     assert default_cache_key("extraction", prefix + " ") != key
     assert default_cache_key("verification", prefix) != key
 
