@@ -22,6 +22,9 @@ function makeServer(world){
   const calls=[];
   const reply=(status,body)=>Promise.resolve({ok:status>=200&&status<300,status,text:()=>Promise.resolve(body===undefined?'':JSON.stringify(body))});
   const typed=(status,code,message)=>reply(status,{error:{code,message,details:{},retryable:false}});
+  // When world.holdGraph or world.holdPositions is a list, the answer of that call waits in it: the
+  // check calls the entry to send that answer, or passes another answer to send in its place.
+  const held=(list,answer)=>list?new Promise(done=>list.push(other=>done(other||answer))):answer;
   function fetch(url,init){
     init=init||{};
     const u=new URL(url,'http://grove.test/'),method=(init.method||'GET').toUpperCase();
@@ -32,14 +35,15 @@ function makeServer(world){
     if(u.pathname==='/v1/views/graph'){
       if(world.graphStatus)return typed(world.graphStatus,'unauthenticated','Sign in to continue');
       const nodes=world.nodes.map(n=>({data:Object.assign({},n,world.positions[n.id]||{},n.id===world.selfId?{self:true}:{})}));
-      return reply(200,{elements:{nodes,edges:world.edges.filter(e=>ids.has(e.source)&&ids.has(e.target)).map(e=>({data:e}))},stats:{total_nodes:nodes.length},time:{min:null,max:null},generated_at:'2026-11-02T00:00:00Z',as_of:null,known_as_of:null,self_item_id:world.selfId||null});
+      return held(world.holdGraph,reply(200,{elements:{nodes,edges:world.edges.filter(e=>ids.has(e.source)&&ids.has(e.target)).map(e=>({data:e}))},stats:{total_nodes:nodes.length},time:{min:null,max:null},generated_at:'2026-11-02T00:00:00Z',as_of:null,known_as_of:null,self_item_id:world.selfId||null}));
     }
     if(u.pathname.indexOf('/v1/views/node/')===0){
       if(world.nodeStatus)return typed(world.nodeStatus,'unauthenticated','Sign in to continue');
+      if(world.nodeMissing)return typed(404,'not_found','No such item');
       const n=world.nodes.find(x=>x.id===decodeURIComponent(u.pathname.slice('/v1/views/node/'.length)));
       return n?reply(200,{node:Object.assign({},n,{title:n.label,content:n.summary,status_field_value:n.status}),required_props:[],optional_props:[],required_prop_names:[],status_field:'status'}):typed(404,'not_found','No such item');
     }
-    if(u.pathname==='/v1/views/schema')return reply(200,{});
+    if(u.pathname==='/v1/views/schema'){if(world.schemaThrows)return Promise.reject(new TypeError('Failed to fetch'));if(world.schemaStatus)return typed(world.schemaStatus,world.schemaStatus===401?'unauthenticated':'unavailable','Sign in to continue');return held(world.holdSchema,reply(200,world.schema||{}));}
     if(u.pathname==='/v1/views/health')return reply(200,{status:'healthy',summary:'Your Grove is ready',checks:{graph:'ready',sources:'ready'},nodes:world.nodes.length,edges:world.edges.length,by_type:{},overall:{state:'healthy'}});
     if(u.pathname==='/v1/views/positions'&&method==='POST'){
       assert.equal(init.headers['Content-Type'],'application/json');
@@ -51,7 +55,7 @@ function makeServer(world){
         assert(Number.isFinite(p.x)&&Number.isFinite(p.y)&&Math.abs(p.x)<=1e7&&Math.abs(p.y)<=1e7,'finite coordinates');
         if(!ids.has(p.id))unknown++;else if(world.positions[p.id])kept++;else{world.positions[p.id]={x:p.x,y:p.y};placed++;}
       }
-      return reply(200,{placed,kept,unknown});
+      return held(world.holdPositions,reply(200,{placed,kept,unknown}));
     }
     if(u.pathname==='/v1/auth/email/start'&&method==='POST')return world.emailStartFails?typed(400,'invalid_arguments','That address cannot receive a code'):reply(200,{});
     if(u.pathname==='/v1/auth/email/verify'&&method==='POST'){if(body.code!==world.code)return typed(401,'unauthenticated','The code does not match');world.session=true;return reply(200,{signed_in:true});}
@@ -62,7 +66,7 @@ function makeServer(world){
     }
     return typed(404,'not_found','No such path');
   }
-  return {fetch,calls,world};
+  return {fetch,calls,world,typed};
 }
 
 // ---------- a browser-shaped sandbox ----------
@@ -414,6 +418,117 @@ function legendRows(elements){
     const titles=w.nodes.map(n=>n.label).filter(l=>l&&l.length>=6);assert(!titles.some(l=>saved.includes(l)),label+': no store title reaches local storage');
   }
 
+  // 6g. A graph read is out when the session ends with a 401 from another call, and then answers
+  //     with graph data: nothing draws, no store title comes back, and no new read starts. The
+  //     graph endpoint keeps answering here, so a read that does start would draw.
+  const graphReads=sv=>sv.calls.filter(c=>c.path==='/v1/views/graph').length;
+  const endWithNodeDetail=async t=>{t.w.session=false;t.w.nodeStatus=401;t.V.openNode('t002');await settle();};
+  const titleKept=(t,w)=>{const kept=shownText(t)+JSON.stringify(t.S.getState())+JSON.stringify(t.st);return w.nodes.map(n=>n.label).find(l=>l&&l.length>=6&&kept.includes(l));};
+  for(const [label,start] of [['a late reload',t=>t.pg.sandbox.reloadGrove()],['a late poll',t=>t.pg.intervals.find(i=>i.ms===180000).fn()]]){
+    const t=await sessionPage(liveWorld());assertSignedIn(t,label+', before');
+    t.w.holdGraph=[];start(t);await settle();
+    const out=t.w.holdGraph;t.w.holdGraph=null;assert.equal(out.length,1,label+': the read is out');
+    await endWithNodeDetail(t);assertCleared(t,label+', the session ended');assert.equal(t.heard(),1);
+    const reads=graphReads(t.sv);
+    out[0]();await settle();
+    assertCleared(t,label+', after its answer');assert.equal(t.heard(),1,label+': one event for the ended session');
+    assert.equal(graphReads(t.sv),reads,label+': its answer starts no new read');
+    assert.equal(titleKept(t,t.w),undefined,label+': no store title comes back');
+    assert.deepStrictEqual(t.pg.errors,[],label+': no error');
+  }
+
+  // 6h. A new session in the same page: the same item ids in another world. The new map is the one
+  //     a page of its own draws for that world (its stored places kept, the rest placed fresh, none
+  //     of the ended session's places), and its save goes out and lands in that world. What the old
+  //     session still has out (a save, a read) neither blocks the new session nor ends it,
+  //     whichever way it answers.
+  const SECOND_TITLE='Second world item ';
+  function secondWorld(){
+    const w=liveWorld();
+    w.nodes.pop();   // one item fewer, so the counts tell the two worlds apart
+    w.nodes.forEach((n,i)=>{n.label=SECOND_TITLE+i;if(i%3===0)w.positions[n.id]={x:4000+60*i,y:-3000};});
+    return w;
+  }
+  const viewId=real=>real==='p001'?'grove-self':real;
+  for(const lateAnswer of ['saved','refused']){
+    const label='new session, the old save '+lateAnswer;
+    const alone=await sessionPage(secondWorld()),expected=fgPositions(alone.pg),expectedSave=positionsCalls(alone.sv)[0].body.positions;
+    const w=liveWorld();w.holdPositions=[];
+    const t=await sessionPage(w),sv=t.sv;assertSignedIn(t,label+', first person');
+    const ended=fgPositions(t.pg),firstWorld={nodes:w.nodes};
+    const oldSave=w.holdPositions;w.holdPositions=null;assert.equal(oldSave.length,1,label+': the first save is out');
+    w.holdGraph=[];t.pg.sandbox.reloadGrove();await settle();
+    const oldRead=w.holdGraph;w.holdGraph=null;assert.equal(oldRead.length,1,label+': a graph read is out');
+    await endWithNodeDetail(t);assertCleared(t,label+', the session ended');assert.equal(t.heard(),1);
+    Object.assign(w,secondWorld(),{session:false,nodeStatus:0});
+    const secondStored=Object.assign({},w.positions),stays=w.nodes.map(n=>n.id).filter(id=>!secondStored[id]);
+    assert(stays.length&&stays.every(id=>Math.hypot(ended[viewId(id)].x-expected[viewId(id)].x,ended[viewId(id)].y-expected[viewId(id)].y)>1),'The two worlds place the same ids apart');
+    const saves=positionsCalls(sv).length;
+    await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');await settle();
+    assertSignedIn(t,label+', second person');assert.equal(t.heard(),1);
+    assert.deepStrictEqual(fgPositions(t.pg),expected,label+': the new map is that of a page of its own');
+    for(const id of Object.keys(secondStored))assert.deepStrictEqual(fgPositions(t.pg)[viewId(id)],secondStored[id],label+': a stored place is kept');
+    assert.equal(positionsCalls(sv).length,saves+1,label+': the new session saves its new items');
+    assert.deepStrictEqual(positionsCalls(sv)[saves].body.positions,expectedSave,label+': the save holds the new map');
+    for(const p of expectedSave)assert.deepStrictEqual(w.positions[p.id],{x:p.x,y:p.y},label+': the save lands in the new world');
+    oldSave[0](lateAnswer==='refused'?sv.typed(401,'unauthenticated','Sign in to continue'):undefined);oldRead[0]();await settle();
+    assertSignedIn(t,label+', after the old calls answer');assert.equal(t.heard(),1,label+': an answer of the ended session ends nothing');
+    assert.deepStrictEqual(fgPositions(t.pg),expected,label+': nothing moves');
+    assert.equal(titleKept(t,firstWorld),undefined,label+': no title of the first world comes back');
+    assert.equal(t.S.getState().currentNodeCount,w.nodes.length,label+': the counts stay those of the new world');
+    await t.pg.sandbox.reloadGrove();await settle();
+    assert.deepStrictEqual(fgPositions(t.pg),expected,label+': a reload keeps the new map');
+    assert.equal(positionsCalls(sv).length,saves+1,label+': a reload saves nothing');
+    assert.deepStrictEqual(t.pg.errors,[],label+': no error');
+  }
+
+  // 6i. The kinds belong to a session. A page that opened signed out reads them after a sign-in in
+  //     the same page; the end of a session drops them; a late answer of the ended session is not
+  //     kept. The node panel falls back on them when the node read names no kind fields.
+  const KINDS={recipe:{required:[{name:'soak_hours',type:'string'}],optional:[],status_field:'status',status_vocab:[]}};
+  const schemaCalls=t=>t.sv.calls.filter(c=>c.path==='/v1/views/schema').length;
+  const signedOutStore=()=>({'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,auth:null,name:'Sam',onboardingComplete:true,onboardingStep:4,tourComplete:true})});
+  const kindInPanel=async t=>{t.w.nodeMissing=true;t.V.openNode('k001');await settle();t.w.nodeMissing=false;const shown=/soak.hours/i.test(t.pg.elements['detail-body'].innerHTML);t.V.close();await settle();return shown;};
+  const signIn=async t=>{await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');await settle();assertSignedIn(t,'kinds, signed in');};
+  const signedOutPage=async()=>{const w=liveWorld();Object.assign(w,{session:false,graphStatus:401,schemaStatus:401});const t=await sessionPage(w,signedOutStore());Object.assign(w,{graphStatus:0,schemaStatus:0,schema:KINDS});return t;};
+  {
+    const t=await signedOutPage(),w=t.w;
+    assert.equal(schemaCalls(t),1,'A signed-out page asks for the kinds once');
+    await signIn(t);
+    assert.equal(schemaCalls(t),2,'A sign-in in the same page reads the kinds');
+    assert(await kindInPanel(t),'The kinds of this session reach the panel');
+    await t.pg.sandbox.reloadGrove();await settle();
+    assert.equal(schemaCalls(t),2,'A reload does not read the kinds again');
+    await endWithNodeDetail(t);assertCleared(t,'kinds, the session ended');
+    Object.assign(w,{nodeStatus:0,schema:{},holdSchema:[]});
+    await signIn(t);
+    assert.equal(schemaCalls(t),3,'The next session reads the kinds again');
+    assert(!await kindInPanel(t),'The kinds of the ended session are gone, with the new read still out');
+    w.holdSchema[0]();w.holdSchema=null;await settle();
+    assert.deepStrictEqual(t.pg.errors,[],'kinds: no error');
+  }
+  {
+    const t=await signedOutPage(),w=t.w;
+    w.holdSchema=[];
+    await signIn(t);
+    const late=w.holdSchema;w.holdSchema=null;assert.equal(late.length,1,'The read of the kinds is out');
+    await endWithNodeDetail(t);assertCleared(t,'late kinds, the session ended');
+    Object.assign(w,{nodeStatus:0,schema:{}});
+    await signIn(t);
+    late[0]();await settle();
+    assert(!await kindInPanel(t),'A late answer of the ended session is not kept');
+    assert.deepStrictEqual(t.pg.errors,[],'late kinds: no error');
+  }
+
+  for(const fail of [{schemaStatus:503},{schemaThrows:true}]){
+    const w=liveWorld();Object.assign(w,fail);
+    const t=await sessionPage(w);assertSignedIn(t,'kinds, a failed read');
+    Object.assign(w,{schemaStatus:0,schemaThrows:false,schema:KINDS});
+    await t.pg.sandbox.reloadGrove();await settle();
+    assert(await kindInPanel(t),'The next graph load reads the kinds again after a failed read');
+    assertSignedIn(t,'kinds, after the failed read');
+  }
+
   // 7. The production page: live scripts first, and no fixture anywhere in the built file.
   const index=read('index.html');
   assert(!/src="[^"]*fixture|fixture\.js/.test(index),'index.html loads no fixture');assert(index.includes('<title>Grove</title>'));
@@ -432,5 +547,5 @@ function legendRows(elements){
   const encoded=[...new Set([...dist.matchAll(/url\((data:font\/woff2;base64,[^)]*%(?:41|61)[^)]*)\)/g)].map(m=>m[1]))];
   assert.equal(encoded.length,fontFiles.length,'Every vendored font is embedded, encoded');
   for(const uri of encoded){const bytes=Buffer.from(await (await fetch(uri)).arrayBuffer());assert(fontBytes.some(b=>b.equals(bytes)),'An encoded font decodes to its vendored bytes');}
-  console.log('PASS: one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, logout only when the server confirms it, no local questions from store titles, no example identity in live mode, and a built page with no fixture');
+  console.log('PASS: one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, logout only when the server confirms it, no local questions from store titles, no example identity in live mode, and a built page with no fixture');
 })().catch(e=>{console.error(e);process.exitCode=1;});

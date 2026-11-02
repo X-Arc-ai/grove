@@ -185,6 +185,8 @@
   function selfNode(){return {data:{id:'grove-self',type:'person',label:state.name||(LIVE?'You':'Anas'),status:'active',summary:'Your world, connected through the sources you bring to Grove',created_at:'2026-10-28T00:00:00Z'}};}
   // Live mode: the last graph payload, with the self item renamed to the identity node's id.
   var live = { selfId: null, nodes: [], edges: [] };
+  // Grows when the session ends: a graph read still out at that moment keeps nothing here.
+  var liveSession = 0;
   function isHubKind(type) { var style = ((window.GroveLive && window.GroveLive.KIND_STYLE) || {})[type] || type; return style === 'company' || style === 'project'; }
   // The views show the payload; when it names no self item, the sim's identity node joins it, as in the sim.
   function liveElements() {
@@ -341,7 +343,7 @@
   function removeMcpClient(id){state.mcpClients=state.mcpClients.filter(function(c){return c.id!==id;});save();return getState();}
   function answerRequest(id,answer){var r=state.requests.find(function(r){return r.id===id;});var text=String(answer||'').trim().slice(0,2000);if(!r||!text)return getState();r.answer=text;r.status='answered';r.answeredAt=new Date().toISOString();save();return getState();}
   // Live mode: the last graph payload goes too, so no item of the session stays in memory.
-  function signOut(){state.auth=null;if(LIVE)live={selfId:null,nodes:[],edges:[]};save();return getState();}
+  function signOut(){state.auth=null;if(LIVE){liveSession++;live={selfId:null,nodes:[],edges:[]};}save();return getState();}
   function saveGrowth(value){['focus','reading','avoid'].forEach(function(k){state.growth[k]=String(value[k]||'').trim().slice(0,1500);});state.growth.confirm=!!value.confirm;save();return getState();}
   function clearGrove(){var auth=state.auth,name=state.name,growth=state.growth;resetOnboarding();state.auth=auth;state.name=name;state.growth=growth;state.onboardingStep=1;save({reload:true});return getState();}
 
@@ -475,10 +477,11 @@
     else if (path === '/api/schema') target = G.ENDPOINTS.schema;
     else if (path === '/api/health' || path === '/health') target = G.ENDPOINTS.health;
     else return Promise.resolve(liveAnswer(404, { error: 'No live endpoint for ' + path }));
+    var session = liveSession;
     return G.getJSON(target).then(function (res) {
       var body = res.body || {};
       if (!res.ok) return liveAnswer(res.status || 500, { error: G.errorText(body), code: (body.error && body.error.code) || null });
-      if (kind === 'graph') body = acceptGraph(body);
+      if (kind === 'graph') { if (session === liveSession) body = acceptGraph(body); }   // native-app drops a late answer
       else if (kind === 'node') body = aliasDetail(body);
       return liveAnswer(res.status, body);
     });

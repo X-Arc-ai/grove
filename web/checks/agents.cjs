@@ -5,11 +5,21 @@ const geometry=[];
 function finite(args){for(const n of args)if(typeof n==='number')assert(Number.isFinite(n),'Non-finite canvas coordinate');}
 class Path {moveTo(...a){finite(a);geometry.push(a);}lineTo(...a){finite(a);geometry.push(a);}closePath(){}}
 function context(){const ctx={canvas:{width:1200,height:800},getTransform:()=>({a:1,b:0,c:0,d:1,e:0,f:0}),measureText:t=>({width:t.length*7})};for(const k of ['save','restore','setTransform','clearRect','beginPath','moveTo','lineTo','arc','fill','stroke','closePath','clip','translate','scale','drawImage','setLineDash','strokeText','fillText'])ctx[k]=(...a)=>finite(a);return ctx;}
-const classes={toggle(){},add(){},remove(){},contains(){return false;}};
+// The playback bar is gone: the real buildBar runs below, and the moment any element takes one of
+// the bar's classes (as its class or in its markup), this check fails with that name.
+const BAR=/\bhood-(bar|play|track|seg|speed)\b/;
+function noBar(value){assert(!BAR.test(String(value)),'The playback bar must not be built: '+String(value).slice(0,80));}
+const classes={toggle(k){noBar(k);},add(...k){k.forEach(noBar);},remove(){},contains(){return false;}};
 const element=()=>({hidden:true,classList:classes,addEventListener(){},getAttribute(){return null;},querySelector(){return null;},querySelectorAll(){return [];},appendChild(){},setAttribute(){},style:{}});
+function watched(el){
+  const kept={className:'',innerHTML:''},set=el.setAttribute;
+  for(const k of Object.keys(kept))Object.defineProperty(el,k,{enumerable:true,get:()=>kept[k],set(v){noBar(v);kept[k]=v;}});
+  el.setAttribute=(k,v)=>{if(k==='class')noBar(v);set.call(el,k,v);};
+  return el;
+}
 // The node panel the workers line goes into, and the page's keydown listeners.
 const panelBody={...element(),appended:[],appendChild(c){this.appended.push(c);return c;}},panel={...element(),classList:{...classes,contains:k=>k==='open'}},keys=[];
-const doc={body:element(),documentElement:{...element(),getAttribute:()=> 'light'},createElement:tag=>tag==='canvas'?{width:0,height:0,getContext:()=>context()}:element(),getElementById:id=>id==='detail-body'?panelBody:id==='detail'?panel:element(),querySelector:()=>null,addEventListener(type,fn){if(type==='keydown')keys.push(fn);}};
+const doc={body:element(),documentElement:{...element(),getAttribute:()=> 'light'},createElement:tag=>tag==='canvas'?{width:0,height:0,getContext:()=>context()}:watched(element()),getElementById:id=>id==='detail-body'?panelBody:id==='detail'?panel:element(),querySelector:()=>null,addEventListener(type,fn){if(type==='keydown')keys.push(fn);}};
 const nodes=Array.from({length:75},(_,i)=>({id:i?'n'+i:'grove-self',title:i?'Memory '+i:'Anas',type:i%6===0?'person':'observation',x:(i%15)*24-170,y:Math.floor(i/15)*30-70,_primaryHubId:Math.floor(i/25)}));
 const links=nodes.slice(1).map((n,i)=>({source:nodes[i],target:n}));
 const methods={nodeCanvasObject:()=>{nativeDraws++;},nodePointerAreaPaint(){},linkColor:()=> '#aaa',linkCanvasObjectMode:()=> 'after',onNodeHover(){},onNodeClick(){},onLinkClick(){},onBackgroundClick(){}};
@@ -18,17 +28,18 @@ for(const k of [...Object.keys(methods),'onRenderFramePre','onRenderFramePost'])
 let hop=null;
 // One load of agents.js; search is the page's query string.
 function boot(search){
-  const box={console,URLSearchParams,Float64Array,Float32Array,Int32Array,Path2D:Path,Math,Promise,performance:{now:()=>now},setInterval(){},setTimeout(){},clearTimeout(){},getComputedStyle:()=>({getPropertyValue:()=>''}),MutationObserver:class{observe(){}},document:doc,localStorage:{getItem:()=>null,setItem(){}},innerWidth:1200,location:{search}};
+  const box={console,URLSearchParams,Float64Array,Float32Array,Int32Array,Path2D:Path,Math,Promise,CustomEvent:class{},dispatchEvent(){},performance:{now:()=>now},setInterval(){},setTimeout(){},clearTimeout(){},getComputedStyle:()=>({getPropertyValue:()=>''}),MutationObserver:class{observe(){}},document:doc,localStorage:{getItem:()=>null,setItem(){}},innerWidth:1200,location:{search}};
   box.window=box;box.addEventListener=()=>{};box.GroveSimulation={getState:()=>({onboardingComplete:true})};box.GroveView={nodes:()=>nodes,graph:()=>graph,close(){},fit(){fitCalls++;}};box.__brainViz={Graph:graph,hopDist:()=>hop};
   let source=fs.readFileSync(path.join(__dirname,'../agents.js'),'utf8');
-  source=source.replace('  (function buildSwitch() {','  buildBar=function(){}; buildScore=function(){}; buildLegend=function(){};\n  (function buildSwitch() {');
-  source=source.replace(/\}\)\(\);\s*$/,'window.__agentTest={sample:sampleAgentData,load:loadData,setOn,follow:followAgent,stop:stopFollowing,spot:spotOf,strength:zoneStrength,regions:()=>zones,note:renderNote};})();');
+  source=source.replace('  (function buildSwitch() {','  buildScore=function(){}; buildLegend=function(){};\n  (function buildSwitch() {');
+  source=source.replace(/\}\)\(\);\s*$/,'window.__agentTest={sample:sampleAgentData,load:loadData,setOn,follow:followAgent,stop:stopFollowing,spot:spotOf,strength:zoneStrength,regions:()=>zones,note:renderNote,bar:()=>barEl};})();');
   vm.createContext(box);vm.runInContext(source,box);return box;
 }
 const sandbox=boot('');
 const test=sandbox.__agentTest,data=test.sample();test.load(data);test.setOn(true);now=5000;
 const ctx=context();function frame(){methods.onRenderFramePre(ctx,1);methods.onRenderFramePost(ctx,1);}
 frame();assert(sandbox.__hood.at().ready);assert(test.regions().length>1);assert(geometry.length>10);
+assert.equal(test.bar(),null,'With the workers toggle on, no playback bar is built');
 for(const n of nodes)methods.nodeCanvasObject(n,ctx,1);assert.equal(nativeDraws,nodes.length,'Activity view must retain native node rendering');
 const turns=sandbox.__hood.turns(),total=sandbox.__hood.at().total;
 const cleaner=turns.find(t=>t.p==='L');
@@ -75,7 +86,8 @@ for(const search of ['','?pause=1&speed=4']){
   keys.length=0;const page=boot(search),t2=page.__agentTest;t2.load(t2.sample());t2.setOn(true);now+=5000;
   methods.onRenderFramePre(ctx,1);const start=page.__hood.at().t;now+=50;methods.onRenderFramePre(ctx,1);
   assert.equal(page.GroveCare.summary().running,true,'The loop runs with '+(search||'no parameters'));
+  assert.equal(t2.bar(),null,'No playback bar with '+(search||'no parameters'));
   steps.push(page.__hood.at().t-start);
 }
 assert(steps[0]>0&&steps[1]===steps[0],'The loop runs at the same speed with ?pause=1&speed=4: '+steps.join(' vs '));
-console.log('PASS: regional geometry, native node colors, progressive area freshness, all agent follow paths, overview and hidden activity continuity, item titles as text in the workers line, no playback keys or parameters');
+console.log('PASS: regional geometry, native node colors, progressive area freshness, all agent follow paths, overview and hidden activity continuity, item titles as text in the workers line, no playback bar, keys or parameters');

@@ -354,6 +354,12 @@ def test_the_welcome_and_a_map_that_keeps_every_place(browser, base_url, shots, 
         _wait_for_nodes(page, grown)
         _assert_same_homes(after, _homes(page), grown)
         _wait_settled(page)
+
+        # The workers toggle on: the workers panel shows, and no playback bar is built.
+        page.locator("label.toggle").click()
+        assert page.locator("#agents-toggle").is_checked()
+        page.locator(".hood-score").wait_for(state="visible", timeout=WAIT_MS)
+        assert page.locator(".hood-bar").count() == 0
         assert errors == []
     finally:
         context.close()

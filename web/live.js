@@ -57,20 +57,22 @@
   }
   // A views call (graph, node, schema, health, positions) that answers 401 means the session has
   // ended. The page hears it once, as 'grove:unauthenticated' (product.js signs out and clears the
-  // graph); a sign-in that the server accepts arms it again. The auth calls never send it: their
-  // answers belong to the sign-in card.
-  var signedOutSent = false;
-  function watchSession(res) {
+  // graph); a sign-in that the server accepts arms it again. A call sent before that sign-in speaks
+  // for the session that ended, so its 401 ends nothing. The auth calls never send it: their answers
+  // belong to the sign-in card.
+  var signedOutSent = false, sessionsBegun = 0;
+  function watchSession(sentIn, res) {
     var code = res.body && res.body.error && res.body.error.code;
-    if ((res.status === 401 || code === 'unauthenticated') && !signedOutSent) {
+    if ((res.status === 401 || code === 'unauthenticated') && !signedOutSent && sentIn === sessionsBegun) {
       signedOutSent = true;
       window.dispatchEvent(new CustomEvent('grove:unauthenticated'));
     }
     return res;
   }
   function signedIn(res) { if (res.ok) signedOutSent = false; return res; }
-  function getJSON(path) { return request('GET', path).then(watchSession); }
-  function postJSON(path, body) { return request('POST', path, body === undefined ? {} : body).then(watchSession); }
+  function newSession(res) { if (res.ok) sessionsBegun++; return signedIn(res); }
+  function getJSON(path) { return request('GET', path).then(watchSession.bind(null, sessionsBegun)); }
+  function postJSON(path, body) { return request('POST', path, body === undefined ? {} : body).then(watchSession.bind(null, sessionsBegun)); }
   function postAuth(path, body) { return request('POST', path, body === undefined ? {} : body); }
 
   // A typed server error ({"error": {"code", "message", ...}}) as one line of text.
@@ -115,7 +117,7 @@
     googleSignIn: function () { window.location.assign(ENDPOINTS.googleStart); },
     emailStart: function (email) { return postAuth(ENDPOINTS.emailStart, { email: String(email || '').trim() }); },
     emailVerify: function (email, code) {
-      return postAuth(ENDPOINTS.emailVerify, { email: String(email || '').trim(), code: String(code || '').trim() }).then(signedIn);
+      return postAuth(ENDPOINTS.emailVerify, { email: String(email || '').trim(), code: String(code || '').trim() }).then(newSession);
     },
     logout: function () { return postAuth(ENDPOINTS.logout); },
   };
