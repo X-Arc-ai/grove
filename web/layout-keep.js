@@ -2,7 +2,8 @@
  *
  * placeNew(stored, nodes, edges, seed, radius) is pure and deterministic:
  *   stored  {id: {x, y}}  positions the store (or this session) already holds
- *   nodes   [{id, _primaryHubId?, ...}] the current graph, in a stable order
+ *   nodes   [{id, _primaryHubId?, ...}] the current graph, in a stable order; _primaryHubId is
+ *           the hub the node's seed sits around (native-app passes seedLayout's group hub)
  *   edges   [{source, target}]
  *   seed    {id: {x, y}}  the sim's own layout of the current graph (native-app seedLayout)
  *   radius  function (node) -> the room a node takes, as the collide force sees it (or a number)

@@ -440,7 +440,9 @@
     all.forEach(function (n) {
       var c = laid.cache[n.id] || {};
       seed[n.id] = { x: c.x, y: c.y };
-      items.push({ id: n.id, type: n.type, _primaryHubId: c._primaryHubId || null, _hubR: c._hubR || null, _demoted: !!c._demoted });
+      // A new leaf re-anchors on the hub its seed sits around. The primary hub can be one hop
+      // away while the seed sits at the centre, and its offset would throw the leaf far off.
+      items.push({ id: n.id, type: n.type, _primaryHubId: c._seedHubId || null, _hubR: c._hubR || null, _demoted: !!c._demoted });
     });
     var edges = el.edges.map(function (w) { return { source: w.data.source, target: w.data.target }; });
     var room = function (n) { return nodeRadius(n) * (DENSE ? 1.45 : 1.6) + (DENSE ? 6 : 8); };   // the collide force's radius
@@ -514,7 +516,7 @@
 
   function loadGraph(refresh) {
     return window.groveApi('/api/graph').then(function(r){return r.json();}).then(function(payload){
-      if (payload.error) throw new Error(payload.error);
+      if (payload.error) { var failed = new Error(payload.error); failed.code = payload.code; throw failed; }
       prepareLayout(payload);
       var previous = fgNodeById || {};
       rawNodes = payload.elements.nodes.map(function(w){
@@ -544,7 +546,11 @@
       if (!rawNodes.length) { focusedNode=null; manualCamera=false; detailEl.classList.remove('open'); }
       loadingEl.classList.add('hidden');
       window.dispatchEvent(new CustomEvent('grove:graph-rendered'));
-    }).catch(function(err){loadingEl.textContent='Unable to open this brain';console.error(err);});
+    }).catch(function(err){
+      // Live mode, signed out: the sign-in card takes the screen, so the loading cover steps aside.
+      if (err && err.code === 'unauthenticated') { loadingEl.classList.add('hidden'); return; }
+      loadingEl.textContent='Unable to open this brain';console.error(err);
+    });
   }
 
   // ---------------- live evolution (ambient auto-refresh) ----------------
@@ -909,6 +915,7 @@
     var seedGroups = {}, seedOrder = [];
     nonHubs.forEach(function (n) {
       var key = firstHub[n.id] ? firstHub[n.id].id : '';
+      n._seedHubId = key || null;   // the hub this leaf's seed sits around (none: the centre)
       if (!seedGroups[key]) { seedGroups[key] = []; seedOrder.push(key); }
       seedGroups[key].push(n);
     });

@@ -17,6 +17,28 @@ uv run uvicorn --factory grove.api.app:create_app --host 127.0.0.1 --port 8765
 
 For a local run only, `GROVE_WEB_DIST` names a folder whose `index.html` `GET /` returns, for example `GROVE_WEB_DIST=../web/dist`. In production nginx serves the page and passes `/v1/` to this process.
 
+### A synthetic world to look at
+
+`grove.writer.demo` is a dev tool. It seeds a `t_` world from `web/checks/fixture.synthetic.json` (invented names) and refuses every other world id:
+
+```sh
+uv run python -m grove.writer.demo seed --fixture ../web/checks/fixture.synthetic.json --token-file <path>
+uv run python -m grove.writer.demo add --world <id> --count 12
+uv run python -m grove.writer.demo purge --world <id>
+```
+
+`seed` writes the session token to the token file with mode 600 and prints only the world id and the counts. Put the token in the browser's `grove_session` cookie for `127.0.0.1` to open the views of that world. The session lasts one hour. A fixture link with `invalid_at` has ended, so it gets its stopped bound and no `active_key`, and the graph leaves it out.
+
+### The browser test
+
+`server/tests/e2e/test_views_browser.py` drives Chromium against the real app and a seeded world: the sign-in card, the welcome, and a map that keeps every placed item after a reload and after new items arrive. It is marked `browser`, the default run leaves it out, and CI has no Playwright, so it never runs there:
+
+```sh
+GROVE_E2E_SHOTS=<folder> uv run --with playwright==1.58.0 pytest -m browser tests/e2e -q -p no:cacheprovider
+```
+
+`docs/screens/views-a/` holds its screenshots beside the simulation's, both on synthetic data.
+
 ## The session contract
 
 Signin owns the session rows and the cookie. The views only read them.
