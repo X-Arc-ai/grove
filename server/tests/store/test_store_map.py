@@ -147,7 +147,7 @@ def test_the_open_points_of_review_round_one():
         "`why` of a contradiction from `grove.cleanup.v1`",
         "never from the installed package",
         "`GROVE_ENV=production` must be set on the box",
-        "The daily dump and the restore have not run on this store.",
+        "D3's restore has not run on this store",
         "no rows for the mail provider, Google sign-in, Calendar and backups",
         "`history_values.forgotten_at`, `budgets.spent`",
     ):

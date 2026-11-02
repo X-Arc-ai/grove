@@ -64,7 +64,7 @@ A filter in `MATCH` or `WHERE` reads with no lock. A probe raced two transaction
 | The job queue | `:Job`. A claim checks the state in one of the two forms above. There is no `SKIP LOCKED`. `runner` must build the claim, with a two-transaction race test. |
 | Row-level security | The query layer. No store rule exists. |
 | Backups | A whole-store offline dump each day with the server stopped, kept 30 days. A.5 asks for snapshots of the snapshot-only tables; the whole-store dump is a change from A.5 (S21). |
-| Restore | `neo4j-admin database load` into a stopped store, then rebuild the projections from history, replay the forget ledger and compare fingerprints. `writer-b` and `deploy-a` own it. It has not run on this store. |
+| Restore | `neo4j-admin database load` into a stopped store, then rebuild the projections from history, replay the forget ledger and compare fingerprints. `deploy-a` runs the dump and its load into a scratch store each day, with a matching dump fingerprint (`docs/deploy.md`). The rebuild, the replay and D3's fingerprint belong to `writer-b` and have not run. |
 
 ## Rulings
 
@@ -166,9 +166,14 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | Rows outside the S12 list that change after they are written carry no version: `requests`, `jobs`, `support_changed.taken_at`, `ontology_change_log.undone_by`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, `run_records`, and the finished times of `audit_runs` and `area_audits`. | 3081 | `writer-a` |
 | The value index must gain the status words, `items.status` and `kinds.status_vocabulary` (S31). Until then, a forget of a status word renames the word in the kind. | 2560, 2561 | `forget` |
 | `why` of a contradiction from `grove.cleanup.v1` (the `grove.extract.v1` form) has no value-id column in `contradictions`. | 2087, 2199, 3133 | `beliefs` |
-| Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. | none; a build fact | `deploy-a` |
-| `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. | 354, 991 | `deploy-a` |
-| The daily dump and the restore have not run on this store. | 806 to 808, 3065 | `deploy-a`, `writer-b` |
+| Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. Closed by `deploy-a`: the API image holds `server/` as in a checkout with an editable install, and a deploy runs the migrations from it (`docs/deploy.md`). | none; a build fact | `deploy-a` |
+| `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. Closed by `deploy-a`: `deploy/compose.yml` sets it for `api` and `runner`, and a test checks it. | 354, 991 | `deploy-a` |
+| D3's restore has not run on this store: rebuild the projections from history, replay the forget ledger, compare D3's fingerprint. The daily dump and its load into a scratch store run on the box since `deploy-a`, checked by the dump fingerprint (`docs/deploy.md`). | 806 to 808, 3065 | `writer-b` |
+| An upload route adds its own nginx location, with its body limit and `proxy_request_buffering off`. Every other path takes at most 10 MB (`deploy/nginx/grove-https.conf.template`). | none; a build fact | `ingest-a` |
+| The runner still reaches the host's sshd and nginx through the gateway of its internal network. A host firewall rule for its bridge goes with the egress allowlist. | none; a build fact | `runner`, `models` |
+| `/etc/grove/runner.env` holds no token yet, and `deploy/runner-placeholder.sh` runs in place of the loop. The backup stops the runner; the loop must leave a killed pass's requests queued. | none; a build fact | `runner` |
+| The API reads Google's client file at `GROVE_GOOGLE_OAUTH_FILE`; the secret files of `docs/deploy.md` are on the box, except `modal.env`, which is still owed. | none; a build fact | `signin`, `models` |
+| `/mcp` and the metadata in `server/grove/api/wellknown.py` are placeholders. uvicorn runs without `--proxy-headers`, so a redirect it makes names `http`. | none; a build fact | `hosts-a` |
 | The verdicts of a judge call: A.1 has the model-call layer record them in `judgments`, and no writer exists yet. | 996, 3121 | `truth-clock` |
 | The job table has no row for load-bearing verification: `verification` waits at the ceiling, and D15 defers only the low-stakes claims. | 2659 | `truth-clock` |
 | A run token needs a minter, a `token_cap` per pass and a holder for `GROVE_GATEWAY_SECRET`. A pass that gets `budget_reached` leaves its requests queued. | 2659 | `runner` |
@@ -183,7 +188,7 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | The session contract the views read: the cookie `grove_session`; `:Session.token_hash` is the lowercase sha256 hex of the cookie value; a session is valid while `revoked_at` is absent and `expires_at` is later than the clock's now; `:Session.user_id` leads to the oldest `:World` with that `owner_user_id`. `docs/views.md` states it in full. | none; a build fact | `signin` |
 | A `map_positions` row keeps `item_id` and its coordinates after its item is forgotten. The forget of an item must remove its map position too. | none; a build fact | `forget` |
 | The views' account, sources, questions and workers still use the simulation's local browser state. It survives the end of a session: the typed name and its initial, the guidance text, file names and connected hosts. A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b`, `signin` |
-| The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`, so the image must run `web/build.py` and set that variable. | none; a build fact | `deploy-a`, `deploy-b` |
+| The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`. Closed by `deploy-a`: the API image runs `web/build.py` and sets that variable, and the deploy smoke asks for the page. | none; a build fact | `deploy-a` |
 | `change_status` and `end_item` do not trigger the walk yet, and `reopen_item` does not yet send an R1 ending back as a proposal. | 3160 to 3162 | `walk` |
 | The writer takes the source type of a row from the connector and the statement class only. These wait for code: an automated sender confirming its own action, a decision's named speaker, a forwarded row's original author, and confirming evidence for the start of a period that took place. | 1074, 1112 | `truth-clock` |
 | A late terminal status that goes to history only stores its status entry but no `stopped_being_true` entry, because nothing clears a stop entry when a later live status moves the head. An as-of read at that time shows the status with no end time, and `change_status` refuses an explicit end time on this path (rule `stopped_on_history_only`). | 3160 | `writer-b` |
@@ -193,6 +198,7 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | The near-duplicate test rewords one word. Calibration needs a stronger pair. | 772 | `writer-a2` |
 | The writer lint has no allowance yet for the bookkeeping tables of the model-call layer and the job runner, and must name them. | 772 | `models`, `runner` |
 | `record_connector`, `record_source` and `record_episode` take no `Caller`, so the read-only refusal does not reach them. A layer that exposes them to a token checks its scope first. | 772 | `hosts-b` |
+| The gateway is not a compose service yet: `python -m grove.models.gateway` needs `MODEL_API_KEY`, `GROVE_GATEWAY_SECRET`, `NEO4J_AUTH` and the Glimmer variables (`docs/models.md`), and none of the new ones is on the box. The runner network must reach it. | none; a build fact | `runner`, `deploy-b` |
 
 ## Added by later lanes
 

@@ -56,7 +56,7 @@ def test_the_factory_opens_and_closes_its_own_driver(monkeypatch):
         def close(self):
             self.closed = True
 
-    def fake_open():
+    def fake_open(**_options):
         opened.append(Recorded())
         return opened[-1]
 
