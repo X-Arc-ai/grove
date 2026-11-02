@@ -4,6 +4,7 @@ import re
 
 import yaml
 
+from grove.oauth import MAX_REGISTRATIONS_PER_WINDOW
 from tests.deploy.conftest import DEPLOY, REPO
 
 COMPOSE = yaml.safe_load((DEPLOY / "compose.yml").read_text(encoding="utf-8"))
@@ -110,7 +111,7 @@ def test_nginx_passes_everything_to_the_api_and_reads_no_user_agent():
         assert "$http_user_agent" not in text
         assert "deny " not in text
     assert "location / {" in https
-    assert https.count("proxy_pass http://127.0.0.1:8000;") == 4
+    assert https.count("proxy_pass http://127.0.0.1:8000;") == 5
     assert "root /var/www/grove-acme;" in http
     assert "return 301 https://$host$request_uri;" in http
 
@@ -254,11 +255,11 @@ def _location(https: str, head: str) -> str:
     return block[: block.index("}") + 1]
 
 
-def test_nginx_limits_the_email_code_path_and_the_two_oauth_paths_only():
+def test_nginx_limits_the_email_code_path_and_the_three_oauth_paths_only():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     zone = "limit_req_zone $binary_remote_addr zone=grove_email:1m rate=10r/m;"
     assert https.index(zone) < https.index("server {")
-    assert https.count("limit_req ") == 3
+    assert https.count("limit_req ") == 4
     block = _location(https, "location /v1/auth/email/ {")
     for line in (
         "limit_req zone=grove_email burst=10 nodelay;",
@@ -268,11 +269,11 @@ def test_nginx_limits_the_email_code_path_and_the_two_oauth_paths_only():
         assert line in block, line
 
 
-def test_nginx_limits_registration_and_tokens_per_address():
+def test_nginx_limits_tokens_and_the_authorization_request_per_address():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     zone = "limit_req_zone $binary_remote_addr zone=grove_oauth:1m rate=30r/m;"
     assert https.index(zone) < https.index("server {")
-    for path in ("/register", "/token"):
+    for path in ("/token", "/authorize"):
         block = _location(https, f"location = {path} {{")
         for line in (
             "limit_req zone=grove_oauth burst=20 nodelay;",
@@ -280,17 +281,35 @@ def test_nginx_limits_registration_and_tokens_per_address():
             "proxy_pass http://127.0.0.1:8000;",
         ):
             assert line in block, (path, line)
-    # The consent page and the other OAuth paths go through location / with no limit of nginx.
-    for path in ("/authorize", "/revoke", "/.well-known/"):
+    # The other OAuth paths go through location / with no limit of nginx.
+    for path in ("/authorize/decision", "/revoke", "/.well-known/"):
         assert f"location = {path}" not in https and f"location {path}" not in https
 
 
-def test_nginx_has_four_locations_and_no_rule_that_can_answer_for_the_api():
+def test_nginx_gives_registration_its_own_zone_that_one_address_cannot_fill_the_cap_with():
+    https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
+    zone = "limit_req_zone $binary_remote_addr zone=grove_register:1m rate=4r/m;"
+    assert https.index(zone) < https.index("server {")
+    block = _location(https, "location = /register {")
+    for line in (
+        "limit_req zone=grove_register burst=20 nodelay;",
+        "limit_req_status 429;",
+        "proxy_pass http://127.0.0.1:8000;",
+    ):
+        assert line in block, line
+    per_minute = int(re.search(r"zone=grove_register:1m rate=(\d+)r/m;", https).group(1))
+    burst = int(re.search(r"zone=grove_register burst=(\d+) nodelay;", https).group(1))
+    assert per_minute * 60 + burst < MAX_REGISTRATIONS_PER_WINDOW
+    assert MAX_REGISTRATIONS_PER_WINDOW == 1000
+
+
+def test_nginx_has_five_locations_and_no_rule_that_can_answer_for_the_api():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     assert re.findall(r"^[ \t]*location\b.*$", https, re.MULTILINE) == [
         "    location / {",
         "    location /v1/auth/email/ {",
         "    location = /register {",
+        "    location = /authorize {",
         "    location = /token {",
     ]
     for word in (

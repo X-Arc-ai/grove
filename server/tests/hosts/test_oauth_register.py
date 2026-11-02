@@ -156,6 +156,33 @@ def test_a_body_that_is_not_a_json_object_of_at_most_16_kib_is_refused(host, sen
     assert oauth_error(response) == "invalid_client_metadata"
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b'{"redirect_uris": ["http://127.0.0.1:9/cb"], "client_name": "\\ud800"}',
+        b'{"redirect_uris": ["http://127.0.0.1:9/cb"], "client_name": "\\udc00 Lumen"}',
+        b'{"redirect_uris": ["http://127.0.0.1:9/cb"], "software_id": "\\ud800"}',
+        b'{"redirect_uris": ["http://127.0.0.1:9/cb"], "software_version": 1e999}',
+        '{"redirect_uris": ["http://127.0.0.1:9/cb"]}'.encode("utf-16"),
+        b'\xef\xbb\xbf{"redirect_uris": ["http://127.0.0.1:9/cb"]}',
+        b"[" * 8000 + b"]" * 8000,
+    ],
+    ids=[
+        "lone surrogate in the name",
+        "lone low surrogate in the name",
+        "lone surrogate in another field",
+        "a number that overflows",
+        "utf-16",
+        "a byte order mark",
+        "nesting too deep",
+    ],
+)
+def test_a_body_that_is_not_strict_json_is_refused_with_the_normal_refusal(host, raw):
+    response = host.post("/register", content=raw, headers={"content-type": "application/json"})
+    assert response.status_code == 400
+    assert oauth_error(response) == "invalid_client_metadata"
+
+
 def test_the_cap_across_the_server_answers_429_and_a_refusal_spends_no_slot(
     driver, migrated, hosts_plant
 ):

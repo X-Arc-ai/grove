@@ -1,6 +1,6 @@
 # Hosts: OAuth and MCP
 
-A host is an AI client that reads and writes a person's Grove through the MCP server at `<base>/mcp`, for example Muse Code or the Muse app. A host signs in with OAuth 2.1: it finds the authorization server from the metadata, registers a client of its own, sends the person to the consent page, and gets short-lived tokens for that person's world. Every URL here comes from `GROVE_PUBLIC_BASE_URL` (`<base>`), never from the request.
+A host is an AI client that reads and writes a person's Grove through the MCP server at `<base>/mcp`, for example Muse Code or the Muse app. A host signs in with OAuth 2.1: it finds the authorization server from the metadata, registers a client of its own, sends the person to the consent page, and gets short-lived tokens for that person's world. Every absolute URL that Grove gives comes from `GROVE_PUBLIC_BASE_URL` (`<base>`), never from the request. The app has `redirect_slashes` off, so no path redirects to its other spelling: that redirect would come from the request, and uvicorn runs without proxy headers, so it would name plain http. The one redirect built from a request is the relative `/signin?next=...`.
 
 The code:
 
@@ -36,29 +36,32 @@ Every answer on these paths carries `Cache-Control: no-store`. The OAuth endpoin
 | `GET /.well-known/oauth-protected-resource`, `GET /.well-known/oauth-protected-resource/mcp` | `resource` `<base>/mcp`, `authorization_servers` `[<base>]`, `scopes_supported` (the three scopes), `bearer_methods_supported` `["header"]`, `resource_name` `"Grove"`. `Access-Control-Allow-Origin: *`. |
 | `GET /.well-known/oauth-authorization-server`, `GET /.well-known/oauth-authorization-server/mcp`, `GET /.well-known/openid-configuration` | `issuer` `<base>`; `authorization_endpoint`, `token_endpoint`, `registration_endpoint`, `revocation_endpoint` under `<base>`; `response_types_supported` `["code"]`; `response_modes_supported` `["query"]`; `grant_types_supported` `["authorization_code", "refresh_token"]`; `code_challenge_methods_supported` `["S256"]`; `token_endpoint_auth_methods_supported` and `revocation_endpoint_auth_methods_supported` `["none", "client_secret_post", "client_secret_basic"]`; `scopes_supported`; `client_id_metadata_document_supported` true; `authorization_response_iss_parameter_supported` true. `Access-Control-Allow-Origin: *`. |
 | `POST /register` | 201 with the client. 400 `invalid_redirect_uri` or `invalid_client_metadata`. 429 `temporarily_unavailable` with `Retry-After` over the cap. |
-| `GET /authorize` | 200 the consent page, 303 to sign-in, 302 to the host with an error, or a 400 HTML page. 503 typed `unavailable` when the consent page is not built. |
-| `POST /authorize/decision` | 302 to the host with a code or `access_denied`; a 400 or 401 HTML page. |
+| `GET /authorize` | 200 the consent page, 303 to sign-in, or a 400 HTML page for every refusal. It never redirects to the host. 503 typed `unavailable` when the consent page is not built. |
+| `POST /authorize/decision` | 302 to the host with a code or `access_denied`, only after a valid `csrf`; a 400 or 401 HTML page for every refusal. |
 | `POST /token` | 200 the tokens. 400 `invalid_request`, `invalid_grant`, `unsupported_grant_type`, `invalid_scope`, `invalid_target`. 401 `invalid_client`. |
 | `POST /revoke` | 200 `{}` once the client is authenticated, whatever the token was. 400 `invalid_request` with no `token`. 401 `invalid_client`. |
 | `GET /v1/views/connections` | The person's live hosts (session). |
 | `POST /v1/views/connections/{grant_id}/revoke` | 200 `{"revoked": true}` (session, JSON content type). |
-| `/mcp` | The MCP transport, below. |
+| `/mcp`, `/mcp/` | The MCP transport, below. |
+| Any other path with a trailing slash | 404 typed `not_found`, never a redirect. |
 
 The OAuth endpoints send no CORS headers. Only the discovery documents allow any origin.
 
 ## The lifetimes and the caps
 
-The constants are in `server/grove/oauth/__init__.py`.
+The constants are in `server/grove/oauth/__init__.py`, and the limits of a document fetch in `server/grove/oauth/metadata_document.py`.
 
 | What | Limit |
 |---|---|
 | An authorization code | 5 minutes, used once |
 | An access token | 1 hour (`expires_in` 3600) |
 | A refresh token | 30 days, used once: each refresh rotates it |
-| Registrations across the server | At most 300 an hour, an in-process sliding window on `clock.monotonic()`. A restart resets it. |
-| nginx on `/register` and `/token` | 30 a minute per address, a burst of 20, 429 above that (`deploy/nginx/grove-https.conf.template`) |
+| Registrations across the server | At most 1000 an hour, `POST /register` and new document rows together, an in-process sliding window on `clock.monotonic()`. A restart resets it. |
+| nginx on `/register` | 4 a minute per address, a burst of 20, 429 above that (zone `grove_register`). One address reaches 240 an hour, so it cannot fill the cap across the server. |
+| nginx on `/token` and `/authorize` | 30 a minute per address, a burst of 20, 429 above that (zone `grove_oauth`, one count per address for the two paths together). `/authorize/decision`, `/revoke` and `/mcp` have no limit of nginx. |
 | A Client ID Metadata Document | Fetched again after 1 hour. When that fetch fails, a copy fetched in the last 24 hours still serves. |
-| A dynamic client that no grant names | Deleted by a later registration once it is 7 days old, at most 100 per registration |
+| A fetch of a document | 5 seconds in all, for the lookup, every address, the headers and the body. At most 4 run in the process; over that a fetch is refused at once. |
+| A client that no grant names | Deleted by a later registration, at most 100 per registration: a dynamic client once it is 7 days old, a document's copy once its last fetch is past the 24 hours above |
 | An expired code | Deleted by a later code of the same client one day after it expired |
 
 ## The scopes
@@ -75,7 +78,7 @@ A request's scope is its intersection with these three. A scope Grove does not k
 
 `POST /register` (RFC 7591) takes a JSON body of at most 16 KiB and needs no initial access token.
 
-- `redirect_uris` is required: 1 to 10 URIs, each at most 2000 characters, each only of the characters of RFC 3986, and none with a fragment. Each one is https (any host), http on a loopback host (`127.0.0.1`, `::1`, `localhost`), or a private-use scheme of a native app (not `http`, `https`, `javascript`, `data`, `file`, `vbscript`, `about` or `blob`).
+- `redirect_uris` is required: 1 to 10 URIs, each at most 2000 characters, each only of the characters of RFC 3986, and none with a fragment. Each one is https (any host), http on a loopback host (`127.0.0.1`, `::1`, `localhost`), or a private-use scheme of a native app (not `http`, `https`, `javascript`, `data`, `file`, `vbscript`, `about`, `blob`, `ftp`, `ftps`, `ws`, `wss`, `view-source`, `filesystem` or `gopher`).
 - `token_endpoint_auth_method` is `none` (a public client), `client_secret_post` or `client_secret_basic`. A registration that names none gets `client_secret_basic` (RFC 7591). Any other value is `invalid_client_metadata`.
 - `grant_types` holds only `authorization_code` and `refresh_token`; `response_types` holds only `code`.
 - `client_name` loses every control and format character, its spaces collapse, and it is cut to 100 characters. It is the client's own claim, and the consent page says so.
@@ -84,21 +87,29 @@ The answer: `client_id` (a UUIDv7, S32), `client_id_issued_at`, `redirect_uris`,
 
 ### Client ID Metadata Documents
 
-A `client_id` that is an `https://` URL with a path other than `/` names a document that describes the client. Grove fetches it at `/authorize` (`server/grove/oauth/metadata_document.py`): https only, port 443 unless the URL names one, no user part, a host that resolves only to global addresses, a connection to the checked address with the original host as SNI and as Host (no second DNS lookup), no proxy, no redirect, 5 seconds, at most 5 KiB. The document must be a JSON object whose `client_id` equals the URL exactly, with valid `redirect_uris`, no `client_secret`, and no `token_endpoint_auth_method` other than `none`. The copy is the client row, with `registration_type` `metadata_document`. The consent page names the document's host.
+A `client_id` that is an `https://` URL with a path other than `/` names a document that describes the client. Grove fetches it at `/authorize`, only for a person who has signed in (`server/grove/oauth/metadata_document.py`): https only, port 443 unless the URL names one, no user part, no dot segment in the path (`%2e` counts as a dot), a host that resolves only to global addresses, a connection to the checked address with the original host as SNI and as Host (no second DNS lookup), no proxy, no redirect, at most 5 KiB.
+
+A global address is one that Python calls global, that carries no inner address (IPv4-mapped, 6to4, Teredo, NAT64), and that is not in `::/96`, `::ffff:0:0:0/96` or `fec0::/10`, and has no ISATAP interface id (`::5efe:`).
+
+One fetch takes at most 5 seconds in all. It runs in a daemon thread, because neither `getaddrinfo` nor a read timeout gives a total limit, and the route holds a thread of the API's pool. At the limit the caller refuses and stops the worker, which shuts down its connection and tries no further address. At most 4 workers run in the process, and each holds its slot until it ends. Over that a fetch is refused at once, so no request queues on a slow host. A refusal for that reason is a failed fetch like any other.
+
+The document must be strict JSON (`server/grove/strict_json.py`): an object whose `client_id` equals the URL exactly, with a `client_name` that is not empty once it is cleaned, valid `redirect_uris`, no `client_secret`, no `client_secret_expires_at`, and no `token_endpoint_auth_method` other than `none`. The copy is the client row, with `registration_type` `metadata_document`. A URL with no row takes a slot of the registration window before it is stored, and a full window refuses the new row. A refetch of a known row takes no slot.
 
 ## The authorization request
 
-`GET /authorize` checks, in this order:
+`GET /authorize` reads the session first. With no valid session (the `grove_session` cookie of `docs/views.md`) and a document `client_id`, the answer is the 303 of step 7 at once, with no fetch and no row: a stranger never reaches the fetch. Then it checks, in this order:
 
-1. `client_id` is present and names a known dynamic client or a document Grove can fetch, and `client_id` and `redirect_uri` are each given at most once. Else a 400 HTML page.
-2. `redirect_uri` matches a registered URI: exactly, or an http loopback redirect that differs in its port only (RFC 8252 section 7.3: same scheme, host, path and query; `localhost` matches only `localhost`). With no `redirect_uri`, the only registered URI is used, and a client with two or more gets a 400 page. A bad redirect is a page, never a redirect, so a forged link cannot send a person anywhere.
-3. `state`, when given, is printable ASCII of at most 1024 characters. Else a redirect with `invalid_request` and no state.
-4. `response_type` is `code` (absent: `invalid_request`; another value: `unsupported_response_type`).
-5. `code_challenge` is 43 to 128 characters of `[A-Za-z0-9-._~]`, and `code_challenge_method` is `S256`. `plain`, or no method, is `invalid_request`.
-6. `resource`, when given, is `<base>/mcp` (a trailing slash is allowed). Else `invalid_target`.
-7. A valid session (the `grove_session` cookie of `docs/views.md`). Else 303 to `/signin?next=<the /authorize path and query, url-encoded>`.
+1. `client_id` is present and names a known dynamic client or a document Grove can fetch, and `client_id` and `redirect_uri` are each given at most once.
+2. `redirect_uri` matches a registered URI: exactly, or an http loopback redirect that differs in its port only (RFC 8252 section 7.3: same scheme, host, path and query; `localhost` matches only `localhost`). With no `redirect_uri`, the only registered URI is used, and a client with two or more is refused.
+3. `state`, when given, is printable ASCII of at most 1024 characters.
+4. `response_type` is `code`.
+5. `code_challenge` is 43 to 128 characters of `[A-Za-z0-9-._~]`, and `code_challenge_method` is `S256`. `plain`, or no method, is refused.
+6. `resource`, when given, is `<base>/mcp` (a trailing slash is allowed).
+7. A valid session. Else 303 to `/signin?next=<the /authorize path and query, url-encoded>`.
 
-From step 3 on, an error redirects to the redirect URI with `error`, `error_description`, `state` (when valid) and `iss`, with `&` when the URI has a query already. `response_type`, `code_challenge`, `code_challenge_method`, `scope` or `state` given twice is `invalid_request`; `resource` may repeat only when each value is `<base>/mcp`, with or without the trailing slash. A parameter with an empty value counts as absent.
+Every refusal from step 1 to step 6 is a 400 HTML page on Grove, from the template of the consent page, with every value escaped, no `Location`, and no `state` sent anywhere. The page names the rule, never a value of the request. `response_type`, `code_challenge`, `code_challenge_method`, `scope` or `state` given twice is refused the same way; `resource` may repeat only when each value is `<base>/mcp`, with or without the trailing slash. A parameter with an empty value counts as absent.
+
+Grove never redirects to a client by itself. Registration is open, so anyone can register a redirect URI on any https host, and an automatic redirect to it would make Grove an open redirector (RFC 9700 section 4.11.2: redirect automatically only to a URI you trust). The only two redirects to a client are Approve and Deny, after a valid `csrf`, because the person pressed a button. So a host that sends a bad request gets no `error` at its redirect: the person sees the page.
 
 ### The way back through sign-in
 
@@ -111,7 +122,8 @@ The server keeps a `next` of at most 2048 characters (`MAX_NEXT_LENGTH` in `serv
 The page shows:
 
 - For a dynamic client, the words "An app that says it is" before the quoted name, because the name is the client's own claim. For a document client, the document's host, and the name it calls itself.
-- Where Grove sends the person afterwards: the redirect's host, or "this computer" for a loopback redirect.
+- For a document client with a loopback redirect, the same hedged words as a dynamic client, the document's host as where it names a description, and the warning "Any program on this computer can claim this name." The document proves who wrote it, not who asks: any program on the computer can name that URL as its `client_id` and listen on a loopback port (MCP 2025-11-25, Localhost Redirect URI Risks).
+- Where Grove sends the person afterwards: the redirect's host, or "this computer" for a loopback redirect. A host keeps a port that is not 443, here and in the document's host.
 - The scopes in words, and "Signed in as <the title of the person's own item>".
 - A form that posts to `/authorize/decision`, with Deny first and then Approve.
 
@@ -119,7 +131,7 @@ The form contract, which a host's test driver may read: each field is `<input ty
 
 `csrf` is the hex HMAC-SHA256, keyed by the session cookie value, over the sorted `k=v` lines (each value percent-encoded) of `client_id`, `redirect_uri`, `redirect_given`, `scope`, `code_challenge`, `state` and `resource`. The headers are `Cache-Control: no-store`, `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'` and `Referrer-Policy: no-referrer`.
 
-`POST /authorize/decision` takes the form (`application/x-www-form-urlencoded`, at most 16 KiB and 64 fields) and runs the checks of `/authorize` again. No valid session is a 401 page. A wrong `csrf` is a 400 page ("This page has expired"), and so is a decision that is neither `approve` nor `deny`. Approve stores the grant and a code and redirects with `code` (`gvc_...`), `state` and `iss`. Deny redirects with `error=access_denied`, `state` and `iss`.
+`POST /authorize/decision` takes the form (`application/x-www-form-urlencoded`, at most 16 KiB and 64 fields) and reads the session first, for every client: no valid session is a 401 page, before any other check and any fetch. Then it runs the checks of `/authorize` again, and each refusal is a 400 page with no `Location`. A wrong `csrf` is a 400 page ("This page has expired"). A decision that is neither `approve` nor `deny` is a 400 page ("This answer is not valid"). Approve stores the grant and a code and redirects with `code` (`gvc_...`), `state` and `iss`. Deny redirects with `error=access_denied`, `state` and `iss`.
 
 ## The token endpoint
 
@@ -133,7 +145,7 @@ Client authentication:
 
 A confidential client may use either secret method. Secrets are compared as sha256 hashes with `hmac.compare_digest`. A client that fails gets 401 `invalid_client`, with `WWW-Authenticate: Basic realm="grove"` only when it used Basic. Basic together with a form secret is 400 `invalid_request`.
 
-`grant_type=authorization_code` needs `code` and `code_verifier` (43 to 128 unreserved characters). `resource`, when given, must be `<base>/mcp`. From the redeem on, the code is spent: an unknown, expired or used code, a code of another client, a verifier whose S256 is not the challenge, or a `redirect_uri` that differs from the stored one (when either the authorize request or the token request names one) is `invalid_grant`. A second use of a code revokes every token issued from it. Every token stores the resource `<base>/mcp`, also when the authorize request named none.
+`grant_type=authorization_code` needs `code` and `code_verifier` (43 to 128 unreserved characters). `resource`, when given, must be `<base>/mcp` (a trailing slash is allowed). From the redeem on, the code is spent: an unknown, expired or used code, a code of another client, a verifier whose S256 is not the challenge, or a `redirect_uri` that differs from the stored one (when either the authorize request or the token request names one) is `invalid_grant`. A second use of a code revokes every token issued from it. Every token stores the resource `<base>/mcp`, also when the authorize request named none.
 
 `grant_type=refresh_token` needs `refresh_token`. It rotates the token: the old one ends, and the new pair keeps the grant, the family and the scopes, or the narrower `scope` the request names. An unknown, expired, revoked or rotated token, a token of another client, or a revoked grant is `invalid_grant`. A second use of a rotated refresh token revokes the whole family.
 
@@ -151,7 +163,9 @@ S41 in `docs/store-map.md` has the full rules. In short: a client is one `:OAuth
 
 ## The MCP transport
 
-`/mcp` speaks MCP streamable HTTP with JSON answers only (no event stream). Every method checks the bearer token first:
+`/mcp` speaks MCP streamable HTTP with JSON answers only (no event stream). Give a host the server URL `<base>/mcp` with no trailing slash: the metadata names that exact `resource`, so with `<base>/mcp/` Muse Code says that the metadata names a different resource. `/mcp/` has the same handler as `/mcp`, so a client that sends it still gets the bearer check and the 401 challenge, and never a redirect.
+
+Every routed method (`POST`, `GET`, `DELETE`, `PUT`, `PATCH`, `OPTIONS`) checks the bearer token first. `HEAD`, `TRACE` and any other method are not routed: they get a 405 before the route, typed `invalid_arguments` (with no body for `HEAD`), with no bearer check, no challenge and no `Allow` header.
 
 | Case | Answer |
 |---|---|

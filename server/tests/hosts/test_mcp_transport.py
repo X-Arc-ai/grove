@@ -519,6 +519,81 @@ def test_a_body_that_does_not_parse_gets_the_json_rpc_parse_error(client, plante
     assert body["error"]["code"] == -32700
 
 
+def _call_with(arguments: bytes) -> bytes:
+    return (
+        b'{"jsonrpc":"2.0","id":7,"method":"tools/call",'
+        b'"params":{"name":"whoami","arguments":' + arguments + b"}}"
+    )
+
+
+_PING_TEXT = json.dumps(PING)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        pytest.param(b'{"jsonrpc":"2.0","id":"\xff","method":"ping"}', id="bad-utf8-in-id"),
+        pytest.param(_call_with(b'{"say":"\xc3\x28"}'), id="bad-utf8-in-arguments"),
+        pytest.param(_call_with(b'{"say":"\xed\xa0\x80"}'), id="surrogate-as-utf8-bytes"),
+        pytest.param(_PING_TEXT.encode("utf-16"), id="utf-16"),
+        pytest.param(_PING_TEXT.encode("utf-16-le"), id="utf-16-le"),
+        pytest.param(_PING_TEXT.encode("utf-16-be"), id="utf-16-be"),
+        pytest.param(_PING_TEXT.encode("utf-32"), id="utf-32"),
+        pytest.param(_PING_TEXT.encode("utf-32-le"), id="utf-32-le"),
+        pytest.param(_PING_TEXT.encode("utf-32-be"), id="utf-32-be"),
+        pytest.param(b"\xef\xbb\xbf" + _PING_TEXT.encode(), id="utf-8-bom"),
+        pytest.param(b'{"jsonrpc":"2.0","id":"\\ud800","method":"ping"}', id="surrogate-in-id"),
+        pytest.param(_call_with(b'{"say":"\\ud800"}'), id="surrogate-in-arguments"),
+        pytest.param(_call_with(b'{"say":"\\udc00"}'), id="low-surrogate-in-arguments"),
+        pytest.param(_call_with(b'{"\\ud800":1}'), id="surrogate-in-a-key"),
+        pytest.param(_call_with(b'{"n":1e999}'), id="overflow-in-arguments"),
+        pytest.param(_call_with(b'{"n":-1e999}'), id="negative-overflow-in-arguments"),
+        pytest.param(_call_with(b'{"n":NaN}'), id="nan"),
+        pytest.param(_call_with(b'{"n":Infinity}'), id="infinity"),
+        pytest.param(_call_with(b'{"n":-Infinity}'), id="negative-infinity"),
+    ],
+)
+def test_a_body_json_could_not_carry_back_gets_the_parse_error_and_no_tool_runs(
+    client, planted, calls, raw
+):
+    response = client.post(
+        "/mcp",
+        content=raw,
+        headers=bearer(planted.ines_rw.access) | {"Content-Type": "application/json"},
+    )
+    assert response.status_code == 400
+    assert response.headers["cache-control"] == "no-store"
+    assert response.json() == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32700, "message": "the body is not valid JSON"},
+    }
+    assert calls.seen == []
+
+
+def test_a_plain_non_ascii_string_still_passes(client, planted, calls):
+    text = "Grüße aus 東京 😀"
+    body = {
+        "jsonrpc": "2.0",
+        "id": "é-1",
+        "method": "tools/call",
+        "params": {"name": "whoami", "arguments": {"say": text, "pair": "\U0001f600"}},
+    }
+    raw = json.dumps(body, ensure_ascii=False).encode("utf-8")
+    response = client.post(
+        "/mcp",
+        content=raw.replace("\U0001f600".encode(), b"\\ud83d\\ude00"),
+        headers=bearer(planted.ines_rw.access) | {"Content-Type": "application/json"},
+    )
+    assert response.status_code == 200
+    assert response.json()["id"] == "é-1"
+    assert response.json()["result"]["structuredContent"]["arguments"] == {
+        "say": text,
+        "pair": "\U0001f600",
+    }
+    assert calls.names() == ["whoami"]
+
+
 # Versions and initialize ------------------------------------------------------------------------
 
 

@@ -19,7 +19,8 @@ An internal network has no route out. So the store reaches nothing but the API, 
 reaches the API and no address outside the box: it holds no store credential and no model key. The
 runner can still open a connection to the host itself through its network's gateway (sshd and
 nginx answer there). A host firewall rule for the runner's bridge belongs with its egress list. Only the API has a
-route out (`egress`), for the model providers, the mail provider and Google.
+route out (`egress`), for the model providers, the mail provider and Google, and to fetch client
+metadata documents from any global https host (`docs/hosts.md`).
 
 The public host name is configuration: `GROVE_PUBLIC_BASE_URL` in `/etc/grove/api.env`, today
 `https://app.grove.x-arc.ai`. The A record is DNS only, with no proxy in front of the box. nginx has
@@ -37,8 +38,8 @@ any client.
 | `GET /healthz` | `{"status": "ok", "store": "ok", "build": "<sha>"}`, or 503 with `"store": "unreachable"`. No sign-in. D13's health views are `/v1/health/person` and `/v1/health/operator`, built later. |
 | `GET /.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp` | The protected-resource metadata (RFC 9728): `resource` is `<base>/mcp`, the authorization server is `<base>`, and the scopes of A.3. |
 | `GET /.well-known/oauth-authorization-server`, `/.well-known/oauth-authorization-server/mcp` and `/.well-known/openid-configuration` | The authorization server metadata (RFC 8414): the issuer `<base>` and its endpoints. |
-| `/register`, `/authorize`, `/authorize/decision`, `/token`, `/revoke` | The OAuth 2.1 authorization server of `/mcp`. `/authorize` fills `consent.html` of `GROVE_WEB_DIST`. nginx limits `/register` and `/token` per address to 30 requests a minute with a burst of 20, and answers 429 above that. |
-| `/mcp` | The MCP transport. With no token: 401 with `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource", scope="grove.read grove.write"`. |
+| `/register`, `/authorize`, `/authorize/decision`, `/token`, `/revoke` | The OAuth 2.1 authorization server of `/mcp`. `/authorize` fills `consent.html` of `GROVE_WEB_DIST`. nginx limits `/register` per address to 4 requests a minute with a burst of 20, and `/token` and `/authorize` per address to 30 requests a minute with a burst of 20, and answers 429 above that. `/authorize/decision` and `/revoke` have no limit of nginx. |
+| `/mcp`, `/mcp/` | The MCP transport. With no token: 401 with `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource", scope="grove.read grove.write"`. Any other path with a trailing slash is a typed 404, never a redirect. |
 
 `docs/hosts.md` has the authorization server and the MCP transport that answer at these paths: every
 endpoint, the consent page, the exact `WWW-Authenticate` headers, and how a host connects.

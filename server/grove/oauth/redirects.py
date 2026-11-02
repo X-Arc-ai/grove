@@ -16,9 +16,26 @@ from urllib.parse import SplitResult, urlencode, urlsplit
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 MAX_REDIRECT_URI_LENGTH = 2000
+HTTPS_PORT = 443
 # Schemes a native app may not claim: the web's own, and those that run or read in the browser.
 BLOCKED_SCHEMES = frozenset(
-    {"http", "https", "javascript", "data", "file", "vbscript", "about", "blob"}
+    {
+        "http",
+        "https",
+        "javascript",
+        "data",
+        "file",
+        "vbscript",
+        "about",
+        "blob",
+        "ftp",
+        "ftps",
+        "ws",
+        "wss",
+        "view-source",
+        "filesystem",
+        "gopher",
+    }
 )
 
 _SCHEME = re.compile(r"[a-z][a-z0-9+.\-]*")
@@ -91,6 +108,16 @@ def is_loopback(uri: str) -> bool:
     return _loopback_key(uri) is not None
 
 
+def shown_host(uri: str) -> str | None:
+    """The host of an https URI as a person reads it: with its port when that is not 443, because
+    two ports of one host can be two different owners."""
+    parts = _split(uri)
+    if parts is None or not parts.hostname:
+        return None
+    host = f"[{parts.hostname}]" if ":" in parts.hostname else parts.hostname
+    return host if parts.port in (None, HTTPS_PORT) else f"{host}:{parts.port}"
+
+
 def return_place(uri: str) -> str:
     """Where the redirect takes the person, in words for the consent page."""
     if is_loopback(uri):
@@ -99,7 +126,7 @@ def return_place(uri: str) -> str:
     if parts is None:
         return "the app"
     if parts.scheme == "https" and parts.hostname:
-        return parts.hostname
+        return shown_host(uri) or "the app"
     return f"an app on this device ({parts.scheme}:)"
 
 

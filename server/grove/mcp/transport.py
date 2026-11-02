@@ -22,6 +22,7 @@ from grove.api.errors import ApiError, store_unavailable
 from grove.mcp import tools as registry
 from grove.mcp.tools import Tool, ToolContext
 from grove.store.errors import STORE_UNAVAILABLE
+from grove.strict_json import loads_strict
 
 __all__ = [
     "INVALID_PARAMS",
@@ -94,16 +95,13 @@ class _Invalid:
     message: str
 
 
-def _refuse_constant(name: str) -> None:
-    raise ValueError(f"{name} is not a number JSON allows")
-
-
 def parse_body(raw: bytes) -> Any:
-    """The body as one JSON value. Raises ParseFailed for text that is not strict JSON."""
+    """The body as one JSON value. Raises ParseFailed for what `loads_strict` refuses: anything
+    that is not strict UTF-8 JSON, or that JSON could not carry back in the answer. So no handler
+    runs on a value that would make the answer fail."""
     try:
-        return json.loads(raw, parse_constant=_refuse_constant)
-    except (ValueError, RecursionError):
-        # RecursionError: a body nested deeper than the parser's limit, which fits in the cap.
+        return loads_strict(raw)
+    except ValueError:
         raise ParseFailed("the body is not valid JSON") from None
 
 

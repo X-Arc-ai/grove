@@ -4,6 +4,10 @@ csrf value that ties a decision to the page and the session it was shown in. doc
 The template holds two marks, each exactly once: `<!--grove:title-->` in its <title> and
 `<!--grove:consent-->` where the fragment goes. Every value that reaches the page goes through
 html.escape, the client's self-declared name first of all.
+
+A document client with a loopback redirect gets the hedged words of a dynamic client and a warning.
+Its document proves who wrote the document, not who asks: any program on this computer can name that
+URL as its client_id and listen on the port (MCP 2025-11-25, Localhost Redirect URI Risks).
 """
 
 import hashlib
@@ -39,13 +43,15 @@ class TemplateBroken(Exception):
 
 @dataclass(frozen=True)
 class ConsentView:
-    """What the page says about one request. `document_host` is set for a document client."""
+    """What the page says about one request. `document_host` is set for a document client, and
+    `loopback` when the redirect goes to this computer."""
 
     client_name: str | None
     document_host: str | None
     return_place: str
     scopes: Sequence[str]
     person_title: str | None
+    loopback: bool
 
 
 def csrf_token(session_token: str, fields: Mapping[str, str]) -> str:
@@ -66,6 +72,14 @@ def _who(view: ConsentView) -> str:
     name = escape(view.client_name) if view.client_name else None
     if view.document_host is not None:
         host = f"<strong>{escape(view.document_host)}</strong>"
+        if view.loopback:
+            claim = f"An app that says it is <strong><q>{name}</q></strong>" if name else "An app"
+            return (
+                f'<p class="consent-who">{claim} asks to use your Grove. It names a description '
+                f"on {host}.</p>"
+                '<p class="consent-who">Any program on this computer can claim this name. Approve '
+                "only if you started this connection yourself.</p>"
+            )
         called = f" It calls itself <q>{name}</q>." if name else ""
         return f'<p class="consent-who">{host} asks to use your Grove.{called}</p>'
     if name:
