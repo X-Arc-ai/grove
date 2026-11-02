@@ -155,7 +155,6 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | A stored receipt holds ids and codes, because a title in it would be a copy no forget reaches. The writer reads titles fresh when it shows a receipt. | 733, 737, 2529 | `writer-a` |
 | The deferral count: stored, or derived from `verifications`. | 2159, 2174 | `cleanup` |
 | The value lists of `property_names.value_type` and `meanings.direction`. | 1583, 3241 | `ontology` |
-| A request row needs its source id before screening has finished. | 750, 2462, 2505 | `screening` |
 | The grade rows of controls, and findings raised by agent runs: their run id and their text. | 2198, 2376, 2427 | `evals`, `cleanup` |
 | The newest-id part of the fingerprint for a table with no id, and whether a rebuild keeps `touched_at`. | 812, 922 | `writer-b` |
 | Rows outside the S12 list that change after they are written carry no version: `requests`, `jobs`, `support_changed.taken_at`, `ontology_change_log.undone_by`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, `run_records`, and the finished times of `audit_runs` and `area_audits`. | 3081 | `writer-a` |
@@ -165,6 +164,14 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. | 354, 991 | `deploy-a` |
 | The daily dump and the restore have not run on this store. | 806 to 808, 3065 | `deploy-a`, `writer-b` |
 | `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
+| The neo4j driver logs the parameters of every query at DEBUG, and so the screened content of each source write. Production must keep the `neo4j` logger above DEBUG, because logs hold ids, counts and operation names only. | 2534 | `deploy-a` |
+| `WorldTx` and `WorldWriter` have no public read of their world id. `grove.writer.sources` reads the private one inside the writer package (SC16). | none; a build fact | `writer-a` |
+
+A point that a later lane resolves leaves the table above and is listed here with its ruling.
+
+| Point | Spec lines | Resolved by |
+|---|---|---|
+| A request row needs its source id before screening has finished. | 750, 2462, 2505 | SC1, lane `screening` |
 
 ## Added by later lanes
 
@@ -176,6 +183,75 @@ These are not in this slice. Each owner lane adds its rows here and in the catal
 | My Grove guidance | `views-b` |
 | Pending exports | `views-b` |
 | Eval scripts and their results | `evals` |
+
+## Screening (lane `screening`)
+
+D14's screening runs in code on the server, before the `sources` table. No step calls a model, and nothing in it logs. The rulings SC1 to SC17 are this lane's. S numbers stay with the other lanes.
+
+| Name | Module | What it does |
+|---|---|---|
+| `Screener(config)` | `grove.screening` | `screen_source(locator, messages)` screens one source. `screen_text(text, *, sender=None, key="text")` screens one message with no locator, such as a remember request or a note. Both return a `ScreenedSource`. |
+| `ScreeningConfig` | `grove.screening` | The rename map, the denylist, the person's own identifiers and the opt-in classes. `ScreeningConfig.from_environment(own_identifiers=..., sensitive_classes=...)` loads the two files. |
+| `Message`, `ScreenedMessage` | `grove.screening` | One message as the connector read it (`key`, `sender`, `text`, `at`), and the same fields after screening. |
+| `ScreenedSource` | `grove.screening` | `locator`, `messages` (the kept ones, in input order), `counts`, `dropped_whole`, and `content()`: the JSON array that `sources.content` stores. Only the screener makes one. |
+| `GROVE_RENAME_MAP`, `GROVE_DENYLIST` | `grove.config` | The paths of `rename.json` and `denylist.txt`. Unset means empty. The files are never in the repo. |
+| `python -m grove.screening counts [--rename PATH] [--denylist PATH]` | the CLI | Prints only `{"rename_forms": n, "labels": n, "denylist_terms": n}`. A file that cannot be loaded exits 2. It writes nothing. |
+| `write_screened_source(tx, screened, *, source_id, connector_id, parser_version)` | `grove.writer.sources` | Writes one `:Source` and its `:ScreeningReceipt` in the caller's transaction. |
+| `add_screened_source(writer, screened, *, connector_id, parser_version, source_id=None)` | `grove.writer.sources` | The same in a transaction of its own. With no `source_id` it mints one. It returns the source id, the counts and the number of kept messages, never text. |
+| `build_prompt(name, blocks, *, root=None)` | `grove.prompts` | A `Prompt`: the data rules and the named instruction file as the instruction part, the data blocks as the data part. `messages()` gives the system and the user message. |
+| `render_blocks(blocks)` | `grove.prompts` | The data part alone, so the `brain` CLI labels what it returns to an agent the same way. |
+| `DataBlock(kind, speaker, source_type, ref, text)` | `grove.prompts` | One labelled block. `kind` is `source`, `item`, `belief`, `question` or `receipt`; `speaker` is a `speaker_kind` code; `source_type` is a `source_type` code or none; `ref` is an id or none. Only `text` is free. |
+
+The class codes are the enum `screening_class`. A receipt counts each class that occurred.
+
+| Code | What screening does | Stored in its place |
+|---|---|---|
+| `credential` | Masks an API key, a token, a password or a private key. | `[credential]` |
+| `payment_card` | Masks a card number that passes the Luhn check. | `[card]` |
+| `one_time_code` | Drops the message. | nothing |
+| `reset_link` | Drops the message that holds a password-reset or magic link. | nothing |
+| `contact_email` | Masks a third party's email address. | `[email N]` |
+| `contact_phone` | Masks a third party's phone number. | `[phone N]` |
+| `contact_handle` | Masks a third party's handle. | `[handle N]` |
+| `pay_amount` | Masks a pay amount, only when the person chose "never store my pay". | `[amount]` |
+| `denylisted` | Drops a message whose sender or text holds a listed term. A term in the locator keeps the whole source out. | nothing; `[kept out]` in a locator |
+| `renamed` | Replaces a name form of the rename map with its label. | the label |
+
+N is a number per distinct value within one source, so a reader can tell two people apart. The order per message is fixed: 1 the denylist, 2 one-time codes and reset links, 3 the rename map, 4 credentials, 5 cards, 6 contact identifiers, 7 pay amounts. The locator goes through steps 1, 3, 4, 5 and 6.
+
+**SC1. A request and its source commit together** (spec lines 750, 2462, 2505). Screening is code only on the server and never waits on a model, so it finishes before the writer opens a transaction. The caller mints the source id with `new_id(world_id)`, screens, then commits the source row, its receipt and the request row (`writer-a2`) in one write transaction. A request never names a source that is not there, and the raw text is never stored first. This is why `write_screened_source` takes the caller's transaction.
+
+**SC2. Screening settings stand apart** (spec line 2505). `Settings` is unchanged. `ScreeningSettings` and `load_screening_settings()` in `grove.config` hold the two paths, so a bad screening path never stops `load_settings()` for the store. An error names the variable or the CLI flag and a line or an entry position. It never names the path, because a home folder path can hold a name, and never the content. No OS, JSON or Unicode error travels with it as its context.
+
+**SC3. The files fail closed** (spec line 2505). Each of these is a `ConfigError`: a variable that is set but blank; a file that is missing, unreadable, not a regular file (a directory or a FIFO, which opens without blocking and is then refused) or open to group or other (`mode & 0o077`); bytes that are not UTF-8; JSON that is not one object of strings, or is nested too deep; a form, label or term with no letter or digit. A UTF-8 byte order mark is dropped first. Forms that differ only in case, spacing or width are one form when they share a label, and an error that names their positions when they do not.
+
+**SC4. The comparison copies** (spec line 2505). Names match on a copy after NFKC and case folding. Detectors read an NFKC copy that keeps case, because key formats are case-sensitive. Both copies drop format characters (zero-width space, soft hyphen, joiners, byte order mark), so an invisible character cannot split a name or a card number. Spans map back to the original offsets, and the stored text keeps its original form outside the replaced spans. Whitespace inside a form or a term matches any run of whitespace.
+
+**SC5. Cards** (spec line 2510). A candidate has 13 to 19 digits with single spaces or dashes between groups, and it must also have a card shape: one unbroken run, groups of four with a last group of one to four digits, or the 4-6-5 and 4-6-4 forms. Without the shape, an order number such as `112-3456789-1234567` would pass Luhn about one time in ten. A trailing group after a card, such as a security code, does not hide the card.
+
+**SC6. One-time codes** (spec line 2511). The design lists both "code is" as a phrase and "the code is 1200 lines" as text to keep. So a bare "code is" counts only when the code ends the clause, and "your code is" counts always. A four-digit year (19xx or 20xx) near a phrase is a code only when it is given as the code, as in "code: 2026". The window of about 40 characters looks before and after the phrase, so "482910 is your login code" counts.
+
+**SC7. Credentials by entropy** (spec line 2509). A pure hex token (a git sha, a hash) and a canonical UUID need a context word within the three words before them, because dev text puts shas next to "key", "api" and "token" all the time. Other random-looking tokens keep the same-line rule. A token with `/` must mix lower case, upper case and digits, so a path is not a key.
+
+**SC8. Reset and magic links** (spec line 2511). A link word matches only as a whole component of the path or the query, after camelCase is split: `resetPassword` matches, `verifier` and `authors` do not. The token-like value (16 or more URL-safe characters, with a letter and a digit) must come after the word, so a GitHub blob link with a sha before `verify_x.py` stays.
+
+**SC9. Contact identifiers** (spec line 2513). Handles: an `@name` first on its line is a Python decorator when `(` follows it, or when it ends the line and the next line starts with `def`, `async def`, `class` or `@`; a chat line can hold only a handle. A short list of words that never name a person is exempt (`everyone`, `here`, `channel`, and CSS and JSDoc at-words such as `media`, `import`, `param`, `returns`). Emails: an address whose last label is an image suffix (`icon@2x.png`) is not an email, a file suffix is trimmed from an address in a file name, and URL userinfo and an SSH remote (`git@host:path`) are not emails, while `mailto:` is. Phones: a run of more than 15 digits is cut into numbers, and a list of decimals is not a phone. The person's own identifiers sort into emails (an `@` after the first character), handles (a leading `@`, or a bare word) and phones (six or more digits). Phones compare as digits with a leading `00` dropped, so `+44 ...` and `0044 ...` are one number.
+
+**SC10. Pay amounts** (spec line 2512). A number with a `k` or `K` suffix is an amount with no currency marker. The words euros, dollars, dirhams and pounds after a number are a currency. The compensation words include their inflected forms (salaries, wages, bonuses, raises, earns, earned, earnings, paying, pays, rates) and per day, per year, per annum, a year, an hour, hourly, yearly and annual. An `m` suffix needs a currency, because `5m` can be minutes.
+
+**SC11. Overlaps** (spec line 2505). Spans that overlap merge into their union, and the lower step names the class. So a rename span inside an email or a handle replaces the whole identifier with the label and counts `renamed` only: `@orla` becomes `Co-founder`.
+
+**SC12. Keys and numbering** (spec line 2513). The message key goes through steps 3 to 6, like the locator, so all four fields of a message are screened. Contact numbers follow first appearance: the locator, then for each message its sender, its text and its key. Numbering starts again for each source.
+
+**SC13. Only the screener makes a `ScreenedSource`** (spec line 2505). It is a slotted class whose constructor takes a module-private token. A copy, a deep copy, a pickle and `dataclasses.replace` are refused, and setting or deleting an attribute raises. `counts` is a read-only mapping in the class order. The writer refuses a subclass too: it checks the exact type. Out of reach: `object.__new__` followed by `object.__setattr__` can still forge one, which no one writes by accident.
+
+**SC14. Slot forms** (spec line 2558). An instruction file holds no slot of any kind. The check also refuses `$1`, `$(`, the OpenCode forms `` !`command` `` and an `@` token that holds a slash or a dot, because OpenCode substitutes them in command templates. Prose that needs one of these says it in words. The walk reads every file of the instruction folder, at any depth; every `*.md` under `runner/agents/`; and every string under a key named `prompt`, `template` or `description` in `runner/opencode.json`, duplicate keys included. A config that is not plain JSON, a missing instruction folder, a symlink and a file that is not UTF-8 are findings. Out of reach: files that the `instructions` array of `runner/opencode.json` pulls into a system prompt. The walk runs as a test; `grove.prompts.slots.check` has the lint signature, and no lint registers it yet.
+
+**SC15. The prompt** (spec line 2486). The six characters that NFKC folds to `&`, `<` or `>` are also written as `&#x...;` references, so a look-alike cannot pass for a tag. A block with no source type or ref leaves that attribute out. The data rules always come from the package, and `root` only gives the folder of the named file. `instruction_name` is the name without its version: `grove.extract.v1` gives `grove.extract` and 1. Only `build_prompt` makes a `Prompt`. It refuses an instruction file with a slot or one that is not UTF-8, and `render_blocks` checks each block again and refuses any object whose type is not exactly `DataBlock`.
+
+**SC16. The source row and its receipt** (spec lines 2516, 3103, 3108). `write_screened_source` writes exactly the catalogue's properties of `sources` except `content_pointer`, because the content is inline: `untrusted = true`, `forget_state = kept`, `version = 1`. One read of `clock.now(world_id)` per transaction gives `received_at`, `touched_at` and the receipt's `screened_at`, because screening finished before the transaction (SC1). `counts_per_class` is JSON with sorted keys and only the classes that occurred. A key outside `screening_class`, a count that is not an int (a bool is refused) and a count below 1 are refused, and the error names neither. `source_id` and `connector_id` must have the form of `new_id`. `parser_version` must be a code (`[A-Za-z0-9][A-Za-z0-9._:-]{0,63}`), so free text cannot ride in it. A source kept out whole is still a row, with the content `[]`, because its receipt needs the source id and the coverage table shows what was kept out (D13). The world id is bound by the layer and never a parameter; `WorldTx` has no public read of it, so `sources.py` reads the private one (see the open points).
+
+**SC17. What screening cannot settle** (spec line 2552). There is no local runner, so a candidate that code cannot settle is treated as sensitive: it is masked or its message is dropped, and no span goes to a hosted model. `docs/data-flow.md` states this, and the `forget` lane states the final rule.
 
 <!-- generated:begin -->
 ## Type classes
