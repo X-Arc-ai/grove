@@ -11,9 +11,9 @@ any other way, so this lint reads every workflow file and allows two `runs-on` v
 A value is compared after its quotes and a trailing comment are dropped and its spaces and tabs
 collapsed. Any other whitespace (a no-break space, for example) stays and makes the value differ.
 
-The project carries no YAML parser, so the lint reads the files line by line. It fails closed: a
-line whose structure it cannot read is a finding, never a skip. The content of a block scalar
-(`run: |`, `key: >-`) is text, not structure, and is not read.
+The project carries no YAML parser, so the lint reads the files line by line. On one line it
+fails closed: a structural line it cannot read is a finding, never a skip. The content of a block
+scalar (`run: |`, `key: >-`) is text, not structure, and is not read. Keys compare without case.
 
 Findings:
     runner/not-allowed     any other value: a pool label, `self-hosted`, a list, an expression
@@ -23,11 +23,16 @@ Findings:
     runner/symlink         a workflow file, or the workflows dir, that is a symbolic link
     runner/unreadable      a line the scanner cannot read: an explicit `?` key, a tag or an anchor
                            or alias in a key's place, a merge key `<<`, a double-quoted key with
-                           an escape, a flow mapping that holds `runs-on` or `uses`, or a column-0
-                           line that is not a key
+                           an escape, a flow mapping that holds `runs-on` or `uses` on that line,
+                           a job that is only an alias, a column-0 line that is not a key, or a
+                           line break that YAML does not break at (NEL, U+2028, U+2029, VT, FF)
 
-Out of reach: a workflow file that a job writes at run time. That is a deliberate act, not an
-accident, and the variable and the pool are removed before the repo goes public in any case.
+Out of reach: YAML structure that spans lines, which only a parser can follow (a flow collection
+or a quoted scalar that goes on over several lines, with a `runs-on` or `uses` on a later line),
+and a workflow file that a job writes at run time. Each of these is a deliberate act, not an
+accident. The guarantee for a public repo does not rest on this lint: the variable and the pool
+are removed before the repo goes public, so a label that no runner carries makes a job queue in
+plain view and never run on a self-hosted runner.
 """
 
 import re
@@ -43,10 +48,12 @@ ALLOWED = frozenset({"${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}", "ubuntu-la
 
 _KEY = re.compile(
     r"""^(?P<indent>[ ]*)(?P<item>-[ ]+)?"""
-    r"""(?P<q>["']?)(?P<key>[A-Za-z0-9_-]+)(?P=q)[ ]*:(?P<rest>.*)$"""
+    r"""(?P<q>["']?)(?P<key>[A-Za-z0-9_-]+)(?P=q)[ \t]*:(?P<rest>.*)$"""
 )
 _UNREADABLE = re.compile(r"""^[ ]*(?:-[ ]+)?(?:[?!&*]|<<|"[^"\n]*\\)""")
-_FLOW_KEY = re.compile(r"""\{[^}]*\b(?:runs-on|uses)\b""")
+# A `{` that is not part of `${{`, with `runs-on` or `uses` anywhere after it on the line.
+_FLOW_KEY = re.compile(r"""(?<![${])\{(?!\{).*\b(?:runs-on|uses)\b""", re.IGNORECASE)
+_ODD_BREAK = re.compile("[\x85\u2028\u2029\x0b\x0c\x1c-\x1e]")
 _BLOCK_SCALAR = re.compile(r"^[|>][0-9+-]*$")
 _COMMENT = re.compile(r"(^|[ \t])#.*$")
 _DOCUMENT_MARK = re.compile(r"^(?:---|\.\.\.)(?:[ \t]+#.*)?$")
@@ -71,7 +78,12 @@ def _check_text(rel: str, text: str) -> list[Finding]:
     key_indent: int | None = None
     block_column: int | None = None  # inside a block scalar: lines indented past this are text
     runs_on: tuple[int, int] | None = None  # (line, key column) of a runs-on with a plain value
-    for number, line in enumerate(text.splitlines(), start=1):
+    # Split only where YAML breaks a line. str.splitlines also breaks at NEL, U+2028 and others,
+    # where a YAML parser reads one line: such a line is a finding below.
+    for number, line in enumerate(re.split(r"\r\n|\r|\n", text), start=1):
+        if _ODD_BREAK.search(line):
+            findings.append(Finding(rel, number, "runner/unreadable"))
+            continue
         stripped = line.strip(" ")
         if not stripped or stripped.startswith("#"):
             continue
@@ -86,8 +98,10 @@ def _check_text(rel: str, text: str) -> list[Finding]:
             runs_on = None
         match = _KEY.match(line)
         if indent == 0:
+            if _FLOW_KEY.search(line):
+                findings.append(Finding(rel, number, "runner/unreadable"))
             if match and not match.group("item"):
-                in_jobs = match.group("key") == "jobs"
+                in_jobs = match.group("key").lower() == "jobs"
                 job_indent = key_indent = None
             elif not _DOCUMENT_MARK.match(line):
                 findings.append(Finding(rel, number, "runner/unreadable"))
@@ -99,7 +113,7 @@ def _check_text(rel: str, text: str) -> list[Finding]:
             if _UNREADABLE.match(line) or _FLOW_KEY.search(line):
                 findings.append(Finding(rel, number, "runner/unreadable"))
             continue
-        key, rest = match.group("key"), match.group("rest")
+        key, rest = match.group("key").lower(), match.group("rest")
         column = indent + len(match.group("item") or "")
         value = _value(rest)
         if _BLOCK_SCALAR.match(value):
@@ -118,6 +132,8 @@ def _check_text(rel: str, text: str) -> list[Finding]:
             continue
         if job_indent is None or indent <= job_indent:
             job_indent, key_indent = indent, None
+            if value.startswith("*"):
+                findings.append(Finding(rel, number, "runner/unreadable"))
             continue
         if key_indent is None:
             key_indent = indent
