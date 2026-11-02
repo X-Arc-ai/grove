@@ -265,6 +265,13 @@ _WORDS_THEN_VALUE = re.compile(
     r"|(?:[ \t]+[\w'-]{1,20}){1,6}?[ \t]*[:=][ \t]*"
     r")(?=\S*[\d!@#$%^&*+=~?])(?P<value>\S+)"
 )
+# "the password for the wifi is lemonade": one plain word, after words that say which password.
+# Only a preposition opens them, because "password manager is great" is a compound noun.
+_PASSWORD_FOR_THEN_PLAIN = re.compile(
+    r"(?i)(?<![A-Za-z])(?:passwords?|passwd|passphrase|passcode|pwd|mot\s+de\s+passe|mdp)[ \t]++"
+    r"(?:for|of|to|on|at|de|du|pour)(?:[ \t]++[\w'-]{1,20}){1,3}?[ \t]++(?:is|was|est)[ \t]++"
+    r"(?P<value>[A-Za-z-]{4,})(?=[.,;!?)]?(?:\s|$))"
+)
 _AND_MORE = re.compile(r"(?:[ \t]*,[ \t]*|[ \t]+(?:and|et)[ \t]+)(?P<value>\S+)")
 _MORE_VALUES = 8
 # "user orla pass X", "u: orla p: X".
@@ -282,10 +289,16 @@ _PHRASE_STOP = frozenset(
     "never always also just only what that this your our their written listed included known "
     "unknown shared sent default rotated revoked too gone ready live active blank unset needed "
     "optional private public broken fixed set good bad new old simple per-world per-user "
-    "enough sensitive valid".split()
+    "enough sensitive valid from with inside under over then when where because since like "
+    "plaintext bcrypt mandatory automatic unique available random temporary longer shorter "
+    "stronger weaker easy hard none null true false".split()
 )
-# A plain word after "password is" is prose ("the API key is configured") unless it is said as
-# someone's own: "my password is sunshine", "the wifi password is lemonade".
+# A key or a token is never one plain word, so a plain word after "the API key is" is prose ("the
+# API key is configured") unless it is said as someone's own. A password can be one ("the password
+# is sunshine"), and code cannot tell it from prose past the stop list and the prose endings, so it
+# is sensitive (spec line 2552). The limit is one word of a sentence, such as "the password is
+# plenty".
+_PASSWORD_WORD = re.compile(r"(?i)pass(?:word|wd|phrase|code)s?|pwd|mot\s+de\s+passe|mdp")
 _PLAIN_WORD = re.compile(r"[a-z]+(?:-[a-z]+)*|[A-Z][a-z]+(?:-[a-z]+)*")
 _OWNER = re.compile(r"(?i)(?:(?<![a-z])(?:my|our|your|his|her|their)\s+(?:[a-z-]+\s+)?|wi-?fi\s+)$")
 _PROSE_ENDING = re.compile(r"(?:ing|ed|ly)$")
@@ -621,8 +634,10 @@ def _phrase_value(text: str, match: re.Match[str]) -> tuple[int, int] | None:
         mixed = any(not ch.isalpha() for ch in value) and not value.replace(",", "").isdigit()
         return (start, end) if mixed else None
     if _PLAIN_WORD.fullmatch(value):
+        if _PROSE_ENDING.search(value.lower()):
+            return None
         said_as_own = _OWNER.search(text, max(0, match.start() - 40), match.start()) is not None
-        if _PROSE_ENDING.search(value.lower()) or not (labelled or said_as_own):
+        if not (labelled or said_as_own or _PASSWORD_WORD.fullmatch(word)):
             return None
     return start, end
 
@@ -652,6 +667,10 @@ def _a_string(value: str) -> bool:
     return value.lower() not in _PHRASE_STOP
 
 
+def _a_plain_password(value: str) -> bool:
+    return _a_string(value) and _PROSE_ENDING.search(value.lower()) is None
+
+
 def _a_digit(value: str) -> bool:
     return any(ch.isdigit() for ch in value)
 
@@ -674,6 +693,7 @@ _VALUE_FORMS = (
     (_BARE_USERINFO, _mixed),
     (_USER_THEN_SECRET, _mixed),
     (_AUTH_HEADER, _a_digit),
+    (_PASSWORD_FOR_THEN_PLAIN, _a_plain_password),
 )
 
 
@@ -1473,9 +1493,17 @@ _PHONE = re.compile(
 # help here: _PHONE reads it, so a long list of them costs no second walk.
 _NEXT_PHONE = re.compile(rf"[/,-](?P<number>\(?{_PHONE_DIGITS})")
 # A place settles that the digits are a phone, with no + or 0: a WhatsApp link, a vCard field, a
-# phone= query or a tel: link.
+# phone= query, a tel: link, a label ("Phone: 4155550132") or words that give a number ("my number
+# is 4155550132", "call me at 4155550132"). An order number has none of these.
 _PHONE_PLACE = re.compile(
-    r"(?i)(?:(?<![\w.-])wa\.me/\+?|(?<![a-z])(?:waid=|phone=|tel:)\+?)(?P<number>\d{7,15})(?!\d)"
+    r"(?i)(?:(?<![\w.-])wa\.me/\+?|(?<![a-z])(?:waid=|phone=|tel:)\+?"
+    r"|(?<![a-z])(?:tel|t[e\u00e9]l[e\u00e9]phone|phone|mobile|cell|gsm|whatsapp)"
+    r"[ \t]*+[:=][ \t]*+\+?"
+    r"|(?<![a-z])(?:my|our|your|his|her|their)[ \t]++(?:(?:phone|mobile|cell|whatsapp)[ \t]++)?"
+    r"(?:number|num[e\u00e9]ro)[ \t]++(?:is|est)[ \t]++\+?"
+    r"|(?<![a-z])(?:call|text|ring|reach|whatsapp)[ \t]++(?:me|him|her|them|us)[ \t]++"
+    r"(?:on|at)[ \t]++\+?"
+    r")(?P<number>\d{7,15})(?!\d)"
 )
 # A URL writes + as %2B, as WhatsApp's own redirect does. The digits are the number.
 _ENCODED_PHONE = re.compile(r"(?i)(?<![\w%])%2B(?P<number>\d{9,15})(?!\d)")
@@ -1837,7 +1865,7 @@ _BARE = r"\d{1,3}(?:[,. ]\d{3}){1,6}|\d{3,}+"
 _AMOUNT = re.compile(rf"(?<![\w.,])(?:(?P<marked>{_MARKED})|{_SUFFIXED})(?!\w)")
 # Three digits or more with no marker. A percentage is no sum, and "-" after a word character is a
 # reference or a date ("PO-2026-00417") or the far end of a range, which _whole_range reads.
-_FIGURE = re.compile(rf"(?<![\w.,/#])(?<!\w-)(?:{_BARE})(?!\w|[.,]\d|\s?%)")
+_FIGURE = re.compile(rf"(?<![\w.,/#])(?<!\w-)(?:{_BARE})(?:[.,]\d{{1,2}})?(?!\w|[.,]\d|\s?%)")
 
 _PERIOD = (
     r"per\s+(?:month|mo|hour|day|year|annum)|par\s+(?:mois|an|heure|jour)"

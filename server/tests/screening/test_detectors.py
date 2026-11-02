@@ -10,7 +10,7 @@ import string
 
 import pytest
 
-from grove.screening import detectors
+from grove.screening import Screener, ScreeningConfig, detectors
 from tests.screening._plants import (
     ANTHROPIC_KEY,
     AWS_KEY_ID,
@@ -2741,3 +2741,102 @@ def test_a_hit_repr_holds_offsets_and_class_only():
     hits = detectors.contacts("mail orla@brightwell-mail.example")
     assert len(hits) == 1
     assert "orla" not in repr(hits[0]) and "brightwell" not in repr(hits[0])
+
+
+# The R4 verifier's two blockers and the pay form it named. Each row is the whole text that a
+# message stores, so a part of the value that survives fails the row.
+LABELLED_PHONES = [
+    pytest.param("Tel: 212612345678", "Tel: [phone 1]", id="tel-spaced-label"),
+    pytest.param("Phone: 4155550132", "Phone: [phone 1]", id="phone-spaced-label"),
+    pytest.param("mobile : 4155550132", "mobile : [phone 1]", id="space-before-the-colon"),
+    pytest.param("my number is 4155550132", "my number is [phone 1]", id="my-number-is"),
+    pytest.param("her phone number is 4155550132", "her phone number is [phone 1]", id="her-phone"),
+    pytest.param("call me at 4155550132 after 5", "call me at [phone 1] after 5", id="call-me-at"),
+    pytest.param("text him on 212612345678", "text him on [phone 1]", id="text-him-on"),
+]
+
+
+@pytest.mark.parametrize(("text", "stored"), LABELLED_PHONES)
+def test_a_label_settles_that_bare_digits_are_a_phone(text, stored):
+    screened = Screener(ScreeningConfig()).screen_text(text)
+    assert screened.messages[0].text == stored
+    assert screened.counts == {"contact_phone": 1}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "order number 123456789",
+        "the order number is 123456789",
+        "my order number is 123456789",
+        "ticket 4155550132 is open",
+        "the phone number field is 4155550132 characters long at most",
+        "4155550132",
+    ],
+)
+def test_digits_with_no_phone_label_stay(text):
+    screened = Screener(ScreeningConfig()).screen_text(text)
+    assert screened.messages[0].text == text
+    assert screened.counts == {}
+
+
+PLAIN_PASSWORDS = [
+    pytest.param("the password is sunshine", "the password is [credential]", id="is"),
+    pytest.param("The password is sunshine.", "The password is [credential].", id="full-stop"),
+    pytest.param(
+        "the admin password is sunshine", "the admin password is [credential]", id="admin"
+    ),
+    pytest.param("the password was sunshine", "the password was [credential]", id="was"),
+    pytest.param("the passphrase is sunshine", "the passphrase is [credential]", id="passphrase"),
+    pytest.param("le mot de passe est azerty", "le mot de passe est [credential]", id="french"),
+    pytest.param(
+        "the password for the wifi is lemonade",
+        "the password for the wifi is [credential]",
+        id="for-the-wifi",
+    ),
+]
+
+
+@pytest.mark.parametrize(("text", "stored"), PLAIN_PASSWORDS)
+def test_one_plain_word_after_a_password_word_is_a_value(text, stored):
+    screened = Screener(ScreeningConfig()).screen_text(text)
+    assert screened.messages[0].text == stored
+    assert screened.counts == {"credential": 1}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "the password is wrong",
+        "the password is required for the dev store",
+        "the password is hashed with argon2",
+        "the password is working again",
+        "the password is from the env file",
+        "the password for this user is wrong",
+        "the password for prod is rotated",
+        "the password manager is great",
+        "the password reset flow is broken",
+        "the API key is configured",
+        "the token is stale",
+        "the secret is safe",
+    ],
+)
+def test_prose_about_a_password_or_a_key_stays(text):
+    screened = Screener(ScreeningConfig()).screen_text(text)
+    assert screened.messages[0].text == text
+    assert screened.counts == {}
+
+
+@pytest.mark.parametrize(
+    ("text", "stored"),
+    [
+        pytest.param("my salary is 25,000.00", "my salary is [amount]", id="thousands"),
+        pytest.param("salary 25 000,00", "salary [amount]", id="french-form"),
+        pytest.param("they pay me 1,500.00 a month", "they pay me [amount] a month", id="a-month"),
+    ],
+)
+def test_a_pay_figure_with_decimals_goes_whole(text, stored):
+    config = ScreeningConfig(sensitive_classes=frozenset({"pay_amount"}))
+    screened = Screener(config).screen_text(text)
+    assert screened.messages[0].text == stored
+    assert screened.counts == {"pay_amount": 1}
