@@ -4,6 +4,7 @@ The cases run through the whole screener, so a case fails when its detector is r
 the screener stops applying it.
 """
 
+import json
 import random
 import string
 
@@ -510,6 +511,16 @@ CONTACTS = [
         {"contact_email": 1},
         id="vcard-email",
     ),
+    # A number after a lone ")" group: the group loses its ")" and reads as an empty candidate.
+    pytest.param(
+        "1 ) (415) 555-0132", "1 ) [phone 1]", {"contact_phone": 1}, id="after-lone-paren"
+    ),
+    pytest.param(
+        "call 3 ) (020) 7946 0958 today",
+        "call 3 ) [phone 1] today",
+        {"contact_phone": 1},
+        id="after-lone-paren-mid-sentence",
+    ),
     pytest.param(
         "send it to _tamsin@brightwell-mail.example_ please",
         "send it to _[email 1]_ please",
@@ -631,6 +642,234 @@ def test_contact_identifiers(text, expected, counts):
     assert screen_one(screener(), text) == (expected, counts)
 
 
+# The forms that glue a value to a word character. Every class must read through each of them.
+GLUE_FORMS = [
+    pytest.param("*{}*", id="bold-control"),
+    pytest.param("~{}~", id="strikethrough-control"),
+    pytest.param("_{}_", id="italics"),
+    pytest.param("*_{}_*", id="bold-italics"),
+    pytest.param("__{}__", id="double-underscore"),
+    pytest.param("see _{}_ today", id="italics-mid-sentence"),
+    pytest.param("(_{}_).", id="italics-in-parentheses"),
+    pytest.param("x\\n{}\\ny", id="json-newline"),
+    pytest.param("x\\t{}\\ty", id="json-tab"),
+    pytest.param("x\\r\\n{}\\r\\ny", id="json-crlf"),
+    pytest.param("x\\u00a0{}\\u00a0y", id="json-unicode-escape"),
+    pytest.param("x\\\\n{}\\\\ny", id="json-nested-twice"),
+    pytest.param("x\\\\\\\\n{}\\\\\\\\ny", id="json-nested-three-times"),
+]
+MASKED_VALUES = [
+    pytest.param(OPENAI_KEY, {"credential": 1}, id="openai-key"),
+    pytest.param(AWS_KEY_ID, {"credential": 1}, id="aws-key-id"),
+    pytest.param(GITHUB_TOKEN, {"credential": 1}, id="github-token"),
+    pytest.param(SLACK_TOKEN, {"credential": 1}, id="slack-token"),
+    pytest.param(JWT, {"credential": 1}, id="jwt"),
+    pytest.param(CARD_VISA, {"payment_card": 1}, id="card-grouped"),
+    pytest.param(CARD_DIGITS, {"payment_card": 1}, id="card-digits"),
+    pytest.param("+212 612 345 678", {"contact_phone": 1}, id="phone-international"),
+    pytest.param("0612345678", {"contact_phone": 1}, id="phone-local"),
+    pytest.param("(415) 555-0132", {"contact_phone": 1}, id="phone-parentheses"),
+    pytest.param("@orlavance", {"contact_handle": 1}, id="handle"),
+    pytest.param("tamsin.reyes@brightwell-mail.example", {"contact_email": 1}, id="email"),
+]
+
+
+@pytest.mark.parametrize("form", GLUE_FORMS)
+@pytest.mark.parametrize("value, counts", MASKED_VALUES)
+def test_no_glue_form_hides_a_masked_value(form, value, counts):
+    kept, found = screen_one(screener(), form.format(value))
+    assert found == counts
+    assert value not in kept
+
+
+@pytest.mark.parametrize("form", GLUE_FORMS)
+@pytest.mark.parametrize(
+    "text, value, cls",
+    [
+        pytest.param("Verification code: 482910", "482910", "one_time_code", id="phrase-code"),
+        pytest.param("your code is 482910", "482910", "one_time_code", id="your-code-is"),
+        pytest.param("the code is 482910.", "482910", "one_time_code", id="code-ends-a-sentence"),
+        pytest.param(
+            "https://app.example/reset?token=Zx81kQ9vLm2Pq7Rt",
+            "Zx81kQ9vLm2Pq7Rt",
+            "reset_link",
+            id="reset-link",
+        ),
+        pytest.param(
+            "https://app.example/magic/Zx81kQ9vLm2Pq7Rt",
+            "Zx81kQ9vLm2Pq7Rt",
+            "reset_link",
+            id="magic-link",
+        ),
+    ],
+)
+def test_no_glue_form_hides_a_code_or_a_link(form, text, value, cls):
+    kept, counts = screen_one(screener(), form.format(text))
+    assert counts == {cls: 1}
+    assert kept is None or value not in kept
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("Your code:\\n482910\\nthanks", id="code-in-the-next-escaped-line"),
+        pytest.param("Verification code\\n482910\\nexpires", id="phrase-then-escaped-line"),
+        pytest.param(
+            'a JSON tool result: {"stdout": "Your code:\\n482910\\ndone"}', id="tool-output"
+        ),
+    ],
+)
+def test_a_code_after_an_escaped_line_break_drops(text):
+    assert screen_one(screener(), text) == (None, {"one_time_code": 1})
+
+
+@pytest.mark.parametrize(
+    "text, expected, counts",
+    [
+        pytest.param(
+            "https:\\/\\/app.example\\/magic\\/Zx81kQ9vLm2Pq7Rt",
+            None,
+            {"reset_link": 1},
+            id="magic-link",
+        ),
+        pytest.param(
+            "https:\\\\\\/\\\\\\/app.example\\\\\\/magic\\\\\\/Zx81kQ9vLm2Pq7Rt",
+            None,
+            {"reset_link": 1},
+            id="magic-link-nested-twice",
+        ),
+        pytest.param(
+            '{"url":"https:\\/\\/app.example\\/reset\\/Zx81kQ9vLm2Pq7Rt","ok":true}',
+            None,
+            {"reset_link": 1},
+            id="reset-link-in-json",
+        ),
+        pytest.param(
+            f"https:\\/\\/hooks.slack.com\\/services\\/{SLACK_WEBHOOK_PATH.replace('/', '\\/')}",
+            "https:\\/\\/hooks.slack.com\\/services\\/[credential]",
+            CRED,
+            id="webhook-path",
+        ),
+        pytest.param(
+            f"postgres:\\/\\/grove:{DB_SECRET}@localhost",
+            "postgres:\\/\\/grove:[credential]@localhost",
+            CRED,
+            id="url-userinfo",
+        ),
+        pytest.param(
+            "https:\\/\\/t.me\\/orlavance",
+            "https:\\/\\/t.me\\/[handle 1]",
+            {"contact_handle": 1},
+            id="profile-link",
+        ),
+        pytest.param(
+            "https:\\/\\/wa.me\\/212612345678",
+            "https:\\/\\/wa.me\\/[phone 1]",
+            {"contact_phone": 1},
+            id="whatsapp-link",
+        ),
+    ],
+)
+def test_a_slash_escape_hides_no_value_of_a_link(text, expected, counts):
+    assert screen_one(screener(), text) == (expected, counts)
+
+
+def test_a_tool_result_that_holds_json_as_a_string():
+    """The realistic form: text that holds a JSON dump, so each line break is two characters."""
+    text = json.dumps(
+        {
+            "stdout": f"Charged card\n{CARD_VISA}\nCall\n0612345678\n{AWS_KEY_ID}\nCC\n@orlavance\n"
+            f"API_KEY={OPENAI_KEY}\ndone",
+            "exit": 0,
+        }
+    )
+    kept, counts = screen_one(screener(), text)
+    for value in (CARD_VISA, "0612345678", AWS_KEY_ID, "orlavance", OPENAI_KEY):
+        assert value not in kept
+    assert counts == {
+        "credential": 2,
+        "payment_card": 1,
+        "contact_phone": 1,
+        "contact_handle": 1,
+    }
+
+
+def test_a_dotted_handle_goes_in_every_glue_form():
+    assert screen_one(screener(), "_@orla.vance_") == ("_[handle 1]_", {"contact_handle": 1})
+    # As written, this one also reads as the address n@orla.vance, and the earlier span wins.
+    kept, counts = screen_one(screener(), "x\\n@orla.vance\\ny")
+    assert "orla" not in kept
+    assert counts == {"contact_email": 1}
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        pytest.param(
+            '{\\"password\\": \\"correct horse\\"}',
+            '{\\"password\\": \\[credential]\\"}',
+            id="escaped-quotes-keep-the-whole-value",
+        ),
+        pytest.param(
+            '{\\"api_key\\": \\"abcd1234\\"}',
+            '{\\"api_key\\": \\[credential]\\"}',
+            id="escaped-quotes-around-a-name",
+        ),
+        pytest.param("_API_KEY=abcd1234_", "_API_KEY=[credential]_", id="italic-assignment"),
+        pytest.param(
+            "*Password:* hunter2x", "*Password:* [credential]", id="bold-label-with-colon"
+        ),
+        pytest.param(
+            "_Password:_ hunter2x", "_Password:_ [credential]", id="italic-label-with-colon"
+        ),
+        pytest.param("*Password*: hunter2x", "*Password*: [credential]", id="bold-label"),
+        pytest.param(
+            "**API_KEY**: abcd1234", "**API_KEY**: [credential]", id="markdown-bold-label"
+        ),
+        pytest.param("`API_KEY`: abcd1234", "`API_KEY`: [credential]", id="code-span-label"),
+    ],
+)
+def test_a_glue_form_hides_no_assignment(text, expected):
+    assert screen_one(screener(), text) == (expected, CRED)
+
+
+@pytest.mark.parametrize(
+    "text, expected, counts",
+    [
+        # Reading alone would cut each of these in two and store a part of it.
+        pytest.param(
+            "here it is sk-proj-Ab3_-dEf6hIj9kLm2nOp5qRs8tUv1wXy4z",
+            "here it is [credential]",
+            CRED,
+            id="key-that-holds-underscore-hyphen",
+        ),
+        pytest.param(
+            "password: a*_bcde1 ok",
+            "password: [credential] ok",
+            CRED,
+            id="password-star-underscore",
+        ),
+        pytest.param(
+            "api_key: abc\\ndef1 ok", "api_key: [credential] ok", CRED, id="escape-inside"
+        ),
+        pytest.param(
+            f"postgres://grove:_{DB_SECRET}@localhost/x",
+            "postgres://grove:[credential]@localhost/x",
+            CRED,
+            id="userinfo-that-starts-with-underscore",
+        ),
+        pytest.param(
+            "write to tamsin_@brightwell-mail.example",
+            "write to [email 1]",
+            {"contact_email": 1},
+            id="address-that-ends-its-local-part-with-underscore",
+        ),
+    ],
+)
+def test_a_value_that_holds_a_glue_form_goes_whole(text, expected, counts):
+    assert screen_one(screener(), text) == (expected, counts)
+
+
 PAY = [
     pytest.param("my salary is 30k MAD", "my salary is [amount]", id="salary-k-mad"),
     pytest.param(
@@ -642,6 +881,14 @@ PAY = [
     pytest.param("EUR 3,200 monthly", "[amount] monthly", id="iso-code-before"),
     pytest.param("a raise to 9 500 MAD", "a raise to [amount]", id="space-thousands"),
     pytest.param("I earn about 45k a year", "I earn about [amount] a year", id="k-suffix-alone"),
+    pytest.param("salary _25000 MAD_", "salary _[amount]_", id="italic-amount"),
+    pytest.param("salary _25k_", "salary _[amount]_", id="italic-k-suffix"),
+    pytest.param("salary\\n25000 MAD\\nthanks", "salary\\n[amount]\\nthanks", id="escaped-line"),
+    # A long figure stays an amount under the bound on its groups.
+    pytest.param("a raise to 1 200 000 EUR", "a raise to [amount]", id="three-space-groups"),
+    pytest.param(
+        "a raise to 1,000,000,000,000,000,000 USD", "a raise to [amount]", id="six-comma-groups"
+    ),
     # The amount seven words from the pay word: the far edge of the window.
     pytest.param(
         "my salary for next year will be about 30k MAD",
@@ -953,6 +1200,40 @@ DEV_TEXT = [
     # A GitHub profile or repository link stays: dev text is full of them.
     pytest.param("https://github.com/tamsinreyes", id="github-link"),
     pytest.param("https://box.com/tamsinreyes", id="host-that-ends-in-x-com"),
+    # A group that is only ")" before a "(" group, or before a run of more than 15 digits.
+    pytest.param("f(1 ) (2)", id="call-with-spaced-parentheses"),
+    pytest.param("1 ) (2", id="lone-paren-group"),
+    pytest.param("0 ) (123", id="lone-paren-group-leading-zero"),
+    pytest.param("step 1 ) (2 items)", id="list-with-spaced-parentheses"),
+    pytest.param("see (1 ) (2 ) (3)", id="three-spaced-parentheses"),
+    pytest.param("value = table( 1 ) ( 2 );", id="subscript-with-spaces"),
+    pytest.param("7 ) 1234567890123456", id="lone-paren-before-long-run"),
+    # "_" between two word characters joins them, so none of these holds a value.
+    pytest.param("__init__ and __repr__", id="dunder-names"),
+    pytest.param("self._client_key and self._cache_", id="private-names"),
+    pytest.param("run_4111111111111111", id="digit-run-in-a-name"),
+    pytest.param("id_0612345678", id="phone-shape-in-a-name"),
+    pytest.param("user_@orlavance", id="handle-shape-in-a-name"),
+    pytest.param(f"task_{OPENAI_KEY}", id="key-shape-in-a-name"),
+    pytest.param("cost_25000 MAD and salary_25k and test_25k_rows", id="amount-shape-in-a-name"),
+    pytest.param("_next/static/chunks/main.js and __tests__/login.spec.ts", id="markup-in-a-path"),
+    # A redacted value is no value, and the next line is not read as one.
+    pytest.param("API_KEY=***\nNEXT_NAME=1", id="redacted-value"),
+    pytest.param("*args and **kwargs and char* name and a*b", id="stars-in-code"),
+    # A slash escape in dev text reads as a slash.
+    pytest.param("/^https?:\\/\\/(www\\.)?example\\.com\\/$/", id="javascript-regex"),
+    pytest.param('{"path":"src\\/grove\\/screening\\/names.py"}', id="escaped-path"),
+    pytest.param('"@types\\/node": "22.1.0"', id="escaped-npm-scope"),
+    pytest.param("on 02\\/11\\/2026", id="escaped-date"),
+    pytest.param(
+        "https:\\/\\/github.com\\/org\\/repo\\/blob\\/3f2a9c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4a39\\/x.py",
+        id="escaped-code-host-page",
+    ),
+    # An escape in dev text reads as what it is.
+    pytest.param('{"log": "line one\\nline two\\n"}', id="escaped-line-breaks"),
+    pytest.param('print(\\"hello\\\\n\\")', id="escaped-quotes-in-code"),
+    pytest.param("@pytest.fixture\\n@login_required\\ndef f():\\n    return 1", id="escaped-code"),
+    pytest.param("C:\\temp\\new\\run_1234", id="windows-path"),
     # A file path is no bare host.
     pytest.param("see grove.screening.py/detectors and auth.py/tokens", id="file-path-is-no-host"),
 ]

@@ -7,6 +7,8 @@ Order per message (fixed):
 4. Credentials, 5. payment cards, 6. third-party contact identifiers, 7. pay amounts (opt-in).
 Steps 3 to 7 return spans on the same text. Overlapping spans merge, and the earlier step wins
 the class, so a rename can never be undone by a later mask and no part of a value survives.
+Every step reads the text as written and as read (names.Normalised.views), so chat markup or an
+escape glued to a value hides nothing.
 
 The locator goes through steps 1, 3, 4, 5 and 6 as one string. A denylisted term there keeps
 the whole source out. The message key goes through steps 3 to 6, so all four fields are screened.
@@ -315,9 +317,12 @@ class Screener:
     @staticmethod
     def _drop_class(sender: "_Text | None", text: "_Text") -> str | None:
         """Step 2, on the detector copy of the text: a one-time code first, then a link."""
-        if detectors.one_time_codes(text.copy.text, None if sender is None else sender.copy.text):
+        views = text.copy.views
+        # The sender rules need no form as written, so the read view alone serves them.
+        said_by = None if sender is None else sender.copy.views[-1]
+        if any(detectors.one_time_codes(view, said_by) for view in views):
             return ONE_TIME_CODE
-        if detectors.reset_links(text.copy.text):
+        if any(detectors.reset_links(view) for view in views):
             return RESET_LINK
         return None
 
@@ -332,14 +337,15 @@ class Screener:
 
         copy = text.copy
         found: list[tuple[int, Hit]] = []
-        if STEP_CREDENTIAL in steps:
-            found += [(STEP_CREDENTIAL, hit) for hit in detectors.credentials(copy.text)]
-        if STEP_CARD in steps:
-            found += [(STEP_CARD, hit) for hit in detectors.cards(copy.text)]
-        if STEP_CONTACT in steps:
-            found += [(STEP_CONTACT, hit) for hit in detectors.contacts(copy.text, self._own)]
-        if STEP_PAY in steps and self._pay:
-            found += [(STEP_PAY, hit) for hit in detectors.pay_amounts(copy.text)]
+        for view in copy.views:
+            if STEP_CREDENTIAL in steps:
+                found += [(STEP_CREDENTIAL, hit) for hit in detectors.credentials(view)]
+            if STEP_CARD in steps:
+                found += [(STEP_CARD, hit) for hit in detectors.cards(view)]
+            if STEP_CONTACT in steps:
+                found += [(STEP_CONTACT, hit) for hit in detectors.contacts(view, self._own)]
+            if STEP_PAY in steps and self._pay:
+                found += [(STEP_PAY, hit) for hit in detectors.pay_amounts(view)]
         for step, hit in found:
             start, end = copy.span(hit.start, hit.end)
             spans.append(_Span(start, end, step, hit.cls, MASKS.get(hit.cls, ""), hit.key))

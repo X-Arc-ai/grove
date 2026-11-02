@@ -279,6 +279,83 @@ def test_counts_hold_only_classes_that_occurred_in_class_order():
     assert screener().screen_text("nothing here").counts == {}
 
 
+def test_a_message_of_any_shape_keeps_the_rest_of_its_source():
+    """One message must never fail a source: the text below once raised IndexError."""
+    screened = screener().screen_source(
+        "1 ) (2.txt",
+        [
+            Message("m1", "Tamsin", "hello"),
+            Message("m2", "Tamsin", "f(1 ) (2)"),
+            Message("1 ) (2", "1 ) (2", "bye"),
+        ],
+    )
+    assert screened.locator == "1 ) (2.txt"
+    assert [(m.key, m.sender, m.text) for m in screened.messages] == [
+        ("m1", "Tamsin", "hello"),
+        ("m2", "Tamsin", "f(1 ) (2)"),
+        ("1 ) (2", "1 ) (2", "bye"),
+    ]
+    assert dict(screened.counts) == {}
+
+
+def test_every_field_reads_through_a_glue_form():
+    screened = screener(rename=RENAME).screen_source(
+        f"chat with _{THIRD_PHONE}_ and _Orla_.txt",
+        [Message(f"k\\n{THIRD_EMAIL}", f"_{THIRD_PHONE}_", f"hi\\n{THIRD_EMAIL}")],
+    )
+    message = screened.messages[0]
+    assert screened.locator == "chat with _[phone 1]_ and _Co-founder_.txt"
+    assert message.sender == "_[phone 1]_"
+    assert message.text == "hi\\[email 1]"
+    assert message.key == "k\\[email 1]"
+
+
+def test_a_denylisted_locator_in_a_glue_form_keeps_the_source_out():
+    screened = screener(denylist=DENYLIST).screen_source(
+        "chat with _Halvard Quist_.txt", [Message("m1", "Tamsin", "hi")]
+    )
+    assert screened.dropped_whole is True
+    assert screened.locator == "chat with _[kept out]_.txt"
+    assert dict(screened.counts) == {"denylisted": 1}
+
+
+def test_a_service_sender_in_a_glue_form_drops_its_code():
+    assert screen_one(screener(), "Enter 4829 now", sender="_Uber_") == (
+        None,
+        {"one_time_code": 1},
+    )
+
+
+def test_a_value_in_a_glue_form_keeps_its_number_and_counts_once():
+    screened = screener().screen_text("ask _@tamsin_r_ or @tamsin_r, _+44 7700 900123_")
+    assert screened.messages[0].text == "ask _[handle 1]_ or [handle 1], _[phone 1]_"
+    assert dict(screened.counts) == {"contact_phone": 1, "contact_handle": 2}
+
+
+def test_own_identifiers_in_a_glue_form_stay_and_are_not_counted():
+    screen = screener(own=(OWN_EMAIL, OWN_PHONE, OWN_HANDLE))
+    for text in (
+        f"_{OWN_EMAIL}_",
+        f"_{OWN_PHONE}_",
+        f"_{OWN_HANDLE}_",
+        f"me\\n{OWN_PHONE}\\nbye",
+        f"me\\n{OWN_HANDLE}\\nbye",
+    ):
+        assert screen_one(screen, text) == (text, {})
+
+
+def test_no_handle_is_cut_out_of_an_own_email_that_holds_a_glue_form():
+    screen = screener(own=("juniper_@grove-dev.example",))
+    text = "write juniper_@grove-dev.example"
+    assert screen_one(screen, text) == (text, {})
+
+
+def test_a_glue_form_in_non_ascii_text_maps_back_to_the_original_offsets():
+    kept, counts = screen_one(screener(), "caf\u00e9 \u200b_4111 1111 1111 1111_ \uff2f\uff2b")
+    assert kept == "caf\u00e9 \u200b_[card]_ \uff2f\uff2b"
+    assert counts == {"payment_card": 1}
+
+
 def test_a_screened_source_is_made_by_the_screener_only():
     screened = screener().screen_text("hi")
     fields = {"locator": "raw", "messages": (), "counts": {}, "dropped_whole": False}

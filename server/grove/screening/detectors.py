@@ -197,9 +197,11 @@ _PHRASE_STOP = frozenset(
 _PLAIN_WORD = re.compile(r"[a-z]+(?:-[a-z]+)*|[A-Z][a-z]+(?:-[a-z]+)*")
 _OWNER = re.compile(r"(?i)(?:(?<![a-z])(?:my|our|your|his|her|their)\s+(?:[a-z-]+\s+)?|wi-?fi\s+)$")
 _PROSE_ENDING = re.compile(r"(?:ing|ed|ly)$")
-# "login: orla / Tr0ub4dor3", "creds: admin / Tr0ub4dor3".
+# "login: orla / Tr0ub4dor3", "creds: admin / Tr0ub4dor3". The user part is as long as an email
+# address at most, and it is never given back: "login=login=..." would rescan to the end of the
+# text from each start, which is quadratic.
 _LOGIN_PAIR = re.compile(
-    r"(?i)(?<![A-Za-z])(?:logins?|creds?|credentials?)\s*[:=]\s*[^\s/:]+\s*/\s*"
+    r"(?i)(?<![A-Za-z])(?:logins?|creds?|credentials?)\s*+[:=]\s*+[^\s/:]{1,256}+\s*+/\s*+"
     r"(?P<value>[^\s\"',;]+)"
 )
 _CONTEXT = re.compile(
@@ -761,12 +763,10 @@ def reset_links(text: str) -> list[Hit]:
 
 # Contact identifiers --------------------------------------------------------------------------
 
-# "_" at the edge is chat markup (_me@x.example_): allowed when no local-part character comes
-# before it, so orla_corp@x.example is one address and never cut after the "_".
 _EMAIL = re.compile(
-    r"(?<![.+%-])(?<![^\W_])(?<!\w_)[A-Za-z0-9][A-Za-z0-9._%+-]*@"
+    r"(?<![\w.+%-])[A-Za-z0-9][A-Za-z0-9._%+-]*@"
     r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*"
-    r"\.[A-Za-z]{2,}(?!-)(?![^\W_])(?!_\w)"
+    r"\.[A-Za-z]{2,}(?![\w-])"
 )
 _SCP_PATH = re.compile(r":[\w~/.-]")
 # "icon@2x.png" is a file name.
@@ -891,8 +891,9 @@ def _blank(text: str, pattern: re.Pattern[str]) -> str:
 def _phone_shape(candidate: str) -> bool:
     if _NANP.fullmatch(candidate):
         return True
-    # The first digit in any script: an Arabic-Indic zero is a zero.
-    lead = candidate[0]
+    # The first digit in any script: an Arabic-Indic zero is a zero. A candidate can be empty: a
+    # group that is only ")" loses it in _without_lone_paren ("1 ) (2").
+    lead = candidate[:1]
     if lead.isdecimal():
         lead = ascii_digits(lead)
     if _DOUBLE_SEPARATOR.search(candidate) or lead not in ("+", "0", "("):
@@ -1070,7 +1071,9 @@ def contacts(text: str, own: OwnIdentifiers | None = None) -> list[Hit]:
 
 # Pay amounts ----------------------------------------------------------------------------------
 
-_NUMBER = r"(?:\d{1,3}(?:[,. ]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d+)?)"
+# The groups are bounded: an amount has few, and a long table of three-digit numbers would rescan
+# to its end from each group, which is quadratic.
+_NUMBER = r"(?:\d{1,3}(?:[,. ]\d{3}){1,6}(?:[.,]\d{1,2})?|\d+(?:[.,]\d+)?)"
 _MULTIPLIER = r"(?:\s?(?:k|K|m|M|bn)(?![A-Za-z]))?"
 _SYMBOL = r"(?:(?:US|CA|AU|NZ|HK|SG)?\$|[\u20ac\u00a3\u00a5\u20b9])"
 _CODES = r"(?i:USD|EUR|GBP|MAD|AED|CHF|CAD|AUD|SAR)"

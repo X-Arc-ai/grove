@@ -76,12 +76,27 @@ RENAME_CASES = [
         {"Anne-Marie": "Partner"}, "Anne\u2011Marie said", "Partner said", id="non-breaking-hyphen"
     ),
     pytest.param(RENAME, "Orla\u2122 deck", "Co-founder\u2122 deck", id="trade-mark-sign"),
+    pytest.param(RENAME, "_Orla Vance_ will call", "_Co-founder_ will call", id="italics"),
+    pytest.param(RENAME, "*_Orla_*", "*_Co-founder_*", id="bold-italics"),
+    pytest.param(RENAME, "__Orla__ said", "__Co-founder__ said", id="double-underscore"),
+    pytest.param(RENAME, "Orla and _Orla_", "Co-founder and _Co-founder_", id="both-views"),
+    pytest.param(RENAME, "_\uff2f\uff52\uff4c\uff41_", "_Co-founder_", id="italic-full-width"),
+    pytest.param(RENAME, "hi\\nOrla Vance", "hi\\nCo-founder", id="json-newline"),
+    pytest.param(RENAME, 'said \\"Orla\\"', 'said \\"Co-founder\\"', id="json-quotes"),
+    pytest.param(
+        RENAME, "x_Orla and Orla_x and orla_vance", "x_Orla and Orla_x and orla_vance", id="joined"
+    ),
 ]
 
 
 @pytest.mark.parametrize("mapping, text, expected", RENAME_CASES)
 def test_rename_map(mapping, text, expected):
     assert renamed(mapping, text) == expected
+
+
+def test_an_escape_inside_a_form_merges_with_the_shorter_form_before_it():
+    # As written the text holds "Orla"; as read it holds "Orla Vance". One span, counted once.
+    assert screen_one(screener(rename=RENAME), "Orla\\nVance") == ("Co-founder", {"renamed": 1})
 
 
 def test_the_rest_of_the_text_keeps_its_original_form():
@@ -129,6 +144,16 @@ DENY_CASES = [
     pytest.param("Tamsin", "halvard_quist", False, id="underscore-joins-words"),
     pytest.param("Tamsin", "Subrightwell Logistics", False, id="not-after-a-longer-word"),
     pytest.param("Tamsin", "Brightwell Logistics\u2122 renewal", True, id="trade-mark-sign"),
+    pytest.param("Tamsin", "_Brightwell Logistics_ signed", True, id="italics"),
+    pytest.param("Tamsin", "*_Halvard Quist_*", True, id="bold-italics"),
+    pytest.param("Tamsin", "__Halvard Quist__", True, id="double-underscore"),
+    pytest.param("_Halvard Quist_", "see you at noon", True, id="italic-sender"),
+    pytest.param("Tamsin", "client\\nBrightwell Logistics", True, id="json-newline"),
+    pytest.param("Tamsin", "client\\tBrightwell Logistics", True, id="json-tab"),
+    pytest.param("Tamsin", "client\\\\nBrightwell Logistics", True, id="json-nested-twice"),
+    pytest.param("client\\nHalvard Quist", "see you at noon", True, id="json-newline-in-sender"),
+    pytest.param("Tamsin", "x_Halvard Quist", False, id="word-then-underscore"),
+    pytest.param("Tamsin", "Halvard Quist_x", False, id="underscore-then-word"),
 ]
 
 
@@ -199,6 +224,46 @@ def test_normalised_offsets_map_back_to_the_original():
     assert folded.span(sharp, sharp + 2) == (6, 7)
     accent = folded.text.index("renée")
     assert text[slice(*folded.span(accent, accent + 5))] == "Renée"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "_Orla_",
+        "__Orla__",
+        "*Orla*",
+        "a\\nb",
+        'a\\"b',
+        "x\\u00a0y",
+        "x\\\\\\\\ny",
+        "café _Orla_ \\n1",
+    ],
+)
+@pytest.mark.parametrize("fold_case", [True, False], ids=["folded", "case-kept"])
+def test_the_read_view_has_the_length_of_the_copy(text, fold_case):
+    """Spans of both views map back through one table, so no form may change the length."""
+    copy = Normalised(text, fold_case=fold_case)
+    assert copy.views[0] == copy.text
+    assert len(copy.views) == 2
+    assert len(copy.views[1]) == len(copy.text)
+
+
+def test_the_copy_drops_a_slash_escape_and_keeps_the_map():
+    copy = Normalised("a\\/b \\\\\\/c", fold_case=False)
+    assert copy.text == "a/b /c"
+    assert copy.span(0, 1) == (0, 1)
+    assert copy.span(1, 2) == (2, 3)
+    assert copy.span(0, 3) == (0, 4)
+    assert copy.span(4, 6) == (8, 10)
+    folded = Normalised("É\\/B", fold_case=True)
+    assert folded.text == "é/b"
+    assert folded.span(1, 3) == (2, 4)
+
+
+def test_a_text_with_no_glue_form_has_one_view():
+    assert Normalised("acme_corp and x_Orla, a*b", fold_case=False).views == (
+        "acme_corp and x_Orla, a*b",
+    )
 
 
 def test_normalised_ascii_is_the_identity_and_case_is_kept_for_detectors():

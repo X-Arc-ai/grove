@@ -70,7 +70,19 @@ def _optional_path(variable: str) -> Path | None:
     # names through, so it fails closed.
     if not value.strip():
         raise ConfigError(f"{variable} is set but empty")
-    return Path(value).expanduser()
+    path = _expanded(value)
+    if path is None:
+        raise ConfigError(f"{variable}: the path cannot be expanded")
+    return path
+
+
+def _expanded(value: str) -> Path | None:
+    """The path with its ~ read, or None for an unknown ~user. It returns None instead of
+    raising, so the error about a name in the path never travels as the context of a ConfigError."""
+    try:
+        return Path(value).expanduser()
+    except RuntimeError:
+        return None
 
 
 def load_screening_settings() -> ScreeningSettings:
