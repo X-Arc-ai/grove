@@ -1,0 +1,236 @@
+/* agents layer (sim) · same tokens and type as style.css */
+
+/* health as an icon like search, theme and refresh; a badge only when something is wrong */
+.health-btn {
+  position: relative;
+  text-decoration: none;
+}
+.health-btn .health-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  line-height: 0;
+}
+.health-btn .health-badge svg {
+  width: 6px;
+  height: 6px;
+}
+.health-btn .health-badge svg.healthy { display: none; }
+
+/* only with agents on; the node-type key has nothing to key while types are not drawn */
+.hood-bar, .hood-legend, .hood-score { display: none; }
+/* Grove type legend stays visible during care. */
+body.hood-on .hood-bar { display: flex; }
+body.hood-on .hood-legend, body.hood-on .hood-score { display: block; }
+
+.hood-bar {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px 4px 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  z-index: 12;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  user-select: none;
+}
+.hood-bar .icon-btn { width: 28px; height: 28px; border-radius: 999px; }
+.hood-track {
+  position: relative;
+  height: 16px;
+}
+.hood-seg {
+  position: absolute;
+  top: 0;
+  height: 16px;
+  cursor: pointer;
+}
+.hood-seg-bg, .hood-seg-fill {
+  position: absolute;
+  left: 0;
+  top: 6px;
+  height: 4px;
+  border-radius: 2px;
+}
+.hood-seg-bg { width: 100%; opacity: 0.22; }
+.hood-seg-fill { width: 0; }
+.hood-speed {
+  background: transparent;
+  border: none;
+  font: inherit;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px 2px;
+  min-width: 22px;
+}
+.hood-speed:hover { color: var(--text); }
+
+/* last cleaned, in order: this cycle on the left, not yet on the right */
+.hood-legend {
+  position: fixed;
+  left: 16px;
+  bottom: 22px;
+  width: 180px;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 12px 11px;
+  z-index: 9;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  user-select: none;
+}
+.hood-legend-h {
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+/* the ramp is drawn as the map draws it: a node's ring, light on CCCl's zone, to dark */
+.hood-ramp {
+  display: flex;
+  height: 16px;
+}
+.hood-ramp span {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+}
+.hood-ramp span i {
+  display: block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.6px solid;
+  background: var(--cream);
+  box-sizing: border-box;
+}
+.hood-ticks {
+  position: relative;
+  height: 14px;
+  margin-top: 3px;
+  font-size: 8.5px;
+  color: var(--text-muted);
+}
+.hood-ticks span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.hood-ticks span.hood-tick-end {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+.hood-ends {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+
+/* the line on top of the node panel */
+.hood-note {
+  margin: 0 0 20px;
+}
+.hood-note-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.35;
+}
+.hood-note-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+}
+.hood-note-name {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+.hood-note-sub {
+  margin-top: 3px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+.hood-note-head + .hood-note-sub { padding-left: 15px; }
+
+/* the agents' score: what each has done in the loop, ticking as it changes */
+.hood-score {
+  position: fixed;
+  right: 16px;
+  bottom: 22px;
+  min-width: 200px;
+  box-sizing: border-box;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 12px 8px;
+  z-index: 9;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  user-select: none;
+}
+.hood-score .hood-legend-h { margin-bottom: 6px; }
+.hood-score-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 2px;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+}
+.hood-score-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  align-self: center;
+  opacity: 0.55;
+  transition: opacity 0.2s;
+}
+.hood-score-row.working .hood-score-dot { opacity: 1; animation: hood-breathe 1.6s ease-in-out infinite; }
+@keyframes hood-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.hood-score-name {
+  width: 40px;
+  font-weight: 600;
+  color: var(--text);
+}
+.hood-score-v {
+  display: inline-block;
+  min-width: 14px;
+  text-align: right;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.hood-score-u { margin-right: 6px; }
+.hood-score-v.tick { animation: hood-tick 0.45s cubic-bezier(0.2, 0.7, 0.2, 1); }
+@keyframes hood-tick {
+  0% { transform: translateY(-4px); opacity: 0.3; }
+  100% { transform: translateY(0); opacity: 1; }
+}
+
+/* Leave the product's account and source actions clear. */
+body.hood-on .hood-legend,body.hood-on .hood-score { bottom:86px; }
+body.gp-onboarding-open .hood-bar,body.gp-onboarding-open .hood-legend,body.gp-onboarding-open .hood-score { display:none; }
+@media(max-width:700px){body.hood-on .hood-score{display:none}body.hood-on .hood-legend{bottom:120px;left:16px;width:156px}.hood-bar{bottom:76px;max-width:calc(100vw - 32px)}.hood-track{max-width:58vw}}

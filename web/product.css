@@ -1,0 +1,196 @@
+/* Product tokens extend Grove's native legend, controls and record panel. */
+:root {
+  --gp-font: "JetBrains Mono",ui-monospace,"SF Mono",monospace;
+  --gp-space-1:4px; --gp-space-2:8px; --gp-space-3:12px; --gp-space-4:16px; --gp-space-6:24px; --gp-space-8:32px;
+  --gp-radius:8px; --gp-title:22px; --gp-body:12px; --gp-label:10.5px;
+}
+#grove-product { position:relative; z-index:40; font-family:var(--gp-font) }
+#grove-product *,#learning-slot * { box-sizing:border-box }
+:where(#grove-product) button,:where(#grove-product) input { font:inherit }
+#grove-product button { cursor:pointer }
+#grove-product button:disabled { opacity:.4; cursor:default }
+#grove-product :focus-visible { outline:2px solid var(--ring-person); outline-offset:4px }
+#grove-product button svg { width:16px; height:16px; flex:none }
+#grove-product [hidden],.legend[hidden] { display:none!important }
+.gp-backdrop { position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:flex-start; padding:100px 24px 60px max(24px,calc((100vw - 1140px)/2)); background:transparent; overflow:auto }
+.gp-backdrop.is-centered { justify-content:center; padding:84px 24px 40px; background:color-mix(in srgb,var(--bg) 55%,transparent) }
+.gp-dialog,.gp-popover,.gp-tour-card { color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:var(--gp-radius); box-shadow:none }
+.gp-dialog { flex:none; width:440px; max-width:100%; padding:var(--gp-space-8); animation:gp-enter .3s ease both }
+@keyframes gp-enter { from { opacity:0; transform:translateY(5px) } }
+.gp-heading { margin-bottom:var(--gp-space-6) }
+.gp-kicker { font:400 9.5px/1.5 var(--gp-font); letter-spacing:.12em; text-transform:uppercase; color:var(--text-secondary) }
+.gp-kicker:empty { display:none }
+.gp-heading h1,.gp-tour-card h2 { margin:12px 0 0; font:500 var(--gp-title)/1.35 var(--gp-font); letter-spacing:-.045em; text-wrap:balance }
+.gp-copy { margin-top:12px; font:400 var(--gp-body)/1.8 var(--gp-font); color:var(--text-secondary); text-wrap:pretty }
+.gp-primary,.gp-small,.gp-text,.gp-icon { display:inline-flex; align-items:center; justify-content:center; gap:12px; border:1px solid var(--border); background:transparent; color:var(--text); text-decoration:none }
+.gp-primary { min-height:40px; padding:10px 16px; border-radius:6px; background:var(--text); border-color:var(--text); color:var(--surface); font:500 11px/1.5 var(--gp-font) }
+.gp-primary:hover { opacity:.85 }
+.gp-small { min-height:32px; padding:6px 12px; border-radius:6px; font:400 10.5px/1.5 var(--gp-font) }
+.gp-small:hover { border-color:var(--text-muted) }
+.gp-text { border:0; background:none; padding:4px 0; color:var(--text-secondary); font:400 10.5px/1.5 var(--gp-font); gap:8px }
+.gp-text:hover { color:var(--text) }
+.gp-icon { width:26px; height:26px; padding:0; border:0; font:300 20px/1 var(--gp-font); color:var(--text-secondary) }
+.gp-footnote { margin-top:24px; color:var(--text-secondary); font:400 9px/1.7 var(--gp-font) }
+.gp-welcome { width:440px; padding:48px 32px 32px; text-align:center }
+.gp-welcome-mark { width:52px; height:52px; border:1px solid var(--ring-person); border-radius:50%; display:grid; place-items:center; margin:0 auto 32px }
+.gp-welcome-mark span { display:block; width:10px; height:10px; border-radius:50%; background:#d4a52a }
+.gp-welcome h1 { font-size:26px }
+.gp-welcome .gp-copy { line-height:1.9 }
+.gp-start { min-width:176px; margin-top:8px }
+.gp-stepper { display:flex; align-items:center; gap:12px; margin-bottom:32px; padding-bottom:16px; border-bottom:1px solid var(--border) }
+.gp-stepper>span { display:flex; gap:6px; align-items:center; color:var(--text-muted); font:400 8.5px/1.5 var(--gp-font); white-space:nowrap }
+.gp-stepper i { display:grid; place-items:center; width:21px; height:21px; border:1px solid var(--border); border-radius:50%; font:inherit; font-size:8px }
+.gp-stepper .is-current { color:var(--text) }
+.gp-stepper .is-current i { border-color:var(--ring-person); color:var(--text) }
+.gp-stepper .is-done i { color:var(--accent); border-color:var(--accent) }
+.gp-provider-list { border-top:1px solid var(--border) }
+.gp-provider-row { width:100%; display:grid; grid-template-columns:28px minmax(0,1fr) 16px; align-items:center; gap:12px; min-height:70px; padding:14px 0; color:var(--text); background:transparent; border:0; border-bottom:1px solid var(--border); text-align:left }
+.gp-provider-row:hover { background:color-mix(in srgb,var(--bg) 65%,transparent) }
+.gp-provider-row>svg { color:var(--text-muted) }
+.gp-provider-row strong { display:block; font:500 11.5px/1.5 var(--gp-font) }
+.gp-provider-row small { display:block; margin-top:3px; color:var(--text-secondary); font:400 9px/1.6 var(--gp-font) }
+.gp-provider-icon { width:28px; height:28px; display:flex; align-items:center; justify-content:center }
+.gp-provider-icon svg,#grove-product .gp-provider-icon svg { width:22px; height:22px }
+.gp-step-footer { margin-top:32px; display:flex; align-items:center; justify-content:space-between; gap:12px }
+.gp-step-footer>div { display:flex; align-items:center; gap:20px }
+.gp-setup>.gp-footnote { text-align:right; margin-top:16px; font-size:8.5px }
+.gp-inline-note { font:400 10px/1.8 var(--gp-font); color:var(--text-secondary); margin-top:24px; max-width:310px }
+.gp-file-area { display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; min-height:158px; gap:10px; border:1px dashed var(--border); border-radius:6px; color:var(--text); background:transparent }
+.gp-file-area:hover { border-color:var(--text-muted) }
+.gp-file-symbol { margin-bottom:5px; color:var(--ring-person) }
+#grove-product .gp-file-symbol svg { width:26px; height:26px }
+.gp-file-area strong { font:500 11px/1.5 var(--gp-font) }
+.gp-file-area small,.gp-source-caption { font:400 9px/1.6 var(--gp-font); color:var(--text-secondary) }
+.gp-source-caption { min-height:15px; margin-top:12px; text-align:center }
+.gp-popup-top { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:24px }
+.gp-guide-steps { list-style:none; border-top:1px solid var(--border); margin:24px 0 }
+.gp-guide-steps li { display:grid; grid-template-columns:24px 1fr; gap:12px; padding:16px 0; border-bottom:1px solid var(--border) }
+.gp-guide-steps li>span { color:var(--text-muted); font:400 10px/1.8 var(--gp-font) }
+.gp-guide-steps strong { font:500 11px/1.7 var(--gp-font) }
+.gp-guide-steps p { margin-top:5px; font:400 10px/1.8 var(--gp-font); color:var(--text-secondary) }
+.gp-file-button { position:relative; width:100%; overflow:hidden; cursor:pointer }
+.gp-file-button input { position:absolute; inset:0; opacity:0; width:100%; height:100%; cursor:pointer }
+.gp-file-button:focus-within { outline:2px solid var(--ring-person); outline-offset:4px }
+.gp-sample { display:flex; margin:16px auto 0 }
+.gp-guide>.gp-footnote { text-align:center; margin-top:20px; font-size:8px }
+.gp-profile-button { border-radius:50%; border:1px solid var(--border); margin-left:4px }
+.gp-profile-button[hidden] { display:none }
+.gp-popover { position:fixed; top:62px; right:24px; width:300px; padding:20px; z-index:45; animation:gp-enter .2s ease both }
+.gp-popover header { display:flex; align-items:center; justify-content:space-between; padding-bottom:12px; margin-bottom:16px; border-bottom:1px solid var(--border) }
+.gp-popover label { display:block; margin-bottom:8px; color:var(--text-secondary); font:400 10px/1.5 var(--gp-font) }
+.gp-input-row { display:flex; gap:8px }
+.gp-input-row input { min-width:0; width:100%; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:5px; padding:8px 10px; font:400 11px/1.5 var(--gp-font) }
+.gp-menu { border-top:1px solid var(--border); margin-top:20px }
+.gp-menu button { width:100%; display:flex; justify-content:space-between; gap:16px; border:0; border-bottom:1px solid var(--border); color:var(--text-secondary); background:none; padding:14px 0; font:400 10px/1.5 var(--gp-font) }
+.gp-menu button:hover { color:var(--text) }
+.gp-popover .gp-footnote { margin-top:16px; font-size:8.5px }
+.gp-health-status { display:flex; align-items:center; gap:8px; font:400 11px/1.5 var(--gp-font) }
+.gp-status-dot { display:inline-block; width:5px; height:5px; flex:none; border-radius:50%; background:var(--accent) }
+.gp-status-dot.is-learning { background:var(--ring-person); animation:gp-breathe 1.8s ease-in-out infinite }
+@keyframes gp-breathe { 50% { opacity:.35 } }
+.gp-health-counts { display:grid; grid-template-columns:1fr 1fr; margin-top:24px; padding-bottom:20px; border-bottom:1px solid var(--border) }
+.gp-health-counts>div+div { border-left:1px solid var(--border); padding-left:20px }
+.gp-health-counts strong { display:block; font:400 24px/1.4 var(--gp-font); letter-spacing:-.04em }
+.gp-health-counts span { display:block; color:var(--text-secondary); font:400 9px/1.8 var(--gp-font) }
+.gp-health-sources { margin:8px 0 16px }
+.gp-health-sources>div { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:9px 0; color:var(--text-secondary); font:400 9px/1.5 var(--gp-font) }
+.gp-health-sources small { font:inherit; text-align:right }
+.gp-accounts-trigger { position:fixed; bottom:24px; left:24px; display:flex; align-items:center; gap:12px; padding:12px; border:1px solid var(--border); border-radius:8px; background:var(--surface); color:var(--text-secondary); font:400 10px/1.5 var(--gp-font); box-shadow:none }
+.gp-accounts-trigger:hover,.gp-add-source:hover { border-color:var(--text-muted); color:var(--text) }
+.gp-provider-stack { display:flex; gap:6px; align-items:center }
+.gp-provider-stack>span { display:flex; width:15px; height:15px }
+#grove-product .gp-provider-stack svg { width:15px; height:15px }
+.gp-add-source { position:fixed; bottom:24px; right:24px; display:flex; align-items:center; gap:8px; border:1px solid var(--border); border-radius:8px; padding:12px; color:var(--text-secondary); background:var(--surface); font:400 10px/1.5 var(--gp-font); box-shadow:none }
+.gp-learning { display:flex; align-items:center; gap:7px; margin-top:1px; padding:0; border:0; background:none; color:var(--text-secondary); font:400 9px/1.5 var(--gp-font); cursor:pointer }
+.gp-learning>span { color:var(--text-muted); margin-left:2px }
+.gp-count-delta { display:inline-block; margin-left:5px; color:var(--accent); font-size:9px; animation:gp-delta 2.4s ease both }
+@keyframes gp-delta { 0% { opacity:0; transform:translateY(3px) } 12%,70% { opacity:1; transform:translateY(0) } 100% { opacity:0 } }
+.gp-stat-divider { margin:0 3px; color:var(--text-muted) }
+.gp-onboarding-open .legend { opacity:.7 }
+.legend { top:99px; transition:opacity .3s }
+.legend-row { animation:gp-enter .3s ease both }
+.gp-wide { width:100% }
+.gp-connection-route { display:flex; align-items:center; justify-content:center; padding:8px 0; gap:24px }
+.gp-connection-route>span { display:grid; place-items:center; width:48px; height:48px; border:1px solid var(--border); border-radius:50% }
+.gp-connection-route svg { width:24px; height:24px }
+.gp-connection-route i { display:block; width:60px; height:1px; background:var(--border) }
+.gp-grove-mini { font:500 24px/1 var(--gp-font); position:relative }
+.gp-grove-mini>span { position:absolute; width:5px; height:5px; border-radius:50%; background:#d4a52a; left:30px; top:17px }
+#gp-tour-root { position:fixed; inset:0; pointer-events:none; z-index:38 }
+.gp-tour-card { position:absolute; bottom:94px; left:50%; transform:translateX(-50%); width:330px; padding:24px; pointer-events:auto }
+.gp-tour-card h2 { font-size:17px; margin-top:8px }
+.gp-tour-card .gp-copy { font-size:10.5px; line-height:1.8 }
+.gp-tour-card footer { display:flex; justify-content:space-between; gap:16px; margin-top:20px }
+.gp-tour-card.is-detail { left:calc(50% - 160px) }
+.gp-node-spotlight { position:absolute; transform:translate(-50%,-50%); border:2px solid var(--accent); outline:5px solid color-mix(in srgb,var(--bg) 80%,transparent); border-radius:50%; background:transparent; pointer-events:auto; animation:gp-spot 2s ease-in-out infinite }
+@keyframes gp-spot { 50% { border-color:var(--ring-person) } }
+.gp-rect-spotlight { position:absolute; border:2px solid var(--accent); border-radius:9px; pointer-events:none }
+.gp-types-toggle { display:none }
+@media(max-width:820px) {
+  .gp-backdrop,.gp-backdrop.is-centered { padding:100px 20px 80px; justify-content:center }
+  .gp-dialog { width:420px; max-height:calc(100dvh - 150px); overflow:auto; padding:24px }
+  .gp-welcome { padding:32px 24px }
+  .gp-stepper { gap:8px; margin-bottom:24px }
+  .gp-stepper>span { font-size:8px }
+  .gp-stepper i { width:18px;height:18px }
+  .gp-accounts-trigger { left:16px; bottom:16px; gap:9px }
+  .gp-add-source { right:16px;bottom:16px }
+  .gp-provider-stack { gap:4px }
+  .gp-tour-card.is-detail { left:50% }
+}
+@media(max-width:600px) {
+  .topbar { padding:16px; height:70px }
+  .brand { gap:7px }
+  .brand-name { font-size:20px }
+  .brand-stats { font-size:9px; white-space:nowrap }
+  .topbar-actions { gap:3px }
+  .topbar-actions .icon-btn { width:28px;height:28px }
+  .topbar-actions .toggle { gap:5px;margin-right:2px;font-size:8px }
+  .topbar-actions .toggle input { width:23px;height:13px }
+  .topbar-actions .toggle input:after { width:9px;height:9px }
+  .topbar-actions .toggle input:checked:after { left:12px }
+  #refresh-data { display:none }
+  .gp-learning { font-size:8px; max-width:230px; flex-wrap:wrap; gap:5px }
+  .legend { display:none; top:130px;left:16px;max-height:calc(100dvh - 220px);overflow:auto }
+  body.gp-types-open .legend:not([hidden]) { display:block }
+  .gp-types-toggle { display:block;position:fixed;top:100px;left:16px;padding:6px 9px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text-secondary);font:400 8px/1.5 var(--gp-font) }
+  .gp-heading h1 { font-size:21px }
+  .gp-copy { font-size:11px }
+  .gp-stepper>span { gap:4px }
+  .gp-stepper>span { font-size:7.5px }
+  .gp-step-footer>div { gap:12px }
+  .gp-primary { padding:9px 12px; font-size:10px }
+  .gp-dialog { padding:24px;max-height:calc(100dvh - 150px) }
+  .gp-setup .gp-footnote { text-align:left;font-size:8px }
+  .gp-accounts-trigger { left:12px;bottom:12px;padding:10px;gap:8px;font-size:8.5px }
+  .gp-accounts-trigger>svg { display:none }
+  #grove-product .gp-provider-stack svg,.gp-provider-stack>span { width:12px;height:12px }
+  .gp-add-source { right:12px;bottom:12px;padding:10px }
+  .gp-add-source span { display:none }
+  .gp-popover { top:62px;right:12px;width:min(300px,calc(100vw - 24px)) }
+  .detail { width:min(360px,100vw)!important;max-width:100vw }
+  .search-overlay { left:12px;right:12px;width:auto;transform:none;top:90px }
+  .gp-tour-card,.gp-tour-card.is-detail { bottom:78px;left:12px;transform:none;width:calc(100vw - 24px);padding:20px }
+  .gp-tour-card.is-detail { bottom:20px }
+}
+@media(prefers-reduced-motion:reduce) {
+  .gp-dialog,.gp-popover,.legend-row,.gp-status-dot,.gp-count-delta,.gp-node-spotlight { animation:none!important }
+}
+
+.gp-visual-guide { width:520px;padding:24px }
+.gp-visual-guide .gp-popup-top { margin-bottom:20px }
+.gp-guide-counter { color:var(--text-muted);font:400 9px var(--gp-font) }
+.gp-guide-title { display:flex;align-items:center;gap:12px;margin-bottom:24px }
+.gp-guide-title h1 { font:500 15px/1.5 var(--gp-font);letter-spacing:-.03em }
+.gp-app-frame { position:relative;aspect-ratio:760/475;border:1px solid var(--border);border-radius:6px;overflow:hidden;background:#fff }
+.gp-app-frame iframe { display:block;width:760px;height:475px;transform-origin:top left;border:0;pointer-events:none }
+.gp-screen-next { position:absolute;inset:0;width:100%;height:100%;border:0;background:transparent }
+.gp-guide-say { min-height:40px;margin-top:20px;font:400 11px/1.8 var(--gp-font);color:var(--text-secondary) }
+.gp-guide-footer { display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:24px }
+.gp-guide-footer>div { display:flex;gap:20px;align-items:center }
+.gp-visual-guide .gp-footnote { margin-top:20px;text-align:center;font-size:8px }
+.gp-footnote a { color:inherit;text-underline-offset:3px }
+.gp-export-route { display:flex;gap:12px;justify-content:space-between;align-items:center;padding:28px 0;border-block:1px solid var(--border);font:400 10px/1.8 var(--gp-font);color:var(--text-secondary) }
+.gp-export-route i { font-style:normal;color:var(--text-muted) }
+.gp-export-route+.gp-copy { margin:24px 0 }
+@media(max-width:600px){.gp-visual-guide{padding:20px}.gp-guide-title h1{font-size:13px}.gp-export-route{font-size:8px;gap:8px}}
