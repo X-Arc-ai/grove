@@ -1,0 +1,195 @@
+"""The placeholder API: the health probe, the protected-resource metadata and the 401 of /mcp."""
+
+import os
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+
+from grove import clock
+from grove.api.app import create_app
+from grove.api.config import ApiSettings, parse_base_url, parse_build_sha
+from grove.config import ConfigError
+from grove.store.connection import open_driver
+
+SERVER = Path(__file__).resolve().parents[2]
+SMOKE = SERVER.parent / "deploy" / "smoke.sh"
+SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.fixture
+def client(driver):
+    settings = ApiSettings(public_base_url="https://grove.example", build_sha=SHA)
+    # The fixture's driver stays open for other tests: the app gets one of its own.
+    with TestClient(create_app(settings, driver_factory=open_driver)) as test_client:
+        yield test_client
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"],
+)
+def test_the_metadata_names_the_mcp_resource_of_the_configured_host(client, path):
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.json() == {
+        "resource": "https://grove.example/mcp",
+        "authorization_servers": ["https://grove.example"],
+        "scopes_supported": ["grove.read", "grove.write", "grove.sensitive_write"],
+        "bearer_methods_supported": ["header"],
+        "resource_name": "Grove",
+    }
+
+
+def test_the_host_name_comes_from_configuration_only(driver):
+    for base in ("https://one.example", "https://two.example:8443"):
+        app = create_app(ApiSettings(public_base_url=base), driver_factory=open_driver)
+        with TestClient(app) as test_client:
+            body = test_client.get("/.well-known/oauth-protected-resource").json()
+        assert body["resource"] == f"{base}/mcp"
+        assert body["authorization_servers"] == [base]
+
+
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
+def test_an_unauthenticated_mcp_call_gets_401_with_the_metadata_url(client, method):
+    response = client.request(method, "/mcp")
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == (
+        'Bearer resource_metadata="https://grove.example/.well-known/oauth-protected-resource"'
+    )
+
+
+def test_meta_s_fetcher_gets_the_same_metadata(client):
+    plain = client.get("/.well-known/oauth-protected-resource")
+    fetcher = client.get(
+        "/.well-known/oauth-protected-resource", headers={"User-Agent": "meta-webindexer/1.1"}
+    )
+    assert fetcher.status_code == 200
+    assert fetcher.json() == plain.json()
+
+
+def test_health_says_ok_with_the_store_up_and_names_the_build(client):
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "store": "ok", "build": SHA}
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_health_answers_503_fast_when_the_store_is_down(monkeypatch):
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        closed_port = probe.getsockname()[1]
+    monkeypatch.setenv("GROVE_NEO4J_URI", f"bolt://127.0.0.1:{closed_port}")
+    monkeypatch.setenv("NEO4J_AUTH", "none")
+    settings = ApiSettings(public_base_url="https://grove.example")
+    # The app starts with the store down: opening a driver does not connect.
+    with TestClient(create_app(settings)) as test_client:
+        started = clock.monotonic()
+        response = test_client.get("/healthz")
+        elapsed = clock.monotonic() - started
+    assert response.status_code == 503
+    assert response.json() == {"status": "degraded", "store": "unreachable", "build": None}
+    assert elapsed < 10
+
+
+def test_the_api_publishes_no_schema_or_docs(client):
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert client.get(path).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        "",
+        "app.example",
+        "ftp://app.example",
+        "https://app.example/path",
+        "https://app.example/?q=1",
+        "https://app.example/#top",
+        "https://user:pw@app.example",
+        "http://app.example",
+    ],
+)
+def test_a_base_url_that_is_not_an_https_origin_is_refused(value):
+    with pytest.raises(ConfigError) as refused:
+        parse_base_url(value)
+    assert "pw" not in str(refused.value)
+
+
+def test_a_base_url_is_kept_as_its_origin():
+    assert parse_base_url("https://App.Example/") == "https://app.example"
+    assert parse_base_url("https://app.example:8443") == "https://app.example:8443"
+    assert parse_base_url("http://127.0.0.1:8000") == "http://127.0.0.1:8000"
+
+
+def test_a_build_sha_is_a_full_sha_or_nothing():
+    assert parse_build_sha(None) is None
+    assert parse_build_sha("") is None
+    assert parse_build_sha(SHA) == SHA
+    for bad in (SHA[:12], SHA.upper(), SHA + "0"):
+        with pytest.raises(ConfigError):
+            parse_build_sha(bad)
+
+
+def _free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+@pytest.fixture
+def served(driver):
+    """The real app under uvicorn, as on the box, with a loopback base URL."""
+    port = _free_port()
+    base = f"http://127.0.0.1:{port}"
+    env = {**os.environ, "GROVE_PUBLIC_BASE_URL": base, "GROVE_BUILD_SHA": SHA}
+    process = subprocess.Popen(
+        [sys.executable, "-m", "uvicorn", "grove.api.app:create_app", "--factory"]
+        + ["--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
+        cwd=SERVER,
+        env=env,
+    )
+    try:
+        for _ in range(100):
+            with socket.socket() as probe:
+                if probe.connect_ex(("127.0.0.1", port)) == 0:
+                    break
+            time.sleep(0.1)
+        yield base
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+def test_the_deploy_smoke_passes_against_the_real_app(served):
+    done = subprocess.run(
+        ["bash", str(SMOKE), served, SHA],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "GROVE_POLL_SECONDS": "0.2"},
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.splitlines() == [
+        f"ok healthz build={SHA}",
+        "ok /.well-known/oauth-protected-resource",
+        "ok /.well-known/oauth-protected-resource/mcp",
+        "ok /mcp 401",
+    ]
+
+
+def test_the_deploy_smoke_fails_against_the_real_app_serving_another_build(served):
+    done = subprocess.run(
+        ["bash", str(SMOKE), served, "f" * 40],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        env={**os.environ, "GROVE_SMOKE_TRIES": "2", "GROVE_POLL_SECONDS": "0"},
+    )
+    assert done.returncode == 1
+    assert "did not answer ok for build" in done.stderr
