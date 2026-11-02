@@ -21,10 +21,52 @@ HEALTHY = "healthy"
 SUMMARY_READY = "Your Grove is ready"
 SUMMARY_EMPTY = "Your Grove is empty"
 
-_ITEMS = "MATCH (i:Item) RETURN i"
+# The graph reads only what node_data, edge_data and the time filters use: never an item's body,
+# search terms or property values. world_id rides along so the WorldLeak guard checks each row.
+_INTERVAL_FIELDS = (
+    "became_true_earliest",
+    "became_true_latest",
+    "stopped_being_true_earliest",
+    "stopped_being_true_latest",
+    "recorded",
+)
+_ITEM_FIELDS = (
+    "id",
+    "world_id",
+    "title",
+    "kind",
+    "summary",
+    "status",
+    "status_since",
+    "touched_at",
+    "last_confirmed",
+    "version",
+    "properties",
+    *_INTERVAL_FIELDS,
+)
+_LINK_FIELDS = (
+    "id",
+    "world_id",
+    "from_item",
+    "to_item",
+    "meaning",
+    "active_key",
+    *_INTERVAL_FIELDS,
+)
+
+
+def _projection(variable: str, fields: tuple[str, ...]) -> str:
+    return ", ".join(f"{variable}.{name} AS {name}" for name in fields)
+
+
+_ITEMS = "MATCH (i:Item) RETURN " + _projection("i", _ITEM_FIELDS)
 _ITEM = "MATCH (i:Item {id: $id}) RETURN i"
 _ITEM_ID = "MATCH (i:Item {id: $id}) RETURN i.id AS id"
-_LINKS = "MATCH (a:Item)-[l:LINK]->(b:Item) RETURN l"
+_LINK_MATCH = "MATCH (a:Item)-[l:LINK]->(b:Item) "
+_LINKS_RETURN = "RETURN " + _projection("l", _LINK_FIELDS)
+# Without as_of only active links show, so the ended ones stay in the store.
+_ACTIVE_LINKS = _LINK_MATCH + "WHERE l.active_key IS NOT NULL " + _LINKS_RETURN
+_ALL_LINKS = _LINK_MATCH + _LINKS_RETURN
 _POSITIONS = "MATCH (p:MapPosition) RETURN p.item_id AS item_id, p.x AS x, p.y AS y"
 _POSITION = "MATCH (p:MapPosition {item_id: $id}) RETURN p.x AS x, p.y AS y"
 _KIND_COUNTS = "MATCH (i:Item) RETURN i.kind AS kind, count(i) AS n"
@@ -178,14 +220,14 @@ def graph_payload(
 ) -> dict[str, Any]:
     registry = read_registry(world, primitives)
     positions = _positions(world)
-    items = [row["i"] for row in world.read(_ITEMS)]
+    items = world.read(_ITEMS)
     nodes = [
         node_data(item, registry, positions.get(item["id"]), self_item_id)
         for item in sorted(items, key=lambda item: item["id"])
         if in_window(item, window)
     ]
     shown = {node["id"] for node in nodes}
-    links = [row["l"] for row in world.read(_LINKS)]
+    links = world.read(_ACTIVE_LINKS if window.as_of is None else _ALL_LINKS)
     edges = [
         edge_data(link, registry)
         for link in sorted(links, key=lambda link: link["id"])

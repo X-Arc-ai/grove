@@ -180,6 +180,8 @@
   var Graph;
   var rawNodes = [], rawEdges = [], byId = {};
   var fgNodes = [], fgLinks = [], fgNodeById = {};
+  // Counts the cleared sessions: a read that started before the last clear draws nothing.
+  var viewEpoch = 0;
   var neighborsOf = {};
   var focusedNode = null;
   var hoverNode = null;
@@ -510,13 +512,35 @@
       return {id:n.id,title:n.title,x:point.x,y:point.y,r:n.id==='grove-self'?Math.max(14,Math.min(27,90*Graph.zoom())):Math.max(20,nodeRadius(n)*Graph.zoom())};
     },
     nodes: function () { return fgNodes; },
-    graph: function () { return Graph; }
+    graph: function () { return Graph; },
+    clear: function () { clearGraph(); }
   };
+
+  // Live mode, the session has ended: no item of it stays in memory or on screen (the map, the
+  // legend, the counts, the node panel), and no placement of it is kept for the next person.
+  function clearGraph() {
+    viewEpoch++;
+    rawNodes = []; rawEdges = []; byId = {};
+    fgNodes = []; fgLinks = []; fgNodeById = {}; neighborsOf = {};
+    focusedNode = null; hoverNode = null; hoverLink = null; hopDist = {};
+    livePlaced = {}; liveSaving = {}; layoutCache = null; stableFrame = null; _evoSig = null;
+    manualCamera = false;
+    clearSelection({ silent: true });
+    if (Graph) Graph.graphData({ nodes: [], links: [] });
+    detailEl.classList.remove('open');
+    detailEl.setAttribute('aria-hidden', 'true');
+    detailBodyEl.innerHTML = '';
+    renderLegend();
+    renderStats();
+    scheduleRedraw();
+  }
   canvasEl.addEventListener('pointerdown', function () { manualCamera=true; });
 
   function loadGraph(refresh) {
+    var epoch = viewEpoch;
     return window.groveApi('/api/graph').then(function(r){return r.json();}).then(function(payload){
       if (payload.error) { var failed = new Error(payload.error); failed.code = payload.code; throw failed; }
+      if (epoch !== viewEpoch) return;   // the session ended while this read was out
       prepareLayout(payload);
       var previous = fgNodeById || {};
       rawNodes = payload.elements.nodes.map(function(w){
@@ -572,8 +596,9 @@
   setInterval(function () {
     if (document.hidden) return;
     if (hasSelection() || focusedNode || hoverNode) return;   // never mid-interaction
+    var epoch = viewEpoch;
     window.groveApi('/api/graph').then(function (r) { return r.json(); }).then(function (payload) {
-      if (!payload || !payload.elements) return;
+      if (!payload || !payload.elements || epoch !== viewEpoch) return;
       var ns = (payload.elements.nodes || []).map(function (w) { return w.data; });
       var es = (payload.elements.edges || []).map(function (w) { return w.data; });
       var sig = _graphSignature(ns, es);
@@ -1514,9 +1539,10 @@
       } else {
         glyph = '<span class="legend-swatch" style="border-color:' + color + '"></span>';
       }
-      return '<div class="legend-row' + disabled + '" data-type="' + t + '" title="click to toggle visibility">' +
+      // A kind name is store text (agents can mint kinds): escaped in the attribute and the label.
+      return '<div class="legend-row' + disabled + '" data-type="' + esc(t) + '" title="click to toggle visibility">' +
         glyph +
-        '<span class="legend-name">' + t + '</span>' +
+        '<span class="legend-name">' + esc(t) + '</span>' +
         '</div>';
     }).join('');
     listEl.querySelectorAll('.legend-row').forEach(function (el) {
@@ -2018,7 +2044,9 @@
     var status = raw.status || 'unknown';
     var dotClass = STATUS_DOT_CLASS[status] || (node.ended ? 'dot-ended' : '');
 
+    var epoch = viewEpoch;
     window.groveApi('/api/node/' + encodeURIComponent(node.id)).then(function (r) { return r.json(); }).then(function (extra) {
+      if (epoch !== viewEpoch) return;   // the session ended while this read was out
       var apiNode = (extra && extra.node) || {};
       var fullSummary = apiNode.content || apiNode.summary || raw.summary || '';
       var apiProps = apiNode.properties || localProps;
@@ -2041,6 +2069,7 @@
         optionalProps: optionalProps,
       });
     }).catch(function () {
+      if (epoch !== viewEpoch) return;
       renderPanel({
         id: node.id,
         title: raw.label || node.id,
@@ -2140,7 +2169,8 @@
     var raw = String(summary || '').trim();
     if (!raw) return '';
     var THRESH = 600;
-    var fullMd = window.marked ? window.marked.parse(raw) : esc(raw);
+    // Store text: markup.js renders it so raw HTML shows as text and only safe links stay.
+    var fullMd = window.GroveMarkup ? window.GroveMarkup.render(raw) : esc(raw);
 
     if (raw.length <= THRESH) {
       return '<div class="detail-section"><h6>summary</h6><div class="summary-md">' + fullMd + '</div></div>';
@@ -2151,7 +2181,7 @@
     var lastPara = raw.lastIndexOf('\n\n', THRESH);
     if (lastPara > THRESH * 0.5) snippetEnd = lastPara;
     var snippet = raw.slice(0, snippetEnd) + (snippetEnd < raw.length ? ' …' : '');
-    var snippetMd = window.marked ? window.marked.parse(snippet) : esc(snippet);
+    var snippetMd = window.GroveMarkup ? window.GroveMarkup.render(snippet) : esc(snippet);
 
     // Stash the full HTML on a data attr so the toggle can swap it in without
     // re-parsing. esc() the JSON-string-form so embedded quotes survive.

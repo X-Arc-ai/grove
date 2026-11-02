@@ -1,6 +1,7 @@
 """Every view endpoint answers a typed 401 unless the cookie names a live session."""
 
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from grove.store.query import PlatformQuery
 from grove.views.session import SESSION_COOKIE, token_hash
 from grove.writer.testing import plant_node, session_token_hash
 
+VIEWS_DOC = Path(__file__).resolve().parents[3] / "docs" / "views.md"
 UNAUTHENTICATED = {
     "error": {
         "code": "unauthenticated",
@@ -73,6 +75,22 @@ def test_an_expired_session_is_401(world, client_for, method, path, body):
 def test_a_revoked_session_is_401(world, client_for, method, path, body):
     client = client_for(world, revoked_at=clock.now() - timedelta(minutes=5))
     assert_unauthenticated(call(client, method, path, body))
+
+
+@pytest.mark.parametrize(("method", "path", "body"), CALLS)
+def test_a_session_whose_user_owns_no_world_is_401(world, client_for, method, path, body):
+    """A live, unrevoked session whose user owns no :World reads as signed out."""
+    orphan = client_for(world)
+    owner = client_for(world)  # a second user takes the world over: the first owns none now
+    assert owner.get("/v1/views/session").status_code == 200
+    assert_unauthenticated(call(orphan, method, path, body))
+
+
+def test_the_contract_says_signin_makes_the_world_before_the_cookie():
+    contract = VIEWS_DOC.read_text(encoding="utf-8")
+    assert "Signin must create the user's `:World` row before it sets the cookie." in contract
+    assert "A valid session whose user owns no `:World` reads as signed out" in contract
+    assert "or a session whose user owns no `:World`. |" in contract
 
 
 def test_the_raw_token_is_not_accepted_as_its_own_hash(app, driver, world, client_for):

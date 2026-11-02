@@ -35,11 +35,11 @@ from grove.ids import new_id
 from grove.store.connection import open_driver
 from grove.store.query import WorldQuery
 from grove.writer.testing import (
-    _refuse_real_world,
     plant_link,
     plant_node,
     plant_session,
     purge_test_world,
+    refuse_real_world,
     seed_test_world,
 )
 
@@ -163,7 +163,7 @@ def seed_world(
     active_key (S7). A second active link with the same world, from, meaning and to is skipped,
     because active_key is unique.
     """
-    _refuse_real_world(world_id)
+    refuse_real_world(world_id)
     nodes = [wrapper["data"] for wrapper in fixture["elements"]["nodes"]]
     edges = [wrapper["data"] for wrapper in fixture["elements"]["edges"]]
     owner = owner_user_id or new_id()
@@ -241,7 +241,7 @@ def add_items(driver: Driver, world_id: str, count: int) -> list[str]:
 
     Returns the new item ids in the order they were planted.
     """
-    _refuse_real_world(world_id)
+    refuse_real_world(world_id)
     if isinstance(count, bool) or not isinstance(count, int) or count < 1:
         raise ValueError("count must be a positive integer")
     existing = [row["id"] for row in WorldQuery(driver, world_id).read(_ITEMS)]
@@ -324,7 +324,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     world_id = args.world if args.world is not None else f"{WORLD_PREFIX}{uuid4()}"
     try:
-        _refuse_real_world(world_id)
+        refuse_real_world(world_id)
     except ValueError as refused:
         print(f"grove.writer.demo: {refused}", file=sys.stderr)
         return 2

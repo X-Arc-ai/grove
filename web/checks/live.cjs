@@ -35,6 +35,7 @@ function makeServer(world){
       return reply(200,{elements:{nodes,edges:world.edges.filter(e=>ids.has(e.source)&&ids.has(e.target)).map(e=>({data:e}))},stats:{total_nodes:nodes.length},time:{min:null,max:null},generated_at:'2026-11-02T00:00:00Z',as_of:null,known_as_of:null,self_item_id:world.selfId||null});
     }
     if(u.pathname.indexOf('/v1/views/node/')===0){
+      if(world.nodeStatus)return typed(world.nodeStatus,'unauthenticated','Sign in to continue');
       const n=world.nodes.find(x=>x.id===decodeURIComponent(u.pathname.slice('/v1/views/node/'.length)));
       return n?reply(200,{node:Object.assign({},n,{title:n.label,content:n.summary,status_field_value:n.status}),required_props:[],optional_props:[],required_prop_names:[],status_field:'status'}):typed(404,'not_found','No such item');
     }
@@ -43,6 +44,7 @@ function makeServer(world){
     if(u.pathname==='/v1/views/positions'&&method==='POST'){
       assert.equal(init.headers['Content-Type'],'application/json');
       assert(Array.isArray(body.positions)&&body.positions.length>=1&&body.positions.length<=5000,'1 to 5000 positions per request');
+      if(world.positionsStatus)return typed(world.positionsStatus,'unauthenticated','Sign in to continue');
       if(world.failPositions)return typed(503,'unavailable','Try again later');
       let placed=0,kept=0,unknown=0;
       for(const p of body.positions){
@@ -53,7 +55,11 @@ function makeServer(world){
     }
     if(u.pathname==='/v1/auth/email/start'&&method==='POST')return world.emailStartFails?typed(400,'invalid_arguments','That address cannot receive a code'):reply(200,{});
     if(u.pathname==='/v1/auth/email/verify'&&method==='POST'){if(body.code!==world.code)return typed(401,'unauthenticated','The code does not match');world.session=true;return reply(200,{signed_in:true});}
-    if(u.pathname==='/v1/auth/logout'&&method==='POST'){world.session=false;return reply(200,{});}
+    if(u.pathname==='/v1/auth/logout'&&method==='POST'){
+      if(world.logoutThrows)return Promise.reject(new TypeError('Failed to fetch'));
+      if(world.logoutStatus)return typed(world.logoutStatus,'internal','the server failed');
+      world.session=false;return reply(200,{});
+    }
     return typed(404,'not_found','No such path');
   }
   return {fetch,calls,world};
@@ -77,12 +83,13 @@ function makeGraph(){
   const proxy=new Proxy(g,{get:(t,k)=>(k in t?t[k]:k==='then'||typeof k!=='string'?undefined:function(){return proxy;})});
   return proxy;
 }
-function page(server,store,files,hook,size){
-  const elements={},winListeners={},errors=[],warnings=[],assigned=[];
+function page(server,store,files,hook,size,prepare){
+  const elements={},winListeners={},errors=[],warnings=[],assigned=[],intervals=[];
+  if(prepare)prepare(elements);
   const document={hidden:false,body:makeElement('body'),documentElement:makeElement('html'),createElement:makeElement,getElementById:id=>elements[id]||(elements[id]=makeElement('div')),querySelector:()=>null,querySelectorAll:()=>[],addEventListener(){},removeEventListener(){}};
   const sandbox={URL,URLSearchParams,Math,JSON,Date,Promise,
     console:{log(){},info(){},warn:(...a)=>warnings.push(a),error:(...a)=>errors.push(a)},
-    setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,clearInterval(){},requestAnimationFrame:()=>0,cancelAnimationFrame(){},
+    setTimeout:()=>0,clearTimeout(){},setInterval:(fn,ms)=>intervals.push({fn,ms}),clearInterval(){},requestAnimationFrame:()=>0,cancelAnimationFrame(){},
     performance:{now:()=>1000},innerWidth:(size||[1440,900])[0],innerHeight:(size||[1440,900])[1],devicePixelRatio:1,document,navigator:{},
     matchMedia:()=>({matches:false,addEventListener(){},removeEventListener(){}}),getComputedStyle:()=>({getPropertyValue:()=>''}),
     localStorage:{getItem:k=>(k in store?store[k]:null),setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}},
@@ -94,11 +101,24 @@ function page(server,store,files,hook,size){
     dispatchEvent:e=>{(winListeners[e.type]||[]).forEach(fn=>fn(e));return true;}};
   sandbox.window=sandbox;vm.createContext(sandbox);
   for(const f of files){let source=read(f);if(f==='product.js'&&hook)source=source.replace('  render(true);maybeTour();',hook);vm.runInContext(source,sandbox,{filename:f});}
-  return {sandbox,elements,errors,warnings,assigned};
+  return {sandbox,elements,errors,warnings,assigned,intervals};
 }
 const GRAPH_FILES=['live.js','layout-keep.js','simulation.js','native-app.js'];
 const positionsCalls=server=>server.calls.filter(c=>c.path==='/v1/views/positions');
 const fgPositions=pg=>Object.fromEntries(pg.sandbox.GroveView.nodes().map(n=>[n.id,{x:n.x,y:n.y}]));
+const decodeHtml=s=>s.replace(/&#x([0-9a-f]+);/gi,(_,h)=>String.fromCodePoint(parseInt(h,16))).replace(/&#(\d+);/g,(_,d)=>String.fromCodePoint(+d))
+  .replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
+// A legend list whose rows behave as the browser's do: each row reads its data-type back decoded,
+// and a click runs the row's own handler.
+function legendRows(elements){
+  const el=makeElement('div');let rows=[];
+  el.querySelectorAll=sel=>{
+    if(sel!=='.legend-row')return [];
+    rows=[...el.innerHTML.matchAll(/<div class="legend-row[^"]*" data-type="([^"]*)"/g)].map(m=>{let onclick=null;return {getAttribute:k=>(k==='data-type'?decodeHtml(m[1]):null),addEventListener:(k,fn)=>{if(k==='click')onclick=fn;},click:()=>onclick&&onclick()};});
+    return rows;
+  };
+  el.rows=()=>rows;elements['legend-list']=el;
+}
 
 (async()=>{
   // 1. live.js: one endpoint map, same-origin fetch helpers, positions in batches of 5000.
@@ -190,7 +210,11 @@ const fgPositions=pg=>Object.fromEntries(pg.sandbox.GroveView.nodes().map(n=>[n.
   assert.deepStrictEqual(retry[1].body.positions.map(p=>p.id).sort(),world2.nodes.map(n=>n.id).sort());
   for(const p of retry[1].body.positions)assert(p.x===failedMap[p.id].x&&p.y===failedMap[p.id].y,'The retry saves the positions on screen');
   // No self item: the sim's identity node joins once onboarding starts, and is never saved.
-  const S2=failing.sandbox.GroveSimulation;S2.setName('Sam');S2.setStep(1);await failing.sandbox.reloadGrove();await settle();
+  // With no name known, the identity node says You (the sim's example name is fixture mode only).
+  const S2=failing.sandbox.GroveSimulation;S2.setStep(1);await failing.sandbox.reloadGrove();await settle();
+  assert.equal((await (await failing.sandbox.groveApi('/api/node/grove-self')).json()).node.title,'You','The identity node says You');
+  assert.equal(failing.sandbox.GroveView.nodes().find(n=>n.id==='grove-self').title,'You','The map labels the identity node You');
+  S2.setName('Sam');await failing.sandbox.reloadGrove();await settle();
   const ids2=failing.sandbox.GroveView.nodes().map(n=>n.id);assert(ids2.includes('grove-self'));
   const selfLinks=failing.sandbox.GroveView.graph().graphData().links.filter(l=>l.source==='grove-self');
   assert(selfLinks.length>0&&selfLinks.length<=16,'The identity node links to hubs, as in the sim');
@@ -226,12 +250,168 @@ const fgPositions=pg=>Object.fromEntries(pg.sandbox.GroveView.nodes().map(n=>[n.
     await p.verifyEmail('246810');assert.equal(A.getState().auth.provider,'email');assert.equal(A.getState().auth.email,'anas@example.com');assert.equal(p.ui.authStage,null);
     p.handle('logout');await settle();call=sv.calls[sv.calls.length-1];assert.equal(call.path,'/v1/auth/logout');assert.equal(call.method,'POST');
     assert.equal(A.getState().auth,null);assert.equal(p.ui.authStage,'signin');assert(sv.calls.every(c=>c.init.credentials==='same-origin'));
-    // Back from Google: a session with no local sign-in signs in.
-    w.session=true;const back=page(sv,{},AUTH_FILES,HOOK);await settle();
-    assert.equal(back.sandbox.GroveSimulation.getState().auth.provider,'google');assert.equal(back.sandbox.productTest.ui.authStage,null);
+    // The email code keeps the address the person typed, and Account shows it.
+    p.ui.panel=null;
+    // Back from Google: a session with no local sign-in signs in, with no made-up identity.
+    const done=()=>({'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,onboardingComplete:true,onboardingStep:4,tourComplete:true})});
+    w.session=true;const back=page(sv,done(),AUTH_FILES,HOOK);await settle();
+    const B=back.sandbox.GroveSimulation,bp=back.sandbox.productTest;
+    assert.equal(B.getState().auth.provider,'google');assert.equal(bp.ui.authStage,null);
+    assert.equal(B.getState().auth.email,'','Google gives the page no address, and none is made up');assert.equal(B.getState().name,'','No example name in live mode');
+    bp.ui.panel='profile';bp.ui.settingsTab='account';bp.render(true);
+    assert(!/anas@example\.com|Anas/.test(bp.html()),'Account shows no example identity');
+    assert(bp.html().includes('Signed in with Google')&&bp.html().includes('<small>You</small>'),'Account shows the sign-in method and a neutral name');
+    assert.equal(back.elements['profile-button'].textContent,'Y');
+    // An email sign-in shows the typed address.
+    const typed=page(sv,done(),AUTH_FILES,HOOK);await settle();const tp=typed.sandbox.productTest;w.session=false;
+    typed.sandbox.GroveSimulation.signOut();tp.ui.authStage='signin';await tp.startEmail('sam.reyes@example.org');await tp.verifyEmail('246810');
+    assert.equal(typed.sandbox.GroveSimulation.getState().auth.email,'sam.reyes@example.org');
+    tp.ui.panel='profile';tp.ui.settingsTab='account';tp.render(true);assert(tp.html().includes('sam.reyes@example.org')&&!tp.html().includes('anas@example.com'));
     // A stale local sign-in with no server session goes back to the sign-in screen.
     w.session=false;const stale=page(sv,st,AUTH_FILES,HOOK);stale.sandbox.GroveSimulation.signIn('email','anas@example.com');await settle();
     assert.equal(stale.sandbox.GroveSimulation.getState().auth,null);assert.equal(stale.sandbox.productTest.ui.authStage,'signin');
+  }
+
+  // 6b. Item text in the node panel never runs: not in the summary, not in its snippet, not in
+  //     the full text that "Show more" puts in place (data-full-html), whatever marked would make.
+  {
+    const w=liveWorld();
+    const hostile='Notes <img src=x onerror=alert(1)> and <script>alert(2)</script> <a href="javascript:alert(3)">raw</a> [md](javascript:alert(4)) ![pic](javascript:alert(5)) <javascript:alert(6)> <https://example.com/ok>';
+    const long=hostile+'\n\n'+'Plain words to pass the fold of the panel. '.repeat(20)+'\n\n'+hostile.replace(/alert\(/g,'confirm(');
+    w.nodes.push(Object.assign({},w.nodes[1],{id:'x-short',label:'Short note',summary:hostile}),Object.assign({},w.nodes[1],{id:'x-long',label:'Long note',summary:long}));
+    const pg=page(makeServer(w),{},['vendor/marked.min.js','markup.js',...GRAPH_FILES]);await settle();
+    assert(pg.sandbox.marked&&pg.sandbox.GroveMarkup,'The panel renders with the vendored marked through markup.js');
+    for(const id of ['x-short','x-long']){
+      pg.sandbox.GroveView.openNode(id);await settle();
+      const html=pg.elements['detail-body'].innerHTML,full=(html.match(/ data-full-html="([^"]*)"/)||[])[1];
+      assert(html.includes('<h6>summary</h6>'),id+': the summary shows');
+      if(id==='x-long'){assert(full,'A long summary keeps its full text for Show more');assert(decodeHtml(full).includes('&lt;img src=x onerror=confirm(1)&gt;'),'The text past the fold is escaped too');}
+      for(const [part,label] of [[html.replace(/ data-full-html="[^"]*"/,''),id+' panel'],[full?decodeHtml(full):'',id+' show more']]){
+        assert(!/<(img|script|svg|iframe)\b/i.test(part),label+': no image or script element');
+        const tags=[...part.matchAll(/<[^>]*>/g)].map(m=>m[0]);
+        assert(!tags.some(t=>/\son\w+\s*=/i.test(t)),label+': no event handler');
+        assert(!tags.some(t=>/javascript:/i.test(decodeHtml(t))),label+': no javascript: address in an attribute');
+      }
+      assert(html.includes('<a href="https://example.com/ok">'),id+': a safe link stays a link');
+    }
+  }
+
+  // 6c. A kind name is store text: the legend shows it as text, and its toggle still hides it.
+  {
+    const w=liveWorld(),odd='<img src=x onerror=alert(1)>"q" & co',st={};
+    w.nodes.push(Object.assign({},w.nodes[1],{id:'odd-1',label:'Odd kind item',type:odd}));
+    const pg=page(makeServer(w),st,GRAPH_FILES,null,null,legendRows);await settle();
+    const list=pg.elements['legend-list'],view=()=>pg.sandbox.GroveView.graph().graphData().nodes;
+    assert(!/<img/i.test(list.innerHTML),'No markup from a kind name reaches the legend');
+    assert(list.innerHTML.includes('data-type="&lt;img src=x onerror=alert(1)&gt;&quot;q&quot; &amp; co"'),'The attribute holds the escaped kind name');
+    assert(list.innerHTML.includes('<span class="legend-name">&lt;img src=x onerror=alert(1)&gt;&quot;q&quot; &amp; co</span>'),'The label shows the kind name as text');
+    let row=list.rows().find(r=>r.getAttribute('data-type')===odd);assert(row,'The row reads back the exact kind name');
+    assert(view().some(n=>n.type===odd));row.click();
+    assert(!view().some(n=>n.type===odd),'A click hides that kind');assert.deepStrictEqual(JSON.parse(st['grove-minimal-codex-hidden-types']),{[odd]:1});
+    row=list.rows().find(r=>r.getAttribute('data-type')===odd);row.click();
+    assert(view().some(n=>n.type===odd),'A second click shows it again');
+  }
+
+  // 6d. The session turns 401 mid-session: one 'grove:unauthenticated', the local sign-in ends,
+  //     panels close, the sign-in card shows, and the graph leaves memory and the screen. Each live
+  //     call can be the one: a graph reload, the 3-minute poll, a node detail, a position save.
+  const ALL_FILES=['live.js','layout-keep.js','simulation.js','native-app.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'];
+  const signedInStore=()=>({'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,auth:{provider:'email',email:'sam.reyes@example.org'},name:'Sam',onboardingComplete:true,onboardingStep:4,tourComplete:true})});
+  async function sessionPage(w,store){
+    const sv=makeServer(w),st=store||signedInStore(),pg=page(sv,st,ALL_FILES,HOOK);let heard=0;
+    pg.sandbox.addEventListener('grove:unauthenticated',()=>heard++);await settle();
+    return {w,sv,st,pg,p:pg.sandbox.productTest,S:pg.sandbox.GroveSimulation,V:pg.sandbox.GroveView,heard:()=>heard};
+  }
+  const shownText=t=>Object.values(t.pg.elements).map(e=>e.innerHTML+'|'+e.textContent).join('|')+t.p.html();
+  function assertSignedIn(t,label){
+    assert(t.S.getState().auth,label+': signed in');assert.equal(t.p.ui.authStage,null,label+': no sign-in card');
+    assert(t.V.nodes().length>0&&t.V.graph().graphData().nodes.length>0,label+': the graph shows');
+    assert(t.pg.elements['legend-list'].innerHTML.includes('legend-row'),label+': the legend shows');
+    assert(/[1-9]\d* nodes/.test(t.pg.elements.stats.innerHTML),label+': the counts show');
+  }
+  function assertCleared(t,label){
+    assert.equal(t.S.getState().auth,null,label+': signed out here');
+    assert.equal(t.p.ui.authStage,'signin',label+': the sign-in card shows');assert(t.p.html().includes('Continue with Google'),label+': sign-in card markup');
+    assert.equal(t.p.ui.panel,null,label+': panels are closed');
+    assert.equal(t.V.nodes().length,0,label+': no node in memory');assert.equal(t.V.graph().graphData().nodes.length,0,label+': no node on the map');
+    assert.equal(t.pg.elements['legend-list'].innerHTML,'',label+': the legend is empty');
+    assert(/^<span>0 nodes<\/span>/.test(t.pg.elements.stats.innerHTML),label+': the counts are zero');
+    assert.equal(t.pg.elements['detail-body'].innerHTML,'',label+': the node panel is empty');assert(!t.pg.elements.detail.classList.contains('open'),label+': the node panel is closed');
+    assert.equal(t.S.getState().currentNodeCount,0,label+': the last payload is gone');
+    const text=shownText(t);assert(!t.w.nodes.some(n=>n.label&&n.label.length>=6&&text.includes(n.label)),label+': no title stays on screen');
+  }
+  const goneNow=w=>{w.session=false;w.graphStatus=401;};
+  {
+    // A graph reload.
+    const t=await sessionPage(liveWorld());assertSignedIn(t,'reload, before');
+    t.p.ui.panel='profile';t.p.ui.settingsTab='account';t.p.render(true);
+    goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();
+    assertCleared(t,'reload');assert.equal(t.heard(),1,'One event for the ended session');
+    // A sign-in the server accepts arms it again: the graph comes back, and a later 401 ends it again.
+    t.w.graphStatus=0;await t.p.startEmail('sam.reyes@example.org');await t.p.verifyEmail('246810');await settle();
+    assertSignedIn(t,'signed in again');
+    goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'reload, second session');assert.equal(t.heard(),2);
+    assert.deepStrictEqual(t.pg.errors,[],'The ended sessions log no error');
+  }
+  {
+    // The 3-minute poll.
+    const t=await sessionPage(liveWorld());assertSignedIn(t,'poll, before');
+    const poll=t.pg.intervals.find(i=>i.ms===180000);assert(poll,'The graph polls every 3 minutes');
+    goneNow(t.w);poll.fn();await settle();assertCleared(t,'poll');assert.equal(t.heard(),1);
+    poll.fn();await settle();assert.equal(t.heard(),1,'A second 401 sends no second event');
+  }
+  {
+    // A node detail, with another node's panel open.
+    const t=await sessionPage(liveWorld());assertSignedIn(t,'detail, before');
+    t.V.openNode('t001');await settle();assert(t.pg.elements['detail-body'].innerHTML.includes('detail-title'),'A node panel shows');assert(t.pg.elements.detail.classList.contains('open'));
+    t.w.session=false;t.w.nodeStatus=401;
+    t.V.openNode('t002');await settle();assertCleared(t,'node detail');assert.equal(t.heard(),1);
+  }
+  {
+    // A position save (a first visit: nothing is placed yet).
+    const w=liveWorld();w.positionsStatus=401;
+    const t=await sessionPage(w);assert.equal(positionsCalls(t.sv).length,1,'The first visit saves');
+    assertCleared(t,'position save');assert.equal(t.heard(),1);
+  }
+  {
+    // A signed-out first load: the card keeps its step, and nothing is drawn.
+    const w=liveWorld();w.session=false;w.graphStatus=401;
+    const t=await sessionPage(w,{});assert.equal(t.p.ui.authStage,'signin');assert.equal(t.V.nodes().length,0);assert.deepStrictEqual(t.pg.errors,[]);
+  }
+
+  // 6e. Logout signs out here only when the server confirms it, or the session is already gone.
+  {
+    const w=liveWorld();w.logoutStatus=500;const t=await sessionPage(w);
+    t.p.ui.panel='profile';t.p.ui.settingsTab='account';t.p.render(true);
+    t.p.handle('logout');await settle();
+    assertSignedIn(t,'failed logout');assert.equal(t.p.ui.panel,'profile','The account panel stays');assert.equal(t.p.ui.settingsTab,'account');
+    assert(t.p.html().includes('<p class="gp-footnote" role="alert">Grove could not sign you out. Try again.</p>'),'The error shows in the sim\'s error style');
+    assert.deepStrictEqual(t.sv.calls.slice(-2).map(c=>c.method+' '+c.path),['POST /v1/auth/logout','GET /v1/views/session'],'A failed logout asks whether the session is gone');
+    w.logoutStatus=0;w.logoutThrows=true;t.p.handle('logout');await settle();
+    assertSignedIn(t,'logout offline');assert(t.p.html().includes('Grove could not sign you out. Try again.'));
+    // The logout fails, but the session is already gone: signed out here.
+    w.logoutThrows=false;w.logoutStatus=500;w.session=false;t.p.handle('logout');await settle();
+    assertCleared(t,'logout of a gone session');
+  }
+  {
+    const w=liveWorld(),t=await sessionPage(w);
+    t.p.ui.panel='profile';t.p.ui.settingsTab='account';t.p.render(true);t.V.openNode('t001');await settle();
+    t.p.handle('logout');await settle();
+    assertCleared(t,'confirmed logout');assert.equal(t.sv.calls[t.sv.calls.length-1].path,'/v1/auth/logout','A confirmed logout asks nothing more');
+    assert(!t.p.html().includes('could not sign you out'));
+  }
+
+  // 6f. Live mode makes no local questions from store titles, and drops the ones an older page saved.
+  for(const older of [false,true]){
+    const kept={version:3,schema:4,auth:{provider:'email',email:'sam.reyes@example.org'},name:'Sam',onboardingStep:4};
+    if(older)Object.assign(kept,{requestsSeeded:true,requests:[{id:'focus',targetLabel:'Saved by an older page',title:'Should Saved by an older page stay?',status:'open'}]});
+    const w=liveWorld(),st={'grove-minimal-codex-v3':JSON.stringify(kept)},label=older?'older questions':'a first onboarding';
+    const pg=page(makeServer(w),st,GRAPH_FILES);await settle();const S=pg.sandbox.GroveSimulation;
+    await S.importSource('conversations',{provider:'chatgpt',name:'chatgpt-export.zip'});S.completeOnboarding();await settle();
+    assert(S.getState().onboardingComplete&&Object.keys(S.getState().accountImports).length,label+': onboarding is done, with an import');
+    assert.deepStrictEqual(S.getState().requests,[],label+': no local question in live mode');
+    const saved=st['grove-minimal-codex-v3'];assert(!saved.includes('Saved by an older page'),label+': the older questions are dropped');
+    const titles=w.nodes.map(n=>n.label).filter(l=>l&&l.length>=6);assert(!titles.some(l=>saved.includes(l)),label+': no store title reaches local storage');
   }
 
   // 7. The production page: live scripts first, and no fixture anywhere in the built file.
@@ -252,5 +432,5 @@ const fgPositions=pg=>Object.fromEntries(pg.sandbox.GroveView.nodes().map(n=>[n.
   const encoded=[...new Set([...dist.matchAll(/url\((data:font\/woff2;base64,[^)]*%(?:41|61)[^)]*)\)/g)].map(m=>m[1]))];
   assert.equal(encoded.length,fontFiles.length,'Every vendored font is embedded, encoded');
   for(const uri of encoded){const bytes=Buffer.from(await (await fetch(uri)).arrayBuffer());assert(fontBytes.some(b=>b.equals(bytes)),'An encoded font decodes to its vendored bytes');}
-  console.log('PASS: one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, and a built page with no fixture');
+  console.log('PASS: one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, logout only when the server confirms it, no local questions from store titles, no example identity in live mode, and a built page with no fixture');
 })().catch(e=>{console.error(e);process.exitCode=1;});
