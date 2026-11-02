@@ -22,18 +22,22 @@ variable and the pool are removed, so a public repository never has a self-hoste
 
 `python -m grove.lints runner` keeps that fallback true. It reads every file under
 `.github/workflows/` and allows two `runs-on` values only: the expression above and
-`ubuntu-latest`. Its findings:
+`ubuntu-latest`. The project has no YAML parser, so the lint reads the files line by line, and it
+fails closed: a line whose structure it cannot read is a finding, never a skip. The text inside a
+block scalar (`run: |`, `key: >-`) is not structure and is not read. Its findings:
 
 | Finding | Meaning |
 |---|---|
 | `runner/not-allowed` | any other value: a pool label, `self-hosted`, a list, another expression |
-| `runner/block-form` | `runs-on:` with its value on the lines below it (a list, `group:`, `labels:`) |
+| `runner/block-form` | `runs-on:` with its value on the lines below it (a list, `group:`, a plain scalar that goes on in the next line) |
 | `runner/reusable-call` | a job that calls a workflow of another repository, whose runner is out of reach |
-| `runner/symlink` | a workflow file that is a symbolic link, whose target is out of reach |
+| `runner/symlink` | a workflow file, `.github/workflows` or `.github` that is a symbolic link |
+| `runner/unreadable` | a line the scanner cannot read: an explicit `?` key, a tag, anchor or alias in a key's place, a merge key `<<`, a double-quoted key with an escape, a flow mapping that holds `runs-on` or `uses`, or a line at column 0 that is not a key |
 
 A job that calls a workflow of this repository (`uses: ./.github/workflows/...`) is allowed: the
-lint reads the called file too. The lint does not read YAML in flow style or YAML anchors for
-`runs-on`, and it cannot see a workflow file that a job writes at run time.
+lint reads the called file too. Values are compared after quotes and a trailing comment are
+dropped and spaces and tabs collapsed; any other whitespace, such as a no-break space, makes the
+value differ. The lint cannot see a workflow file that a job writes at run time.
 
 Run it locally from `server/`:
 

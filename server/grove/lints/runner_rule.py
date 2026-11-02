@@ -3,22 +3,31 @@
 `Validate` runs on `${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}`. While the repo is private, the
 variable may name a self-hosted pool. Before the repo goes public the variable is deleted, and every
 job then falls back to `ubuntu-latest`. That fallback holds only when no workflow names a runner in
-any other way, so this lint reads every workflow file as text and allows two `runs-on` values only:
+any other way, so this lint reads every workflow file and allows two `runs-on` values only:
 
     ${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}
     ubuntu-latest
 
-A value is compared after its quotes and a trailing comment are dropped and its spaces collapsed.
+A value is compared after its quotes and a trailing comment are dropped and its spaces and tabs
+collapsed. Any other whitespace (a no-break space, for example) stays and makes the value differ.
+
+The project carries no YAML parser, so the lint reads the files line by line. It fails closed: a
+line whose structure it cannot read is a finding, never a skip. The content of a block scalar
+(`run: |`, `key: >-`) is text, not structure, and is not read.
 
 Findings:
     runner/not-allowed     any other value: a pool label, `self-hosted`, a list, an expression
-    runner/block-form      `runs-on:` with its value on the lines below it (a list, `group:`)
+    runner/block-form      `runs-on:` with its value on the lines below it (a list, `group:`, a
+                           plain scalar that goes on in the next line)
     runner/reusable-call   a job that calls a workflow of another repository (runner out of reach)
-    runner/symlink         a workflow file that is a symbolic link (target out of reach)
+    runner/symlink         a workflow file, or the workflows dir, that is a symbolic link
+    runner/unreadable      a line the scanner cannot read: an explicit `?` key, a tag or an anchor
+                           or alias in a key's place, a merge key `<<`, a double-quoted key with
+                           an escape, a flow mapping that holds `runs-on` or `uses`, or a column-0
+                           line that is not a key
 
-Out of reach: a workflow file that a job writes at run time, and YAML written in flow style
-(`jobs: {build: {runs-on: x}}`) or with anchors and aliases for `runs-on`. None of these is in the
-repo, and each one is a deliberate act, not an accident.
+Out of reach: a workflow file that a job writes at run time. That is a deliberate act, not an
+accident, and the variable and the pool are removed before the repo goes public in any case.
 """
 
 import re
@@ -28,21 +37,27 @@ from grove.lints._scan import Finding, list_files, read_text
 
 WORKFLOW_DIR = ".github/workflows/"
 WORKFLOW_SUFFIXES = (".yml", ".yaml")
+LINKED_DIRS = (".github", ".github/workflows")
 
 ALLOWED = frozenset({"${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}", "ubuntu-latest"})
 
 _KEY = re.compile(
-    r"""^(?P<indent>[ ]*)(?P<item>-[ ]+)?["']?(?P<key>[A-Za-z0-9_-]+)["']?[ ]*:(?P<rest>.*)$"""
+    r"""^(?P<indent>[ ]*)(?P<item>-[ ]+)?"""
+    r"""(?P<q>["']?)(?P<key>[A-Za-z0-9_-]+)(?P=q)[ ]*:(?P<rest>.*)$"""
 )
+_UNREADABLE = re.compile(r"""^[ ]*(?:-[ ]+)?(?:[?!&*]|<<|"[^"\n]*\\)""")
+_FLOW_KEY = re.compile(r"""\{[^}]*\b(?:runs-on|uses)\b""")
+_BLOCK_SCALAR = re.compile(r"^[|>][0-9+-]*$")
 _COMMENT = re.compile(r"(^|[ \t])#.*$")
+_DOCUMENT_MARK = re.compile(r"^(?:---|\.\.\.)(?:[ \t]+#.*)?$")
 
 
 def _value(rest: str) -> str:
-    """The scalar after a key: no trailing comment, no outer quotes, spaces collapsed."""
-    text = _COMMENT.sub("", rest).strip()
+    """The scalar after a key: no trailing comment, no outer quotes, spaces and tabs collapsed."""
+    text = _COMMENT.sub("", rest).strip(" \t")
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
-        text = text[1:-1].strip()
-    return " ".join(text.split())
+        text = text[1:-1].strip(" \t")
+    return re.sub(r"[ \t]+", " ", text)
 
 
 def _is_workflow(rel: str) -> bool:
@@ -54,24 +69,50 @@ def _check_text(rel: str, text: str) -> list[Finding]:
     in_jobs = False
     job_indent: int | None = None
     key_indent: int | None = None
+    block_column: int | None = None  # inside a block scalar: lines indented past this are text
+    runs_on: tuple[int, int] | None = None  # (line, key column) of a runs-on with a plain value
     for number, line in enumerate(text.splitlines(), start=1):
-        if not line.strip() or line.lstrip().startswith("#"):
+        stripped = line.strip(" ")
+        if not stripped or stripped.startswith("#"):
             continue
-        match = _KEY.match(line)
         indent = len(line) - len(line.lstrip(" "))
+        if block_column is not None:
+            if indent > block_column:
+                continue
+            block_column = None
+        if runs_on is not None:
+            if indent > runs_on[1]:
+                findings.append(Finding(rel, runs_on[0], "runner/block-form"))
+            runs_on = None
+        match = _KEY.match(line)
         if indent == 0:
-            in_jobs = bool(match and match.group("key") == "jobs" and not match.group("item"))
-            job_indent = key_indent = None
+            if match and not match.group("item"):
+                in_jobs = match.group("key") == "jobs"
+                job_indent = key_indent = None
+            elif not _DOCUMENT_MARK.match(line):
+                findings.append(Finding(rel, number, "runner/unreadable"))
+                in_jobs = False
+            if match and _BLOCK_SCALAR.match(_value(match.group("rest"))):
+                block_column = 0
             continue
         if not match:
+            if _UNREADABLE.match(line) or _FLOW_KEY.search(line):
+                findings.append(Finding(rel, number, "runner/unreadable"))
             continue
         key, rest = match.group("key"), match.group("rest")
+        column = indent + len(match.group("item") or "")
+        value = _value(rest)
+        if _BLOCK_SCALAR.match(value):
+            block_column = column
+        elif _FLOW_KEY.search(rest):
+            findings.append(Finding(rel, number, "runner/unreadable"))
         if key == "runs-on":
-            value = _value(rest)
             if not value:
                 findings.append(Finding(rel, number, "runner/block-form"))
             elif value not in ALLOWED:
                 findings.append(Finding(rel, number, "runner/not-allowed"))
+            else:
+                runs_on = (number, column)
             continue
         if not in_jobs or match.group("item"):
             continue
@@ -80,7 +121,7 @@ def _check_text(rel: str, text: str) -> list[Finding]:
             continue
         if key_indent is None:
             key_indent = indent
-        if indent == key_indent and key == "uses" and not _value(rest).startswith("./"):
+        if indent == key_indent and key == "uses" and not value.startswith("./"):
             findings.append(Finding(rel, number, "runner/reusable-call"))
     return findings
 
@@ -88,9 +129,12 @@ def _check_text(rel: str, text: str) -> list[Finding]:
 def check(root: Path, base: str | None = None) -> list[Finding]:
     findings: list[Finding] = []
     for rel in list_files(root):
+        path = root / rel
+        if rel in LINKED_DIRS and path.is_symlink():
+            findings.append(Finding(rel, 1, "runner/symlink"))
+            continue
         if not _is_workflow(rel):
             continue
-        path = root / rel
         if path.is_symlink():
             findings.append(Finding(rel, 1, "runner/symlink"))
         elif path.is_file():
