@@ -300,7 +300,7 @@ body.hood-on .hood-score{width:var(--gp-dock-width);padding:16px;box-sizing:bord
 }
 /* The entry volume fills the viewport; different depth planes drift independently. */
 #grove-product .gp-entry-backdrop{overflow:hidden;padding:24px}
-#grove-product .gp-entry{min-height:0;height:100%;width:100%;display:grid;place-items:center}
+#grove-product .gp-entry{min-height:0;height:100%;width:100%;display:grid;grid-template-columns:minmax(0,1fr);place-items:center}
 .gp-entry-art{inset:0}
 .gp-entry-art:after{display:none}
 #grove-product .gp-entry .gp-auth{background:var(--surface);box-shadow:0 15px 70px -35px rgba(35,39,30,.32);z-index:1}

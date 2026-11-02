@@ -1,4 +1,4 @@
-"""D2 durable queue: the request row, its state machine and the replay rules (S40).
+"""D2 durable queue: the request row, its state machine and the replay rules (S41).
 
 Spec, D2 "The durable queue": "A remember request is written to a requests table, with an
 idempotency key, before any model is called. Its states are queued, applying, saved (receipt

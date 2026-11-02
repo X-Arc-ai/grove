@@ -36,7 +36,13 @@ from grove.writer.requests import (
     worlds_with_due_requests,
     write_request_row,
 )
-from grove.writer.sources import record_connector, record_episode, record_source
+from grove.writer.sources import (
+    add_screened_source,
+    record_connector,
+    record_episode,
+    record_source,
+    write_screened_source,
+)
 
 __all__ = [
     "BACKOFF_SECONDS",
@@ -56,6 +62,7 @@ __all__ = [
     "RequestState",
     "WriteFailed",
     "WriteOutcomeUnknown",
+    "add_screened_source",
     "apply_batch",
     "apply_request",
     "claim_next_request",
@@ -74,4 +81,5 @@ __all__ = [
     "surfaced_requests",
     "worlds_with_due_requests",
     "write_request_row",
+    "write_screened_source",
 ]

@@ -1,4 +1,4 @@
-"""D2 declines: every decline is logged by its operation, in ids and codes (S41).
+"""D2 declines: every decline is logged by its operation, in ids and codes (S42).
 
 Spec, D2 "Validation at write": "every decline is logged for the clean-up agent"; the declines
 table holds "request id, operation id (its values stay in the run record, D14), the rule that

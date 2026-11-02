@@ -1,4 +1,4 @@
-"""D2 counting: the earning bars count distinct episodes among active supporting rows (S42).
+"""D2 counting: the earning bars count distinct episodes among active supporting rows (S43).
 
 Spec, D2 line 766: "The earning bar for words (D8) and for beliefs (D9) counts distinct episode
 ids among a target's active supporting rows, so a ten-month export earns as many episodes as it

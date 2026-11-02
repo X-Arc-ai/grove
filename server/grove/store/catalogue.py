@@ -841,14 +841,14 @@ REQUESTS = Table(
     group="snapshot",
     owner="D2",
     columns=(
-        _col("id", "id", note="the caller's idempotency key, unique per world (S9, S40)"),
+        _col("id", "id", note="the caller's idempotency key, unique per world (S9, S41)"),
         _WORLD,
         _col("caller", "code", note="the actor code of the first writer"),
         _col(
             "source id of the request's text",
             "id",
             "source_id",
-            note="only a row with one can be claimed (S40)",
+            note="only a row with one can be claimed (S41)",
         ),
         _col("run id", "id"),
         _col("status", "enum:request_status"),
@@ -859,29 +859,29 @@ REQUESTS = Table(
             "receipt",
             "json_ids",
             note="ids and codes; a title is read fresh when shown. "
-            "A declined row holds its stored decline here (S41)",
+            "A declined row holds its stored decline here (S42)",
         ),
         _col("last error code", "code"),
         *_version_touched(),
-        _ruling("commit_id", "id", "S40: the one commit of this request"),
-        _ruling("change_set_id", "id", "S40: the one change set of this request"),
-        _ruling("fingerprint", "code", "S40: sha256 of the committed batch"),
-        _ruling("declined_fingerprint", "code", "S40: sha256 of the batch last declined"),
-        _ruling("repairs", "int", "S40: 1 once the one repair attempt is spent (line 748)"),
-        _ruling("retry_at", "instant", "S40: when a queued or failed row is due again"),
-        _ruling("lease_until", "instant", "S40: when an applying row is due again"),
-        _ruling("claimed_by", "code", "S40: the worker that holds the lease"),
-        _ruling("content_key", "code", "S40: what a second enqueue under this key compares"),
-        _ruling("verbatim", "bool", "S40: B.3 remember, for the later pass"),
-        _ruling("host_message_id", "locator", "S40: B.3 remember, for the later pass"),
-        _ruling("said_at", "instant", "S40: B.3 remember, for the later pass"),
-        _ruling("about", "ids", "S40: B.3 remember, for the later pass"),
+        _ruling("commit_id", "id", "S41: the one commit of this request"),
+        _ruling("change_set_id", "id", "S41: the one change set of this request"),
+        _ruling("fingerprint", "code", "S41: sha256 of the committed batch"),
+        _ruling("declined_fingerprint", "code", "S41: sha256 of the batch last declined"),
+        _ruling("repairs", "int", "S41: 1 once the one repair attempt is spent (line 748)"),
+        _ruling("retry_at", "instant", "S41: when a queued or failed row is due again"),
+        _ruling("lease_until", "instant", "S41: when an applying row is due again"),
+        _ruling("claimed_by", "code", "S41: the worker that holds the lease"),
+        _ruling("content_key", "code", "S41: what a second enqueue under this key compares"),
+        _ruling("verbatim", "bool", "S41: B.3 remember, for the later pass"),
+        _ruling("host_message_id", "locator", "S41: B.3 remember, for the later pass"),
+        _ruling("said_at", "instant", "S41: B.3 remember, for the later pass"),
+        _ruling("about", "ids", "S41: B.3 remember, for the later pass"),
     ),
     uniques=_keys("requests", ("world_id", "id")),
     indexes=_ranges("requests", ("world_id", "status")),
     notes=(
         "A request commits once, in one batch, and `saved` moves in the same transaction as that "
-        "commit (S40). A filter in MATCH or WHERE reads with no lock, so a transition checks the "
+        "commit (S41). A filter in MATCH or WHERE reads with no lock, so a transition checks the "
         "row after it holds the row's write lock (S1)."
     ),
 )
@@ -905,13 +905,13 @@ DECLINES = Table(
             note="list of {item id, score}",
         ),
         _col("override used", "bool"),
-        _ruling("code", "code", "S41: the typed error code of the refusal"),
-        _ruling("recorded_at", "instant", "S41: when the decline was logged"),
+        _ruling("code", "code", "S42: the typed error code of the refusal"),
+        _ruling("recorded_at", "instant", "S42: when the decline was logged"),
     ),
     uniques=_keys("declines", ("world_id", "request_id", "op_id")),
     notes=(
         "Ids and codes only: a refusal's message and details are never stored, and an op id that "
-        "could hold text is stored by its hash (S41). `op_id` is `batch` for a fault of the whole "
+        "could hold text is stored by its hash (S42). `op_id` is `batch` for a fault of the whole "
         "batch."
     ),
 )
@@ -1577,6 +1577,11 @@ WORLDS = _platform(
         _p("created_at", "instant"),
         _p("next_sequence", "int", "S10: starts at 0; advanced by one direct SET"),
         _p("seed_version", "code"),
+        _p(
+            "self_item_id",
+            "id",
+            "S40: the person's own item, set in the transaction that creates it; absent before",
+        ),
     ),
     _keys("worlds", ("id",)),
     _ranges("worlds", ("owner_user_id",)),
@@ -1589,7 +1594,11 @@ USERS = _platform(
     f"{_PLATFORM_OWNER}; signin",
     (
         _p("id", "id"),
-        _p("email_hash", "code", "secrets and contact details stay out of the row"),
+        _p(
+            "email_hash",
+            "code",
+            "S40: sha256 of the salted address; secrets and contact details stay out of the row",
+        ),
         _p("created_at", "instant"),
     ),
     _keys("users", ("id",), ("email_hash",)),
@@ -1604,6 +1613,7 @@ SESSIONS = _platform(
         _p("id", "id"),
         _p("user_id", "id"),
         _p("token_hash", "code"),
+        _p("method", "code", "S40: google or email; a planted test session has none"),
         _p("created_at", "instant"),
         _p("expires_at", "instant"),
         _p("revoked_at", "instant"),

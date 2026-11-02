@@ -6,7 +6,7 @@ has changed since the run began fails the writer's version check, re-reads and t
 
 Every race here is set with threading.Event pauses inside an open transaction, never with timing.
 A wait is proven by the store, which names each transaction blocked on a lock and the statement it
-waits in (harness.wait_until_blocked). The world lock (S40) orders every batch of a world; the
+waits in (harness.wait_until_blocked). The world lock (S41) orders every batch of a world; the
 tests of the item and link locks, the belts under it, patch it to a no-op.
 """
 
@@ -426,7 +426,7 @@ def test_two_near_duplicate_creates_at_once_one_commits_and_the_other_is_refused
     assert [row["t"] for row in titles] == ["Fix the Ilse invoice mismatch"]
 
 
-# The world lock and the sequence (S10, S40) -------------------------------------------------------
+# The world lock and the sequence (S10, S41) -------------------------------------------------------
 
 
 def sequences(driver, world_id: str) -> list[int]:
