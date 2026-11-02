@@ -528,3 +528,14 @@ def test_the_smoke_fails_when_the_401_names_another_metadata_url(box):
     done = box.run("deploy.sh", SHA, FAKE_MCP_METADATA=elsewhere)
     assert done.returncode != 0
     assert "no resource_metadata" in done.stderr
+
+
+def test_a_backup_removes_the_work_folder_of_a_killed_backup(box):
+    box.deployed()
+    stale = box.backups / ".work-20261102T011930Z"
+    stale.mkdir()
+    (stale / "neo4j.dump").write_bytes(b"partial")
+    done = box.run("backup.sh")
+    assert done.returncode == 0, done.stderr
+    assert not stale.exists()
+    assert len([name for name in _backup_files(box) if name.endswith(".dump")]) == 1

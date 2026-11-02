@@ -42,6 +42,9 @@ fingerprint_of() {
 }
 
 install -d -m 700 "$GROVE_BACKUP_DIR"
+# A backup killed outright leaves its work folder with a partial dump. The lock is held, so no
+# other backup owns one now.
+find "$GROVE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '.work-*' -exec rm -rf {} +
 log "backup $name: stopping the runner and the API"
 services_down=1
 compose stop runner api
