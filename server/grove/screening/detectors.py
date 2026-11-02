@@ -291,7 +291,14 @@ _PHRASE_STOP = frozenset(
     "optional private public broken fixed set good bad new old simple per-world per-user "
     "enough sensitive valid from with inside under over then when where because since like "
     "plaintext bcrypt mandatory automatic unique available random temporary longer shorter "
-    "stronger weaker easy hard none null true false".split()
+    "stronger weaker easy hard none null true false "
+    # Past forms with no -ed and words that start a phrase: "the password is read from the env".
+    "read taken kept held given built left made chosen part whatever within about great stale "
+    "insecure secret configurable minimum maximum falsy truthy case downstairs upstairs "
+    "somewhere elsewhere generated rotated "
+    # French: "le mot de passe est dans le .env", "... est faux", "... est trop court".
+    "dans faux vrai obligatoire requis trop pris vide chiffr\u00e9 stock\u00e9 d\u00e9fini "
+    "chang\u00e9 perdu oubli\u00e9 expir\u00e9 correct incorrect".split()
 )
 # A key or a token is never one plain word, so a plain word after "the API key is" is prose ("the
 # API key is configured") unless it is said as someone's own. A password can be one ("the password
@@ -1493,14 +1500,21 @@ _PHONE = re.compile(
 # help here: _PHONE reads it, so a long list of them costs no second walk.
 _NEXT_PHONE = re.compile(rf"[/,-](?P<number>\(?{_PHONE_DIGITS})")
 # A place settles that the digits are a phone, with no + or 0: a WhatsApp link, a vCard field, a
-# phone= query, a tel: link, a label ("Phone: 4155550132") or words that give a number ("my number
-# is 4155550132", "call me at 4155550132"). An order number has none of these.
+# phone= query, a tel: link, a label ("Phone number: 4155550132", "Tel.: ...", "Tel 4155550132") or
+# words that give someone's number ("my number is ...", "my phone is ...", "mon numéro est ...",
+# "call me at ..."). An order number or a count has none of these.
+_PHONE_NOUN = r"(?:phone|t[e\u00e9]l[e\u00e9]phone|mobile|cell|gsm|whatsapp|portable)"
 _PHONE_PLACE = re.compile(
     r"(?i)(?:(?<![\w.-])wa\.me/\+?|(?<![a-z])(?:waid=|phone=|tel:)\+?"
-    r"|(?<![a-z])(?:tel|t[e\u00e9]l[e\u00e9]phone|phone|mobile|cell|gsm|whatsapp)"
-    r"[ \t]*+[:=][ \t]*+\+?"
-    r"|(?<![a-z])(?:my|our|your|his|her|their)[ \t]++(?:(?:phone|mobile|cell|whatsapp)[ \t]++)?"
-    r"(?:number|num[e\u00e9]ro)[ \t]++(?:is|est)[ \t]++\+?"
+    # A label, maybe with its number word, then ":" or "=": "Phone no.: ", "WhatsApp number: ".
+    rf"|(?<![a-z])(?:tel|{_PHONE_NOUN})(?:[ \t]++(?:number|no|num[e\u00e9]ro|n[o\u00b0\u00ba]|#))?"
+    r"\.?[ \t]*+[:=][ \t]*+\+?"
+    # "Tel 4155550132", "Tel. 4155550132": only this short label stands with a space alone.
+    r"|(?<![a-z])t[e\u00e9]l\.?[ \t]++\+?"
+    # "my number is ...", "my phone's ...", "my number: ...", "mon num\u00e9ro est ...".
+    r"|(?<![a-z])(?:my|our|your|his|her|their|mon|ma|son|sa|notre|votre|leur)[ \t]++"
+    rf"(?:{_PHONE_NOUN}[ \t]++)?(?:number|num[e\u00e9]ro|{_PHONE_NOUN})"
+    r"(?:'s|\u2019s|[ \t]++(?:is|est))?[ \t]*+:?[ \t]*+\+?"
     r"|(?<![a-z])(?:call|text|ring|reach|whatsapp)[ \t]++(?:me|him|her|them|us)[ \t]++"
     r"(?:on|at)[ \t]++\+?"
     r")(?P<number>\d{7,15})(?!\d)"

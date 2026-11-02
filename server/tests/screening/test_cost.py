@@ -46,6 +46,10 @@ TEXTS = [
     "call me" + " " * N,
     "password for the wifi is" + " " * N,
     "password for " * (N // 13),
+    "Phone number" + " " * N,
+    "my phone " * (N // 9),
+    "tel " * (N // 4),
+    "mon " * (N // 4),
 ]
 """
 # The forms the read view writes as space: a long run must cost no more than a short one.
