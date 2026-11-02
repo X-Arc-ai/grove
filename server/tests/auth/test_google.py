@@ -169,6 +169,24 @@ def test_a_next_changed_in_the_cookie_is_refused_too(client, accounts, google):
     assert response.headers["location"] == "/"
 
 
+@pytest.mark.parametrize("field", ["state", "nonce", "verifier"])
+def test_a_non_ascii_value_in_the_state_cookie_fails_neutrally(
+    field, client, driver, accounts, google
+):
+    address = accounts.address()
+    query = google_start(client)
+    held = unpack_state(client.cookies.get(STATE_COOKIE))
+    values = {"state": held.state, "nonce": held.nonce, "verifier": held.verifier}
+    values[field] = "\ud800" if field == "verifier" else values[field] + "\u00e9"
+    forged = HeldState(values["state"], values["nonce"], values["verifier"], "/")
+    client.cookies.set(STATE_COOKIE, pack_state(forged), domain="grove.example", path="/")
+    google.claims = google.good_claims(address, query["nonce"])
+    state = values["state"] if field == "state" else query["state"]
+    response = client.get(GOOGLE_CALLBACK, params={"code": "c", "state": state})
+    _assert_failed(response, driver, address)
+    assert google.requests == []
+
+
 def _assert_failed(response, driver, address):
     assert response.status_code == 303
     assert response.headers["location"] == SIGNIN_ERROR

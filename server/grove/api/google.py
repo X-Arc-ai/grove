@@ -117,7 +117,8 @@ def unpack_state(text: str | None) -> HeldState | None:
     if not isinstance(body, dict):
         return None
     values = [body.get(name) for name in ("state", "nonce", "verifier")]
-    if not all(isinstance(value, str) and value for value in values):
+    # new_state makes URL-safe ASCII tokens; anything else was changed in the browser.
+    if not all(isinstance(value, str) and value and value.isascii() for value in values):
         return None
     return HeldState(*values, next=safe_next(body.get("next")))
 

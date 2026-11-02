@@ -77,8 +77,15 @@ def load_mailer() -> Mailer | None:
 
 
 def valid_address(value: object) -> bool:
-    """At most 254 characters, one @, no whitespace or control character, a dot in the domain."""
+    """At most 254 ASCII characters, one @, no whitespace or control character, a dot in the domain.
+
+    ASCII only: the account key folds case with str.lower(), and that folds some other letters to
+    ASCII (the Kelvin sign U+212A becomes k). A look-alike address would then reach another
+    person's account while its code went to a different mailbox.
+    """
     if not isinstance(value, str) or not 0 < len(value) <= MAX_ADDRESS_LENGTH:
+        return False
+    if not value.isascii():
         return False
     if any(c.isspace() or unicodedata.category(c).startswith("C") for c in value):
         return False
