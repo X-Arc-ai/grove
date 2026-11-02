@@ -122,7 +122,8 @@ the metadata URL.
 Neo4j Community has no online backup: a dump needs the server stopped. `grove-backup.timer` runs
 `deploy/backup.sh` each day at 03:30 UTC, and again after the box was down at that time. The script:
 
-1. takes the box lock, so no deploy runs during it;
+1. takes the box lock, so no deploy runs during it, and removes the work folder that a killed
+   backup left;
 2. stops the runner and the API, so nothing writes;
 3. records the dump fingerprint of the store;
 4. stops Neo4j and runs `neo4j-admin database dump`;
