@@ -139,3 +139,80 @@ def test_no_address_or_operator_key_path_is_in_the_deploy_files():
         assert "~/.ssh/" not in text, path.name
         assert "IdentityFile" not in text, path.name
         assert "sslip.io" not in text, path.name
+
+
+# ---- review round one -------------------------------------------------------------------------
+
+# Every key the runner service may have. A new key (privileged, devices, pid, a socket mount) is a
+# change of its isolation, so it must come with a change of this list.
+RUNNER_KEYS = {
+    "build",
+    "image",
+    "restart",
+    "init",
+    "user",
+    "env_file",
+    "environment",
+    "volumes",
+    "networks",
+    "cap_drop",
+    "security_opt",
+    "depends_on",
+    "logging",
+}
+
+
+def test_the_runner_service_has_no_key_beyond_its_list():
+    assert set(SERVICES["runner"]) == RUNNER_KEYS
+
+
+def test_the_runner_mounts_its_home_and_nothing_else():
+    runner = SERVICES["runner"]
+    assert runner["volumes"] == ["/var/lib/grove-runner:/var/lib/grove-runner"]
+    assert runner["cap_drop"] == ["ALL"]
+    assert runner["security_opt"] == ["no-new-privileges:true"]
+    assert runner["environment"] == {"GROVE_ENV": "production", "GROVE_API_URL": "http://api:8000"}
+
+
+def test_the_api_drops_every_capability_and_mounts_one_file():
+    api = SERVICES["api"]
+    assert api["cap_drop"] == ["ALL"]
+    assert api["security_opt"] == ["no-new-privileges:true"]
+    assert [mount["source"] for mount in api["volumes"]] == ["/etc/grove/google-oauth.json"]
+    assert "privileged" not in api and "devices" not in api
+
+
+def test_nginx_needs_no_file_from_the_box_beyond_the_certificate():
+    https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
+    assert "include " not in https
+    assert "ssl_dhparam" not in https
+    paths = set(re.findall(r"\s(/etc/\S+);", https))
+    assert paths == {
+        "/etc/letsencrypt/live/__GROVE_HOST__/fullchain.pem",
+        "/etc/letsencrypt/live/__GROVE_HOST__/privkey.pem",
+    }
+    assert "ssl_protocols TLSv1.2 TLSv1.3;" in https
+    # No DHE cipher, so no dhparam file is needed.
+    ciphers = re.search(r"ssl_ciphers (\S+);", https).group(1).split(":")
+    assert ciphers and all(cipher.startswith("ECDHE-") for cipher in ciphers)
+
+
+def test_the_operator_lock_frees_itself_after_one_hour_by_default():
+    text = (DEPLOY / "with-deploy-lock.sh").read_text(encoding="utf-8")
+    assert "cap=${GROVE_LOCK_CAP_SECONDS:-3600}" in text
+    assert 'lock="${GROVE_LOCK_DIR:-$HOME/.grove/locks}/deploy.lock.d"' in text
+
+
+def test_the_box_lock_is_shared_by_deploy_backup_and_restore_check():
+    lib = (DEPLOY / "lib.sh").read_text(encoding="utf-8")
+    assert "GROVE_LOCK_FILE=${GROVE_LOCK_FILE:-/run/grove/deploy.lock}" in lib
+    for name in ("deploy.sh", "backup.sh", "restore-check.sh", "services-up.sh"):
+        assert "take_lock" in (DEPLOY / name).read_text(encoding="utf-8"), name
+
+
+def test_no_box_script_runs_a_one_off_container_with_stdin_open():
+    for path in DEPLOY.glob("*.sh"):
+        text = path.read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "compose run" in line and not line.lstrip().startswith("#"):
+                assert path.name == "lib.sh" and line.rstrip().endswith("</dev/null"), path.name

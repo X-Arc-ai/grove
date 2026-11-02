@@ -16,7 +16,9 @@ runs the compose project `grove` from `deploy/compose.yml`.
 | `runner` | OpenCode 1.18.32, checked against its release checksum, with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`. A placeholder process runs until the `runner` lane lands its loop. | `runner` (internal) | uid 10002 `grove-runner` |
 
 An internal network has no route out. So the store reaches nothing but the API, and the runner
-reaches the API and nothing else: it holds no store credential and no model key. Only the API has a
+reaches the API and no address outside the box: it holds no store credential and no model key. The
+runner can still open a connection to the host itself through its network's gateway (sshd and
+nginx answer there). A host firewall rule for the runner's bridge belongs with its egress list. Only the API has a
 route out (`egress`), for the model providers, the mail provider and Google.
 
 The public host name is configuration: `GROVE_PUBLIC_BASE_URL` in `/etc/grove/api.env`, today
@@ -43,7 +45,7 @@ transport in their place.
 | `/etc/grove/*.env` | The secret files below. | 600, root |
 | `/etc/grove/google-oauth.json` | Google's Web client file, mounted read-only into the API at `/run/grove/google-oauth.json` (`GROVE_GOOGLE_OAUTH_FILE`). | 400, uid 10001 |
 | `/var/lib/grove/deployed.sha` | The sha the box serves. | root |
-| `/var/log/grove/deploy.log`, `backup.log` | One line per deploy, per dump and per restore check. | 640, root |
+| `/var/log/grove/deploy.log`, `backup.log` | Two lines per deploy (its start and its result), one per dump, one per restore check, and one per removed dump. | 640, root |
 | `/var/backups/grove/` | `grove-<UTC stamp>.dump`, its `.fingerprint.json` and its `.dump.sha256`. | 700, files 600 |
 | `/var/lib/grove-runner` | The runner's HOME. The host user `grove-runner` owns it; it has no sudo and is not in the docker group. | 700 |
 
@@ -66,36 +68,44 @@ and no file is pushed with `scp` or `rsync`:
 ssh root@app.grove.x-arc.ai 'umask 077; cat > /etc/grove/model-api.env' < <local key file>
 ```
 
+For every other ssh command, give `ssh -n`, so that ssh reads nothing from the standard input of
+the shell that runs it.
+
 ## Deploy a commit
 
 A deploy names one full sha that is on `origin/develop`. One deploy runs at a time: the operator's
-machine holds a lock, and the box holds a second one that the backup also takes. From the
-operator's machine:
+machine holds a lock, and the box holds a second one, `/run/grove/deploy.lock` in a folder only root
+can enter, that the backup and the restore check also take. From the operator's machine:
 
 ```
-deploy/with-deploy-lock.sh ssh root@app.grove.x-arc.ai /opt/grove/src/deploy/deploy.sh <full sha>
+deploy/with-deploy-lock.sh ssh -n root@app.grove.x-arc.ai /opt/grove/src/deploy/deploy.sh <full sha>
 ```
 
 `with-deploy-lock.sh` takes `~/.grove/locks/deploy.lock.d` (a `mkdir` lock with an owner file) and
-starts a detached releaser that frees it after one hour if the holder dies. It exits 75 when the
-lock is held. Give ssh the operator's own key options; they are not part of this repo.
+starts a detached releaser. The releaser frees the lock one hour after it was taken, whether the
+holder still runs or not, and only while the owner file still holds its own token. It exits 75 when
+the lock is held. If the operator's machine restarts while it holds the lock, the releaser is gone
+too: remove the folder by hand after checking its owner file. Give ssh the operator's own key
+options; they are not part of this repo.
 
 On the box, `deploy/deploy.sh <sha>`:
 
-1. takes the box lock `/run/lock/grove-deploy.lock`;
+1. takes the box lock `/run/grove/deploy.lock`;
 2. fetches `develop` from GitHub and refuses a sha that is not on it, and a checkout with local
    changes;
 3. checks out the sha and hands over to that commit's own `deploy/apply.sh`, which
 4. refuses to go on if a secret file is missing or readable by group or others;
 5. installs the host files of that commit (`deploy/install-host.sh`): the nginx sites, the
-   certificate on first use (certbot, webroot), the backup timer, the certbot reload hook and log
-   rotation;
+   certificate on first use (certbot, webroot), the backup units, the certbot reload hook and log
+   rotation. If `nginx -t` refuses the new sites, the old ones go back and the deploy stops;
 6. builds the `api` and `runner` images (the only build on the box), starts `neo4j`, runs the
    migrations from the image's copy of `server/`, starts `api` and `runner`, and records the sha;
-7. runs `deploy/smoke.sh` against the public host and writes one line to `deploy.log`.
+7. runs `deploy/smoke.sh` against the public host, writes the result to `deploy.log`, and removes
+   the images of every build except this one and the one it replaced.
 
-`--ref <branch>` deploys a sha of another branch, to try a change on the box before its merge.
-To roll back, deploy the previous sha: `deploy.log` names it on every line.
+`--ref <branch>` with `GROVE_ALLOW_BRANCH_DEPLOY=1` deploys a sha of another branch, to try a
+change on the box before its merge; without the variable only `develop` deploys. To roll back,
+deploy the previous sha: `deploy.log` names it on every line.
 
 The smoke checks also run from any machine:
 
@@ -117,17 +127,21 @@ Neo4j Community has no online backup: a dump needs the server stopped. `grove-ba
 3. records the dump fingerprint of the store;
 4. stops Neo4j and runs `neo4j-admin database dump`;
 5. starts Neo4j, checks that the fingerprint did not move, and starts the API and the runner;
-6. keeps the dump with its fingerprint and checksum, and removes dumps older than 30 days (the newest
-   one always stays);
-7. runs `deploy/restore-check.sh` on the new dump.
+6. keeps the dump with its fingerprint and checksum;
+7. runs `deploy/restore-check.sh` on the new dump, and only when it matches, removes dumps older
+   than 30 days.
 
-The API is down for the length of the dump, about one minute for a small store. If any step fails,
-the script still starts Neo4j, the API and the runner again.
+The API is down for the length of the dump: 34 seconds on the first run, with a store that held
+only its schema. If a step fails, or systemd stops the script, it starts Neo4j, the API and the
+runner again before it exits. The unit's `ExecStopPost` runs `deploy/services-up.sh` after every
+run, so a script that was killed outright also leaves the services running. The backup needs the
+fingerprint before the dump: if that read fails, no dump is made, and the unit fails.
 
-`deploy/restore-check.sh <dump>` checks the dump's checksum, loads it into a scratch Neo4j with its
-own volume and an internal network of its own, and compares the fingerprint of what loaded with the
-recorded one. It never touches the live store, and it removes the scratch container, volume and
-network at the end. It exits 3 on another fingerprint.
+`deploy/restore-check.sh <dump>` refuses a dump with no checksum file or a wrong checksum, loads it
+into a scratch Neo4j with its own volume and an internal network of its own, and compares the
+fingerprint of what loaded with the recorded one. It never touches the live store. It removes the
+scratch container, volume and network at the end, and first removes any that a killed check left.
+It exits 3 on another fingerprint.
 
 ```
 systemctl list-timers grove-backup.timer     # when the next backup runs
@@ -151,10 +165,11 @@ ledger, compare).
    public half to the repository as a read-only deploy key (`gh repo deploy-key add`, with no
    `--allow-write`). Write GitHub's host keys from `gh api meta` (`.ssh_keys`) to
    `/root/.ssh/known_hosts_github`.
-3. Clone `git@github.com:X-Arc-ai/grove.git` into `/opt/grove/src` with that key, and set the
-   clone's `core.sshCommand` to the same key and host-key file.
+3. Clone `git@github.com:X-Arc-ai/grove.git` into `/opt/grove/src` with that key and
+   `--branch develop`, and set the clone's `core.sshCommand` to the same key and host-key file.
 4. Run `deploy/bootstrap.sh --base-url https://<host>`. It makes the folders, the `grove-runner`
    user, `neo4j.env`, `api.env` and an empty `runner.env`, then installs the host files and asks for
-   the certificate.
+   the certificate. Set `GROVE_ACME_EMAIL` to give certbot a contact address for a new account; with
+   no variable, it registers with no address.
 5. Copy the other secret files (above).
 6. Deploy a sha.

@@ -1,7 +1,11 @@
 """The box scripts against fake commands: what they run, in which order, and what they refuse."""
 
+import hashlib
 import json
 import os
+import signal
+import subprocess
+import time
 
 from grove import clock
 from tests.deploy.conftest import BASE, FP, HOST, OTHER_SHA, SHA
@@ -39,8 +43,16 @@ def test_deploy_waits_for_the_box_lock_and_stops_when_it_is_held(box):
     assert not [call for call in box.calls() if call.startswith("git ")]
 
 
-def test_deploy_checks_the_named_branch(box):
+def test_deploy_refuses_another_branch_unless_told_it_is_meant(box):
     done = box.run("deploy.sh", SHA, "--ref", "feat/deploy-a-20261102")
+    assert done.returncode != 0
+    assert "only develop deploys" in done.stderr
+    assert not [call for call in box.calls() if call.startswith(("flock", "git"))]
+
+
+def test_deploy_checks_the_named_branch(box):
+    branch = "feat/deploy-a-20261102"
+    done = box.run("deploy.sh", SHA, "--ref", branch, GROVE_ALLOW_BRANCH_DEPLOY="1")
     assert done.returncode == 0, done.stderr
     fetch = box.calls()[box.index("git fetch")]
     assert "+refs/heads/feat/deploy-a-20261102:refs/remotes/origin/feat/deploy-a-20261102" in fetch
@@ -183,7 +195,13 @@ def test_bootstrap_makes_the_runner_user_and_generated_files_and_keeps_existing_
     )
     assert done.returncode == 0, done.stderr
     assert "groupadd --system --gid 10002 grove-runner" in box.calls()
-    assert any(call.startswith("useradd --system --uid 10002 --gid 10002") for call in box.calls())
+    runner_home = box.root / "runner-home"
+    useradd = [call for call in box.calls() if call.startswith("useradd")]
+    # Exactly this: no --groups or -G, so no docker group and no sudo.
+    assert useradd == [
+        f"useradd --system --uid 10002 --gid 10002 --home-dir {runner_home} --no-create-home "
+        "--shell /usr/sbin/nologin grove-runner"
+    ]
     auth = (box.etc / "neo4j.env").read_text()
     assert (
         auth.startswith("NEO4J_AUTH=neo4j/") and len(auth.strip()) > len("NEO4J_AUTH=neo4j/") + 40
@@ -305,8 +323,11 @@ def test_a_backup_keeps_thirty_days_of_dumps(box):
 
 def _planted_dump(box, fingerprint: str = FP) -> str:
     stem = "grove-20261102T033000Z"
-    (box.backups / f"{stem}.dump").write_bytes(b"neo4j dump bytes")
+    data = b"neo4j dump bytes"
+    (box.backups / f"{stem}.dump").write_bytes(data)
     (box.backups / f"{stem}.fingerprint.json").write_text(json.dumps({"fingerprint": fingerprint}))
+    digest = hashlib.sha256(data).hexdigest()
+    (box.backups / f"{stem}.dump.sha256").write_text(f"{digest}  {stem}.dump\n")
     return str(box.backups / f"{stem}.dump")
 
 
@@ -345,3 +366,165 @@ def test_a_restore_check_refuses_a_dump_that_fails_its_checksum(box):
     assert done.returncode != 0
     assert "does not match its checksum" in done.stderr
     assert not [call for call in box.calls() if call.startswith("docker run")]
+
+
+# ---- review round one -------------------------------------------------------------------------
+
+
+def test_a_deploy_fed_on_stdin_keeps_the_rest_of_its_script(box):
+    """ssh host 'bash -s' <<EOF: a one-off container must not read the lines after the deploy."""
+    script = f"bash {box.src}/deploy/deploy.sh {SHA}\necho after-the-deploy\n"
+    done = subprocess.run(
+        ["bash", "-s"], input=script, env=box.env, capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    assert "after-the-deploy" in done.stdout
+
+
+def test_a_backup_fed_on_stdin_keeps_the_rest_of_its_script(box):
+    box.deployed()
+    script = f"bash {box.src}/deploy/backup.sh\necho after-the-backup\n"
+    done = subprocess.run(
+        ["bash", "-s"], input=script, env=box.env, capture_output=True, text=True, timeout=60
+    )
+    assert done.returncode == 0, done.stderr
+    assert "after-the-backup" in done.stdout
+
+
+def test_the_box_lock_lives_in_a_folder_only_root_can_enter(box):
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    folder = box.root / "lock"
+    assert oct(folder.stat().st_mode & 0o777) == "0o700"
+
+
+def test_a_site_that_nginx_refuses_never_stays_live(box):
+    https = box.nginx / "sites-available" / "grove-https.conf"
+    https.write_text("the old site\n")
+    (box.nginx / "sites-enabled" / "grove-https.conf").symlink_to(https)
+    done = box.run("deploy.sh", SHA, FAKE_NGINX_STATUS="1")
+    assert done.returncode != 0
+    assert "the old ones are back" in done.stderr
+    assert https.read_text() == "the old site\n"
+    assert (box.nginx / "sites-enabled" / "grove-https.conf").resolve() == https
+    assert not (box.nginx / "sites-available" / "grove-http.conf").exists()
+    assert not (box.nginx / "sites-enabled" / "grove-http.conf").is_symlink()
+    assert not [call for call in box.calls() if call.startswith("systemctl reload")]
+    assert not [call for call in box.calls() if call.startswith("docker compose")]
+
+
+def test_a_deploy_keeps_only_the_images_of_this_build_and_the_last(box):
+    box.deployed(OTHER_SHA)
+    old = "1" * 40
+    images = [f"grove-{kind}:{tag}" for kind in ("api", "runner") for tag in (SHA, OTHER_SHA, old)]
+    done = box.run("deploy.sh", SHA, FAKE_IMAGES=" ".join([*images, "neo4j:pinned"]))
+    assert done.returncode == 0, done.stderr
+    removed = sorted(call.split()[-1] for call in box.calls() if call.startswith("docker image rm"))
+    assert removed == [f"grove-api:{old}", f"grove-runner:{old}"]
+
+
+def test_a_failed_restore_check_keeps_every_old_dump(box):
+    box.deployed()
+    now = clock.now().timestamp()
+    old = box.backups / "grove-20260901T033000Z.dump"
+    old.write_text("old\n")
+    os.utime(old, (now - 40 * 86400, now - 40 * 86400))
+    done = box.run("backup.sh", FAKE_RESTORE_FP="c" * 64)
+    assert done.returncode == 3
+    assert old.exists()
+    assert "removed" not in box.log_text("backup.log")
+
+
+def test_an_empty_dump_fails_the_backup_and_is_not_kept(box):
+    box.deployed()
+    done = box.run("backup.sh", FAKE_EMPTY_DUMP="1")
+    assert done.returncode != 0
+    assert "the dump wrote no file" in done.stderr
+    assert not [name for name in _backup_files(box) if name.endswith(".dump")]
+    box.index("start api runner")
+
+
+def test_a_backup_stopped_by_systemd_mid_dump_starts_the_services_again(box):
+    box.deployed()
+    process = subprocess.Popen(
+        ["bash", str(box.src / "deploy" / "backup.sh")],
+        env={**box.env, "FAKE_DOCKER_SLOW": "neo4j-admin database dump", "FAKE_DOCKER_SLEEP": "3"},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    for _ in range(100):
+        if any("neo4j-admin database dump" in call for call in box.calls()):
+            break
+        time.sleep(0.1)
+    process.send_signal(signal.SIGTERM)
+    process.communicate(timeout=60)
+    assert process.returncode == 143
+    dump = box.index("neo4j-admin database dump")
+    start = box.index("start neo4j", dump)
+    box.index("start api runner", start)
+    assert "FAILED (exit 143)" in box.log_text("backup.log")
+
+
+def test_the_backup_unit_starts_the_services_after_any_run(box):
+    box.deployed()
+    done = box.run("services-up.sh")
+    assert done.returncode == 0, done.stderr
+    start = box.index("start neo4j")
+    box.index("start api runner", start)
+    unit = (box.src / "deploy" / "systemd" / "grove-backup.service").read_text()
+    assert "ExecStopPost=/opt/grove/src/deploy/services-up.sh" in unit
+
+
+def test_the_services_script_does_nothing_before_the_first_deploy(box):
+    done = box.run("services-up.sh")
+    assert done.returncode == 0, done.stderr
+    assert not [call for call in box.calls() if call.startswith("docker")]
+
+
+def test_a_restore_check_refuses_a_dump_with_no_checksum(box):
+    box.deployed()
+    dump = _planted_dump(box)
+    (box.backups / "grove-20261102T033000Z.dump.sha256").unlink()
+    done = box.run("restore-check.sh", dump)
+    assert done.returncode != 0
+    assert "no checksum" in done.stderr
+    assert not [call for call in box.calls() if call.startswith("docker run")]
+
+
+def test_a_restore_check_first_removes_what_a_killed_check_left(box):
+    box.deployed()
+    done = box.run("restore-check.sh", _planted_dump(box), FAKE_STALE="leftover")
+    assert done.returncode == 0, done.stderr
+    sweep = box.index("docker rm --force --volumes leftover")
+    box.index("docker volume rm leftover", sweep)
+    box.index("docker network rm leftover", sweep)
+    assert sweep < box.index("docker network create --internal grove-restorecheck-")
+
+
+def test_a_restore_check_by_hand_takes_the_box_lock(box):
+    box.deployed()
+    done = box.run("restore-check.sh", _planted_dump(box), FAKE_FLOCK_STATUS="1")
+    assert done.returncode != 0
+    assert not [call for call in box.calls() if call.startswith("docker")]
+
+
+def test_the_smoke_fetches_the_metadata_as_meta_s_fetcher(box):
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    for path in ("oauth-protected-resource", "oauth-protected-resource/mcp"):
+        fetched = [
+            call
+            for call in box.calls()
+            if call.startswith("curl")
+            and "--user-agent meta-webindexer/1.1" in call
+            and call.endswith(f"{BASE}/.well-known/{path}")
+        ]
+        assert fetched, path
+
+
+def test_the_smoke_fails_when_the_401_names_another_metadata_url(box):
+    elsewhere = "https://elsewhere.test/.well-known/oauth-protected-resource"
+    done = box.run("deploy.sh", SHA, FAKE_MCP_METADATA=elsewhere)
+    assert done.returncode != 0
+    assert "no resource_metadata" in done.stderr

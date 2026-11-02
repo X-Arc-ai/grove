@@ -8,11 +8,15 @@ import pytest
 
 # The driver's time types, through the store module: only server/grove/store/ imports neo4j.
 from grove.store.dump_fingerprint import (
+    _INDEXES,
+    _NODES,
     MISMATCH,
     Date,
     DateTime,
     Duration,
+    StoreMoved,
     UnknownValue,
+    _read,
     combine,
     dump_fingerprint,
     encode,
@@ -181,3 +185,40 @@ def test_a_new_row_anywhere_moves_the_whole_store_fingerprint(driver, world):
     after = dump_fingerprint(driver)
     assert after["fingerprint"] != before["fingerprint"]
     assert after["nodes"] == before["nodes"] + 1
+
+
+# ---- review round one -------------------------------------------------------------------------
+
+
+class _MovingTx:
+    """A transaction whose second read sees a link to a node the first read did not return."""
+
+    def run(self, query, **params):
+        if query == _NODES:
+            return [{"element": "e1", "labels": ["Item"], "props": {"id": "a"}}]
+        return [{"start": "e1", "end": "e-new", "type": "LINK", "props": {}}]
+
+
+def test_a_link_to_a_node_the_first_read_missed_is_refused():
+    with pytest.raises(StoreMoved):
+        _read(_MovingTx(), "t_deploy-a_00000000-0000-0000-0000-000000000000", with_schema=False)
+
+
+def test_a_link_into_another_world_stays_out_of_this_world_s_fingerprint(driver, make_world):
+    mine, other = make_world(), make_world()
+    first, _ = _plant_world(driver, mine)
+    before = dump_fingerprint(driver, world_id=mine)
+    far = plant_node(driver, other, "Item", title="Far")
+    plant_link(driver, mine, first["id"], far["id"], to_world=other, meaning="depends_on")
+    after = dump_fingerprint(driver, world_id=mine)
+    assert after == before
+    assert after["relationships"] == 1
+
+
+def test_the_live_index_rows_carry_their_options(driver, migrated):
+    with driver.session(database="neo4j") as session:
+        rows = [dict(row) for row in session.run(_INDEXES)]
+    fulltext = [row for row in rows if row["type"] == "FULLTEXT"]
+    assert fulltext
+    for row in fulltext:
+        assert row["options"]["indexConfig"]["fulltext.analyzer"]

@@ -28,12 +28,18 @@ _FAKE_DOCKER = r"""
 import json, os, sys
 from pathlib import Path
 
+import time
+
 args = sys.argv[1:]
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write("docker " + " ".join(args) + "\n")
+joined = " ".join(args)
 fail = os.environ.get("FAKE_DOCKER_FAIL")
-if fail and fail in " ".join(args):
+if fail and fail in joined:
     sys.exit(1)
+slow = os.environ.get("FAKE_DOCKER_SLOW")
+if slow and slow in joined:
+    time.sleep(float(os.environ.get("FAKE_DOCKER_SLEEP", "3")))
 
 
 def fingerprint(counter_name, default):
@@ -57,6 +63,9 @@ if args[0] == "compose":
     while rest and rest[0].startswith("--"):
         rest = rest[2:]
     command = rest[0]
+    # docker compose run keeps stdin open, as the real one does with no --interactive=false.
+    if command == "run" and not sys.stdin.isatty():
+        sys.stdin.read()
     if command == "config" and "--images" in rest:
         print(os.environ["FAKE_NEO4J_IMAGE"])
         print("grove-api:" + os.environ.get("GROVE_BUILD_SHA", "unset"))
@@ -67,9 +76,16 @@ if args[0] == "compose":
     elif command == "run" and "neo4j-admin" in rest and "dump" in rest:
         mount = rest[rest.index("--volume") + 1]
         host_dir = mount.rsplit(":", 1)[0]
-        Path(host_dir, "neo4j.dump").write_bytes(b"neo4j dump bytes")
+        empty = os.environ.get("FAKE_EMPTY_DUMP") == "1"
+        Path(host_dir, "neo4j.dump").write_bytes(b"" if empty else b"neo4j dump bytes")
     elif command == "run" and "grove.writer.migrate" in rest:
         print(json.dumps({"applied": [], "skipped": []}))
+elif args[:2] == ["image", "ls"]:
+    for image in os.environ.get("FAKE_IMAGES", "").split():
+        print(image)
+elif args[0] == "ps" or args[1:2] == ["ls"]:
+    for stale in os.environ.get("FAKE_STALE", "").split():
+        print(stale)
 elif args[0] == "inspect":
     print(os.environ.get("FAKE_HEALTH", "healthy"))
 elif args[0] == "run" and "grove.store.dump_fingerprint" in args:
@@ -127,7 +143,7 @@ elif parts.path.startswith("/.well-known/oauth-protected-resource"):
     status, body = 200, {"resource": resource, "authorization_servers": [base]}
 elif parts.path == "/mcp" and method == "POST":
     status, body = 401, {"error": "unauthorized"}
-    metadata = f"{base}/.well-known/oauth-protected-resource"
+    metadata = os.environ.get("FAKE_MCP_METADATA", f"{base}/.well-known/oauth-protected-resource")
     hdr = ["HTTP/1.1 401 Unauthorized", f'www-authenticate: Bearer resource_metadata="{metadata}"']
 else:
     status, body = 404, {}
@@ -201,6 +217,7 @@ class Box:
             capture_output=True,
             text=True,
             input=stdin,
+            stdin=None if stdin is not None else subprocess.DEVNULL,
             timeout=60,
         )
 

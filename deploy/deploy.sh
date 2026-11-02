@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deploy one named commit on the box: deploy.sh <full sha> [--ref <branch>]
 #
-# The commit must be on origin/<branch> (develop unless --ref says otherwise). The checkout pulls
+# The commit must be on origin/<branch>: develop, unless --ref names another branch and
+# GROVE_ALLOW_BRANCH_DEPLOY=1 says that is meant (a try on the box before a merge). The checkout pulls
 # from GitHub with the box's read-only deploy key; nothing is pushed to the box. This script takes
 # the box lock, moves the checkout, and hands over to that commit's own apply.sh.
 set -euo pipefail
@@ -32,6 +33,10 @@ done
 
 [[ $sha =~ ^[0-9a-f]{40}$ ]] || die "give the full 40-character sha"
 [[ $ref =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || die "not a branch name: $ref"
+# Another branch's apply.sh runs as root here, before any review of it.
+if [ "$ref" != develop ] && [ "${GROVE_ALLOW_BRANCH_DEPLOY:-}" != 1 ]; then
+    die "only develop deploys; set GROVE_ALLOW_BRANCH_DEPLOY=1 to try $ref on the box"
+fi
 
 take_lock "${GROVE_DEPLOY_WAIT_SECONDS:-600}"
 

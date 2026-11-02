@@ -7,7 +7,8 @@ GROVE_ETC=${GROVE_ETC:-/etc/grove}
 GROVE_STATE=${GROVE_STATE:-/var/lib/grove}
 GROVE_LOG_DIR=${GROVE_LOG_DIR:-/var/log/grove}
 GROVE_BACKUP_DIR=${GROVE_BACKUP_DIR:-/var/backups/grove}
-GROVE_LOCK_FILE=${GROVE_LOCK_FILE:-/run/lock/grove-deploy.lock}
+# In a folder only root can write: anyone who can open the lock file can hold it.
+GROVE_LOCK_FILE=${GROVE_LOCK_FILE:-/run/grove/deploy.lock}
 GROVE_NGINX_DIR=${GROVE_NGINX_DIR:-/etc/nginx}
 GROVE_SYSTEMD_DIR=${GROVE_SYSTEMD_DIR:-/etc/systemd/system}
 GROVE_LETSENCRYPT_DIR=${GROVE_LETSENCRYPT_DIR:-/etc/letsencrypt}
@@ -36,10 +37,16 @@ compose() {
         --project-name "$GROVE_PROJECT" --file "$GROVE_SRC/deploy/compose.yml" "$@"
 }
 
+# `compose run` keeps stdin open, so a script fed on stdin (ssh host 'bash -s' <<EOF) would lose
+# the rest of itself to the container. Every one-off container reads /dev/null instead.
+compose_run() {
+    compose run --rm --no-deps -T "$@" </dev/null
+}
+
 # One deploy or backup at a time on the box. The lock lives on fd 9, so an exec keeps it.
 take_lock() {
     local wait_seconds=$1
-    mkdir -p "$(dirname "$GROVE_LOCK_FILE")"
+    install -d -m 700 "$(dirname "$GROVE_LOCK_FILE")"
     exec 9>"$GROVE_LOCK_FILE"
     flock -w "$wait_seconds" 9 || die "another deploy or backup holds $GROVE_LOCK_FILE"
     export GROVE_LOCK_HELD=1
@@ -86,5 +93,6 @@ record() {
     local file=$1
     shift
     mkdir -p "$GROVE_LOG_DIR"
+    [ -f "$GROVE_LOG_DIR/$file" ] || install -m 640 /dev/null "$GROVE_LOG_DIR/$file"
     log "$*" | tee -a "$GROVE_LOG_DIR/$file"
 }

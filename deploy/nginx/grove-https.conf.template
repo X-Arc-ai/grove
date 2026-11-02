@@ -1,5 +1,7 @@
 # The public host: TLS here, everything else in the API on 127.0.0.1:8000. No rule looks at the
 # user agent, so Meta's metadata fetcher (meta-webindexer/1.1) gets the same answers as anyone.
+# Every TLS setting is in this file: a box gets only the certificate from certbot, and ECDHE
+# ciphers need no dhparam file.
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
@@ -7,8 +9,12 @@ server {
 
     ssl_certificate /etc/letsencrypt/live/__GROVE_HOST__/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/__GROVE_HOST__/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers off;
+    ssl_session_cache shared:grove_tls:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
 
     add_header Strict-Transport-Security "max-age=31536000" always;
     # Chat exports with voice notes are large.
