@@ -10,10 +10,19 @@ two redeems of one code would both see it unused. The lock write sets a property
 never the checked one, and the read after it is a statement of its own, so it sees what a racer
 committed before the lock was granted.
 
+Only that read proves the row exists. A lock statement or a MERGE that waits on a row a racer then
+deletes still returns a row, with nulls in it, and its write goes nowhere. So no row in the read
+after the lock means the row is absent (_after_lock, _merged).
+
+A family revoke takes the lock of the family's grant before it reads the family (_revoke_family).
+One statement fixes its rows when it starts, so alone it would miss a pair that commits while it
+waits. rotate_refresh and issue_tokens hold that lock when they add a pair, so the two serialize,
+and the statement after the lock sees the new pair.
+
 Lock order: a code before its grant (redeem_code, issue_tokens), a client before its grant
-(grant_consent). rotate_refresh locks a token before its grant and revoke_grant the grant before
-its tokens; when those two meet, Neo4j ends one with a transient deadlock error and the driver runs
-it again, so the second sees what the first committed.
+(grant_consent). rotate_refresh and revoke_token lock a token before its grant, and a family revoke
+and revoke_grant lock the grant before its tokens. When those meet, Neo4j ends one with a transient
+deadlock error and the driver runs it again, so the second sees what the first committed.
 
 A caller passes hashes (grove.oauth.secrets.token_hash), never a code, a token or a secret.
 """
@@ -30,6 +39,7 @@ from grove.ids import new_id
 from grove.oauth import (
     EXPIRED_CODE_KEPT,
     MAX_CLIENTS_DELETED_PER_REGISTRATION,
+    METADATA_DOCUMENT_STALE_LIMIT,
     UNUSED_DYNAMIC_CLIENT_KEPT,
 )
 from grove.store.connection import DATABASE
@@ -59,17 +69,30 @@ _ENSURE_DOCUMENT_CLIENT = (
     "c.token_endpoint_auth_method = $auth_method, c.fetched_at = $at "
     "RETURN c.registration_type AS registration_type"
 )
-# Old dynamic clients that no grant names, oldest first. The filter comes before the limit, so old
-# clients with grants never fill it. Each is locked, and the drop checks for a grant again in a
-# statement of its own, so a consent that committed first keeps its client. A client with no grant
-# holds no code or token: store_code and issue_tokens both need a grant.
-_LOCK_OLD_DYNAMIC_CLIENTS = (
-    "MATCH (c:OAuthClient {registration_type: $registration_type}) "
-    "WHERE c.registered_at < $before "
+# The clients a registration may delete: no grant names them, and a dynamic client registered long
+# ago, or a document's copy was last fetched past the stale limit, so it cannot serve without a new
+# fetch. A client with no grant holds no code or token: store_code and issue_tokens both need one.
+_OLD_AND_UNUSED = (
+    "((c.registration_type = $dynamic AND c.registered_at < $dynamic_before) "
+    "OR (c.registration_type = $document AND c.fetched_at < $document_before)) "
     "AND NOT EXISTS { MATCH (g:OAuthGrant {client_id: c.client_id}) } "
-    "WITH c ORDER BY c.registered_at, c.client_id LIMIT $limit "
+)
+# Oldest first. The filter comes before the limit, so old clients with grants never fill it. Each is
+# locked, and the drop checks again in a statement of its own, so a consent or a new fetch that
+# committed first keeps its client.
+_LOCK_OLD_UNUSED_CLIENTS = (
+    "MATCH (c:OAuthClient) "
+    f"WHERE {_OLD_AND_UNUSED}"
+    "WITH c ORDER BY coalesce(c.fetched_at, c.registered_at), c.client_id LIMIT $limit "
     "SET c.registration_type = c.registration_type "
     "RETURN c.client_id AS client_id"
+)
+_DROP_OLD_UNUSED_CLIENTS = (
+    "UNWIND $client_ids AS client_id "
+    "MATCH (c:OAuthClient {client_id: client_id}) "
+    f"WHERE {_OLD_AND_UNUSED}"
+    "DETACH DELETE c "
+    "RETURN count(*) AS deleted"
 )
 _DROP_UNUSED_CLIENTS = (
     "UNWIND $client_ids AS client_id "
@@ -83,6 +106,9 @@ _LOCK_CLIENT = (
     "SET c.registration_type = c.registration_type "
     "RETURN c.client_id AS client_id"
 )
+_READ_CLIENT = (
+    "MATCH (c:OAuthClient {client_id: $client_id}) RETURN c.registration_type AS registration_type"
+)
 
 # Grants -----------------------------------------------------------------------------------------
 
@@ -94,6 +120,9 @@ _ENSURE_GRANT = (
     "SET g.user_id = $user_id, g.scopes_granted = $scopes, g.granted_at = $at "
     "REMOVE g.revoked_at "
     "RETURN g.id AS id"
+)
+_READ_GRANT_ID = (
+    "MATCH (g:OAuthGrant {client_id: $client_id, world_id: $world_id}) RETURN g.id AS id"
 )
 _LOCK_GRANT = (
     "MATCH (g:OAuthGrant {id: $grant_id}) SET g.granted_at = g.granted_at RETURN g.id AS id"
@@ -118,6 +147,7 @@ _LOCK_CODE = (
 )
 _LOCK_CODE_BY_ID = "MATCH (c:AuthCode {id: $id}) SET c.created_at = c.created_at RETURN c.id AS id"
 _READ_CODE = "MATCH (c:AuthCode {id: $id}) RETURN c {.*} AS row"
+_READ_CODE_BY_HASH = "MATCH (c:AuthCode {code_hash: $code_hash}) RETURN c {.*} AS row"
 _USE_CODE = "MATCH (c:AuthCode {id: $id}) SET c.used_at = $at"
 # A second redeem keeps the time of the first reuse.
 _MARK_REUSED = "MATCH (c:AuthCode {id: $id}) SET c.reused_at = coalesce(c.reused_at, $at)"
@@ -129,7 +159,7 @@ _LOCK_TOKEN = (
     "MATCH (t:OAuthToken {token_hash: $token_hash}) "
     "SET t.created_at = t.created_at RETURN t.id AS id"
 )
-_READ_TOKEN = "MATCH (t:OAuthToken {id: $id}) RETURN t {.*} AS row"
+_READ_TOKEN = "MATCH (t:OAuthToken {token_hash: $token_hash}) RETURN t {.*} AS row"
 _SPEND_REFRESH = "MATCH (t:OAuthToken {id: $id}) SET t.used_at = $at, t.revoked_at = $at"
 _REVOKE_ONE = "MATCH (t:OAuthToken {id: $id}) WHERE t.revoked_at IS NULL SET t.revoked_at = $at"
 _REVOKE_FAMILY = (
@@ -196,6 +226,31 @@ def _rows(tx: ManagedTransaction, cypher: str, **params: Any) -> list[dict]:
     return collect(tx.run(CYPHER_PREFIX + cypher, params), None)
 
 
+def _after_lock(
+    tx: ManagedTransaction, lock: str, read: str, **params: Any
+) -> dict[str, Any] | None:
+    """Takes the lock, then reads the row in a statement of its own. None when no row is there.
+
+    The lock's own answer proves nothing: it waits on a row a racer then deletes, and still returns
+    a row. Only the read after it sees what the racer committed."""
+    _rows(tx, lock, **params)
+    found = _rows(tx, read, **params)
+    return found[0] if found else None
+
+
+def _merged(tx: ManagedTransaction, merge: str, read: str, **params: Any) -> dict[str, Any]:
+    """The row a MERGE made or found, read in a statement of its own.
+
+    A MERGE that finds a row a racer is deleting waits on it, writes nothing, and still returns a
+    row. The next MERGE sees that the row is gone and makes a new one."""
+    for _ in range(_ATTEMPTS):
+        _rows(tx, merge, **params)
+        found = _rows(tx, read, **params)
+        if found:
+            return found[0]
+    raise RuntimeError("the row was deleted under every MERGE")
+
+
 def _codes(name: str, values: Sequence[str]) -> list[str]:
     """A non-empty list of non-empty strings, in order, each once. S16: no empty list is stored."""
     if isinstance(values, str) or not isinstance(values, Sequence) or not values:
@@ -230,9 +285,10 @@ def register_client(
 ) -> None:
     """A dynamic client (CREATE) or a metadata document's copy (MERGE on client_id).
 
-    The same transaction deletes up to 100 dynamic clients that no grant names and that registered
-    more than 7 days before `at`. A client id that exists raises ConstraintError for a dynamic
-    client; a metadata document's row is refreshed with what the document says and fetched_at=at.
+    The same transaction deletes up to 100 clients that no grant names: dynamic clients that
+    registered more than 7 days before `at`, and document clients last fetched more than 24 hours
+    before `at`. A client id that exists raises ConstraintError for a dynamic client; a metadata
+    document's row is refreshed with what the document says and fetched_at=at.
     """
     if registration_type not in REGISTRATION_TYPES:
         raise ValueError(f"registration_type must be one of {REGISTRATION_TYPES}")
@@ -259,9 +315,10 @@ def register_client(
             }
             _rows(tx, _ADD_CLIENT, row=_present(row))
         else:
-            found = _rows(
+            found = _merged(
                 tx,
                 _ENSURE_DOCUMENT_CLIENT,
+                _READ_CLIENT,
                 client_id=client_id,
                 registration_type=registration_type,
                 host=host,
@@ -269,25 +326,28 @@ def register_client(
                 auth_method=auth_method,
                 at=at,
             )
-            if found[0]["registration_type"] != METADATA_DOCUMENT:
+            if found["registration_type"] != METADATA_DOCUMENT:
                 raise ValueError("a dynamic client holds that client id")
-        _drop_unused_clients(tx, before=at - UNUSED_DYNAMIC_CLIENT_KEPT)
+        _drop_unused_clients(tx, at=at)
 
     _write(driver, work)
 
 
-def _drop_unused_clients(tx: ManagedTransaction, *, before: datetime) -> int:
+def _drop_unused_clients(tx: ManagedTransaction, *, at: datetime) -> int:
+    """Deletes at most MAX_CLIENTS_DELETED_PER_REGISTRATION clients, of both types together."""
+    limits = {
+        "dynamic": DYNAMIC,
+        "dynamic_before": at - UNUSED_DYNAMIC_CLIENT_KEPT,
+        "document": METADATA_DOCUMENT,
+        "document_before": at - METADATA_DOCUMENT_STALE_LIMIT,
+    }
     locked = _rows(
-        tx,
-        _LOCK_OLD_DYNAMIC_CLIENTS,
-        registration_type=DYNAMIC,
-        before=before,
-        limit=MAX_CLIENTS_DELETED_PER_REGISTRATION,
+        tx, _LOCK_OLD_UNUSED_CLIENTS, limit=MAX_CLIENTS_DELETED_PER_REGISTRATION, **limits
     )
     if not locked:
         return 0
     client_ids = [row["client_id"] for row in locked]
-    return _rows(tx, _DROP_UNUSED_CLIENTS, client_ids=client_ids)[0]["deleted"]
+    return _rows(tx, _DROP_OLD_UNUSED_CLIENTS, client_ids=client_ids, **limits)[0]["deleted"]
 
 
 def delete_unused_client(driver: Driver, *, client_id: str) -> bool:
@@ -296,7 +356,7 @@ def delete_unused_client(driver: Driver, *, client_id: str) -> bool:
     purged the client's test worlds, whose grants, codes and tokens go with them."""
 
     def work(tx: ManagedTransaction) -> bool:
-        if not _rows(tx, _LOCK_CLIENT, client_id=client_id):
+        if _after_lock(tx, _LOCK_CLIENT, _READ_CLIENT, client_id=client_id) is None:
             return False
         return _rows(tx, _DROP_UNUSED_CLIENTS, client_ids=[client_id])[0]["deleted"] == 1
 
@@ -317,23 +377,25 @@ def grant_consent(
 ) -> str:
     """The grant of (client_id, world_id), made or found: user_id, scopes_granted and granted_at
     are set and revoked_at is cleared. Returns the grant id. Raises UnknownClient when no client
-    has the id; the client's lock keeps a cleanup from deleting it under the new grant."""
+    has the id, also when a cleanup deletes it while this waits on its lock; once held, the client's
+    lock keeps a cleanup from deleting it under the new grant."""
     granted = _codes("scopes", scopes)
     fresh = new_id()
 
     def work(tx: ManagedTransaction) -> str:
-        if not _rows(tx, _LOCK_CLIENT, client_id=client_id):
+        if _after_lock(tx, _LOCK_CLIENT, _READ_CLIENT, client_id=client_id) is None:
             raise UnknownClient("no client has that id")
-        return _rows(
+        return _merged(
             tx,
             _ENSURE_GRANT,
+            _READ_GRANT_ID,
             client_id=client_id,
             world_id=world_id,
             id=fresh,
             user_id=user_id,
             scopes=granted,
             at=at,
-        )[0]["id"]
+        )["id"]
 
     for attempt in range(_ATTEMPTS):
         try:
@@ -401,14 +463,14 @@ def redeem_code(driver: Driver, *, code_hash: str, at: datetime) -> RedeemedCode
     reused_at, so a reuse that comes before the winner's issue still leaves no live token."""
 
     def work(tx: ManagedTransaction) -> RedeemedCode | None:
-        locked = _rows(tx, _LOCK_CODE, code_hash=code_hash)
-        if not locked:
+        found = _after_lock(tx, _LOCK_CODE, _READ_CODE_BY_HASH, code_hash=code_hash)
+        if found is None:
             return None
-        code_id = locked[0]["id"]
-        row = _rows(tx, _READ_CODE, id=code_id)[0]["row"]
+        row = found["row"]
+        code_id = row["id"]
         if row.get("used_at") is not None:
             _rows(tx, _MARK_REUSED, id=code_id, at=at)
-            _rows(tx, _REVOKE_FAMILY, family_id=code_id, at=at)
+            _revoke_family(tx, grant_id=row.get("grant_id"), family_id=code_id, at=at)
             return None
         if row["expires_at"] <= at:
             return None
@@ -439,9 +501,10 @@ def _family_code_holds(
     that commits first is seen here, and one that comes later waits for this transaction and then
     revokes what it made. The code must be redeemed, redeemed once, and of this grant, client and
     world. The code comes before the grant in every transaction that takes both locks."""
-    if not _rows(tx, _LOCK_CODE_BY_ID, id=family_id):
+    found = _after_lock(tx, _LOCK_CODE_BY_ID, _READ_CODE, id=family_id)
+    if found is None:
         return False
-    code = _rows(tx, _READ_CODE, id=family_id)[0]["row"]
+    code = found["row"]
     return (
         code.get("used_at") is not None
         and code.get("reused_at") is None
@@ -454,14 +517,25 @@ def _family_code_holds(
 def _live_grant(tx: ManagedTransaction, grant_id: str, client_id: str, world_id: str) -> bool:
     """Locks the grant, then reads it: a revoke that commits first is seen, and one that comes
     later waits for this transaction and then revokes what it made."""
-    if not _rows(tx, _LOCK_GRANT, grant_id=grant_id):
-        return False
-    grant = _rows(tx, _READ_GRANT, grant_id=grant_id)[0]
+    grant = _after_lock(tx, _LOCK_GRANT, _READ_GRANT, grant_id=grant_id)
     return (
-        grant["revoked_at"] is None
+        grant is not None
+        and grant["revoked_at"] is None
         and grant["client_id"] == client_id
         and grant["world_id"] == world_id
     )
+
+
+def _revoke_family(
+    tx: ManagedTransaction, *, grant_id: str | None, family_id: str, at: datetime
+) -> None:
+    """Revokes every live token of the family, also a pair that a rotation is adding right now.
+
+    The lock comes first and the family's read is a statement of its own, so a pair that commits
+    while this waits is in that read. A rotation that has not added its pair yet waits for this
+    transaction, and then finds its refresh token revoked."""
+    _rows(tx, _LOCK_GRANT, grant_id=grant_id)
+    _rows(tx, _REVOKE_FAMILY, family_id=family_id, at=at)
 
 
 def _granted_now(tx: ManagedTransaction, grant_id: str) -> tuple[str, ...]:
@@ -589,14 +663,14 @@ def rotate_refresh(
     scope the old token does not hold."""
 
     def work(tx: ManagedTransaction) -> IssuedFamily | None:
-        locked = _rows(tx, _LOCK_TOKEN, token_hash=refresh_hash)
-        if not locked:
+        found = _after_lock(tx, _LOCK_TOKEN, _READ_TOKEN, token_hash=refresh_hash)
+        if found is None:
             return None
-        old = _rows(tx, _READ_TOKEN, id=locked[0]["id"])[0]["row"]
+        old = found["row"]
         if old.get("token_type") != REFRESH or old.get("client_id") != client_id:
             return None
         if old.get("used_at") is not None or old.get("revoked_at") is not None:
-            _rows(tx, _REVOKE_FAMILY, family_id=old["family_id"], at=at)
+            _revoke_family(tx, grant_id=old.get("grant_id"), family_id=old["family_id"], at=at)
             return None
         if old["expires_at"] <= at:
             return None
@@ -648,14 +722,14 @@ def revoke_token(driver: Driver, *, token_hash: str, client_id: str, at: datetim
     family. Another client's token and an unknown one change nothing."""
 
     def work(tx: ManagedTransaction) -> None:
-        locked = _rows(tx, _LOCK_TOKEN, token_hash=token_hash)
-        if not locked:
+        found = _after_lock(tx, _LOCK_TOKEN, _READ_TOKEN, token_hash=token_hash)
+        if found is None:
             return
-        row = _rows(tx, _READ_TOKEN, id=locked[0]["id"])[0]["row"]
+        row = found["row"]
         if row.get("client_id") != client_id:
             return
         if row.get("token_type") == REFRESH and row.get("family_id"):
-            _rows(tx, _REVOKE_FAMILY, family_id=row["family_id"], at=at)
+            _revoke_family(tx, grant_id=row.get("grant_id"), family_id=row["family_id"], at=at)
         else:
             _rows(tx, _REVOKE_ONE, id=row["id"], at=at)
 
@@ -669,6 +743,9 @@ def revoke_grant(driver: Driver, *, grant_id: str, world_id: str, at: datetime) 
 
     def work(tx: ManagedTransaction) -> bool:
         if not _rows(tx, _REVOKE_GRANT, grant_id=grant_id, world_id=world_id, at=at):
+            return False
+        # That statement waits on a grant a racer deletes and still returns a row.
+        if not _rows(tx, _READ_GRANT, grant_id=grant_id):
             return False
         _rows(tx, _REVOKE_GRANT_TOKENS, grant_id=grant_id, at=at)
         return True

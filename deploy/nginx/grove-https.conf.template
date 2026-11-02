@@ -6,8 +6,11 @@
 # Each address may ask for a sign-in code at a steady rate, on top of the API's own limits per
 # mail address. A code costs a mail, so this stops a flood before it reaches the API.
 limit_req_zone $binary_remote_addr zone=grove_email:1m rate=10r/m;
-# The OAuth paths that a host calls with no session: each address registers clients and asks for
-# tokens at a steady rate, on top of the API's own cap on registrations across the server.
+# Registration is open, so one address must not be able to fill the API's cap across the server:
+# 4 a minute is 240 an hour, against MAX_REGISTRATIONS_PER_WINDOW of 1000 an hour.
+limit_req_zone $binary_remote_addr zone=grove_register:1m rate=4r/m;
+# The other OAuth paths that a host or a browser calls with no session: /token, and /authorize,
+# which reaches the store and the fetch of a client metadata document.
 limit_req_zone $binary_remote_addr zone=grove_oauth:1m rate=30r/m;
 
 server {
@@ -49,6 +52,12 @@ server {
     }
 
     location = /register {
+        limit_req zone=grove_register burst=20 nodelay;
+        limit_req_status 429;
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    location = /authorize {
         limit_req zone=grove_oauth burst=20 nodelay;
         limit_req_status 429;
         proxy_pass http://127.0.0.1:8000;

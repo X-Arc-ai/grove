@@ -2,10 +2,16 @@
 
 Codes are single use, a reuse revokes the family, a refresh rotates inside its family and grant,
 a grant's revoke takes its tokens with it, a token carries its grant's world, and two redeems that
-race give one winner. Names are invented; the worlds and clients are purged at the end.
+race give one winner. A lock on a row a racer deletes counts as no row, and a family revoke waits
+for a rotation in flight. Names are invented; the worlds and clients are purged at the end.
+
+The store is shared with other runs, and any run's registration cleans up the whole store. So a
+client that is old and has no grant may go at any moment: a test ages a client only after its
+consent (age_granted_client), and waits through more than one cleanup (_clean_until_gone).
 """
 
 import hashlib
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -18,6 +24,7 @@ from grove.ids import new_id
 from grove.oauth import (
     ACCESS_TOKEN_LIFETIME,
     CODE_LIFETIME,
+    METADATA_DOCUMENT_STALE_LIMIT,
     REFRESH_TOKEN_LIFETIME,
     UNUSED_DYNAMIC_CLIENT_KEPT,
 )
@@ -49,7 +56,14 @@ from grove.writer.oauth import (
     rotate_refresh,
     store_code,
 )
-from grove.writer.testing import plant_session
+from grove.writer.testing import (
+    DROP_GRANT,
+    DROP_TOKEN,
+    HeldTransaction,
+    age_granted_client,
+    held_transaction,
+    plant_session,
+)
 from tests.hosts.conftest import (
     CLIENT_NAME,
     LOOPBACK_REDIRECT,
@@ -62,6 +76,8 @@ RESOURCE = "https://grove.example/mcp"
 READ_WRITE = ["grove.read", "grove.write"]
 CHALLENGE = "Zm9yLXRlc3RzLW9ubHktYS1jaGFsbGVuZ2Utb2YtNDMtY2hhcnM"
 DOCUMENT_URL = "https://lumen-desk.example/oauth/client.json"
+# How many registrations a test may wait through for one client to go.
+CLEANUP_CALLS = 10
 
 
 @dataclass(frozen=True)
@@ -75,6 +91,7 @@ class Chain:
     code_id: str
     access: str
     refresh: str
+    code: str
 
 
 def _consent(driver, person, client_id: str, at: datetime, scopes=READ_WRITE) -> str:
@@ -139,7 +156,9 @@ def _chain(driver, person, client_id: str, at: datetime | None = None) -> Chain:
     redeemed = redeem_code(driver, code_hash=token_hash(code), at=at)
     assert redeemed is not None
     access, refresh = _issue(driver, redeemed, at)
-    return Chain(client_id, person.world_id, person.user_id, grant_id, redeemed.id, access, refresh)
+    return Chain(
+        client_id, person.world_id, person.user_id, grant_id, redeemed.id, access, refresh, code
+    )
 
 
 def _rotate(driver, chain_client: str, refresh: str, at: datetime, scopes=None):
@@ -191,6 +210,62 @@ def _grant_row(driver, grant_id: str) -> dict:
 
 def _live(driver, value: str, now: datetime | None = None):
     return find_access_token(driver, token_hash(value), now or clock.now())
+
+
+def _waits_on(driver, hold: Callable[[HeldTransaction], None], work: Callable[[], object]):
+    """`hold` runs in an open transaction, `work` starts in a thread and must wait on that
+    transaction's locks, the transaction commits, and `work` gives its answer."""
+    with ThreadPoolExecutor(1) as pool, held_transaction(driver) as held:
+        hold(held)
+        job = pool.submit(work)
+        assert held.blocks(job.done), "the work did not wait on the open transaction"
+        held.commit()
+        return job.result(timeout=60)
+
+
+def _dynamic_client(driver, plant: HostsPlant, at: datetime) -> str:
+    client_id = plant.track_client(new_id())
+    register_client(
+        driver,
+        client_id=client_id,
+        host=CLIENT_NAME,
+        redirect_uris=[LOOPBACK_REDIRECT],
+        registration_type=DYNAMIC,
+        auth_method="none",
+        secret_hash=None,
+        at=at,
+    )
+    return client_id
+
+
+def _document_client(
+    driver, plant: HostsPlant, at: datetime, *, url: str | None = None, host: str = CLIENT_NAME
+) -> str:
+    url = url or plant.track_client(f"{DOCUMENT_URL}?run={new_id()}")
+    register_client(
+        driver,
+        client_id=url,
+        host=host,
+        redirect_uris=["https://lumen-desk.example/callback"],
+        registration_type=METADATA_DOCUMENT,
+        auth_method="none",
+        secret_hash=None,
+        at=at,
+    )
+    return url
+
+
+def _clean_until_gone(driver, plant: HostsPlant, gone: str, kept: Sequence[str] = ()) -> None:
+    """Registrations, each with its cleanup, until `gone` is deleted, and never fewer than two.
+    Another run's old clients may take a cleanup's budget first, so one call proves too little
+    either way. Every client in `kept` must stay through all of them."""
+    for call in range(CLEANUP_CALLS):
+        plant.client()
+        for client_id in kept:
+            assert find_client(driver, client_id) is not None, f"a cleanup deleted {client_id}"
+        if call >= 1 and find_client(driver, gone) is None:
+            return
+    pytest.fail(f"{CLEANUP_CALLS} cleanups left {gone} in the store")
 
 
 # Secrets ----------------------------------------------------------------------------------------
@@ -496,7 +571,7 @@ def test_find_access_token_refuses_expired_revoked_refresh_and_revoked_grant_tok
 def test_find_access_token_reads_the_grant_itself_not_only_the_token_row(
     driver, hosts_plant, monkeypatch
 ):
-    """A token that a revoke missed, as a race could leave it, still dies with its grant."""
+    """A second wall: a token that a revoke somehow missed still dies with its grant."""
     person = hosts_plant.person(seeded=False)
     at = clock.now()
     chain = _chain(driver, person, hosts_plant.client(), at)
@@ -626,6 +701,287 @@ def test_rotation_under_a_revoked_grant_gives_nothing(driver, hosts_plant):
 
     assert _rotate(driver, chain.client_id, chain.refresh, at)[0] is None
     assert len(_family(driver, chain.code_id)) == 2
+
+
+# A family revoke and a rotation in flight --------------------------------------------------------
+
+
+_REPLAYS = {
+    "rotate_refresh": lambda driver, chain, at: _rotate(driver, chain.client_id, chain.refresh, at),
+    "redeem_code": lambda driver, chain, at: redeem_code(
+        driver, code_hash=token_hash(chain.code), at=at
+    ),
+    "revoke_token": lambda driver, chain, at: revoke_token(
+        driver, token_hash=token_hash(chain.refresh), client_id=chain.client_id, at=at
+    ),
+}
+
+
+@pytest.mark.parametrize("replay", _REPLAYS)
+def test_a_family_revoke_waits_for_a_rotation_in_flight_and_revokes_its_pair(
+    driver, hosts_plant, replay
+):
+    """The steps of rotate_refresh up to its commit, in an open transaction: the old token's lock,
+    the grant's lock, the spend, the new pair. The revoke must wait, and must then see the pair."""
+    person = hosts_plant.person(seeded=False)
+    client_id = hosts_plant.client()
+    at = clock.now()
+    chain = _chain(driver, person, client_id, at)
+    _, _, second_refresh = _rotate(driver, client_id, chain.refresh, at)
+    access, refresh = new_secret(ACCESS_TOKEN_PREFIX), new_secret(REFRESH_TOKEN_PREFIX)
+
+    def rotation_in_flight(held: HeldTransaction) -> None:
+        held.run(oauth_module._LOCK_TOKEN, token_hash=token_hash(second_refresh))
+        held.run(oauth_module._LOCK_GRANT, grant_id=chain.grant_id)
+        held.run(oauth_module._SPEND_REFRESH, id=_token(driver, second_refresh)["id"], at=at)
+        oauth_module._add_pair(
+            held.tx,
+            access_hash=token_hash(access),
+            refresh_hash=token_hash(refresh),
+            access_expires_at=at + ACCESS_TOKEN_LIFETIME,
+            refresh_expires_at=at + REFRESH_TOKEN_LIFETIME,
+            client_id=client_id,
+            user_id=person.user_id,
+            world_id=person.world_id,
+            grant_id=chain.grant_id,
+            family_id=chain.code_id,
+            scopes=READ_WRITE,
+            resource=RESOURCE,
+            at=at,
+        )
+
+    _waits_on(
+        driver,
+        rotation_in_flight,
+        lambda: _REPLAYS[replay](driver, chain, at + timedelta(seconds=1)),
+    )
+
+    family = _family(driver, chain.code_id)
+    assert len(family) == 6
+    assert all(row.get("revoked_at") is not None for row in family)
+    assert _live(driver, access, at) is None
+    assert _rotate(driver, client_id, refresh, at + timedelta(seconds=2))[0] is None
+
+
+def test_a_rotation_and_a_replay_at_one_time_never_leave_a_live_pair(driver, hosts_plant):
+    """The thief rotates the second refresh token as the victim replays the first. Whichever order
+    the store gives, a deadlock included, the family ends with no live token."""
+    person = hosts_plant.person(seeded=False)
+    client_id = hosts_plant.client()
+    at = clock.now()
+    for _ in range(10):
+        chain = _chain(driver, person, client_id, at)
+        _, _, second_refresh = _rotate(driver, client_id, chain.refresh, at)
+        barrier = Barrier(2, timeout=30)
+
+        def spend(token: str, barrier: Barrier = barrier):
+            barrier.wait()
+            return _rotate(driver, client_id, token, at)
+
+        with ThreadPoolExecutor(2) as pool:
+            rotated = pool.submit(spend, second_refresh)
+            replayed = pool.submit(spend, chain.refresh)
+            issued, access, _ = rotated.result(timeout=60)
+            assert replayed.result(timeout=60)[0] is None
+
+        assert all(row.get("revoked_at") is not None for row in _family(driver, chain.code_id))
+        if issued is not None:
+            assert _live(driver, access, at) is None
+
+
+# A lock on a row a racer deletes -----------------------------------------------------------------
+
+
+def _hold_client_delete(client_id: str) -> Callable[[HeldTransaction], None]:
+    def hold(held: HeldTransaction) -> None:
+        held.run(oauth_module._LOCK_CLIENT, client_id=client_id)
+        assert held.run(oauth_module._DROP_UNUSED_CLIENTS, client_ids=[client_id]) == [
+            {"deleted": 1}
+        ]
+
+    return hold
+
+
+def _hold_code_delete(code: str, client_id: str, at: datetime) -> Callable[[HeldTransaction], None]:
+    """The cleanup statement of store_code, with a time past every code of this test's client."""
+
+    def hold(held: HeldTransaction) -> None:
+        held.run(oauth_module._LOCK_CODE, code_hash=token_hash(code))
+        held.run(oauth_module._DROP_OLD_CODES, client_id=client_id, before=at + timedelta(days=1))
+
+    return hold
+
+
+def _hold_grant_delete(grant_id: str) -> Callable[[HeldTransaction], None]:
+    def hold(held: HeldTransaction) -> None:
+        held.run(oauth_module._LOCK_GRANT, grant_id=grant_id)
+        held.run(DROP_GRANT, grant_id=grant_id)
+
+    return hold
+
+
+def _hold_token_delete(token: str) -> Callable[[HeldTransaction], None]:
+    def hold(held: HeldTransaction) -> None:
+        held.run(oauth_module._LOCK_TOKEN, token_hash=token_hash(token))
+        held.run(DROP_TOKEN, token_hash=token_hash(token))
+
+    return hold
+
+
+def test_a_consent_that_waits_on_a_client_being_deleted_is_refused(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    client_id = hosts_plant.client()
+
+    with pytest.raises(UnknownClient):
+        _waits_on(
+            driver,
+            _hold_client_delete(client_id),
+            lambda: _consent(driver, person, client_id, clock.now()),
+        )
+
+    assert find_client(driver, client_id) is None
+    assert list_grants(driver, person.world_id) == []
+
+
+def test_a_consent_that_waits_on_a_grant_being_deleted_makes_a_new_grant(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    client_id = hosts_plant.client()
+    at = clock.now()
+    deleted = _consent(driver, person, client_id, at)
+
+    grant_id = _waits_on(
+        driver, _hold_grant_delete(deleted), lambda: _consent(driver, person, client_id, at)
+    )
+
+    assert grant_id is not None and grant_id != deleted
+    row = _grant_row(driver, grant_id)
+    assert (row["client_id"], row["world_id"]) == (client_id, person.world_id)
+
+
+def test_a_document_fetch_that_waits_on_its_row_being_deleted_makes_a_new_row(driver, hosts_plant):
+    at = clock.now()
+    url = _document_client(driver, hosts_plant, at)
+
+    _waits_on(
+        driver,
+        _hold_client_delete(url),
+        lambda: _document_client(driver, hosts_plant, at, url=url, host="Lumen Desk 2"),
+    )
+
+    client = find_client(driver, url)
+    assert client is not None and client.host == "Lumen Desk 2" and client.fetched_at == at
+
+
+def test_a_redeem_that_waits_on_a_code_being_deleted_gives_nothing(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    client_id = hosts_plant.client()
+    at = clock.now()
+    grant_id = _consent(driver, person, client_id, at)
+    code = _code(driver, person, client_id, grant_id, at)
+
+    redeemed = _waits_on(
+        driver,
+        _hold_code_delete(code, client_id, at),
+        lambda: redeem_code(driver, code_hash=token_hash(code), at=at),
+    )
+
+    assert redeemed is None
+    assert _code_row(driver, code) is None
+
+
+def test_an_issue_that_waits_on_its_code_being_deleted_is_refused(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    client_id = hosts_plant.client()
+    at = clock.now()
+    grant_id = _consent(driver, person, client_id, at)
+    code = _code(driver, person, client_id, grant_id, at)
+    redeemed = redeem_code(driver, code_hash=token_hash(code), at=at)
+
+    with pytest.raises(GrantRevoked):
+        _waits_on(
+            driver, _hold_code_delete(code, client_id, at), lambda: _issue(driver, redeemed, at)
+        )
+
+    assert _family(driver, redeemed.id) == []
+
+
+def test_an_issue_that_waits_on_its_grant_being_deleted_is_refused(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    client_id = hosts_plant.client()
+    at = clock.now()
+    grant_id = _consent(driver, person, client_id, at)
+    code = _code(driver, person, client_id, grant_id, at)
+    redeemed = redeem_code(driver, code_hash=token_hash(code), at=at)
+
+    with pytest.raises(GrantRevoked):
+        _waits_on(driver, _hold_grant_delete(grant_id), lambda: _issue(driver, redeemed, at))
+
+    assert _family(driver, redeemed.id) == []
+
+
+def test_a_rotation_that_waits_on_its_token_being_deleted_changes_nothing(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    at = clock.now()
+    chain = _chain(driver, person, hosts_plant.client(), at)
+
+    answer = _waits_on(
+        driver,
+        _hold_token_delete(chain.refresh),
+        lambda: _rotate(driver, chain.client_id, chain.refresh, at),
+    )
+
+    assert answer[0] is None
+    assert [row["token_type"] for row in _family(driver, chain.code_id)] == ["access"]
+    assert "revoked_at" not in _token(driver, chain.access)
+
+
+def test_a_rotation_that_waits_on_its_grant_being_deleted_changes_nothing(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    at = clock.now()
+    chain = _chain(driver, person, hosts_plant.client(), at)
+
+    answer = _waits_on(
+        driver,
+        _hold_grant_delete(chain.grant_id),
+        lambda: _rotate(driver, chain.client_id, chain.refresh, at),
+    )
+
+    assert answer[0] is None
+    assert len(_family(driver, chain.code_id)) == 2
+    assert "used_at" not in _token(driver, chain.refresh)
+
+
+def test_a_token_revoke_that_waits_on_its_token_being_deleted_changes_nothing(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    at = clock.now()
+    chain = _chain(driver, person, hosts_plant.client(), at)
+
+    answer = _waits_on(
+        driver,
+        _hold_token_delete(chain.refresh),
+        lambda: revoke_token(
+            driver, token_hash=token_hash(chain.refresh), client_id=chain.client_id, at=at
+        ),
+    )
+
+    assert answer is None
+    assert [row["token_type"] for row in _family(driver, chain.code_id)] == ["access"]
+    assert "revoked_at" not in _token(driver, chain.access)
+
+
+def test_a_grant_revoke_that_waits_on_its_grant_being_deleted_answers_false(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    at = clock.now()
+    chain = _chain(driver, person, hosts_plant.client(), at)
+
+    answer = _waits_on(
+        driver,
+        _hold_grant_delete(chain.grant_id),
+        lambda: revoke_grant(driver, grant_id=chain.grant_id, world_id=person.world_id, at=at),
+    )
+
+    assert answer is False
+    assert "revoked_at" not in _token(driver, chain.access)
 
 
 # Revokes ----------------------------------------------------------------------------------------
@@ -820,8 +1176,9 @@ def test_register_client_refuses_a_shape_it_cannot_store(
 
 def test_a_metadata_document_client_is_refreshed_in_place(driver, hosts_plant):
     url = hosts_plant.track_client(f"{DOCUMENT_URL}?run={new_id()}")
-    first_at = clock.now()
-    later = first_at + timedelta(hours=2)
+    # In the past, not the future: a registration's `at` also sets what its cleanup deletes.
+    later = clock.now()
+    first_at = later - timedelta(hours=2)
     for at, host, uris in (
         (first_at, "Lumen Desk", ["https://lumen-desk.example/callback"]),
         (later, "Lumen Desk 2", ["https://lumen-desk.example/callback2"]),
@@ -851,24 +1208,16 @@ def test_registration_deletes_old_dynamic_clients_that_no_grant_names(driver, ho
     person = hosts_plant.person(seeded=False)
     now = clock.now()
     old = now - UNUSED_DYNAMIC_CLIENT_KEPT - timedelta(minutes=1)
-    unused, granted, recent = (hosts_plant.track_client(new_id()) for _ in range(3))
-    for client_id, at in ((unused, old), (granted, old), (recent, now - timedelta(days=6))):
-        register_client(
-            driver,
-            client_id=client_id,
-            host=CLIENT_NAME,
-            redirect_uris=[LOOPBACK_REDIRECT],
-            registration_type=DYNAMIC,
-            auth_method="none",
-            secret_hash=None,
-            at=at,
-        )
+    granted = hosts_plant.client()
     _consent(driver, person, granted, now)
+    age_granted_client(driver, person.world_id, granted, old)
+    unused = _dynamic_client(driver, hosts_plant, old)
+    recent = _dynamic_client(driver, hosts_plant, now - timedelta(days=6))
 
-    hosts_plant.client()
+    _clean_until_gone(driver, hosts_plant, unused, kept=[granted, recent])
 
     assert find_client(driver, unused) is None
-    assert find_client(driver, granted) is not None
+    assert find_client(driver, granted).registered_at == old
     assert find_client(driver, recent) is not None
 
 
@@ -879,25 +1228,160 @@ def test_old_clients_that_a_grant_names_do_not_fill_the_cleanup_limit(
     next one, or a store with 100 old granted clients would never clean up again."""
     person = hosts_plant.person(seeded=False)
     now = clock.now()
-    granted, unused = (hosts_plant.track_client(new_id()) for _ in range(2))
-    for client_id, age in ((granted, timedelta(days=9000)), (unused, timedelta(days=8999))):
-        register_client(
-            driver,
-            client_id=client_id,
-            host=CLIENT_NAME,
-            redirect_uris=[LOOPBACK_REDIRECT],
-            registration_type=DYNAMIC,
-            auth_method="none",
-            secret_hash=None,
-            at=now - age,
-        )
+    granted = hosts_plant.client()
     _consent(driver, person, granted, now)
+    age_granted_client(driver, person.world_id, granted, now - timedelta(days=9000))
+    unused = _dynamic_client(driver, hosts_plant, now - timedelta(days=8999))
     monkeypatch.setattr(oauth_module, "MAX_CLIENTS_DELETED_PER_REGISTRATION", 1)
 
-    hosts_plant.client()
+    _clean_until_gone(driver, hosts_plant, unused, kept=[granted])
 
     assert find_client(driver, unused) is None
     assert find_client(driver, granted) is not None
+
+
+def test_registration_deletes_document_clients_past_the_stale_limit(driver, hosts_plant):
+    """The young side keeps a margin of hours: other tests register with `at` up to two hours ahead
+    of the clock, and their cleanups must not reach it."""
+    now = clock.now()
+    past = _document_client(
+        driver, hosts_plant, now - METADATA_DOCUMENT_STALE_LIMIT - timedelta(minutes=1)
+    )
+    young = _document_client(
+        driver, hosts_plant, now - METADATA_DOCUMENT_STALE_LIMIT + timedelta(hours=3)
+    )
+
+    _clean_until_gone(driver, hosts_plant, past, kept=[young])
+
+    assert find_client(driver, past) is None
+    assert find_client(driver, young) is not None
+
+
+def test_a_grant_keeps_a_document_client_past_the_stale_limit(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    now = clock.now()
+    old = now - METADATA_DOCUMENT_STALE_LIMIT - timedelta(hours=1)
+    granted = _document_client(driver, hosts_plant, now)
+    _consent(driver, person, granted, now)
+    age_granted_client(driver, person.world_id, granted, old)
+    unused = _document_client(driver, hosts_plant, old)
+
+    _clean_until_gone(driver, hosts_plant, unused, kept=[granted])
+
+    assert find_client(driver, granted).fetched_at == old
+
+
+def test_one_budget_covers_old_clients_of_both_types(driver, hosts_plant, monkeypatch):
+    now = clock.now()
+    monkeypatch.setattr(oauth_module, "MAX_CLIENTS_DELETED_PER_REGISTRATION", 1)
+    planted = [
+        _dynamic_client(driver, hosts_plant, now - timedelta(days=9100)),
+        _document_client(driver, hosts_plant, now - timedelta(days=9101)),
+    ]
+
+    for _ in range(CLEANUP_CALLS):
+        deleted = oauth_module._write(
+            driver, lambda tx: oauth_module._drop_unused_clients(tx, at=now)
+        )
+        assert deleted <= 1
+        if not any(find_client(driver, client_id) for client_id in planted):
+            break
+
+    assert not any(find_client(driver, client_id) for client_id in planted)
+
+
+def _old_client_under_lock(held: HeldTransaction, make: Callable[[], str]) -> str:
+    """An old client with no grant that this transaction has locked. Any run's cleanup may delete
+    such a row before the lock, so another one is made when that happened."""
+    for _ in range(CLEANUP_CALLS):
+        client_id = make()
+        held.run(oauth_module._LOCK_CLIENT, client_id=client_id)
+        if find_client(held.driver, client_id) is not None:
+            return client_id
+    pytest.fail("every old client was deleted before its lock")
+
+
+def _old_document(driver, plant: HostsPlant, now: datetime) -> str:
+    return _document_client(
+        driver, plant, now - METADATA_DOCUMENT_STALE_LIMIT - timedelta(minutes=1)
+    )
+
+
+def _old_dynamic(driver, plant: HostsPlant, now: datetime) -> str:
+    return _dynamic_client(driver, plant, now - UNUSED_DYNAMIC_CLIENT_KEPT - timedelta(minutes=1))
+
+
+def test_a_new_fetch_that_commits_while_a_cleanup_waits_keeps_its_row(driver, hosts_plant):
+    """The cleanup's first statement sees a stale row and waits on its lock. The fetch commits. The
+    drop looks again, in a statement of its own, and finds the row fresh."""
+    now = clock.now()
+    with ThreadPoolExecutor(1) as pool, held_transaction(driver) as held:
+        url = _old_client_under_lock(held, lambda: _old_document(driver, hosts_plant, now))
+        held.run(
+            oauth_module._ENSURE_DOCUMENT_CLIENT,
+            client_id=url,
+            registration_type=METADATA_DOCUMENT,
+            host=CLIENT_NAME,
+            redirect_uris=["https://lumen-desk.example/callback"],
+            auth_method="none",
+            at=now,
+        )
+        job = pool.submit(hosts_plant.client)
+        assert held.blocks(job.done), "the cleanup did not wait on the lock"
+        held.commit()
+        job.result(timeout=60)
+
+    assert find_client(driver, url).fetched_at == now
+
+
+@pytest.mark.parametrize("old_client", [_old_dynamic, _old_document])
+def test_a_consent_that_commits_while_a_cleanup_waits_keeps_its_client(
+    driver, hosts_plant, old_client
+):
+    """The steps of grant_consent up to its commit, in an open transaction."""
+    person = hosts_plant.person(seeded=False)
+    now = clock.now()
+    with ThreadPoolExecutor(1) as pool, held_transaction(driver) as held:
+        client_id = _old_client_under_lock(held, lambda: old_client(driver, hosts_plant, now))
+        grant_id = new_id()
+        held.run(
+            oauth_module._ENSURE_GRANT,
+            client_id=client_id,
+            world_id=person.world_id,
+            id=grant_id,
+            user_id=person.user_id,
+            scopes=READ_WRITE,
+            at=now,
+        )
+        job = pool.submit(hosts_plant.client)
+        assert held.blocks(job.done), "the cleanup did not wait on the lock"
+        held.commit()
+        job.result(timeout=60)
+
+    assert find_client(driver, client_id) is not None
+    assert _grant_row(driver, grant_id)["client_id"] == client_id
+
+
+def test_age_granted_client_works_only_through_a_grant_of_a_test_world(driver, hosts_plant):
+    person = hosts_plant.person(seeded=False)
+    stranger = hosts_plant.person(SECOND_TITLE, seeded=False)
+    client_id = hosts_plant.client()
+    now = clock.now()
+    registered_at = find_client(driver, client_id).registered_at
+    with pytest.raises(ValueError):
+        age_granted_client(driver, "real-world", client_id, now)
+    with pytest.raises(ValueError):
+        age_granted_client(driver, person.world_id, client_id, now)
+    _consent(driver, person, client_id, now)
+    with pytest.raises(ValueError):
+        age_granted_client(driver, stranger.world_id, client_id, now)
+    assert find_client(driver, client_id).registered_at == registered_at
+
+    long_ago = now - timedelta(days=30)
+    age_granted_client(driver, person.world_id, client_id, long_ago)
+
+    client = find_client(driver, client_id)
+    assert client.registered_at == long_ago and client.fetched_at is None
 
 
 def test_delete_unused_client_keeps_a_client_that_a_grant_names(driver, hosts_plant):
@@ -911,6 +1395,19 @@ def test_delete_unused_client_keeps_a_client_that_a_grant_names(driver, hosts_pl
     assert delete_unused_client(driver, client_id=lonely) is True
     assert find_client(driver, lonely) is None
     assert delete_unused_client(driver, client_id=lonely) is False
+
+
+def test_a_delete_that_waits_on_a_client_being_deleted_answers_false(driver, hosts_plant):
+    client_id = hosts_plant.client()
+
+    answer = _waits_on(
+        driver,
+        _hold_client_delete(client_id),
+        lambda: delete_unused_client(driver, client_id=client_id),
+    )
+
+    assert answer is False
+    assert find_client(driver, client_id) is None
 
 
 # Reads ------------------------------------------------------------------------------------------

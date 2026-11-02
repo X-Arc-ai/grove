@@ -2,9 +2,15 @@
 /revoke, and the person's connections under /v1/views. docs/hosts.md.
 
 The OAuth endpoints answer OAuth errors (RFC 6749 section 5.2: {"error", "error_description"}),
-and every answer carries Cache-Control: no-store. /authorize never redirects before it knows the
-client and the redirect: an unknown client or a redirect_uri that matches no registered URI gets an
-HTML page, so a forged link cannot use Grove to send a person anywhere.
+and every answer carries Cache-Control: no-store.
+
+/authorize and its decision redirect to a client only because a person pressed a button.
+Registration is open, so a registered redirect URI proves nothing about its owner, and an automatic
+redirect would make Grove an open redirector (RFC 9700 section 4.11.2). So every refusal at these
+two routes before the csrf check is a 400 HTML page on Grove, with no Location, and no state goes
+anywhere. The only two redirects to a client are Approve and Deny, after a valid csrf. With no
+session, a document client_id goes to sign-in with no fetch and no row, and a decision is a 401 page
+before any other check.
 
 The consent page is web/dist/consent.html, read from GROVE_WEB_DIST at request time. With no built
 page, an answer that needs it is a typed 503.
@@ -16,13 +22,12 @@ absent. The store is read and written in a thread: the driver is synchronous.
 import base64
 import binascii
 import hmac
-import json
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qsl, quote, unquote_plus, urlsplit
+from urllib.parse import parse_qsl, quote, unquote_plus
 
 import httpx
 from fastapi import APIRouter, Request
@@ -60,7 +65,13 @@ from grove.oauth.metadata_document import (
     system_resolver,
 )
 from grove.oauth.pkce import S256, valid_pkce_value, verifier_matches
-from grove.oauth.redirects import redirect_matches, return_place, with_params
+from grove.oauth.redirects import (
+    is_loopback,
+    redirect_matches,
+    return_place,
+    shown_host,
+    with_params,
+)
 from grove.oauth.registration import (
     INVALID_CLIENT_METADATA,
     MAX_REGISTRATION_BYTES,
@@ -80,6 +91,7 @@ from grove.oauth.secrets import (
 from grove.oauth.store import ClientRow, GrantRow, find_client, list_grants
 from grove.store.connection import Driver
 from grove.store.query import PlatformQuery, WorldQuery
+from grove.strict_json import loads_strict
 from grove.views.session import SESSION_COOKIE, ViewSession, find_session
 from grove.views.times import iso_z
 from grove.writer.oauth import (
@@ -124,7 +136,6 @@ INVALID_GRANT = "invalid_grant"
 INVALID_SCOPE = "invalid_scope"
 INVALID_TARGET = "invalid_target"
 UNSUPPORTED_GRANT_TYPE = "unsupported_grant_type"
-UNSUPPORTED_RESPONSE_TYPE = "unsupported_response_type"
 ACCESS_DENIED = "access_denied"
 TEMPORARILY_UNAVAILABLE = "temporarily_unavailable"
 
@@ -137,7 +148,7 @@ PAGE_HEADERS = {
 _REDIRECT_HEADERS = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"}
 _TOKEN_HEADERS = {"Cache-Control": "no-store", "Pragma": "no-cache"}
 
-# The pages /authorize shows in place of a redirect: (title, what happened).
+# The pages /authorize shows for a refusal: (title, what happened).
 _NO_CLIENT = ("This request names no app", "The link that sent you here names no app.")
 _UNKNOWN_CLIENT = (
     "Grove does not know this app",
@@ -151,7 +162,8 @@ _NO_REDIRECT = (
     "This request names no return address",
     "The app registered more than one return address, and the request does not say which one.",
 )
-_TWICE = ("This request is not valid", "The link names the app or its return address twice.")
+_NOT_VALID = "This request is not valid"
+_TWICE = (_NOT_VALID, "The link names the app or its return address twice.")
 _SIGNED_OUT = ("You are signed out", "Sign in to Grove, then connect the app again.")
 _EXPIRED = (
     "This page has expired",
@@ -336,11 +348,9 @@ class PageRefusal(Exception):
         self.title, self.message = page
 
 
-class RedirectRefusal(Exception):
-    def __init__(self, error: str, description: str, redirect_uri: str, state: str | None) -> None:
-        super().__init__(description)
-        self.error, self.description = error, description
-        self.redirect_uri, self.state = redirect_uri, state
+def _not_valid(message: str) -> PageRefusal:
+    """A refusal of a parameter. The message names the rule, never what the request sent."""
+    return PageRefusal((_NOT_VALID, message))
 
 
 @dataclass(frozen=True)
@@ -386,35 +396,31 @@ def _client(request: Request, client_id: str) -> ClientRow | None:
     if is_document_client_id(client_id):
         deps = _deps(request)
         return document_client(
-            driver, client_id, now=clock.now(), resolver=deps.resolver, transport=deps.transport
+            driver,
+            client_id,
+            now=clock.now(),
+            window=deps.window,
+            resolver=deps.resolver,
+            transport=deps.transport,
         )
     row = find_client(driver, client_id)
     return row if row is not None and row.registration_type == DYNAMIC else None
 
 
-def _state(pairs: Pairs, redirect_uri: str) -> str | None:
-    """RFC 6749 appendix A.5: printable ASCII. A state that breaks it is not sent back."""
-    try:
-        state = _one(pairs, "state")
-    except Duplicate:
-        raise RedirectRefusal(
-            INVALID_REQUEST, "state is given more than once", redirect_uri, None
-        ) from None
+def _state(pairs: Pairs) -> str | None:
+    """RFC 6749 appendix A.5: printable ASCII."""
+    state = _one(pairs, "state")
     if state is None:
         return None
     if len(state) > MAX_STATE_LENGTH or not all(" " <= char <= "~" for char in state):
-        raise RedirectRefusal(
-            INVALID_REQUEST,
-            f"state must be printable ASCII of at most {MAX_STATE_LENGTH} characters",
-            redirect_uri,
-            None,
+        raise _not_valid(
+            f"The state must be printable ASCII of at most {MAX_STATE_LENGTH} characters."
         )
     return state
 
 
 def _validate(request: Request, pairs: Pairs) -> AuthorizeRequest:
-    """The checks of /authorize, in the design's order. PageRefusal before the client and the
-    redirect are known; RedirectRefusal after."""
+    """The checks of /authorize, in the design's order. Each refusal is a PageRefusal."""
     try:
         client_id = _one(pairs, "client_id")
         given = _one(pairs, "redirect_uri")
@@ -434,32 +440,26 @@ def _validate(request: Request, pairs: Pairs) -> AuthorizeRequest:
     else:
         raise PageRefusal(_NO_REDIRECT)
 
-    state = _state(pairs, redirect_uri)
-
-    def refused(error: str, description: str) -> RedirectRefusal:
-        return RedirectRefusal(error, description, redirect_uri, state)
-
     try:
+        state = _state(pairs)
         response_type = _one(pairs, "response_type")
         challenge = _one(pairs, "code_challenge")
         method = _one(pairs, "code_challenge_method")
         scope = _one(pairs, "scope")
     except Duplicate as twice:
-        raise refused(INVALID_REQUEST, f"{twice.name} is given more than once") from None
+        raise _not_valid(f"The link gives {twice.name} more than once.") from None
     if response_type is None:
-        raise refused(INVALID_REQUEST, "response_type is required")
+        raise _not_valid("The link gives no response_type.")
     if response_type != "code":
-        raise refused(UNSUPPORTED_RESPONSE_TYPE, "response_type must be code")
+        raise _not_valid("The response_type must be code.")
     if not valid_pkce_value(challenge):
-        raise refused(
-            INVALID_REQUEST, "code_challenge is required: 43 to 128 unreserved characters"
-        )
+        raise _not_valid("The code_challenge must be 43 to 128 unreserved characters.")
     if method != S256:
-        raise refused(INVALID_REQUEST, "code_challenge_method must be S256")
+        raise _not_valid("The code_challenge_method must be S256.")
     settings = _settings(request)
     acceptable, resource = _canonical_resource(pairs, settings)
     if not acceptable:
-        raise refused(INVALID_TARGET, f"resource must be {settings.mcp_url}")
+        raise _not_valid(f"The resource must be {settings.mcp_url}.")
     assert challenge is not None
     return AuthorizeRequest(
         client=client,
@@ -470,14 +470,6 @@ def _validate(request: Request, pairs: Pairs) -> AuthorizeRequest:
         state=state,
         resource=resource,
     )
-
-
-def _error_redirect(request: Request, refused: RedirectRefusal) -> RedirectResponse:
-    params = {"error": refused.error, "error_description": refused.description}
-    if refused.state is not None:
-        params["state"] = refused.state
-    params["iss"] = _settings(request).public_base_url
-    return _redirect(refused.redirect_uri, params)
 
 
 def _to_signin(request: Request) -> RedirectResponse:
@@ -507,15 +499,24 @@ def _signed_in(request: Request) -> tuple[str, ViewSession] | None:
     return token, session
 
 
+def _names_a_document(pairs: Pairs) -> bool:
+    try:
+        return is_document_client_id(_one(pairs, "client_id"))
+    except Duplicate:
+        return False
+
+
 @router.get(AUTHORIZE_PATH, include_in_schema=False)
 def authorize(request: Request) -> Response:
+    pairs = request.query_params.multi_items()
+    signed_in = _signed_in(request)
+    # The fetch and the row of a document are for a person who signed in, never for a stranger.
+    if signed_in is None and _names_a_document(pairs):
+        return _to_signin(request)
     try:
-        asked = _validate(request, request.query_params.multi_items())
+        asked = _validate(request, pairs)
     except PageRefusal as refused:
         return _page(400, refused.title, refused.message)
-    except RedirectRefusal as refused:
-        return _error_redirect(request, refused)
-    signed_in = _signed_in(request)
     if signed_in is None:
         return _to_signin(request)
     token, session = signed_in
@@ -523,28 +524,25 @@ def authorize(request: Request) -> Response:
     view = ConsentView(
         client_name=client.host,
         document_host=(
-            urlsplit(client.client_id).hostname
-            if client.registration_type == METADATA_DOCUMENT
-            else None
+            shown_host(client.client_id) if client.registration_type == METADATA_DOCUMENT else None
         ),
         return_place=return_place(asked.redirect_uri),
         scopes=asked.scopes,
         person_title=_own_title(_driver(request), session),
+        loopback=is_loopback(asked.redirect_uri),
     )
     fragment = consent_fragment(view, asked.fields(), csrf_token(token, asked.csrf_fields()))
     return _html(200, CONSENT_TITLE, fragment)
 
 
 def _decide(request: Request, pairs: Pairs) -> Response:
+    signed_in = _signed_in(request)
+    if signed_in is None:
+        return _page(401, *_SIGNED_OUT)
     try:
         asked = _validate(request, pairs)
     except PageRefusal as refused:
         return _page(400, refused.title, refused.message)
-    except RedirectRefusal as refused:
-        return _error_redirect(request, refused)
-    signed_in = _signed_in(request)
-    if signed_in is None:
-        return _page(401, *_SIGNED_OUT)
     token, session = signed_in
     try:
         csrf = _one(pairs, "csrf")
@@ -819,10 +817,6 @@ async def revoke(request: Request) -> JSONResponse:
 # /register -------------------------------------------------------------------------------------
 
 
-def _refuse_constant(name: str) -> None:
-    raise ValueError(f"{name} is not a number JSON allows")
-
-
 async def _registration_body(request: Request) -> Any:
     if _media_type(request) != JSON_TYPE:
         raise InvalidMetadata(INVALID_CLIENT_METADATA, f"the body must be {JSON_TYPE}")
@@ -832,9 +826,9 @@ async def _registration_body(request: Request) -> Any:
             INVALID_CLIENT_METADATA, f"the body is over {MAX_REGISTRATION_BYTES} bytes"
         )
     try:
-        return json.loads(raw, parse_constant=_refuse_constant)
-    except (ValueError, RecursionError):
-        raise InvalidMetadata(INVALID_CLIENT_METADATA, "the body is not valid JSON") from None
+        return loads_strict(raw)
+    except ValueError:
+        raise InvalidMetadata(INVALID_CLIENT_METADATA, "the body is not strict JSON") from None
 
 
 def _register(request: Request, metadata: ClientMetadata) -> JSONResponse:

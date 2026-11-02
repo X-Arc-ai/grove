@@ -12,9 +12,10 @@ CODE_LIFETIME = timedelta(minutes=5)
 ACCESS_TOKEN_LIFETIME = timedelta(hours=1)
 REFRESH_TOKEN_LIFETIME = timedelta(days=30)
 
-# Dynamic registration: at most this many across the server in a sliding window, in process, on
-# clock.monotonic().
-MAX_REGISTRATIONS_PER_WINDOW = 300
+# Dynamic registration and new metadata document rows: at most this many across the server in a
+# sliding window, in process, on clock.monotonic(). nginx allows one address 240 an hour on
+# /register, so one address cannot fill it.
+MAX_REGISTRATIONS_PER_WINDOW = 1000
 REGISTRATION_WINDOW_SECONDS = 3600.0
 
 # A Client ID Metadata Document is fetched again when its copy is older than the cache time. When

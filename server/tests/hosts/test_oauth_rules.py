@@ -21,6 +21,7 @@ from grove.oauth.redirects import (
     redirect_matches,
     redirect_uri_problem,
     return_place,
+    shown_host,
     with_params,
 )
 from grove.oauth.registration import (
@@ -133,6 +134,13 @@ def test_these_redirect_uris_may_be_registered(uri):
         "vbscript:msgbox",
         "about:blank",
         "blob:https://app.example/1",
+        "ftp://files.example/cb",
+        "ftps://files.example/cb",
+        "ws://app.example/cb",
+        "wss://app.example/cb",
+        "view-source:https://app.example/",
+        "filesystem:https://app.example/temporary/cb",
+        "gopher://app.example/cb",
         "https://app.example/a b",
         'https://app.example/"cb"',
         "https://app.example/<cb>",
@@ -206,6 +214,20 @@ def test_the_consent_page_names_where_the_redirect_goes():
     assert return_place("com.lumendesk.app:/cb") == "an app on this device (com.lumendesk.app:)"
 
 
+@pytest.mark.parametrize(
+    ("uri", "shown"),
+    [
+        ("https://app.example:8443/cb", "app.example:8443"),
+        ("https://app.example:443/cb", "app.example"),
+        ("https://[2606:2800:21f::1]:8443/cb", "[2606:2800:21f::1]:8443"),
+        ("https://[2606:2800:21f::1]/cb", "[2606:2800:21f::1]"),
+    ],
+)
+def test_the_place_keeps_a_port_that_is_not_the_default(uri, shown):
+    assert return_place(uri) == shown
+    assert shown_host(uri) == shown
+
+
 # Registration metadata -------------------------------------------------------------------------
 
 
@@ -270,6 +292,7 @@ def _view(**changes) -> ConsentView:
         "return_place": "this computer",
         "scopes": ("grove.read", "grove.write"),
         "person_title": "Ines Duarte",
+        "loopback": True,
         **changes,
     }
     return ConsentView(**values)
@@ -302,12 +325,35 @@ def test_the_fragment_escapes_every_value_it_shows():
 
 def test_a_document_client_shows_its_host_and_its_name_as_its_own_words():
     page = consent_fragment(
-        _view(document_host="lumen.example", client_name="Lumen Desk"), {}, "0" * 64
+        _view(document_host="lumen.example", client_name="Lumen Desk", loopback=False),
+        {},
+        "0" * 64,
     )
     assert "<strong>lumen.example</strong> asks to use your Grove" in page
     assert "It calls itself <q>Lumen Desk</q>" in page
     assert "says it is" not in page
+    assert "Any program on this computer" not in page
     assert "An app with no name" in consent_fragment(_view(client_name=None), {}, "0" * 64)
+
+
+def test_a_document_client_on_loopback_gets_hedged_words_and_a_warning():
+    """MCP 2025-11-25, Localhost Redirect URI Risks: its document cannot prove who asks."""
+    page = consent_fragment(
+        _view(document_host="lumen.example", client_name="<Lumen Desk>"), {}, "0" * 64
+    )
+    assert "An app that says it is <strong><q>&lt;Lumen Desk&gt;</q></strong>" in page
+    assert "It names a description on <strong>lumen.example</strong>." in page
+    assert "Any program on this computer can claim this name." in page
+    assert "<strong>lumen.example</strong> asks to use" not in page
+    assert "An app asks" in consent_fragment(
+        _view(document_host="lumen.example", client_name=None), {}, "0" * 64
+    )
+
+
+def test_a_dynamic_client_on_loopback_keeps_its_words_and_gets_no_warning():
+    page = consent_fragment(_view(), {}, "0" * 64)
+    assert "An app that says it is" in page
+    assert "Any program on this computer" not in page
 
 
 def test_sensitive_write_is_shown_in_words_when_it_is_asked():

@@ -90,7 +90,16 @@ def create_app(
             if driver is None:
                 app.state.driver.close()
 
-    app = FastAPI(title="Grove", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    # redirect_slashes=False: Starlette builds that redirect from the request, and uvicorn runs
+    # without proxy headers, so it would name plain http and a client would send its body in clear.
+    app = FastAPI(
+        title="Grove",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        redirect_slashes=False,
+    )
     app.state.settings = settings
     app.state.auth = AuthDeps(mailer=mailer, google_http=google_http, world_id_for=world_id_for)
     app.state.oauth = oauth_deps or OAuthDeps()

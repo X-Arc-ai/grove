@@ -1,16 +1,19 @@
-"""GET /authorize and POST /authorize/decision: the page before the redirect, the checks in the
-design's order, the sign-in round trip, the consent page, and the decision with its csrf value."""
+"""GET /authorize and POST /authorize/decision: every refusal is a page on Grove, the checks in the
+design's order, the sign-in round trip, the consent page, and the decision with its csrf value. The
+only redirects to a client are Approve and Deny."""
 
-from urllib.parse import parse_qs, urlsplit
+from dataclasses import dataclass, field
+from urllib.parse import parse_qs, urlencode, urlsplit
 from uuid import uuid4
 
 import httpx
 import pytest
 
+from grove.api.auth import CodeWindow
 from grove.api.config import WEB_DIST_ENV
 from grove.api.oauth import OAuthDeps
 from grove.ids import new_id
-from grove.oauth.store import list_grants
+from grove.oauth.store import find_client, list_grants
 from tests.hosts.conftest import CLIENT_NAME, LOOPBACK_REDIRECT, SECOND_TITLE
 from tests.hosts.oauth_kit import (
     BASE,
@@ -26,8 +29,11 @@ from tests.hosts.oauth_kit import (
     location,
     make_app,
     new_pkce,
+    oauth_error,
 )
 
+PUBLIC_ADDRESS = "93.184.215.14"
+FORM_TYPE = "application/x-www-form-urlencoded"
 PAGE_HEADERS = {
     "cache-control": "no-store",
     "x-frame-options": "DENY",
@@ -127,20 +133,73 @@ def test_a_trailing_slash_on_the_resource_is_tolerated(web, client_id):
     )
 
 
-def test_a_document_client_is_shown_by_its_documents_host(
-    driver, migrated, ines, hosts_plant, tmp_path, monkeypatch
-):
+@dataclass
+class DocumentHost:
+    """The resolver and the server of one document URL, which record every call."""
+
+    url: str
+    body: bytes
+    asked: list[str] = field(default_factory=list)
+    fetched: list[httpx.Request] = field(default_factory=list)
+
+    def resolve(self, host: str, port: int) -> list[str]:
+        self.asked.append(host)
+        return [PUBLIC_ADDRESS]
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        self.fetched.append(request)
+        return httpx.Response(200, content=self.body)
+
+    def deps(self, **options) -> OAuthDeps:
+        return OAuthDeps(
+            resolver=self.resolve, transport=httpx.MockTransport(self.handle), **options
+        )
+
+
+def _document_host(hosts_plant, netloc: str = "lumen.example", **fields) -> DocumentHost:
+    url = hosts_plant.track_client(f"https://{netloc}/clients/{uuid4()}.json")
+    return DocumentHost(url, document(url, **fields))
+
+
+@pytest.fixture
+def consent_page(tmp_path, monkeypatch):
     built_consent_page(tmp_path / "dist", monkeypatch)
-    url = hosts_plant.track_client(f"https://lumen.example/clients/{uuid4()}.json")
-    deps = OAuthDeps(
-        resolver=lambda host, port: ["93.184.215.14"],
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=document(url))),
-    )
-    web = browser(make_app(driver, oauth_deps=deps), ines)
-    text = consent(web, authorize_query(url, new_pkce())).text
+
+
+def test_a_document_client_with_an_https_redirect_is_shown_by_its_documents_host(
+    driver, migrated, ines, hosts_plant, consent_page
+):
+    redirect = "https://lumen.example/cb"
+    served = _document_host(hosts_plant, redirect_uris=[redirect])
+    web = browser(make_app(driver, oauth_deps=served.deps()), ines)
+    text = consent(web, authorize_query(served.url, new_pkce(), redirect_uri=redirect)).text
     assert "<strong>lumen.example</strong> asks to use your Grove." in text
     assert f"It calls itself <q>{CLIENT_NAME}</q>." in text
     assert "says it is" not in text
+    assert "Any program on this computer" not in text
+
+
+def test_a_document_client_with_a_loopback_redirect_is_hedged_and_warned_about(
+    driver, migrated, ines, hosts_plant, consent_page
+):
+    served = _document_host(hosts_plant)
+    web = browser(make_app(driver, oauth_deps=served.deps()), ines)
+    text = consent(web, authorize_query(served.url, new_pkce())).text
+    assert f"An app that says it is <strong><q>{CLIENT_NAME}</q></strong>" in text
+    assert "<strong>lumen.example</strong> asks to use your Grove." not in text
+    assert "It names a description on <strong>lumen.example</strong>." in text
+    assert "Any program on this computer can claim this name." in text
+
+
+def test_the_page_keeps_a_port_that_is_not_the_default(
+    driver, migrated, ines, hosts_plant, consent_page
+):
+    redirect = "https://app.example:8443/cb"
+    served = _document_host(hosts_plant, netloc="lumen.example:8443", redirect_uris=[redirect])
+    web = browser(make_app(driver, oauth_deps=served.deps()), ines)
+    text = consent(web, authorize_query(served.url, new_pkce(), redirect_uri=redirect)).text
+    assert "<strong>lumen.example:8443</strong> asks to use your Grove." in text
+    assert "Grove sends you back to app.example:8443" in text
 
 
 def test_with_no_built_page_a_signed_in_request_gets_a_typed_503(web, client_id, monkeypatch):
@@ -166,13 +225,22 @@ def test_no_client_an_unknown_client_or_two_of_them_get_a_page(host, client_id, 
 
 
 def test_a_document_that_cannot_be_fetched_is_an_unknown_client(
-    driver, migrated, tmp_path, monkeypatch, hosts_plant
+    driver, migrated, ines, consent_page, hosts_plant
 ):
-    built_consent_page(tmp_path / "dist", monkeypatch)
     url = hosts_plant.track_client(f"https://lumen.example/clients/{uuid4()}.json")
     deps = OAuthDeps(resolver=lambda host, port: ["10.0.0.7"])
-    host = browser(make_app(driver, oauth_deps=deps))
-    assert_page(host.get("/authorize", params=authorize_query(url, new_pkce())), 400)
+    web = browser(make_app(driver, oauth_deps=deps), ines)
+    assert_page(web.get("/authorize", params=authorize_query(url, new_pkce())), 400)
+
+
+@pytest.mark.parametrize(
+    "client",
+    ["https://a..b/x", "https://.a/x", f"https://{'a' * 64}.example/x"],
+    ids=["empty label", "empty first label", "label over 63 characters"],
+)
+def test_a_host_that_getaddrinfo_cannot_encode_is_an_unknown_client(web, client):
+    # The real resolver: getaddrinfo raises UnicodeError for these before it asks any server.
+    assert_page(web.get("/authorize", params={"client_id": client}), 400)
 
 
 @pytest.mark.parametrize(
@@ -226,46 +294,162 @@ def test_with_no_redirect_uri_the_only_registered_one_is_used(web, client_id, ho
     )
 
 
-# After: errors go to the redirect, with state and iss ------------------------------------------
+# A refusal never goes to the client: registration is open, so a registered URI proves nothing -----
+
+PHISH = "https://phish.example/login"
+REFUSALS = [
+    pytest.param({"response_type": "token"}, [], id="response_type is not code"),
+    pytest.param({"response_type": None}, [], id="no response_type"),
+    pytest.param({"code_challenge_method": "plain"}, [], id="method plain"),
+    pytest.param({"code_challenge_method": None}, [], id="no method"),
+    pytest.param({"code_challenge": None}, [], id="no challenge"),
+    pytest.param({"code_challenge": "a" * 42}, [], id="short challenge"),
+    pytest.param({"code_challenge": "a" * 42 + "!"}, [], id="bad character in the challenge"),
+    pytest.param({"resource": "https://other.example/mcp"}, [], id="another resource"),
+    pytest.param({"resource": BASE}, [], id="the base as the resource"),
+    pytest.param({}, [("resource", "https://other.example/mcp")], id="a second resource"),
+    pytest.param({"state": "a\nb"}, [], id="state with a control character"),
+    pytest.param({"state": "s" * 1025}, [], id="state too long"),
+    pytest.param({}, [("state", "st-other")], id="state twice"),
+    pytest.param({}, [("response_type", "code")], id="response_type twice"),
+    pytest.param({}, [("code_challenge", "b" * 43)], id="challenge twice"),
+    pytest.param({}, [("code_challenge_method", "S256")], id="method twice"),
+    pytest.param({}, [("scope", "grove.read")], id="scope twice"),
+]
 
 
-@pytest.mark.parametrize(
-    ("change", "error"),
-    [
-        ({"response_type": "token"}, "unsupported_response_type"),
-        ({"response_type": None}, "invalid_request"),
-        ({"code_challenge_method": "plain"}, "invalid_request"),
-        ({"code_challenge_method": None}, "invalid_request"),
-        ({"code_challenge": None}, "invalid_request"),
-        ({"code_challenge": "a" * 42}, "invalid_request"),
-        ({"code_challenge": "a" * 42 + "!"}, "invalid_request"),
-        ({"resource": "https://other.example/mcp"}, "invalid_target"),
-        ({"resource": BASE}, "invalid_target"),
-    ],
-)
-def test_a_request_with_a_bad_parameter_returns_its_error_to_the_redirect(
-    host, client_id, change, error
+@pytest.fixture
+def phishing_client(hosts_plant):
+    """A stranger's client, with an https redirect that nothing vouches for."""
+    return hosts_plant.client(redirect_uris=[PHISH])
+
+
+def _refused_pairs(client_id: str, change: dict, more: list) -> list[tuple[str, str]]:
+    query = {**authorize_query(client_id, new_pkce(), redirect_uri=PHISH), **change}
+    return [(key, value) for key, value in query.items() if value is not None] + more
+
+
+def assert_stays_on_grove(response: httpx.Response) -> None:
+    assert_page(response, 400)
+    assert "phish.example" not in response.text
+    assert "<a " not in response.text
+    assert STATE not in response.text
+
+
+@pytest.mark.parametrize(("change", "more"), REFUSALS)
+@pytest.mark.parametrize("signed_in", [False, True], ids=["no session", "signed in"])
+def test_a_refusal_at_authorize_is_a_page_and_never_a_redirect(
+    app, ines, phishing_client, change, more, signed_in
 ):
-    query = {**authorize_query(client_id, new_pkce()), **change}
-    response = host.get("/authorize", params={k: v for k, v in query.items() if v is not None})
-    assert response.status_code == 302
-    assert response.headers["cache-control"] == "no-store"
-    target, answer = location(response)
-    assert target == LOOPBACK_REDIRECT
-    assert answer["error"] == error and answer["state"] == STATE and answer["iss"] == BASE
-    assert answer["error_description"]
+    visitor = browser(app, ines if signed_in else None)
+    pairs = _refused_pairs(phishing_client, change, more)
+    assert_stays_on_grove(visitor.get("/authorize", params=pairs))
 
 
-def test_a_scope_given_twice_is_refused_at_the_redirect(host, client_id):
-    params = list(authorize_query(client_id, new_pkce()).items()) + [("scope", "grove.read")]
-    _, answer = location(host.get("/authorize", params=params))
-    assert answer["error"] == "invalid_request"
+@pytest.mark.parametrize(("change", "more"), REFUSALS)
+def test_a_refusal_at_the_decision_is_a_page_and_never_a_redirect(
+    web, phishing_client, change, more
+):
+    pairs = _refused_pairs(phishing_client, change, more)
+    form = urlencode([*pairs, ("decision", "approve"), ("csrf", "0" * 64)])
+    answer = web.post("/authorize/decision", content=form, headers={"content-type": FORM_TYPE})
+    assert_stays_on_grove(answer)
 
 
-def test_a_state_that_is_not_printable_ascii_is_not_sent_back(host, client_id):
-    response = host.get("/authorize", params=authorize_query(client_id, new_pkce(), state="a\nb"))
-    _, answer = location(response)
-    assert answer["error"] == "invalid_request" and "state" not in answer
+def test_a_stranger_who_registers_a_page_cannot_make_grove_redirect_to_it(host, hosts_plant):
+    registered = host.post("/register", json={"redirect_uris": [PHISH]})
+    assert registered.status_code == 201
+    client_id = hosts_plant.track_client(registered.json()["client_id"])
+    assert_stays_on_grove(host.get("/authorize", params={"client_id": client_id}))
+
+
+def test_the_page_says_what_was_wrong_in_words_of_the_rule(host, client_id):
+    query = authorize_query(client_id, new_pkce(), resource="https://other<b>.example/mcp")
+    text = host.get("/authorize", params=query).text
+    assert "This request is not valid" in text
+    assert f"The resource must be {MCP_URL}." in text
+    assert "other" not in text
+
+
+# A stranger reaches no fetch and no row ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("cookie", [None, "not-a-session"])
+def test_a_document_client_id_with_no_session_goes_to_sign_in_with_no_fetch_and_no_row(
+    driver, migrated, ines, hosts_plant, consent_page, cookie
+):
+    served = _document_host(hosts_plant)
+    app = make_app(driver, oauth_deps=served.deps())
+    stranger = browser(app)
+    if cookie is not None:
+        stranger.cookies.set("grove_session", cookie, domain="grove.example", path="/")
+    query = authorize_query(served.url, new_pkce())
+    answer = stranger.get("/authorize", params=query)
+    assert answer.status_code == 303
+    assert answer.headers["location"].startswith("/signin?next=%2Fauthorize%3F")
+    assert served.asked == [] and served.fetched == []
+    assert find_client(driver, served.url) is None
+
+    consent(browser(app, ines), query)
+    assert served.asked == ["lumen.example"] and len(served.fetched) == 1
+    assert find_client(driver, served.url) is not None
+
+
+def test_a_document_client_id_twice_is_a_page_with_no_fetch(
+    driver, migrated, hosts_plant, consent_page
+):
+    served = _document_host(hosts_plant)
+    stranger = browser(make_app(driver, oauth_deps=served.deps()))
+    pairs = [("client_id", served.url), ("client_id", served.url)]
+    assert_page(stranger.get("/authorize", params=pairs), 400)
+    assert served.asked == []
+
+
+def test_a_decision_with_no_session_reaches_no_fetch_and_no_row(
+    driver, migrated, hosts_plant, consent_page
+):
+    served = _document_host(hosts_plant)
+    stranger = browser(make_app(driver, oauth_deps=served.deps()))
+    form = authorize_query(served.url, new_pkce())
+    assert_page(stranger.post("/authorize/decision", data=form), 401)
+    assert served.asked == [] and served.fetched == []
+    assert find_client(driver, served.url) is None
+
+
+@pytest.mark.parametrize("change", [{"client_id": new_id()}, {"response_type": "token"}])
+def test_a_decision_with_no_session_is_401_before_any_other_check(host, client_id, change):
+    form = {**authorize_query(client_id, new_pkce()), **change}
+    response = host.post("/authorize/decision", data=form)
+    assert_page(response, 401)
+    assert "You are signed out" in response.text
+
+
+# A new document row spends a slot of the registration window -------------------------------------
+
+
+def test_a_new_document_and_a_registration_share_one_window(
+    driver, migrated, ines, hosts_plant, consent_page
+):
+    served = _document_host(hosts_plant)
+    second = _document_host(hosts_plant)
+    window = CodeWindow(limit=1, seconds=3600.0)
+    deps = served.deps(window=window)
+    app = make_app(driver, oauth_deps=deps)
+    web = browser(app, ines)
+    consent(web, authorize_query(served.url, new_pkce()))
+
+    # The slot is gone: a registration waits, and so does a new document.
+    full = browser(app).post(
+        "/register",
+        json={"redirect_uris": [LOOPBACK_REDIRECT], "token_endpoint_auth_method": "none"},
+    )
+    assert full.status_code == 429 and oauth_error(full) == "temporarily_unavailable"
+    other = browser(make_app(driver, oauth_deps=second.deps(window=window)), ines)
+    assert_page(other.get("/authorize", params=authorize_query(second.url, new_pkce())), 400)
+    assert len(second.fetched) == 1 and find_client(driver, second.url) is None
+
+    # A document with a row takes no slot.
+    consent(web, authorize_query(served.url, new_pkce()))
 
 
 # The sign-in round trip ------------------------------------------------------------------------
@@ -357,7 +541,7 @@ def test_another_persons_session_cannot_use_the_form(app, web, client_id, plant_
     assert list_grants(driver, tomas.world_id) == []
 
 
-def test_a_decision_with_no_session_gets_401(app, web, client_id):
+def test_a_valid_decision_with_no_session_gets_401(app, web, client_id):
     form = _form(web, client_id)
     response = browser(app).post("/authorize/decision", data=form)
     assert_page(response, 401)

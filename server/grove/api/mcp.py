@@ -1,4 +1,4 @@
-"""The MCP streamable HTTP route at /mcp. docs/hosts.md.
+"""The MCP streamable HTTP route at /mcp, and at /mcp/ with the same handler. docs/hosts.md.
 
 Every method checks the bearer token first: `Authorization: Bearer <token>`, a live access token
 (`grove.oauth.store.find_access_token` on its sha256 hex) whose resource is this server's
@@ -208,6 +208,7 @@ async def _post(request: Request, token: TokenRow) -> Response:
 
 
 @router.api_route(MCP_PATH, methods=_ROUTE_METHODS, include_in_schema=False)
+@router.api_route(f"{MCP_PATH}/", methods=_ROUTE_METHODS, include_in_schema=False)
 async def mcp(request: Request) -> Response:
     token = await _authenticate(request)
     if isinstance(token, JSONResponse):
