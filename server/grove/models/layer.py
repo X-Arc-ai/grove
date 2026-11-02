@@ -14,8 +14,6 @@ and the gateway use Chat Completions, which an OpenAI-compatible server speaks.
 
 import hashlib
 import json
-import math
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -37,6 +35,7 @@ from grove.models.config import (
     ModelSpec,
     load_catalog,
     load_model_settings,
+    valid_run_id,
 )
 from grove.models.egress import MODEL_LAYER, AllowlistTransport, EgressPolicy
 from grove.models.errors import (
@@ -47,6 +46,20 @@ from grove.models.errors import (
 )
 from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, NOT_SENT, reset_after, send
 from grove.models.meter import Meter
+from grove.models.shape import (
+    Usage,
+    chat_answer,
+    chat_usage,
+    check_responses_input,
+    clean_messages,
+    clean_tools,
+    estimate_usage,
+    may_have_run,
+    redact,
+    responses_text,
+    responses_usage,
+    usage_or_estimate,
+)
 from grove.store.connection import Driver
 from grove.writer.model_calls import BudgetState, ModelCall
 
@@ -55,19 +68,7 @@ MAX_SCHEMA_PROPERTIES = 5000
 BACKGROUND_DEADLINE = 900.0
 _TERMINAL = frozenset({"completed", "failed", "cancelled", "incomplete"})
 _PROVIDER_MESSAGE = 300
-_CHARS_PER_TOKEN = 4
-_FUNCTION_KEYS = ("name", "description", "parameters", "strict")
-# The provider may have run the call behind these statuses, so the row carries an estimate.
-UNKNOWN_SPEND = frozenset({500, 502, 504})
 _TIMEOUT = httpx.Timeout(300.0, connect=10.0)
-
-
-@dataclass(frozen=True)
-class Usage:
-    input_tokens: int = 0
-    cached_tokens: int = 0
-    output_tokens: int = 0
-    reasoning_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -90,70 +91,6 @@ class Transcript:
     audio_seconds: float
     cost: float
     model_call_ids: tuple[str, ...]
-
-
-def _int(value: object) -> int:
-    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
-
-
-def estimate_usage(input_chars: int, output_chars: int = 0) -> Usage:
-    """Tokens for a call the provider may have run but did not report: four characters a token.
-    The budget then sees a call whose real usage never came."""
-    return Usage(
-        input_tokens=math.ceil(input_chars / _CHARS_PER_TOKEN),
-        output_tokens=math.ceil(output_chars / _CHARS_PER_TOKEN),
-    )
-
-
-def clean_tools(tools: object) -> list[dict]:
-    """Function tools only, with only their known keys. Another type, such as a web search or a
-    remote MCP server, would make the provider reach out for the agent, past the allowlist."""
-    if not isinstance(tools, list):
-        raise ModelRefused("tools must be a list")
-    clean = []
-    for tool in tools:
-        function = tool.get("function") if isinstance(tool, dict) else None
-        if not isinstance(tool, dict) or tool.get("type") != "function":
-            raise ModelRefused("only function tools are taken")
-        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
-            raise ModelRefused("a function tool needs a function with a name")
-        kept = {key: function[key] for key in _FUNCTION_KEYS if key in function}
-        clean.append({"type": "function", "function": kept})
-    return clean
-
-
-def responses_usage(doc: dict) -> Usage:
-    usage = doc.get("usage") or {}
-    return Usage(
-        input_tokens=_int(usage.get("input_tokens")),
-        cached_tokens=_int((usage.get("input_tokens_details") or {}).get("cached_tokens")),
-        output_tokens=_int(usage.get("output_tokens")),
-        reasoning_tokens=_int((usage.get("output_tokens_details") or {}).get("reasoning_tokens")),
-    )
-
-
-def chat_usage(usage: dict | None) -> Usage:
-    usage = usage or {}
-    return Usage(
-        input_tokens=_int(usage.get("prompt_tokens")),
-        cached_tokens=_int((usage.get("prompt_tokens_details") or {}).get("cached_tokens")),
-        output_tokens=_int(usage.get("completion_tokens")),
-        reasoning_tokens=_int(
-            (usage.get("completion_tokens_details") or {}).get("reasoning_tokens")
-        ),
-    )
-
-
-def responses_text(doc: dict) -> str:
-    """The answer of a Responses document: its message parts, never its reasoning items."""
-    parts = []
-    for item in doc.get("output") or []:
-        if item.get("type") != "message":
-            continue
-        for part in item.get("content") or []:
-            if part.get("type") == "output_text":
-                parts.append(part.get("text") or "")
-    return "".join(parts)
 
 
 def check_schema(schema: dict) -> Draft202012Validator:
@@ -229,11 +166,8 @@ def glimmer_effort_fields(effort: str | None) -> dict[str, Any]:
     return {"chat_template_kwargs": {"reasoning_strength": effort}} if effort else {}
 
 
-_BEARER = re.compile(r"(?i)bearer\s+\S+")
-
-
-def _provider_message(response: httpx.Response, secrets: tuple[str | None, ...] = ()) -> str:
-    """The provider's error message, cut short, with the given keys and any bearer value out."""
+def _provider_message(response: httpx.Response, secrets: tuple[str | None, ...]) -> str:
+    """The provider's error message, cut short, with the keys this layer holds taken out."""
     try:
         doc = response.json()
     except ValueError:
@@ -242,10 +176,7 @@ def _provider_message(response: httpx.Response, secrets: tuple[str | None, ...] 
     message = error.get("message") if isinstance(error, dict) else None
     if not isinstance(message, str):
         return ""
-    for secret in secrets:
-        if secret:
-            message = message.replace(secret, "<redacted>")
-    return _BEARER.sub("Bearer <redacted>", message)[:_PROVIDER_MESSAGE]
+    return redact(message, secrets)[:_PROVIDER_MESSAGE]
 
 
 class ModelLayer:
@@ -281,8 +212,16 @@ class ModelLayer:
     # The steps every call shares.
 
     def _prepare(
-        self, world_id: str, job_name: str, effort: str | None, family: str | None = None
+        self,
+        world_id: str,
+        job_name: str,
+        effort: str | None,
+        run_id: str | None,
+        family: str | None = None,
     ) -> tuple[Job, ModelSpec, str | None]:
+        if run_id is not None and not valid_run_id(run_id):
+            # Checked here: the writer would refuse it only after the call had run and billed.
+            raise ModelRefused("run_id must be a short ASCII id")
         job = self.catalog.job(job_name)
         spec = self.catalog.model_for(job)
         if family is not None and spec.family != family:
@@ -349,6 +288,7 @@ class ModelLayer:
         started: float,
         gpu_from: float | None = None,
         usage: Usage | None = None,
+        audio_seconds: float | None = None,
     ) -> None:
         """Record a refused call, then raise its typed error."""
         if response.status_code == 429:
@@ -377,6 +317,7 @@ class ModelLayer:
             outcome="provider_error",
             started=started,
             gpu_from=gpu_from,
+            audio_seconds=audio_seconds,
         )
         error = ProviderError(
             "the provider refused the call",
@@ -401,6 +342,7 @@ class ModelLayer:
         run_id: str | None,
         started: float,
         request_chars: int = 0,
+        audio_seconds: float | None = None,
     ) -> tuple[dict, float]:
         """Send with back-off, and return the JSON answer with the start of the attempt that
         gave it. A failure is recorded and raised typed: no answer, an error status, or an answer
@@ -417,20 +359,24 @@ class ModelLayer:
             response = send(self._http, timed, sleep=self._sleep, attempts=attempts)
         except httpx.RequestError as exc:
             # No answer, or an answer whose body could not be read (a DecodingError).
+            not_sent = isinstance(exc, NOT_SENT)
             self._record(
                 world_id,
                 job=job,
                 spec=spec,
                 effort=effort,
                 run_id=run_id,
-                usage=Usage() if isinstance(exc, NOT_SENT) else estimate_usage(request_chars),
+                usage=Usage() if not_sent else estimate_usage(request_chars),
                 outcome="provider_error",
                 started=started,
                 gpu_from=attempt[0],
+                audio_seconds=None if not_sent else audio_seconds,
             )
-            raise ProviderError("the model provider did not answer") from exc
+            # From None: the cause's text can quote a request header, and a header holds a key.
+            raise ProviderError("the model provider did not answer") from None
         if response.status_code >= 300:
             # Redirects are not followed, so a 3xx is a failure too.
+            ran = may_have_run(response.status_code)
             self._failed(
                 world_id,
                 response,
@@ -440,11 +386,8 @@ class ModelLayer:
                 run_id=run_id,
                 started=started,
                 gpu_from=attempt[0],
-                usage=(
-                    estimate_usage(request_chars)
-                    if response.status_code in UNKNOWN_SPEND
-                    else Usage()
-                ),
+                usage=estimate_usage(request_chars) if ran else Usage(),
+                audio_seconds=audio_seconds if ran else None,
             )
         try:
             doc = response.json()
@@ -461,6 +404,7 @@ class ModelLayer:
                 outcome="provider_error",
                 started=started,
                 gpu_from=attempt[0],
+                audio_seconds=audio_seconds,
             )
             raise ProviderError("the model provider's answer is not a JSON object")
         return doc, attempt[0]
@@ -490,8 +434,9 @@ class ModelLayer:
             raise ModelRefused(
                 f"max_output_tokens must be from {MIN_OUTPUT_TOKENS} to {MAX_OUTPUT_TOKENS}"
             )
+        check_responses_input(input)
         validator = check_schema(schema) if schema is not None else None
-        job_row, spec, chosen = self._prepare(world_id, job, effort, family="spark")
+        job_row, spec, chosen = self._prepare(world_id, job, effort, run_id, family="spark")
         body: dict[str, Any] = {
             "model": spec.id,
             "input": input,
@@ -550,8 +495,8 @@ class ModelLayer:
                 if isinstance(exc, ProviderError):
                     raise
                 raise ProviderError("polling a background response failed") from exc
-        usage = responses_usage(doc)
         text = responses_text(doc)
+        usage = usage_or_estimate(responses_usage(doc), request_chars, len(text))
         status = doc.get("status")
         ok = status == "completed" and bool(text.strip())
         # The answer is checked before the call is written, so the row says what it was.
@@ -652,8 +597,9 @@ class ModelLayer:
             raise ModelRefused(
                 f"max_tokens must be from {MIN_OUTPUT_TOKENS} to {MAX_OUTPUT_TOKENS}"
             )
+        messages = clean_messages(messages)
         validator = check_schema(schema) if schema is not None else None
-        job_row, spec, chosen = self._prepare(world_id, job, effort)
+        job_row, spec, chosen = self._prepare(world_id, job, effort, run_id)
         if not spec.chat:
             raise ModelRefused("this job's model does not take chat")
         while True:
@@ -726,6 +672,7 @@ class ModelLayer:
                 "json_schema": {"name": schema_name, "strict": True, "schema": schema},
             }
         started = clock.monotonic()
+        request_chars = len(json.dumps(body))
         doc, attempt = self._send(
             world_id,
             lambda: self._http.build_request(
@@ -736,13 +683,10 @@ class ModelLayer:
             effort=effort,
             run_id=run_id,
             started=started,
-            request_chars=len(json.dumps(body)),
+            request_chars=request_chars,
         )
-        usage = chat_usage(doc.get("usage"))
-        choice = (doc.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        text = message.get("content") or ""
-        tool_calls = tuple(message.get("tool_calls") or ())
+        text, tool_calls, finish = chat_answer(doc)
+        usage = usage_or_estimate(chat_usage(doc.get("usage")), request_chars, len(text))
         empty = not text.strip() and not tool_calls
         data, misfit = (None, None) if empty or not text else _structured(text, validator)
         call_id, budget, cost = self._record(
@@ -759,11 +703,7 @@ class ModelLayer:
         if empty:
             raise InvalidOutput(
                 "the model gave an empty answer",
-                details={
-                    "empty": True,
-                    "finish": choice.get("finish_reason"),
-                    "model_call_id": call_id,
-                },
+                details={"empty": True, "finish": finish, "model_call_id": call_id},
             )
         if misfit is not None:
             misfit.details["model_call_id"] = call_id
@@ -777,7 +717,7 @@ class ModelLayer:
             cost=cost,
             model_call_id=call_id,
             budget=budget,
-            finish=choice.get("finish_reason"),
+            finish=finish,
             tool_calls=tool_calls,
         )
 
@@ -792,7 +732,7 @@ class ModelLayer:
         run_id: str | None = None,
     ) -> Transcript:
         """Text of a WAV file. Audio over the API's 10 minutes goes as pieces, one call each."""
-        job_row, spec, _ = self._prepare(world_id, job, None, family="voice")
+        job_row, spec, _ = self._prepare(world_id, job, None, run_id, family="voice")
         pieces = audio.split_wav(audio_wav)
         base, headers = self.settings.meta_base_url, self._meta_headers()
         request = json.dumps({"model": spec.id, "audioEncoding": "WAV", "mode": "PUSH_TO_TALK"})
@@ -818,6 +758,7 @@ class ModelLayer:
                 effort=None,
                 run_id=run_id,
                 started=started,
+                audio_seconds=piece.seconds,
             )
             stated = doc.get("audioDurationMs")
             stated_ok = isinstance(stated, int | float) and stated > 0

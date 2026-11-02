@@ -39,6 +39,7 @@ SPARK = "muse-spark-1.3"
 GLIMMER = "muse-glimmer-30b"
 CATALOG = load_catalog()
 DEFER_JOBS = (
+    "update_pass",
     "verification",
     "second_opinion",
     "consolidation",
@@ -47,7 +48,7 @@ DEFER_JOBS = (
     "consolidation_pass",
     "smoke",
 )
-CONTINUE_JOBS = ("triage", "triage_fallback", "extraction", "transcription", "update_pass")
+CONTINUE_JOBS = ("triage", "triage_fallback", "extraction", "transcription")
 THREADS = 12
 
 

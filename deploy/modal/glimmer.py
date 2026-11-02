@@ -41,7 +41,11 @@ MODEL_REPO = "meta-models/Muse-Glimmer-30B"
 # 2026-10-22: the revision with the fixed chat template. A moving revision could change both.
 MODEL_REVISION = "cec94fcfd6512f2cfe708138c32533b346ea4f69"
 SERVED_MODEL_NAME = "muse-glimmer-30b"
-VLLM_IMAGE = "vllm/vllm-openai:v0.32.0"
+# By digest, as the store's image is: a tag can move.
+VLLM_IMAGE = (
+    "vllm/vllm-openai:v0.32.0"
+    "@sha256:befccf0e7e4089aa23926bb6f887a85c0d46c2a99e6de5c5ffdf5cb7957c5b34"
+)
 PORT = 8000
 HF_CACHE = "/root/.cache/huggingface"
 VLLM_CACHE = "/root/.cache/vllm"

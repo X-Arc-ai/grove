@@ -957,6 +957,7 @@ def test_malformed_body_gets_400_and_no_call(driver, world, make_rig, content):
         ("verification", SPARK),
         ("consolidation", SPARK),
         ("second_opinion", GLIMMER),
+        ("update_pass", SPARK),
         ("cleanup_pass", SPARK),
         ("consolidation_pass", SPARK),
     ],
@@ -966,7 +967,7 @@ def test_deferred_job_waits_once_the_ceiling_is_reached(driver, world, make_rig,
     rig = make_rig(answer(200, GLIMMER_DOC if model == GLIMMER else SPARK_DOC))
 
     waits = rig.post(token(world, job=job), {"model": model, "messages": MESSAGES})
-    runs_on = rig.post(token(world, job="update_pass"), {"model": SPARK, "messages": MESSAGES})
+    runs_on = rig.post(token(world, job="extraction"), {"model": SPARK, "messages": MESSAGES})
 
     assert waits.status_code == 429
     error = error_of(waits)
@@ -984,7 +985,7 @@ def test_deferred_job_waits_once_the_ceiling_is_reached(driver, world, make_rig,
     assert runs_on.status_code == 200
     assert "retry-after" not in runs_on.headers
     assert [str(request.url) for request in rig.upstream.requests] == [META_URL]
-    assert [row["job"] for row in read_rows(driver, world)] == ["update_pass"]
+    assert [row["job"] for row in read_rows(driver, world)] == ["extraction"]
 
 
 @pytest.mark.parametrize(
@@ -993,7 +994,6 @@ def test_deferred_job_waits_once_the_ceiling_is_reached(driver, world, make_rig,
         ("triage", GLIMMER, "low", "modal"),
         ("triage_fallback", SPARK, "minimal", "meta"),
         ("extraction", SPARK, "minimal", "meta"),
-        ("update_pass", SPARK, "low", "meta"),
     ],
 )
 def test_continuing_job_runs_on_past_the_ceiling(

@@ -1098,6 +1098,7 @@ def _answer(method: str) -> tuple:
     [
         ("respond", "verification"),
         ("respond", "consolidation"),
+        ("respond", "update_pass"),
         ("respond", "cleanup_pass"),
         ("respond", "consolidation_pass"),
         ("chat", "second_opinion"),
@@ -1132,7 +1133,6 @@ def test_a_deferrable_job_waits_when_the_budget_is_reached(driver, world, make_l
     ("method", "job"),
     [
         ("respond", "extraction"),
-        ("respond", "update_pass"),
         ("chat", "triage"),
         ("transcribe", "transcription"),
     ],
