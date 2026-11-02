@@ -64,7 +64,7 @@ A filter in `MATCH` or `WHERE` reads with no lock. A probe raced two transaction
 | The job queue | `:Job`. A claim checks the state in one of the two forms above. There is no `SKIP LOCKED`. `runner` must build the claim, with a two-transaction race test. |
 | Row-level security | The query layer. No store rule exists. |
 | Backups | A whole-store offline dump each day with the server stopped, kept 30 days. A.5 asks for snapshots of the snapshot-only tables; the whole-store dump is a change from A.5 (S21). |
-| Restore | `neo4j-admin database load` into a stopped store, then rebuild the projections from history, replay the forget ledger and compare fingerprints. `writer-b` and `deploy-a` own it. It has not run on this store. |
+| Restore | `neo4j-admin database load` into a stopped store, then rebuild the projections from history, replay the forget ledger and compare fingerprints. `deploy-a` runs the dump and its load into a scratch store each day, with a matching dump fingerprint (`docs/deploy.md`). The rebuild, the replay and D3's fingerprint belong to `writer-b` and have not run. |
 
 ## Rulings
 
@@ -161,9 +161,9 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | Rows outside the S12 list that change after they are written carry no version: `requests`, `jobs`, `support_changed.taken_at`, `ontology_change_log.undone_by`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, `run_records`, and the finished times of `audit_runs` and `area_audits`. | 3081 | `writer-a` |
 | The value index must gain the status words, `items.status` and `kinds.status_vocabulary` (S31). Until then, a forget of a status word renames the word in the kind. | 2560, 2561 | `forget` |
 | `why` of a contradiction from `grove.cleanup.v1` (the `grove.extract.v1` form) has no value-id column in `contradictions`. | 2087, 2199, 3133 | `beliefs` |
-| Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. | none; a build fact | `deploy-a` |
-| `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. | 354, 991 | `deploy-a` |
-| The daily dump and the restore have not run on this store. | 806 to 808, 3065 | `deploy-a`, `writer-b` |
+| Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. Closed by `deploy-a`: the API image holds `server/` as in a checkout with an editable install, and a deploy runs the migrations from it (`docs/deploy.md`). | none; a build fact | `deploy-a` |
+| `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. Closed by `deploy-a`: `deploy/compose.yml` sets it for `api` and `runner`, and a test checks it. | 354, 991 | `deploy-a` |
+| D3's restore has not run on this store: rebuild the projections from history, replay the forget ledger, compare D3's fingerprint. The daily dump and its load into a scratch store run on the box since `deploy-a`, checked by the dump fingerprint (`docs/deploy.md`). | 806 to 808, 3065 | `writer-b` |
 | `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
 
 ## Added by later lanes
