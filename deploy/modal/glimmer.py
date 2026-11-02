@@ -7,8 +7,9 @@ synthetic or screened text reaches it.
 What runs: vLLM 0.32.0 (native Glimmer support since 0.28.0) with the BF16 weights at a pinned
 revision, on one 80 GB GPU (A100 80 GB, then H100). The weights need about 60 GB, so a 48 GB card
 does not fit them. No container runs while there is no traffic (min_containers 0); an idle one
-stops after five minutes. A server scaled to zero answers 503 until a container is up and queues
-nothing, so the layer retries 503 on this route for about ten minutes.
+stops after one minute, so a call costs at most about 0.07 USD of idle GPU after it. A server
+scaled to zero answers 503 until a container is up and queues nothing, so the layer retries 503 on
+this route for about ten minutes. The first cold start took about three minutes, on an H100.
 
 Effort: Glimmer's template reads `reasoning_strength` (low, medium, high, xhigh; default high).
 The layer sends it in `chat_template_kwargs` on every call; the server default is low. vLLM
@@ -26,9 +27,13 @@ Deploy, with MODAL_TOKEN_ID and MODAL_TOKEN_SECRET in the environment (modal 1.6
     modal deploy deploy/modal/glimmer.py
     modal workspace proxy-tokens create --name grove-glimmer
 
-Then set GROVE_GLIMMER_BASE_URL to the server URL that the deploy prints, followed by /v1, and
-GROVE_GLIMMER_KEY to `<token id>.<token secret>`. The first boot on these GPUs is the first proof
-that vLLM serves Glimmer there: the vLLM recipe lists other hardware.
+The deploy does not print the server URL. Read it with
+`modal.Server.from_name("grove-glimmer", "GlimmerServer").get_url()`. Then set
+GROVE_GLIMMER_BASE_URL to that URL followed by /v1, and GROVE_GLIMMER_KEY to
+`<token id>.<token secret>`.
+
+The spend: `modal billing report --for "this month"`. `model_calls` does not hold cold starts or
+idle GPU time, so this report is the true figure.
 """
 
 import subprocess
@@ -49,7 +54,8 @@ VLLM_IMAGE = (
 PORT = 8000
 HF_CACHE = "/root/.cache/huggingface"
 VLLM_CACHE = "/root/.cache/vllm"
-IDLE_SECONDS = 300
+# Short on purpose: the workspace has no spend limit, and the meter does not see idle GPU time.
+IDLE_SECONDS = 60
 STARTUP_SECONDS = 30 * 60
 MAX_MODEL_LEN = 131072
 
