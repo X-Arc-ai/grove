@@ -46,7 +46,7 @@ Probed live on 2026-11-02 with synthetic text.
 
 Each world has one `budgets` row per day (UTC, from the clock provider). `record_model_call` writes the call and adds its cost to `spent` in one transaction; the call that brings `spent` to the ceiling turns the state to `reached`. From then on, a job that waits is refused with `budget_reached` (HTTP 429, retryable, with `resets_at`, the next midnight UTC) before any request leaves. A job that continues still runs: it keeps memory current, and it is the cheap part. A new day starts a new row with the ceiling of `GROVE_DAILY_BUDGET_USD`. The operator changes a day's ceiling with `set_budget_ceiling`; `None` removes it. Calls that pass the gate at the same moment can end the day above the ceiling by the cost of those calls. Ruling S37 in `docs/store-map.md` has the store side.
 
-The gateway also takes a token cap per run: a run token with `token_cap` is refused with `run_cap_reached` once the run's recorded input and output tokens reach it.
+The gateway also takes a token cap per run: a run token with `token_cap` is refused with `run_cap_reached` once the run's recorded input and output tokens reach it. A stream is recorded when it ends, so calls of one run in flight at the same moment can pass the cap together, as with the daily ceiling.
 
 ## Cost
 
@@ -62,7 +62,7 @@ Glimmer's GPU seconds run from the start of the attempt that answered, so the 50
 
 The gateway is a FastAPI app (`grove.models.gateway`), served with `python -m grove.models.gateway` on `GROVE_GATEWAY_HOST:GROVE_GATEWAY_PORT` (`127.0.0.1:18300`). It holds the Meta key and the Glimmer key. OpenCode's provider key is a run token, minted with `grove.models.gateway_auth.mint` by whoever holds `GROVE_GATEWAY_SECRET`: it binds one world, one run and one job, and it expires (at most 6 hours).
 
-For each call it refuses an unknown or contributor model and a model that does not chat, applies the budget gate and the run cap, sets the effort from the job table (`reasoning_effort` for Spark, `chat_template_kwargs.reasoning_strength` for Glimmer; an effort the agent sends is dropped, so an agent cannot raise its own spend), raises the output limit to at least 1,024, drops the fields Meta refuses, turns a `tool_choice` other than `"auto"` into `"auto"` (`"none"` removes the tools), adds a cache key from the system message, asks for the usage chunk on a stream, sends the call on, and writes it to `model_calls`. A stream reaches the client byte for byte. A call that fails, an answer that is not a JSON object, a redirect, and a stream the client closes early are written with their outcome. A `budget_reached` refusal carries a `Retry-After` header with the seconds to the reset.
+For each call it refuses an unknown or contributor model and a model that does not chat, keeps only the fields and message keys it knows (so `store`, `ignore_eos` or `chat_template` never reach a provider), takes text parts and images as `data:` URLs only (a provider never fetches a URL for an agent), applies the budget gate and the run cap, sets the effort from the job table (`reasoning_effort` for Spark, `chat_template_kwargs.reasoning_strength` for Glimmer; an effort the agent sends is dropped, so an agent cannot raise its own spend), raises the output limit to at least 1,024, drops the fields Meta refuses, turns a `tool_choice` other than `"auto"` into `"auto"` (`"none"` removes the tools), adds a cache key from the system message, asks for the usage chunk on a stream, sends the call on, and writes it to `model_calls`. A stream reaches the client byte for byte. A pump task owns each stream and its record: when the client leaves, the pump reads on for up to 120 seconds to get the usage chunk, which Meta sends only at the end, so the real tokens count against the ceiling and the run cap; if the chunk never comes, the row carries an estimate of four characters a token. A call that fails, an answer that is not a JSON object or cannot be decoded, a redirect, and a stream the client closes early are written with their outcome; an empty completion is written as `invalid_output` and passes on as it came. A provider's error message reaches the caller with the keys the gateway holds, and any bearer value, removed. A `budget_reached` refusal carries a `Retry-After` header with the seconds to the reset.
 
 `GET /v1/models` lists the chat models. Errors use B.3's shape, `{"error": {"code", "type", "message", "details", "retryable"}}`.
 
@@ -74,15 +74,15 @@ OpenCode 1.18.32 sends this through the `@ai-sdk/openai-compatible` provider: `P
 
 ## Glimmer on Modal
 
-`deploy/modal/glimmer.py` serves Muse Glimmer 30B (BF16, a pinned revision) with vLLM 0.32.0 on one A100 80 GB or H100, scaled to zero after five idle minutes, behind Modal's proxy auth. A server scaled to zero answers 503 until a container is up, so the layer and the gateway retry 503 on this route for about ten minutes. Glimmer's effort goes in `chat_template_kwargs.reasoning_strength`; vLLM ignores a `reasoning_effort` field without an error. The file's docstring has the deploy steps.
+`deploy/modal/glimmer.py` serves Muse Glimmer 30B (BF16, a pinned revision) with vLLM 0.32.0 on one A100 80 GB or H100, scaled to zero after five idle minutes, behind Modal's proxy auth. A server scaled to zero answers 503 until a container is up, so the layer and the gateway retry 503 on this route for about ten minutes. Glimmer's effort goes in `chat_template_kwargs.reasoning_strength`; vLLM ignores a `reasoning_effort` field without an error. The server fetches no remote media (`--allowed-media-domains media.invalid`, no media redirects). The file's docstring has the deploy steps.
 
 ## Settings
 
 | Variable | Meaning |
 |---|---|
 | `MODEL_API_KEY` | The Meta Model API key. |
-| `GROVE_META_BASE_URL` | Default `https://api.meta.ai/v1`. |
-| `GROVE_GLIMMER_BASE_URL` | The Modal server's URL followed by `/v1`. |
+| `GROVE_META_BASE_URL` | Default `https://api.meta.ai/v1`. Only the host `api.meta.ai` loads: the allowlist comes from this URL, and the key goes to it. |
+| `GROVE_GLIMMER_BASE_URL` | The Modal server's URL followed by `/v1`. Only a host under `.modal.direct` or `.modal.run` loads. |
 | `GROVE_GLIMMER_KEY` | The Modal proxy token as `<id>.<secret>`. |
 | `GROVE_DAILY_BUDGET_USD` | The ceiling of a new day's budget row; default 5.0; `unlimited` for none. |
 | `GROVE_GATEWAY_SECRET` | At least 32 bytes; signs the run tokens. |

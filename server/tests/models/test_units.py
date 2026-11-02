@@ -76,6 +76,7 @@ VOICE = "muse-voice-transcribe-1.0"
 GLIMMER = "muse-glimmer-30b"
 META_HOST = "api.meta.ai"
 GLIMMER_HOST = "glimmer.example.test"
+MODAL_HOST = "ws--grove-glimmer-glimmerserver.eu-west.modal.direct"
 SECRET = b"s" * 32
 T0 = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)
 SETTINGS = ModelSettings(
@@ -320,7 +321,7 @@ def test_settings_take_every_variable():
         {
             "GROVE_META_BASE_URL": "https://api.meta.ai/v1/",
             "MODEL_API_KEY": "test-meta-key",
-            "GROVE_GLIMMER_BASE_URL": "https://glimmer.example.test/v1",
+            "GROVE_GLIMMER_BASE_URL": f"https://{MODAL_HOST}/v1",
             "GROVE_GLIMMER_KEY": "test-glimmer-key",
             "GROVE_GATEWAY_SECRET": "k" * 32,
             "GROVE_GATEWAY_HOST": "127.0.0.2",
@@ -329,10 +330,27 @@ def test_settings_take_every_variable():
     )
     assert settings.meta_base_url == "https://api.meta.ai/v1"
     assert settings.require_meta_key() == "test-meta-key"
-    assert settings.require_glimmer() == ("https://glimmer.example.test/v1", "test-glimmer-key")
+    assert settings.require_glimmer() == (f"https://{MODAL_HOST}/v1", "test-glimmer-key")
     assert settings.require_gateway_secret() == b"k" * 32
     assert (settings.gateway_host, settings.gateway_port) == ("127.0.0.2", 18411)
-    assert settings.model_hosts() == frozenset({META_HOST, GLIMMER_HOST})
+    assert settings.model_hosts() == frozenset({META_HOST, MODAL_HOST})
+
+
+@pytest.mark.parametrize(
+    ("name", "url"),
+    [
+        ("GROVE_META_BASE_URL", "https://api.meta.ai.example.net/v1"),
+        ("GROVE_META_BASE_URL", "https://203.0.113.9/v1"),
+        ("GROVE_META_BASE_URL", "https://api.meta.ai:8443/v1"),
+        ("GROVE_GLIMMER_BASE_URL", "https://glimmer.example.test/v1"),
+        ("GROVE_GLIMMER_BASE_URL", "https://modal.direct/v1"),
+        ("GROVE_GLIMMER_BASE_URL", "https://ws--app.eu-west.modal.direct.example.net/v1"),
+    ],
+)
+def test_settings_refuse_a_base_url_off_the_model_hosts(name, url):
+    # The allowlist comes from these URLs and the keys go to them: a planted URL must not load.
+    with pytest.raises(NotConfigured, match=name):
+        load_model_settings({name: url})
 
 
 @pytest.mark.parametrize(

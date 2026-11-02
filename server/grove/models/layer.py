@@ -14,6 +14,7 @@ and the gateway use Chat Completions, which an OpenAI-compatible server speaks.
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -196,14 +197,23 @@ def glimmer_effort_fields(effort: str | None) -> dict[str, Any]:
     return {"chat_template_kwargs": {"reasoning_strength": effort}} if effort else {}
 
 
-def _provider_message(response: httpx.Response) -> str:
+_BEARER = re.compile(r"(?i)bearer\s+\S+")
+
+
+def _provider_message(response: httpx.Response, secrets: tuple[str | None, ...] = ()) -> str:
+    """The provider's error message, cut short, with the given keys and any bearer value out."""
     try:
         doc = response.json()
     except ValueError:
         return ""
     error = doc.get("error") if isinstance(doc, dict) else None
     message = error.get("message") if isinstance(error, dict) else None
-    return message[:_PROVIDER_MESSAGE] if isinstance(message, str) else ""
+    if not isinstance(message, str):
+        return ""
+    for secret in secrets:
+        if secret:
+            message = message.replace(secret, "<redacted>")
+    return _BEARER.sub("Bearer <redacted>", message)[:_PROVIDER_MESSAGE]
 
 
 class ModelLayer:
@@ -339,7 +349,9 @@ class ModelLayer:
             "the provider refused the call",
             details={
                 "status": response.status_code,
-                "provider_message": _provider_message(response),
+                "provider_message": _provider_message(
+                    response, (self.settings.meta_key, self.settings.glimmer_key)
+                ),
             },
         )
         error.retryable = response.status_code >= 500
@@ -368,7 +380,8 @@ class ModelLayer:
 
         try:
             response = send(self._http, timed, sleep=self._sleep, attempts=attempts)
-        except httpx.TransportError as exc:
+        except httpx.RequestError as exc:
+            # No answer, or an answer whose body could not be read (a DecodingError).
             self._record(
                 world_id,
                 job=job,
@@ -478,7 +491,7 @@ class ModelLayer:
         if background:
             try:
                 doc = self._wait(doc, base, headers)
-            except (ProviderError, httpx.TransportError) as exc:
+            except (ProviderError, httpx.RequestError) as exc:
                 self._record(
                     world_id,
                     job=job_row,
@@ -538,25 +551,41 @@ class ModelLayer:
             raise ProviderError("a background response came back with no id")
         deadline = clock.monotonic() + BACKGROUND_DEADLINE
         pause = 1.0
-        while doc.get("status") not in _TERMINAL:
-            if clock.monotonic() > deadline:
-                self._http.post(f"{base}/responses/{response_id}/cancel", headers=headers)
-                raise ProviderError("a background response did not finish in time")
-            self._sleep(pause)
-            pause = min(pause * 2, 5.0)
-            polled = send(
-                self._http,
-                lambda: self._http.build_request(
-                    "GET", f"{base}/responses/{response_id}", headers=headers
-                ),
-                sleep=self._sleep,
-            )
-            if polled.status_code >= 400:
-                raise ProviderError(
-                    "polling a background response failed", details={"status": polled.status_code}
+        try:
+            while doc.get("status") not in _TERMINAL:
+                if clock.monotonic() > deadline:
+                    raise ProviderError("a background response did not finish in time")
+                self._sleep(pause)
+                pause = min(pause * 2, 5.0)
+                polled = send(
+                    self._http,
+                    lambda: self._http.build_request(
+                        "GET", f"{base}/responses/{response_id}", headers=headers
+                    ),
+                    sleep=self._sleep,
                 )
-            doc = polled.json()
+                if polled.status_code >= 300:
+                    raise ProviderError(
+                        "polling a background response failed",
+                        details={"status": polled.status_code},
+                    )
+                try:
+                    doc = polled.json()
+                except ValueError:
+                    doc = None
+                if not isinstance(doc, dict):
+                    raise ProviderError("a background poll answered with no JSON object")
+        except (ProviderError, httpx.RequestError):
+            # A response left running bills at Meta with no row to show it: stop it.
+            self._cancel(base, response_id, headers)
+            raise
         return doc
+
+    def _cancel(self, base: str, response_id: str, headers: dict[str, str]) -> None:
+        try:
+            self._http.post(f"{base}/responses/{response_id}/cancel", headers=headers)
+        except httpx.RequestError:
+            pass
 
     # Chat Completions: Glimmer on Modal, or Spark on Meta.
 
@@ -601,6 +630,8 @@ class ModelLayer:
                 # An empty answer at the reasoning ceiling is retried at a lower effort (D15).
                 if not error.details.get("empty") or lower is None:
                     raise
+                # A retry is a new call: it passes the budget gate again.
+                self.meter.gate(world_id, job_row)
                 chosen = lower
 
     @staticmethod

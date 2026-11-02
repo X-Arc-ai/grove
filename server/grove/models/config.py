@@ -33,6 +33,10 @@ _RATES = {
     "gpu_seconds": ("per_second",),
 }
 _CONTRIBUTOR = "contributor"
+# The egress allowlist comes from these URLs, and the keys go to them, so a URL from the env may
+# name only Meta's API host or a Modal server (A.1: the Model API and the judgment host).
+META_HOSTS = frozenset({"api.meta.ai"})
+GLIMMER_HOST_SUFFIXES = (".modal.direct", ".modal.run")
 _EFFORTS = frozenset(ENUMS["effort"])
 _MIN_SECRET = 32
 
@@ -191,11 +195,25 @@ def load_catalog() -> Catalog:
     return Catalog(families, models, jobs, prices)
 
 
-def _https_base(name: str, value: str) -> str:
+def _https_base(name: str, value: str, allowed) -> str:
     parts = urlsplit(value)
     if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
         raise NotConfigured(f"{name} must be an https URL with a host and no user part")
+    try:
+        port = parts.port
+    except ValueError:
+        port = -1
+    if port not in (None, 443) or not allowed(parts.hostname.rstrip(".").lower()):
+        raise NotConfigured(f"{name} names a host outside the model hosts")
     return value.rstrip("/")
+
+
+def _meta_host(host: str) -> bool:
+    return host in META_HOSTS
+
+
+def _glimmer_host(host: str) -> bool:
+    return host.endswith(GLIMMER_HOST_SUFFIXES) and len(host) > max(map(len, GLIMMER_HOST_SUFFIXES))
 
 
 def _budget(value: str | None) -> float | None:
@@ -252,10 +270,14 @@ def load_model_settings(env: dict[str, str] | None = None) -> ModelSettings:
     port = env.get("GROVE_GATEWAY_PORT")
     return ModelSettings(
         meta_base_url=_https_base(
-            "GROVE_META_BASE_URL", env.get("GROVE_META_BASE_URL") or DEFAULT_META_BASE_URL
+            "GROVE_META_BASE_URL",
+            env.get("GROVE_META_BASE_URL") or DEFAULT_META_BASE_URL,
+            _meta_host,
         ),
         meta_key=env.get("MODEL_API_KEY") or None,
-        glimmer_base_url=_https_base("GROVE_GLIMMER_BASE_URL", glimmer) if glimmer else None,
+        glimmer_base_url=(
+            _https_base("GROVE_GLIMMER_BASE_URL", glimmer, _glimmer_host) if glimmer else None
+        ),
         glimmer_key=env.get("GROVE_GLIMMER_KEY") or None,
         daily_budget=_budget(env.get("GROVE_DAILY_BUDGET_USD")),
         gateway_secret=secret.encode("utf-8") if secret else None,

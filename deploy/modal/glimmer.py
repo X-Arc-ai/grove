@@ -36,6 +36,7 @@ import subprocess
 import modal
 
 APP_NAME = "grove-glimmer"
+# Not gated on Hugging Face (its API said gated false on 2026-11-02), so no token is needed.
 MODEL_REPO = "meta-models/Muse-Glimmer-30B"
 # 2026-10-22: the revision with the fixed chat template. A moving revision could change both.
 MODEL_REVISION = "cec94fcfd6512f2cfe708138c32533b346ea4f69"
@@ -56,7 +57,13 @@ volumes = {HF_CACHE: hf_cache, VLLM_CACHE: vllm_cache}
 image = (
     modal.Image.from_registry(VLLM_IMAGE)
     .entrypoint([])
-    .env({"HF_HUB_CACHE": HF_CACHE, "HF_XET_HIGH_PERFORMANCE": "1"})
+    .env(
+        {
+            "HF_HUB_CACHE": HF_CACHE,
+            "HF_XET_HIGH_PERFORMANCE": "1",
+            "VLLM_MEDIA_URL_ALLOW_REDIRECTS": "0",
+        }
+    )
 )
 
 SERVE_COMMAND = [
@@ -82,6 +89,10 @@ SERVE_COMMAND = [
     "muse_glimmer",
     "--default-chat-template-kwargs",
     '{"reasoning_strength": "low"}',
+    # No remote media: an image comes inline as a data URL, so the server fetches no URL for a
+    # caller (vLLM's guidance against SSRF). The gateway refuses other image parts too.
+    "--allowed-media-domains",
+    "media.invalid",
 ]
 
 
