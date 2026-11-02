@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Grove — simulation</title>
+  <title>Grove</title>
   <link rel="icon" type="image/svg+xml" sizes="any" href="./favicon.svg" />
   <!-- All assets vendored locally (viz/vendor/) — a localhost tool must never
        block first paint on CDN/network availability. -->
@@ -79,7 +79,9 @@
   <div id="loading" class="loading">loading graph…</div>
 
   
-  <script src="./fixture.js"></script>
+  <!-- Live mode: server calls (live.js) and kept map positions (layout-keep.js). No fixture. -->
+  <script src="./live.js"></script>
+  <script src="./layout-keep.js"></script>
   <script src="./simulation.js"></script>
   <script src="./native-app.js"></script>
   <script src="./provider-icons.js"></script>

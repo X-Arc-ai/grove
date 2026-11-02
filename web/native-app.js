@@ -117,6 +117,27 @@
     pattern: 3,   // structural insight — reads as meaningful structure (ring-weight 2.5)
   };
 
+  // Grove's starter kinds draw with the sim's styles (map in web/live.js): the data keeps the
+  // real kind name; a kind borrows the size, tier, hub role and ring colour of its sim type.
+  // organisation and plan are hubs, as company and project are. Live mode gives any other
+  // kind the task style (adoptKinds); the legend lists every kind under its own name.
+  var SIM_KINDS = Object.keys(SIZES);
+  var KIND_STYLE = (window.GroveLive && window.GroveLive.KIND_STYLE) || {};
+  Object.keys(KIND_STYLE).forEach(function (kind) {
+    var style = KIND_STYLE[kind];
+    if (SIZES[kind] == null && SIZES[style] != null) SIZES[kind] = SIZES[style];
+    if (TIER[kind] == null && TIER[style] != null) TIER[kind] = TIER[style];
+    if (HUB_TYPES[style]) HUB_TYPES[kind] = 1;
+  });
+  function adoptKinds(nodes) {
+    nodes.forEach(function (n) {
+      var kind = n.type;
+      if (typeof kind !== 'string' || !kind || kind === '__proto__' || Object.prototype.hasOwnProperty.call(SIZES, kind)) return;
+      SIZES[kind] = SIZES.task;
+      TIER[kind] = TIER.task;
+    });
+  }
+
   // Verbs that ALWAYS show their label on the canvas — small set for visual signal.
   var ALWAYS_LABELED_VERBS = {
     'CEO of': 1, 'CTO of': 1, 'Director of': 1,
@@ -237,6 +258,8 @@
       roadmap: v('--ring-roadmap'),
       pattern: v('--ring-pattern'),
     };
+    // Starter kinds read their alias tokens (style.css), which resolve to the sim's colours.
+    Object.keys(KIND_STYLE).forEach(function (kind) { ring[kind] = v('--ring-' + kind) || ring[KIND_STYLE[kind]]; });
     // Precompute the inactive (desaturated) ring per type so the draw hot path
     // is a map lookup, never a color computation — it runs every frame now that
     // the simulation never freezes.
@@ -362,25 +385,93 @@
     lastNodeCount=rawNodes.length;lastEdgeCount=rawEdges.length;
   }
 
-  function prepareLayout() {
-    if (layoutCache) return;
-    var fixture = window.GROVE_FIXTURE;
-    if (!fixture) return;
-    var ns = JSON.parse(JSON.stringify(fixture.elements.nodes)).map(function (w) { return w.data; });
-    var es = fixture.elements.edges.map(function (w) { return w.data; });
+  // The sim's own layout of a node set: seedLayout, opened out, with room for the identity at
+  // the centre. Returns {cache: {id: node}, frame}; fixture and live mode share it.
+  function simLayout(ns, es) {
     seedLayout(ns, es);
-    layoutCache = {};
+    var cache = {};
     ns.forEach(function (n) {
       if (n.__open) { n.x = n.__open[2]; n.y = n.__open[3]; delete n.__open; }
-      layoutCache[n.id] = n;
+      cache[n.id] = n;
     });
+    // An empty world (live mode only): the identity sits at the centre of the empty layout.
+    if (!ns.length) { var g0 = computeLayoutGeometry(0); cache['grove-self'] = { x: g0.cx, y: g0.cy }; return { cache: cache, frame: { x0: g0.cx - 65, x1: g0.cx + 65, y0: g0.cy - 65, y1: g0.cy + 65 } }; }
     var xs=ns.map(function(n){return n.x;}),ys=ns.map(function(n){return n.y;});
     var selfX=(Math.min.apply(null,xs)+Math.max.apply(null,xs))/2,selfY=(Math.min.apply(null,ys)+Math.max.apply(null,ys))/2;
     // Reserve breathing room for the identity without stacking it over a hub.
     ns.forEach(function(n,i){var dx=n.x-selfX,dy=n.y-selfY,r=Math.hypot(dx,dy),a=r?Math.atan2(dy,dx):i*2.39996,space=r+180*Math.exp(-r/600);n.x=selfX+Math.cos(a)*space;n.y=selfY+Math.sin(a)*space;});
     xs=ns.map(function(n){return n.x;});ys=ns.map(function(n){return n.y;});
-    stableFrame={x0:Math.min.apply(null,xs)-65,x1:Math.max.apply(null,xs)+65,y0:Math.min.apply(null,ys)-65,y1:Math.max.apply(null,ys)+65};
-    layoutCache['grove-self']={x:selfX,y:selfY};
+    var frame={x0:Math.min.apply(null,xs)-65,x1:Math.max.apply(null,xs)+65,y0:Math.min.apply(null,ys)-65,y1:Math.max.apply(null,ys)+65};
+    cache['grove-self']={x:selfX,y:selfY};
+    return { cache: cache, frame: frame };
+  }
+
+  function prepareLayout(payload) {
+    var fixture = window.GROVE_FIXTURE;
+    if (!fixture) return prepareLiveLayout(payload);
+    // Fixture mode (the checks): the FULL fixture is laid out once, so nothing moves as imports reveal it.
+    if (layoutCache) return;
+    var ns = JSON.parse(JSON.stringify(fixture.elements.nodes)).map(function (w) { return w.data; });
+    var es = fixture.elements.edges.map(function (w) { return w.data; });
+    var laid = simLayout(ns, es);
+    layoutCache = laid.cache;
+    stableFrame = laid.frame;
+  }
+
+  // Live mode: every load seeds the sim's layout of the current graph, then placeNew
+  // (layout-keep.js) keeps each stored position exactly and finds each new item a free spot
+  // near its hub or neighbours. Items the store has no position for are saved (insert-only);
+  // a failed save is retried on the next load. livePlaced keeps this session's placements, so
+  // a reload before a save lands shows the same map.
+  var livePlaced = {}, liveSaving = {};
+  function prepareLiveLayout(payload) {
+    var el = (payload && payload.elements) || { nodes: [], edges: [] };
+    var serverStored = {};
+    el.nodes.forEach(function (w) {
+      var d = w.data;
+      if (typeof d.x === 'number' && typeof d.y === 'number' && isFinite(d.x) && isFinite(d.y)) serverStored[d.id] = { x: d.x, y: d.y };
+    });
+    var all = JSON.parse(JSON.stringify(el.nodes)).map(function (w) { return w.data; });
+    adoptKinds(all);
+    var ns = all.filter(function (n) { return n.id !== 'grove-self'; });
+    var es = el.edges.map(function (w) { return w.data; }).filter(function (e) { return e.source !== 'grove-self' && e.target !== 'grove-self'; });
+    var laid = simLayout(ns, es);
+    var seed = {}, items = [];
+    all.forEach(function (n) {
+      var c = laid.cache[n.id] || {};
+      seed[n.id] = { x: c.x, y: c.y };
+      items.push({ id: n.id, type: n.type, _primaryHubId: c._primaryHubId || null, _hubR: c._hubR || null, _demoted: !!c._demoted });
+    });
+    var edges = el.edges.map(function (w) { return { source: w.data.source, target: w.data.target }; });
+    var room = function (n) { return nodeRadius(n) * (DENSE ? 1.45 : 1.6) + (DENSE ? 6 : 8); };   // the collide force's radius
+    var kept = window.GroveLayoutKeep.placeNew(Object.assign({}, livePlaced, serverStored), items, edges, seed, room);
+    layoutCache = {};
+    var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    all.forEach(function (n) {
+      var p = kept.positions[n.id];
+      layoutCache[n.id] = Object.assign({}, laid.cache[n.id] || {}, { x: p.x, y: p.y });
+      livePlaced[n.id] = { x: p.x, y: p.y };
+      x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
+    });
+    stableFrame = all.length ? { x0: x0 - 65, x1: x1 + 65, y0: y0 - 65, y1: y1 + 65 } : laid.frame;
+    saveNewPositions(all.filter(function (n) { return !serverStored[n.id]; }).map(function (n) { return n.id; }), kept.positions);
+  }
+  function saveNewPositions(ids, positions) {
+    var S = window.GroveSimulation, G = window.GroveLive;
+    if (!S || !S.realId || !G) return;
+    var list = [], sent = [];
+    ids.forEach(function (id) {
+      var real = S.realId(id), p = positions[id];   // the identity node saves under the self item's id
+      if (!real || !p || liveSaving[real]) return;
+      liveSaving[real] = 1; sent.push(real);
+      list.push({ id: real, x: p.x, y: p.y });
+    });
+    if (!list.length) return;
+    G.savePositions(list).catch(function (err) {
+      // Not saved: the map still renders, and the next load saves these items again.
+      sent.forEach(function (real) { delete liveSaving[real]; });
+      console.warn('Grove: map positions were not saved', err);
+    });
   }
 
   function frameGrove(duration) {
@@ -424,7 +515,7 @@
   function loadGraph(refresh) {
     return window.groveApi('/api/graph').then(function(r){return r.json();}).then(function(payload){
       if (payload.error) throw new Error(payload.error);
-      prepareLayout();
+      prepareLayout(payload);
       var previous = fgNodeById || {};
       rawNodes = payload.elements.nodes.map(function(w){
         var n=w.data, seed=layoutCache && layoutCache[n.id];
@@ -1399,6 +1490,11 @@
     if (!listEl) return;
     var present={}; rawNodes.forEach(function(n){present[n.type]=1;});
     var types=LEGEND_TYPES.filter(function(t){return present[t];});
+    // Kinds the sim does not know (Grove's starter kinds, any new kind) join under their own
+    // name, next to the sim type they draw as; unknown kinds last, by name.
+    var rank=function(t){var i=LEGEND_TYPES.indexOf(KIND_STYLE[t]);return i<0?LEGEND_TYPES.length:i;};
+    var extra=Object.keys(present).filter(function(t){return SIM_KINDS.indexOf(t)<0;});
+    if(extra.length){types=types.concat(extra).sort(function(a,b){var ra=LEGEND_TYPES.indexOf(a),rb=LEGEND_TYPES.indexOf(b);ra=ra<0?rank(a)+0.5:ra;rb=rb<0?rank(b)+0.5:rb;return ra-rb||(a<b?-1:a>b?1:0);});}
     document.getElementById('legend').hidden=!types.length;
     listEl.innerHTML = types.map(function (t) {
       var color = THEME.ring[t] || THEME.ring.task;

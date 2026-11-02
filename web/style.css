@@ -82,6 +82,18 @@
   --label-halo: rgba(247, 246, 241, 0.92);
 }
 
+/* Grove's starter kinds alias the sim's ring colours in both themes (map in live.js). */
+:root {
+  --ring-organisation:  var(--ring-company);
+  --ring-plan:          var(--ring-project);
+  --ring-place:         var(--ring-instance);
+  --ring-problem:       var(--ring-blocker);
+  --ring-assumption:    var(--ring-pattern);
+  --ring-trip:          var(--ring-goal);
+  --ring-period:        var(--ring-roadmap);
+  --ring-belief:        var(--ring-pattern);
+}
+
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {

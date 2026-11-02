@@ -3,7 +3,7 @@ const path=require('path'),root=path.join(__dirname,'..');
 async function main(){
  const store={},events=[];let reloads=0;
  const sandbox={console,URL,Date,Math,Promise,setTimeout,clearTimeout,CustomEvent:class{constructor(type,init){this.type=type;this.detail=init.detail;}},localStorage:{getItem:k=>store[k]||null,setItem:(k,v)=>store[k]=v}};
- sandbox.window=sandbox;sandbox.location={href:'http://localhost/'};sandbox.GROVE_FIXTURE=JSON.parse(fs.readFileSync(path.join(root,'fixture.json')));sandbox.__GROVE_SIM_TICK_MS__=20;sandbox.dispatchEvent=e=>events.push(e);sandbox.reloadGrove=()=>{reloads++;};
+ sandbox.window=sandbox;sandbox.location={href:'http://localhost/'};sandbox.GROVE_FIXTURE=JSON.parse(fs.readFileSync(path.join(__dirname,'fixture.synthetic.json')));sandbox.__GROVE_SIM_TICK_MS__=20;sandbox.dispatchEvent=e=>events.push(e);sandbox.reloadGrove=()=>{reloads++;};
  vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(root,'simulation.js'),'utf8'),sandbox);await Promise.resolve();
  const api=sandbox.GroveSimulation;
  assert.equal(api.getState().currentNodeCount,0);
