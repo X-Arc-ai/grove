@@ -9,8 +9,8 @@ revision, on one 80 GB GPU (A100 80 GB, then H100). The weights need about 60 GB
 does not fit them. No container runs while there is no traffic (min_containers 0); an idle one
 stops after one minute. A server scaled to zero answers 503 until a container is up and queues
 nothing, so the layer retries 503 on this route for about ten minutes. The first cold start took
-about three minutes on an H100. So one call after a quiet time costs about 0.27 USD of GPU: 0.20
-for the cold start and 0.07 for the idle minute. A call every four minutes bills a GPU all day.
+about three minutes on an H100. So one call after a quiet time costs about 0.26 USD of GPU: 180
+seconds of cold start and 60 idle seconds. A call every four minutes bills a GPU all day.
 
 Effort: Glimmer's template reads `reasoning_strength` (low, medium, high, xhigh; default high).
 The layer sends it in `chat_template_kwargs` on every call; the server default is low. vLLM
