@@ -3,42 +3,38 @@
 `Validate` runs on `${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}`. While the repo is private, the
 variable may name a self-hosted pool. Before the repo goes public the variable is deleted, and every
 job then falls back to `ubuntu-latest`. That fallback holds only when no workflow names a runner in
-any other way, so this lint reads every workflow file and allows two `runs-on` values only:
+any other way, so a job's `runs-on` may hold two values only:
 
     ${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}
     ubuntu-latest
 
-A value is compared after its quotes and a trailing comment are dropped and its spaces and tabs
-collapsed. Any other whitespace (a no-break space, for example) stays and makes the value differ.
-
-The project carries no YAML parser, so the lint reads the files line by line. On one line it
-fails closed: a structural line it cannot read is a finding, never a skip. The content of a block
-scalar (`run: |`, `key: >-`) is text, not structure, and is not read. Keys compare without case.
+The lint parses every `.yml` and `.yaml` file under `.github/workflows/` with a YAML parser and
+walks `jobs`, so quotes, comments, escapes, flow style, block scalars, anchors, aliases and merge
+keys read as the parser reads them. The names `jobs`, `runs-on` and `uses` compare without case,
+and spaces and tabs inside a value collapse. Any other difference in a value makes it differ.
 
 Findings:
-    runner/not-allowed     any other value: a pool label, `self-hosted`, a list, an expression
-    runner/block-form      `runs-on:` with its value on the lines below it (a list, `group:`, a
-                           plain scalar that goes on in the next line)
-    runner/reusable-call   a job that calls a workflow of another repository (runner out of reach)
-    runner/symlink         a workflow file, or the workflows dir, that is a symbolic link
-    runner/unreadable      a line the scanner cannot read: an explicit `?` key, a tag or an anchor
-                           or alias in a key's place, a merge key `<<`, a double-quoted key with
-                           an escape, a flow mapping that holds `runs-on` or `uses` on that line,
-                           a job that is only an alias, a column-0 line that is not a key, or a
-                           line break that YAML does not break at (NEL, U+2028, U+2029, VT, FF)
+    runner/not-allowed     a job's `runs-on` that holds anything else: a pool label, `self-hosted`,
+                           a list, a mapping, another expression, nothing
+    runner/reusable-call   a job's `uses` that is not a workflow file in ./.github/workflows/, since
+                           the runner of any other workflow is out of reach
+    runner/symlink         a workflow file, `.github/workflows` or `.github` that is a symbolic link
+    runner/unreadable      a file the parser refuses or that holds more than one document; a root,
+                           `jobs` or job that is not a mapping; a key there that is not a scalar; a
+                           job with neither `runs-on` nor `uses`; a tracked workflow that is not on
+                           disk; or a line break that YAML versions read differently (NEL, U+2028,
+                           U+2029, VT, FF, U+001C to U+001E)
 
-Out of reach: YAML structure that spans lines, which only a parser can follow (a flow collection
-or a quoted scalar that goes on over several lines, with a `runs-on` or `uses` on a later line),
-and a workflow file that a job writes at run time. Each of these is a deliberate act, not an
-accident. The guarantee for a public repo does not rest on this lint: the variable and the pool
-are removed before the repo goes public, so a label that no runner carries makes a job queue in
-plain view and never run on a self-hosted runner.
+Out of reach: a workflow file that a job writes at run time, and any text that GitHub's own parser
+reads differently from PyYAML. The guarantee for a public repo does not rest on this lint: the
+variable and the pool are removed before the repo goes public, so a label that no runner carries
+makes a job queue in plain view and never run on a self-hosted runner.
 """
 
 import re
 from pathlib import Path
 
-from grove.lints._scan import Finding, list_files, read_text
+from grove.lints._scan import Finding, LintError, list_files, read_text
 
 WORKFLOW_DIR = ".github/workflows/"
 WORKFLOW_SUFFIXES = (".yml", ".yaml")
@@ -46,113 +42,103 @@ LINKED_DIRS = (".github", ".github/workflows")
 
 ALLOWED = frozenset({"${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}", "ubuntu-latest"})
 
-_KEY = re.compile(
-    r"""^(?P<indent>[ ]*)(?P<item>-[ ]+)?"""
-    r"""(?P<q>["']?)(?P<key>[A-Za-z0-9_-]+)(?P=q)[ \t]*:(?P<rest>.*)$"""
-)
-_UNREADABLE = re.compile(r"""^[ ]*(?:-[ ]+)?(?:[?!&*]|<<|"[^"\n]*\\)""")
-# A `{` that is not part of `${{`, with `runs-on` or `uses` anywhere after it on the line.
-_FLOW_KEY = re.compile(r"""(?<![${])\{(?!\{).*\b(?:runs-on|uses)\b""", re.IGNORECASE)
-_ODD_BREAK = re.compile("[\x85\u2028\u2029\x0b\x0c\x1c-\x1e]")
-_BLOCK_SCALAR = re.compile(r"^[|>][0-9+-]*$")
-_COMMENT = re.compile(r"(^|[ \t])#.*$")
-_DOCUMENT_MARK = re.compile(r"^(?:---|\.\.\.)(?:[ \t]+#.*)?$")
+_LOCAL_CALL = re.compile(r"^\./\.github/workflows/(?!.*\.\.)[^/]+\.ya?ml$", re.IGNORECASE)
+_ODD_BREAK = re.compile("[\\x85\\u2028\\u2029\\x0b\\x0c\\x1c-\\x1e]")
 
 
-def _value(rest: str) -> str:
-    """The scalar after a key: no trailing comment, no outer quotes, spaces and tabs collapsed."""
-    text = _COMMENT.sub("", rest).strip(" \t")
-    if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":
-        text = text[1:-1].strip(" \t")
-    return re.sub(r"[ \t]+", " ", text)
+def _load_yaml():
+    """PyYAML is a dev dependency, imported here so that the other lints run without it."""
+    try:
+        import yaml
+    except ImportError as error:
+        raise LintError("the runner lint needs PyYAML: uv sync --frozen") from error
+    return yaml
 
 
 def _is_workflow(rel: str) -> bool:
     return rel.startswith(WORKFLOW_DIR) and rel.lower().endswith(WORKFLOW_SUFFIXES)
 
 
-def _check_text(rel: str, text: str) -> list[Finding]:
+def _line(node) -> int:
+    return node.start_mark.line + 1
+
+
+def _scalar(yaml, node) -> str | None:
+    """A scalar's text with spaces and tabs collapsed; None for a list or a mapping."""
+    if not isinstance(node, yaml.ScalarNode):
+        return None
+    return re.sub(r"[ \t]+", " ", node.value)
+
+
+def _check_job(yaml, loader, rel: str, name_node, job) -> list[Finding]:
+    if not isinstance(job, yaml.MappingNode):
+        return [Finding(rel, _line(name_node), "runner/unreadable")]
+    loader.flatten_mapping(job)
     findings: list[Finding] = []
-    in_jobs = False
-    job_indent: int | None = None
-    key_indent: int | None = None
-    block_column: int | None = None  # inside a block scalar: lines indented past this are text
-    runs_on: tuple[int, int] | None = None  # (line, key column) of a runs-on with a plain value
-    # Split only where YAML breaks a line. str.splitlines also breaks at NEL, U+2028 and others,
-    # where a YAML parser reads one line: such a line is a finding below.
-    for number, line in enumerate(re.split(r"\r\n|\r|\n", text), start=1):
-        if _ODD_BREAK.search(line):
-            findings.append(Finding(rel, number, "runner/unreadable"))
+    has_runner = False
+    for key_node, value_node in job.value:
+        if not isinstance(key_node, yaml.ScalarNode):
+            findings.append(Finding(rel, _line(key_node), "runner/unreadable"))
             continue
-        stripped = line.strip(" ")
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = len(line) - len(line.lstrip(" "))
-        if block_column is not None:
-            if indent > block_column:
-                continue
-            block_column = None
-        if runs_on is not None:
-            if indent > runs_on[1]:
-                findings.append(Finding(rel, runs_on[0], "runner/block-form"))
-            runs_on = None
-        match = _KEY.match(line)
-        if indent == 0:
-            if _FLOW_KEY.search(line):
-                findings.append(Finding(rel, number, "runner/unreadable"))
-            if match and not match.group("item"):
-                in_jobs = match.group("key").lower() == "jobs"
-                job_indent = key_indent = None
-            elif not _DOCUMENT_MARK.match(line):
-                findings.append(Finding(rel, number, "runner/unreadable"))
-                in_jobs = False
-            if match and _BLOCK_SCALAR.match(_value(match.group("rest"))):
-                block_column = 0
-            continue
-        if not match:
-            if _UNREADABLE.match(line) or _FLOW_KEY.search(line):
-                findings.append(Finding(rel, number, "runner/unreadable"))
-            continue
-        key, rest = match.group("key").lower(), match.group("rest")
-        column = indent + len(match.group("item") or "")
-        value = _value(rest)
-        if _BLOCK_SCALAR.match(value):
-            block_column = column
-        elif _FLOW_KEY.search(rest):
-            findings.append(Finding(rel, number, "runner/unreadable"))
+        key = key_node.value.lower()
         if key == "runs-on":
-            if not value:
-                findings.append(Finding(rel, number, "runner/block-form"))
-            elif value not in ALLOWED:
-                findings.append(Finding(rel, number, "runner/not-allowed"))
-            else:
-                runs_on = (number, column)
-            continue
-        if not in_jobs or match.group("item"):
-            continue
-        if job_indent is None or indent <= job_indent:
-            job_indent, key_indent = indent, None
-            if value.startswith("*"):
-                findings.append(Finding(rel, number, "runner/unreadable"))
-            continue
-        if key_indent is None:
-            key_indent = indent
-        if indent == key_indent and key == "uses" and not value.startswith("./"):
-            findings.append(Finding(rel, number, "runner/reusable-call"))
+            has_runner = True
+            if _scalar(yaml, value_node) not in ALLOWED:
+                findings.append(Finding(rel, _line(key_node), "runner/not-allowed"))
+        elif key == "uses":
+            has_runner = True
+            value = _scalar(yaml, value_node)
+            if value is None or not _LOCAL_CALL.match(value):
+                findings.append(Finding(rel, _line(key_node), "runner/reusable-call"))
+    if not has_runner:
+        findings.append(Finding(rel, _line(name_node), "runner/unreadable"))
     return findings
 
 
+def _check_text(yaml, rel: str, text: str) -> list[Finding]:
+    odd = _ODD_BREAK.search(text)
+    if odd:
+        return [Finding(rel, text.count("\n", 0, odd.start()) + 1, "runner/unreadable")]
+    loader = yaml.SafeLoader(text)
+    try:
+        root = loader.get_single_node()
+        if not isinstance(root, yaml.MappingNode):
+            return [Finding(rel, 1, "runner/unreadable")]
+        loader.flatten_mapping(root)
+        findings: list[Finding] = []
+        for key_node, value_node in root.value:
+            if not isinstance(key_node, yaml.ScalarNode):
+                findings.append(Finding(rel, _line(key_node), "runner/unreadable"))
+            elif key_node.value.lower() == "jobs":
+                if not isinstance(value_node, yaml.MappingNode):
+                    findings.append(Finding(rel, _line(key_node), "runner/unreadable"))
+                    continue
+                loader.flatten_mapping(value_node)
+                for name_node, job in value_node.value:
+                    findings += _check_job(yaml, loader, rel, name_node, job)
+        return findings
+    except yaml.YAMLError as error:
+        mark = getattr(error, "problem_mark", None)
+        return [Finding(rel, mark.line + 1 if mark else 1, "runner/unreadable")]
+    except RecursionError:  # nesting deeper than the parser's recursion
+        return [Finding(rel, 1, "runner/unreadable")]
+    finally:
+        loader.dispose()
+
+
 def check(root: Path, base: str | None = None) -> list[Finding]:
+    yaml = _load_yaml()
     findings: list[Finding] = []
     for rel in list_files(root):
         path = root / rel
         if rel in LINKED_DIRS and path.is_symlink():
             findings.append(Finding(rel, 1, "runner/symlink"))
+        elif not _is_workflow(rel):
             continue
-        if not _is_workflow(rel):
-            continue
-        if path.is_symlink():
+        elif path.is_symlink():
             findings.append(Finding(rel, 1, "runner/symlink"))
         elif path.is_file():
-            findings += _check_text(rel, read_text(root, rel))
+            findings += _check_text(yaml, rel, read_text(root, rel))
+        else:
+            findings.append(Finding(rel, 1, "runner/unreadable"))
     return findings
