@@ -42,7 +42,13 @@ from grove.models.config import (
     load_model_settings,
 )
 from grove.models.egress import MODEL_LAYER, AsyncAllowlistTransport, EgressPolicy
-from grove.models.errors import ModelError, ModelRefused, ProviderError, Unauthenticated
+from grove.models.errors import (
+    BodyTooLarge,
+    ModelError,
+    ModelRefused,
+    ProviderError,
+    Unauthenticated,
+)
 from grove.models.gateway_auth import RunClaims, verify
 from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, NOT_SENT, asend, reset_after
 from grove.models.layer import default_cache_key, glimmer_effort_fields
@@ -91,6 +97,8 @@ _KNOWN_FIELDS = frozenset(
 )
 # After the client leaves, how long the pump reads on for the usage chunk.
 DRAIN_SECONDS = 120.0
+# A full Spark context is about 4 MB of text; images as data URLs take the rest. The box has 8 GB.
+MAX_BODY_BYTES = 32 * 1024 * 1024
 
 
 def _error(error: ModelError) -> JSONResponse:
@@ -122,7 +130,25 @@ def _effort(claims_job: Any, spec: ModelSpec, catalog: Catalog) -> str | None:
     return spec.efforts[0]
 
 
-def upstream_body(body: dict, *, spec: ModelSpec, effort: str | None, job: str) -> dict:
+async def _read_json(request: Request) -> Any:
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise BodyTooLarge(f"a body may hold at most {MAX_BODY_BYTES} bytes")
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_BODY_BYTES:
+            raise BodyTooLarge(f"a body may hold at most {MAX_BODY_BYTES} bytes")
+        chunks.append(chunk)
+    try:
+        return json.loads(b"".join(chunks))
+    except (ValueError, RecursionError):
+        raise ModelRefused("the body is not JSON") from None
+
+
+def upstream_body(
+    body: dict, *, spec: ModelSpec, effort: str | None, job: str, world_id: str = ""
+) -> dict:
     out = {
         key: value
         for key, value in body.items()
@@ -165,7 +191,7 @@ def upstream_body(body: dict, *, spec: ModelSpec, effort: str | None, job: str) 
             messages = out.get("messages") or []
             first = messages[0] if messages and isinstance(messages[0], dict) else {}
             prefix = first.get("content") if first.get("role") == "system" else None
-            key = default_cache_key(job, prefix if isinstance(prefix, str) else None)
+            key = default_cache_key(job, prefix if isinstance(prefix, str) else None, world_id)
             if key:
                 out["prompt_cache_key"] = key
     else:
@@ -211,7 +237,8 @@ class _StreamMeter:
             return
         if isinstance(event.get("usage"), dict):
             self.usage = event["usage"]
-        for choice in event.get("choices") or []:
+        choices = event.get("choices")
+        for choice in choices if isinstance(choices, list) else []:
             if not isinstance(choice, dict):
                 continue
             if choice.get("finish_reason"):
@@ -219,7 +246,8 @@ class _StreamMeter:
             delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
             self._count(delta.get("content"), output=True)
             self._count(delta.get("reasoning"), output=False)
-            for call in delta.get("tool_calls") or []:
+            calls = delta.get("tool_calls")
+            for call in calls if isinstance(calls, list) else []:
                 self.output = True
                 function = call.get("function") if isinstance(call, dict) else None
                 if isinstance(function, dict):
@@ -310,18 +338,17 @@ class Gateway:
         )
 
     def _admit(self, claims: RunClaims) -> None:
+        # Every agent call stops at the ceiling (build plan section 4), whatever job its token
+        # names. The jobs that continue past it are the ones code runs through the layer.
         job = self.catalog.job(claims.job)
-        self.meter.gate(claims.world_id, job)
+        self.meter.gate(claims.world_id, job, every_job=True)
         if claims.token_cap is not None:
             self.meter.check_run_cap(claims.world_id, claims.run_id, claims.token_cap)
 
     async def chat_completions(self, request: Request) -> Response:
         try:
             claims = verify(self.secret, self.catalog, _bearer(request))
-            try:
-                body = await request.json()
-            except (ValueError, RecursionError):
-                raise ModelRefused("the body is not JSON") from None
+            body = await _read_json(request)
             if not isinstance(body, dict) or not isinstance(body.get("model"), str):
                 raise ModelRefused("the body must be an object with a model")
             spec = self.catalog.model(body["model"])
@@ -331,7 +358,9 @@ class Gateway:
             effort = _effort(job, spec, self.catalog)
             url, headers = self._route(spec)
             try:
-                out = upstream_body(body, spec=spec, effort=effort, job=claims.job)
+                out = upstream_body(
+                    body, spec=spec, effort=effort, job=claims.job, world_id=claims.world_id
+                )
                 messages, tools = json.dumps(out["messages"]), json.dumps(out.get("tools") or [])
                 # A trial build: NaN or a lone surrogate cannot be sent, and it is said here.
                 self.client.build_request("POST", url, json=out)
@@ -392,7 +421,7 @@ class Gateway:
         if not stream:
             try:
                 doc = response.json()
-            except ValueError:
+            except (ValueError, RecursionError):
                 doc = None
             if not isinstance(doc, dict):
                 usage = estimate_usage(input_chars)
@@ -507,15 +536,19 @@ class Gateway:
                 outcome = "ok" if watch.output else "invalid_output"
             else:
                 outcome = "provider_error"
-        except httpx.HTTPError:
+        except Exception:
+            # Whatever broke the read, the call is metered below with what came.
             outcome = "client_closed" if gone.is_set() else "provider_error"
         finally:
-            # The cap's cancel lands here too: the record runs first, with no await before it.
+            # The cap's cancel lands here too.
             if outcome is None:
                 outcome = "client_closed" if gone.is_set() else "provider_error"
             try:
                 usage = usage_or_estimate(chat_usage(watch.usage), input_chars, watch.chars)
-                self._record(claims, spec, effort, usage, outcome, started, gpu_from)
+                # In a thread: a slow store must not freeze every other stream of the loop.
+                await asyncio.to_thread(
+                    self._record, claims, spec, effort, usage, outcome, started, gpu_from
+                )
             finally:
                 # Whatever happened, the client's stream ends.
                 queue.put_nowait(None)
