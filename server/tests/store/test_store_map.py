@@ -132,6 +132,10 @@ def test_public_docs_point_to_no_private_plan():
     assert "Meta Model API, Spark 1.3, Standard mode" in flow
     record = (REPO / "HACKATHON.md").read_text(encoding="utf-8")
     assert record.count("the simulation of the views (the sim)") == 1
+    assert (
+        "The vendored public font CSS for Inter and JetBrains Mono: `web/vendor/fonts.css`"
+        in " ".join(record.split())
+    )
     compose = (REPO / "docker-compose.dev.yml").read_text(encoding="utf-8")
     assert "lane" not in compose.splitlines()[0]
 

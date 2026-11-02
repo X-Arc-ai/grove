@@ -192,6 +192,7 @@
   // in the detail panel. Empty {} until the fetch resolves; rendering code
   // tolerates a missing entry by falling back to the legacy flat list.
   var schemaByType = {};
+  var schemaAsked = false;   // false again after a failed read or the end of a session: the next graph load reads the kinds
   // Hop-distance from focusedNode (rebuilt on every click).
   // hopDist[id] = 0 (focused), 1, 2, 3, or undefined (>3 / not reachable).
   var hopDist = {};
@@ -304,9 +305,12 @@
   Promise.resolve().then(renderLegend);
 
   function loadSchema() {
+    var epoch = viewEpoch;
+    schemaAsked = true;
     window.groveApi('/api/schema').then(function (r) { return r.json(); }).then(function (s) {
-      if (s && !s.error) schemaByType = s;
-    }).catch(function () { /* schema is optional; panel falls back */ });
+      if (epoch !== viewEpoch) return;   // the session ended while this read was out
+      if (s && !s.error) schemaByType = s; else schemaAsked = false;
+    }).catch(function () { /* schema is optional; panel falls back */ if (epoch === viewEpoch) schemaAsked = false; });
   }
 
   document.getElementById('refresh-data').addEventListener('click', function () { loadGraph(true); });
@@ -524,6 +528,7 @@
     fgNodes = []; fgLinks = []; fgNodeById = {}; neighborsOf = {};
     focusedNode = null; hoverNode = null; hoverLink = null; hopDist = {};
     livePlaced = {}; liveSaving = {}; layoutCache = null; stableFrame = null; _evoSig = null;
+    schemaByType = {}; schemaAsked = false;
     manualCamera = false;
     clearSelection({ silent: true });
     if (Graph) Graph.graphData({ nodes: [], links: [] });
@@ -541,6 +546,7 @@
     return window.groveApi('/api/graph').then(function(r){return r.json();}).then(function(payload){
       if (payload.error) { var failed = new Error(payload.error); failed.code = payload.code; throw failed; }
       if (epoch !== viewEpoch) return;   // the session ended while this read was out
+      if (!schemaAsked) loadSchema();    // a sign-in in the same page: the first read answered 401
       prepareLayout(payload);
       var previous = fgNodeById || {};
       rawNodes = payload.elements.nodes.map(function(w){

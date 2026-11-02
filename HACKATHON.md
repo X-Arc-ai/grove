@@ -21,6 +21,8 @@ This material predates the event:
   of each later commit is event work.
 - The worker renderer that the sim adapted from earlier Grove code: `web/agents.js` and
   `web/agents.css`, imported the same way.
+- The vendored public font CSS for Inter and JetBrains Mono: `web/vendor/fonts.css`, imported the
+  same way.
 
 ## Prior work
 

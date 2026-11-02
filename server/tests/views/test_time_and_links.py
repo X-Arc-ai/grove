@@ -69,6 +69,19 @@ def test_without_filters_all_items_and_only_active_links(world, client_for, time
     assert graph["time"] == {"min": "2026-09-01", "max": "2026-10-01"}
 
 
+def test_health_counts_only_the_active_links(driver, world, client_for):
+    meaning = plant_node(driver, world, "Meaning", **MEANING)["id"]
+    first = plant_node(driver, world, "Item", title="First", recorded=T0)["id"]
+    second = plant_node(driver, world, "Item", title="Second", recorded=T0)["id"]
+    active = plant_keyed_link(driver, world, first, second, meaning, recorded=T0)
+    # An ended link: no active_key, and it stays in the store.
+    plant_link(driver, world, second, first, meaning=meaning, recorded=T0)
+
+    client = client_for(world)
+    assert client.get("/v1/views/health").json()["edges"] == 1
+    assert edge_ids(client.get("/v1/views/graph").json()) == {active["id"]}
+
+
 def test_known_as_of_keeps_rows_recorded_by_then(world, client_for, timeline):
     client = client_for(world)
     graph = client.get("/v1/views/graph", params={"known_as_of": z(T1)}).json()
