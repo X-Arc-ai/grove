@@ -23,7 +23,7 @@ Probed live on 2026-11-02 with synthetic text.
 | Chat Completions | Same efforts as `reasoning_effort`, the same cache key, and `response_format` with a strict JSON schema. Refused with HTTP 400: `stop`, `n` other than 1, `logprobs`, and every `tool_choice` except `"auto"`. A stream carries the usage on its finish chunk when `stream_options.include_usage` is true. Tool parameters with a `$schema` key and an assistant turn whose content is `""` beside its tool calls are accepted. |
 | The Messages path at `https://api.meta.ai` | Refuses `prompt_cache_key` and the effort `minimal` with HTTP 400. The layer does not use it. |
 | Voice Transcribe | The request part `{"model": "muse-voice-transcribe-1.0", "audioEncoding": "WAV", "mode": "PUSH_TO_TALK"}` and a WAV part. The answer has `transcript` and `audioDurationMs`. Files over 10 minutes are split into pieces of at most 590 seconds, one call each. The fields `keywords` and `languageBias` in the form `["..."]` and `"en"` were refused as a malformed request. |
-| Reasoning tokens | Every Muse language model reasons, and the tokens bill as output. A one-word answer used up to 340 of them, so no call asks for fewer than 1,024 output tokens. |
+| Reasoning tokens | Every Muse language model reasons, and the tokens bill as output. A one-word answer used up to 340 of them, so no call asks for fewer than 1,024 output tokens. No call asks for more than 65,536, about 0.28 USD of output on Spark. |
 
 ## Jobs and the budget
 
@@ -62,7 +62,9 @@ Glimmer's GPU seconds run from the start of the attempt that answered, so the 50
 
 The gateway is a FastAPI app (`grove.models.gateway`), served with `python -m grove.models.gateway` on `GROVE_GATEWAY_HOST:GROVE_GATEWAY_PORT` (`127.0.0.1:18300`). It holds the Meta key and the Glimmer key. OpenCode's provider key is a run token, minted with `grove.models.gateway_auth.mint` by whoever holds `GROVE_GATEWAY_SECRET`: it binds one world, one run and one job, and it expires (at most 6 hours).
 
-For each call it refuses an unknown or contributor model and a model that does not chat, keeps only the fields and message keys it knows (so `store`, `ignore_eos` or `chat_template` never reach a provider), takes text parts and images as `data:` URLs only (a provider never fetches a URL for an agent), applies the budget gate and the run cap, sets the effort from the job table (`reasoning_effort` for Spark, `chat_template_kwargs.reasoning_strength` for Glimmer; an effort the agent sends is dropped, so an agent cannot raise its own spend), raises the output limit to at least 1,024, drops the fields Meta refuses, turns a `tool_choice` other than `"auto"` into `"auto"` (`"none"` removes the tools), adds a cache key from the system message, asks for the usage chunk on a stream, sends the call on, and writes it to `model_calls`. A stream reaches the client byte for byte. A pump task owns each stream and its record: when the client leaves, the pump reads on for up to 120 seconds to get the usage chunk, which Meta sends only at the end, so the real tokens count against the ceiling and the run cap; if the chunk never comes, the row carries an estimate of four characters a token. A call that fails, an answer that is not a JSON object or cannot be decoded, a redirect, and a stream the client closes early are written with their outcome; an empty completion is written as `invalid_output` and passes on as it came. A provider's error message reaches the caller with the keys the gateway holds, and any bearer value, removed. A `budget_reached` refusal carries a `Retry-After` header with the seconds to the reset.
+For each call it refuses an unknown or contributor model and a model that does not chat, keeps only the fields and message keys it knows (so `store`, `ignore_eos` or `chat_template` never reach a provider), takes text parts and images as `data:` URLs only and function tools only (a provider never fetches a URL or searches the web for an agent), applies the budget gate and the run cap, sets the effort from the job table (`reasoning_effort` for Spark, `chat_template_kwargs.reasoning_strength` for Glimmer; an effort the agent sends is dropped, so an agent cannot raise its own spend), keeps the output limit from 1,024 to 65,536, drops the fields Meta refuses, turns a `tool_choice` other than `"auto"` into `"auto"` (`"none"` removes the tools), adds a cache key from the system message, asks for the usage chunk on a stream, sends the call on, and writes it to `model_calls`. A stream reaches the client byte for byte. A pump task owns each stream and its record: when the client leaves, the pump reads on for up to 120 seconds to get the usage chunk, which Meta sends only at the end, so the real tokens count against the ceiling and the run cap; if the chunk never comes, the row carries an estimate of four characters a token. A call that fails, an answer that is not a JSON object or cannot be decoded, a redirect, and a stream the client closes early are written with their outcome; an empty completion is written as `invalid_output` and passes on as it came. A provider's error message reaches the caller with the keys the gateway holds, and any bearer value, removed. A `budget_reached` refusal carries a `Retry-After` header with the seconds to the reset.
+
+Only a failure that shows the provider did no work is sent again: a 429, a 503, a connection that never opened. A read timeout, a dropped read, and a 500, 502 or 504 may have run and billed, so they are sent once, and the row carries an estimate of the input (the layer does the same, and also for a background response whose poll failed). A 429 waits for its stated reset; a reset over 60 seconds comes back at once, with `Retry-After`, for the caller to reschedule.
 
 `GET /v1/models` lists the chat models. Errors use B.3's shape, `{"error": {"code", "type", "message", "details", "retryable"}}`.
 
@@ -87,6 +89,14 @@ OpenCode 1.18.32 sends this through the `@ai-sdk/openai-compatible` provider: `P
 | `GROVE_DAILY_BUDGET_USD` | The ceiling of a new day's budget row; default 5.0; `unlimited` for none. |
 | `GROVE_GATEWAY_SECRET` | At least 32 bytes; signs the run tokens. |
 | `GROVE_GATEWAY_HOST`, `GROVE_GATEWAY_PORT` | Default `127.0.0.1` and `18300`. |
+
+## Open points for later lanes
+
+| Point | Owner lane |
+|---|---|
+| The job table has no row for load-bearing verification. D15 keeps those claims running at the ceiling and defers only the low-stakes ones; `verification` waits today. Add the job when the lane exists. | `truth-clock` |
+| Who mints a run token, and how the runner holds `GROVE_GATEWAY_SECRET`. | `runner` |
+| The runner's network rules: a process that opens its own socket is out of the allowlist's reach. `GROVE_GATEWAY_HOST` has no loopback check, because a container network may need another address. | `runner`, `deploy-a` |
 
 ## Tests
 

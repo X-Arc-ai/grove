@@ -7,6 +7,7 @@ is refused wherever it appears: Meta may train on what reaches it (decision 12).
 import json
 import math
 import os
+import re
 from dataclasses import dataclass, field
 from importlib import resources
 from typing import Any
@@ -24,6 +25,8 @@ UNLIMITED = "unlimited"
 # them in our probes, so no call may ask for fewer than this.
 MIN_OUTPUT_TOKENS = 1024
 DEFAULT_OUTPUT_TOKENS = 8192
+# About 0.28 USD of output on Spark: the most one call can spend past its input.
+MAX_OUTPUT_TOKENS = 65536
 AT_CEILING = ("continue", "defer")
 ROUTES = ("meta", "modal")
 BASES = ("tokens", "audio", "gpu_seconds")
@@ -37,6 +40,7 @@ _CONTRIBUTOR = "contributor"
 # name only Meta's API host or a Modal server (A.1: the Model API and the judgment host).
 META_HOSTS = frozenset({"api.meta.ai"})
 GLIMMER_HOST_SUFFIXES = (".modal.direct", ".modal.run")
+_HOST_TEXT = re.compile(r"[a-z0-9.-]+")
 _EFFORTS = frozenset(ENUMS["effort"])
 _MIN_SECRET = 32
 
@@ -203,7 +207,8 @@ def _https_base(name: str, value: str, allowed) -> str:
         port = parts.port
     except ValueError:
         port = -1
-    if port not in (None, 443) or not allowed(parts.hostname.rstrip(".").lower()):
+    host = parts.hostname.rstrip(".").lower()
+    if port not in (None, 443) or not _HOST_TEXT.fullmatch(host) or not allowed(host):
         raise NotConfigured(f"{name} names a host outside the model hosts")
     return value.rstrip("/")
 

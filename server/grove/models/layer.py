@@ -14,6 +14,7 @@ and the gateway use Chat Completions, which an OpenAI-compatible server speaks.
 
 import hashlib
 import json
+import math
 import re
 import time
 from collections.abc import Callable
@@ -28,6 +29,7 @@ from grove import clock
 from grove.models import audio
 from grove.models.config import (
     DEFAULT_OUTPUT_TOKENS,
+    MAX_OUTPUT_TOKENS,
     MIN_OUTPUT_TOKENS,
     Catalog,
     Job,
@@ -43,7 +45,7 @@ from grove.models.errors import (
     ProviderError,
     RateLimited,
 )
-from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, reset_after, send
+from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, NOT_SENT, reset_after, send
 from grove.models.meter import Meter
 from grove.store.connection import Driver
 from grove.writer.model_calls import BudgetState, ModelCall
@@ -53,6 +55,10 @@ MAX_SCHEMA_PROPERTIES = 5000
 BACKGROUND_DEADLINE = 900.0
 _TERMINAL = frozenset({"completed", "failed", "cancelled", "incomplete"})
 _PROVIDER_MESSAGE = 300
+_CHARS_PER_TOKEN = 4
+_FUNCTION_KEYS = ("name", "description", "parameters", "strict")
+# The provider may have run the call behind these statuses, so the row carries an estimate.
+UNKNOWN_SPEND = frozenset({500, 502, 504})
 _TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 
 
@@ -88,6 +94,32 @@ class Transcript:
 
 def _int(value: object) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def estimate_usage(input_chars: int, output_chars: int = 0) -> Usage:
+    """Tokens for a call the provider may have run but did not report: four characters a token.
+    The budget then sees a call whose real usage never came."""
+    return Usage(
+        input_tokens=math.ceil(input_chars / _CHARS_PER_TOKEN),
+        output_tokens=math.ceil(output_chars / _CHARS_PER_TOKEN),
+    )
+
+
+def clean_tools(tools: object) -> list[dict]:
+    """Function tools only, with only their known keys. Another type, such as a web search or a
+    remote MCP server, would make the provider reach out for the agent, past the allowlist."""
+    if not isinstance(tools, list):
+        raise ModelRefused("tools must be a list")
+    clean = []
+    for tool in tools:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(tool, dict) or tool.get("type") != "function":
+            raise ModelRefused("only function tools are taken")
+        if not isinstance(function, dict) or not isinstance(function.get("name"), str):
+            raise ModelRefused("a function tool needs a function with a name")
+        kept = {key: function[key] for key in _FUNCTION_KEYS if key in function}
+        clean.append({"type": "function", "function": kept})
+    return clean
 
 
 def responses_usage(doc: dict) -> Usage:
@@ -316,8 +348,9 @@ class ModelLayer:
         run_id: str | None,
         started: float,
         gpu_from: float | None = None,
+        usage: Usage | None = None,
     ) -> None:
-        """Record a refused call with no tokens, then raise its typed error."""
+        """Record a refused call, then raise its typed error."""
         if response.status_code == 429:
             self._record(
                 world_id,
@@ -340,7 +373,7 @@ class ModelLayer:
             spec=spec,
             effort=effort,
             run_id=run_id,
-            usage=Usage(),
+            usage=usage or Usage(),
             outcome="provider_error",
             started=started,
             gpu_from=gpu_from,
@@ -367,10 +400,12 @@ class ModelLayer:
         effort: str | None,
         run_id: str | None,
         started: float,
+        request_chars: int = 0,
     ) -> tuple[dict, float]:
         """Send with back-off, and return the JSON answer with the start of the attempt that
-        gave it. A failure is recorded with no tokens and raised typed: no answer, an error
-        status, or an answer that is not a JSON object."""
+        gave it. A failure is recorded and raised typed: no answer, an error status, or an answer
+        that is not a JSON object. Its row has no tokens when the provider did no work, and an
+        estimate of the input when it may have run the call."""
         attempts = MODAL_ATTEMPTS if spec.route == "modal" else MAX_ATTEMPTS
         attempt = [started]
 
@@ -388,7 +423,7 @@ class ModelLayer:
                 spec=spec,
                 effort=effort,
                 run_id=run_id,
-                usage=Usage(),
+                usage=Usage() if isinstance(exc, NOT_SENT) else estimate_usage(request_chars),
                 outcome="provider_error",
                 started=started,
                 gpu_from=attempt[0],
@@ -405,6 +440,11 @@ class ModelLayer:
                 run_id=run_id,
                 started=started,
                 gpu_from=attempt[0],
+                usage=(
+                    estimate_usage(request_chars)
+                    if response.status_code in UNKNOWN_SPEND
+                    else Usage()
+                ),
             )
         try:
             doc = response.json()
@@ -417,7 +457,7 @@ class ModelLayer:
                 spec=spec,
                 effort=effort,
                 run_id=run_id,
-                usage=Usage(),
+                usage=estimate_usage(request_chars),
                 outcome="provider_error",
                 started=started,
                 gpu_from=attempt[0],
@@ -446,8 +486,10 @@ class ModelLayer:
         background: bool = False,
     ) -> Result:
         """One Spark answer. `instructions` is the stable prefix, `input` the event (D15)."""
-        if max_output_tokens < MIN_OUTPUT_TOKENS:
-            raise ModelRefused(f"max_output_tokens must be at least {MIN_OUTPUT_TOKENS}")
+        if not MIN_OUTPUT_TOKENS <= max_output_tokens <= MAX_OUTPUT_TOKENS:
+            raise ModelRefused(
+                f"max_output_tokens must be from {MIN_OUTPUT_TOKENS} to {MAX_OUTPUT_TOKENS}"
+            )
         validator = check_schema(schema) if schema is not None else None
         job_row, spec, chosen = self._prepare(world_id, job, effort, family="spark")
         body: dict[str, Any] = {
@@ -477,6 +519,7 @@ class ModelLayer:
         base = self.settings.meta_base_url
         headers = self._meta_headers()
         started = clock.monotonic()
+        request_chars = len(json.dumps(body))
         doc, _ = self._send(
             world_id,
             lambda: self._http.build_request(
@@ -487,6 +530,7 @@ class ModelLayer:
             effort=chosen,
             run_id=run_id,
             started=started,
+            request_chars=request_chars,
         )
         if background:
             try:
@@ -498,7 +542,8 @@ class ModelLayer:
                     spec=spec,
                     effort=chosen,
                     run_id=run_id,
-                    usage=Usage(),
+                    # It was accepted and may have run before the poll failed.
+                    usage=estimate_usage(request_chars),
                     outcome="provider_error",
                     started=started,
                 )
@@ -603,8 +648,10 @@ class ModelLayer:
         max_tokens: int = DEFAULT_OUTPUT_TOKENS,
         cache_key: str | None = None,
     ) -> Result:
-        if max_tokens < MIN_OUTPUT_TOKENS:
-            raise ModelRefused(f"max_tokens must be at least {MIN_OUTPUT_TOKENS}")
+        if not MIN_OUTPUT_TOKENS <= max_tokens <= MAX_OUTPUT_TOKENS:
+            raise ModelRefused(
+                f"max_tokens must be from {MIN_OUTPUT_TOKENS} to {MAX_OUTPUT_TOKENS}"
+            )
         validator = check_schema(schema) if schema is not None else None
         job_row, spec, chosen = self._prepare(world_id, job, effort)
         if not spec.chat:
@@ -671,7 +718,7 @@ class ModelLayer:
             headers = {"Authorization": f"Bearer {token}"}
             body.update(glimmer_effort_fields(effort))
         if tools:
-            body["tools"] = tools
+            body["tools"] = clean_tools(tools)
             body["tool_choice"] = "auto"
         if validator is not None:
             body["response_format"] = {
@@ -689,6 +736,7 @@ class ModelLayer:
             effort=effort,
             run_id=run_id,
             started=started,
+            request_chars=len(json.dumps(body)),
         )
         usage = chat_usage(doc.get("usage"))
         choice = (doc.get("choices") or [{}])[0]

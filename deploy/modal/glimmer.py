@@ -111,6 +111,10 @@ def download() -> None:
     port=PORT,
     volumes=volumes,
     min_containers=0,
+    # Two, not one: a redeploy rolls over onto a second container. A burst cannot start more.
+    max_containers=2,
+    # Explicit, though it is the default for a Server: no call runs without the proxy token.
+    unauthenticated=False,
     scaledown_window=IDLE_SECONDS,
     startup_timeout=STARTUP_SECONDS,
     routing_region="eu-west",

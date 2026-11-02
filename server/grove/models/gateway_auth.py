@@ -80,6 +80,9 @@ def verify(secret: bytes, catalog: Catalog, token: str) -> RunClaims:
     if len(parts) != 3 or parts[0] != PREFIX:
         raise Unauthenticated("not a gateway run token")
     _, payload, signature = parts
+    # Both are base64url text; anything else would break the signing below, not just fail it.
+    if not (payload.isascii() and signature.isascii()):
+        raise Unauthenticated("not a gateway run token")
     if not hmac.compare_digest(_sign(secret, payload), signature):
         raise Unauthenticated("the run token's signature does not match")
     try:

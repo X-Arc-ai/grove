@@ -815,11 +815,27 @@ def test_send_backs_off_by_doubling_when_a_429_states_no_wait():
     assert sleeps == [2.0, 4.0]
 
 
-def test_send_caps_a_stated_wait_at_max_wait():
-    response, _, sleeps, _ = _send([(429, {"retry-after": "120"}), (200, {})])
-    assert response.status_code == 200
-    assert sleeps == [MAX_WAIT]
+def test_send_returns_a_429_whose_reset_is_too_far_to_wait_for():
+    # Nothing goes out again before the stated reset, and no worker sleeps minutes on one call.
+    response, seen, sleeps, _ = _send([(429, {"retry-after": "120"}), (200, {})])
+    assert response.status_code == 429
+    assert len(seen) == 1
+    assert sleeps == []
     assert MAX_WAIT == 60.0
+
+
+def test_send_waits_a_stated_reset_up_to_max_wait():
+    response, _, sleeps, _ = _send([(429, {"retry-after": "60"}), (200, {})])
+    assert response.status_code == 200
+    assert sleeps == [60.0]
+
+
+@pytest.mark.parametrize("status", [500, 502, 504])
+def test_send_never_resends_a_call_that_may_have_run(status):
+    response, seen, sleeps, _ = _send([(status, {}), (200, {})])
+    assert response.status_code == status
+    assert len(seen) == 1
+    assert sleeps == []
 
 
 def test_send_returns_the_last_429_after_max_attempts():
@@ -831,9 +847,8 @@ def test_send_returns_the_last_429_after_max_attempts():
     assert sleeps == [5.0] * (MAX_ATTEMPTS - 1)
 
 
-@pytest.mark.parametrize("status", [500, 502, 503, 504])
-def test_send_retries_a_server_error(status):
-    response, seen, sleeps, _ = _send([(status, {}), (200, {})])
+def test_send_retries_a_503():
+    response, seen, sleeps, _ = _send([(503, {}), (200, {})])
     assert response.status_code == 200
     assert len(seen) == 2
     assert sleeps == [2.0]
@@ -952,7 +967,7 @@ def test_asend_waits_the_stated_retry_after_with_an_async_sleep():
 
 
 def test_asend_streams_and_retries_a_503():
-    response, body, seen, sleeps = _asend([(503, {}), (502, {}), (200, {})], stream=True)
+    response, body, seen, sleeps = _asend([(503, {}), (503, {}), (200, {})], stream=True)
     assert response.status_code == 200
     assert body == {"attempt": 3}
     assert sleeps == [2.0, 4.0]

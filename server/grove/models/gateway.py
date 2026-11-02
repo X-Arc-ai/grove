@@ -34,6 +34,7 @@ from starlette.concurrency import run_in_threadpool
 from grove import clock
 from grove.models.config import (
     DEFAULT_OUTPUT_TOKENS,
+    MAX_OUTPUT_TOKENS,
     MIN_OUTPUT_TOKENS,
     Catalog,
     ModelSettings,
@@ -44,8 +45,16 @@ from grove.models.config import (
 from grove.models.egress import MODEL_LAYER, AsyncAllowlistTransport, EgressPolicy
 from grove.models.errors import ModelError, ModelRefused, ProviderError, Unauthenticated
 from grove.models.gateway_auth import RunClaims, verify
-from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, asend
-from grove.models.layer import Usage, chat_usage, default_cache_key, glimmer_effort_fields
+from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, NOT_SENT, asend, reset_after
+from grove.models.layer import (
+    UNKNOWN_SPEND,
+    Usage,
+    chat_usage,
+    clean_tools,
+    default_cache_key,
+    estimate_usage,
+    glimmer_effort_fields,
+)
 from grove.models.meter import Meter
 from grove.store.connection import Driver
 from grove.writer.model_calls import ModelCall
@@ -77,13 +86,12 @@ _KNOWN_FIELDS = frozenset(
         *_OUTPUT_FIELDS,
     }
 )
+_RESPONSE_FORMATS = frozenset({"text", "json_object", "json_schema"})
 _ROLES = frozenset({"system", "developer", "user", "assistant", "tool"})
 _MESSAGE_KEYS = ("role", "content", "name", "tool_calls", "tool_call_id")
 _DATA_IMAGE = "data:image/"
 # After the client leaves, how long the pump reads on for the usage chunk.
 DRAIN_SECONDS = 120.0
-# Four characters a token: the estimate for a stream that ended before its usage chunk.
-_CHARS_PER_TOKEN = 4
 _BEARER = re.compile(r"(?i)bearer\s+\S+")
 
 
@@ -153,11 +161,19 @@ def upstream_body(body: dict, *, spec: ModelSpec, effort: str | None, job: str) 
     if not isinstance(messages, list) or not messages:
         raise ModelRefused("messages must be a list with at least one message")
     out["messages"] = [_message(message) for message in messages]
+    if "tools" in out:
+        out["tools"] = clean_tools(out["tools"])
+    form = out.get("response_format")
+    if form is not None and (
+        not isinstance(form, dict) or form.get("type") not in _RESPONSE_FORMATS
+    ):
+        raise ModelRefused("response_format must be text, json_object or json_schema")
     n = out.pop("n", 1)
     if n != 1:
         raise ModelRefused("n must be 1")
     wanted = [out[field] for field in _OUTPUT_FIELDS if isinstance(out.get(field), int)]
     limit = max(max(wanted) if wanted else DEFAULT_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS)
+    limit = min(limit, MAX_OUTPUT_TOKENS)
     for field in _OUTPUT_FIELDS:
         out.pop(field, None)
     out["max_tokens"] = limit
@@ -244,14 +260,6 @@ class _StreamMeter:
         if isinstance(text, str) and text:
             self.chars += len(text)
             self.output = self.output or output
-
-
-def _estimate(input_chars: int, output_chars: int) -> Usage:
-    """Tokens for a stream whose usage chunk never came: four characters a token."""
-    return Usage(
-        input_tokens=math.ceil(input_chars / _CHARS_PER_TOKEN),
-        output_tokens=math.ceil(output_chars / _CHARS_PER_TOKEN),
-    )
 
 
 def _empty_completion(doc: dict) -> bool:
@@ -369,7 +377,10 @@ class Gateway:
 
         def timed() -> httpx.Request:
             attempt[0] = clock.monotonic()
-            return self.client.build_request("POST", url, json=out, headers=headers)
+            # Identity, so a stream is relayed as it comes, with no compression buffer.
+            return self.client.build_request(
+                "POST", url, json=out, headers={**headers, "Accept-Encoding": "identity"}
+            )
 
         record = self._record
         try:
@@ -380,18 +391,26 @@ class Gateway:
                 sleep=self._sleep,
                 attempts=MODAL_ATTEMPTS if spec.route == "modal" else MAX_ATTEMPTS,
             )
-        except httpx.RequestError:
-            # No answer, or an answer whose body could not be read (a DecodingError).
+        except httpx.RequestError as exc:
+            # No answer, or an answer whose body could not be read (a DecodingError). Past a
+            # failed connect, the provider may have run the call, so the row carries an estimate.
+            usage = Usage() if isinstance(exc, NOT_SENT) else estimate_usage(input_chars)
             await run_in_threadpool(
-                record, claims, spec, effort, Usage(), "provider_error", started, attempt[0]
+                record, claims, spec, effort, usage, "provider_error", started, attempt[0]
             )
             return _error(ProviderError("the model provider did not answer"))
         if response.status_code >= 300:
-            await response.aread()
-            await response.aclose()
+            try:
+                await response.aread()
+            except Exception:  # The status decides from here; an unreadable body changes nothing.
+                pass
+            finally:
+                await response.aclose()
             outcome = "rate_limited" if response.status_code == 429 else "provider_error"
+            spent = response.status_code in UNKNOWN_SPEND
+            usage = estimate_usage(input_chars) if spent else Usage()
             await run_in_threadpool(
-                record, claims, spec, effort, Usage(), outcome, started, attempt[0]
+                record, claims, spec, effort, usage, outcome, started, attempt[0]
             )
             if response.status_code < 400:
                 # Redirects are not followed: the provider must answer at the URL it was given.
@@ -403,8 +422,9 @@ class Gateway:
             except ValueError:
                 doc = None
             if not isinstance(doc, dict):
+                usage = estimate_usage(input_chars)
                 await run_in_threadpool(
-                    record, claims, spec, effort, Usage(), "provider_error", started, attempt[0]
+                    record, claims, spec, effort, usage, "provider_error", started, attempt[0]
                 )
                 return _error(ProviderError("the model provider's answer is not a JSON object"))
             usage = chat_usage(doc.get("usage"))
@@ -432,7 +452,8 @@ class Gateway:
         try:
             doc = response.json()
             message = self._redact(str(doc["error"]["message"]))
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, httpx.StreamError):
+            # httpx.StreamError: the body could not be read, so only the status is known.
             message = ""
         code = "rate_limited" if response.status_code == 429 else "provider_error"
         body = {
@@ -445,8 +466,9 @@ class Gateway:
             }
         }
         headers = {}
-        if "retry-after" in response.headers:
-            headers["retry-after"] = response.headers["retry-after"]
+        wait = reset_after(response)
+        if wait is not None:
+            headers["retry-after"] = str(math.ceil(wait))
         return JSONResponse(body, status_code=response.status_code, headers=headers)
 
     async def _relay(
@@ -503,7 +525,8 @@ class Gateway:
         watch = _StreamMeter()
         outcome: str | None = None
         try:
-            async for chunk in response.aiter_raw():
+            # Decoded bytes: the client gets no Content-Encoding header, and the meter reads text.
+            async for chunk in response.aiter_bytes():
                 watch.feed(chunk)
                 if not gone.is_set():
                     queue.put_nowait(chunk)
@@ -520,7 +543,9 @@ class Gateway:
             # The cap's cancel lands here too: the record runs first, with no await before it.
             if outcome is None:
                 outcome = "client_closed" if gone.is_set() else "provider_error"
-            usage = chat_usage(watch.usage) if watch.usage else _estimate(input_chars, watch.chars)
+            usage = (
+                chat_usage(watch.usage) if watch.usage else estimate_usage(input_chars, watch.chars)
+            )
             try:
                 self._record(claims, spec, effort, usage, outcome, started, gpu_from)
             finally:
@@ -542,11 +567,11 @@ class Gateway:
         ]
         return JSONResponse({"object": "list", "data": data})
 
-    async def settle(self, timeout: float = DRAIN_SECONDS + 5) -> None:
+    async def settle(self, timeout: float | None = None) -> None:
         """Wait for the pumps still reading or recording, and for their caps."""
         pending = [task for task in self._pending if not task.done()]
         if pending:
-            await asyncio.wait(pending, timeout=timeout)
+            await asyncio.wait(pending, timeout=DRAIN_SECONDS + 5 if timeout is None else timeout)
 
     async def aclose(self) -> None:
         await self.settle()
