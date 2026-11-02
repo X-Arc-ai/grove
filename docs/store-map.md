@@ -165,6 +165,11 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. Closed by `deploy-a`: `deploy/compose.yml` sets it for `api` and `runner`, and a test checks it. | 354, 991 | `deploy-a` |
 | D3's restore has not run on this store: rebuild the projections from history, replay the forget ledger, compare D3's fingerprint. The daily dump and its load into a scratch store run on the box since `deploy-a`, checked by the dump fingerprint (`docs/deploy.md`). | 806 to 808, 3065 | `writer-b` |
 | `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
+| An upload route adds its own nginx location, with its body limit and `proxy_request_buffering off`. Every other path takes at most 10 MB (`deploy/nginx/grove-https.conf.template`). | none; a build fact | `ingest-a` |
+| The runner still reaches the host's sshd and nginx through the gateway of its internal network. A host firewall rule for its bridge goes with the egress allowlist. | none; a build fact | `runner`, `models` |
+| `/etc/grove/runner.env` holds no token yet, and `deploy/runner-placeholder.sh` runs in place of the loop. The backup stops the runner; the loop must leave a killed pass's requests queued. | none; a build fact | `runner` |
+| The API reads Google's client file at `GROVE_GOOGLE_OAUTH_FILE`; the secret files of `docs/deploy.md` are on the box, except `modal.env`, which is still owed. | none; a build fact | `signin`, `models` |
+| `/mcp` and the metadata in `server/grove/api/wellknown.py` are placeholders. uvicorn runs without `--proxy-headers`, so a redirect it makes names `http`. | none; a build fact | `hosts-a` |
 
 ## Added by later lanes
 

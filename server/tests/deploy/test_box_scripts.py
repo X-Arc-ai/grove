@@ -43,7 +43,7 @@ def test_deploy_waits_for_the_box_lock_and_stops_when_it_is_held(box):
     done = box.run("deploy.sh", SHA, FAKE_FLOCK_STATUS="1")
     assert done.returncode != 0
     assert "holds" in done.stderr
-    assert box.calls()[0].startswith("flock -w 600 9")
+    assert box.calls()[0].startswith("flock -w 1800 9")
     assert not [call for call in box.calls() if call.startswith("git ")]
 
 
@@ -68,7 +68,7 @@ def test_a_deploy_runs_its_steps_in_order(box):
     assert done.returncode == 0, done.stderr
 
     steps = [
-        "flock -w 600 9",
+        "flock -w 1800 9",
         "git fetch",
         f"git merge-base --is-ancestor {SHA} origin/develop",
         "git status --porcelain",
@@ -906,3 +906,56 @@ def test_apply_refuses_a_secret_folder_open_to_others(box):
     assert done.returncode != 0
     assert "open to group or others" in done.stderr
     assert not [call for call in box.calls() if call.startswith("docker")]
+
+
+# ---- review round five ------------------------------------------------------------------------
+
+
+def test_a_failed_reinstall_says_so_and_never_says_the_host_files_are_back(box):
+    box.deployed(OTHER_SHA)
+    done = box.run("deploy.sh", SHA, FAKE_DOCKER_FAIL="build api runner", FAKE_SYSTEMCTL_STATUS="1")
+    assert done.returncode != 0
+    shown = done.stdout + done.stderr
+    assert "host files did not install" in shown
+    assert "host files are back" not in shown
+    assert (box.root / "fake" / "HEAD").read_text() == OTHER_SHA
+
+
+def test_the_services_script_fails_when_the_runner_does_not_run(box):
+    box.deployed()
+    done = box.run("services-up.sh", FAKE_NOT_RUNNING="runner", GROVE_SERVICES_TRIES="2")
+    assert done.returncode != 0
+    assert "not all healthy" in done.stderr
+    assert "the store and its writers run" not in done.stdout
+
+
+def test_the_services_script_shows_what_compose_said_when_it_gives_up(box):
+    box.deployed()
+    done = box.run(
+        "services-up.sh",
+        FAKE_START_REFUSALS="99",
+        FAKE_START_MESSAGE="dependency failed to start",
+        GROVE_SERVICES_TRIES="2",
+    )
+    assert done.returncode != 0
+    assert "compose said: dependency failed to start" in done.stderr
+
+
+def test_a_failed_restore_check_leaves_a_line_in_the_backup_log(box):
+    box.deployed()
+    dump = _planted_dump(box)
+    (box.backups / "grove-20261102T033000Z.dump.sha256").unlink()
+    done = box.run("restore-check.sh", dump)
+    assert done.returncode != 0
+    line = "restore check grove-20261102T033000Z.dump: FAILED, no checksum"
+    assert line in box.log_text("backup.log")
+
+
+def test_a_scratch_store_that_never_starts_fails_the_check_and_cleans_up(box):
+    box.deployed()
+    done = box.run("restore-check.sh", _planted_dump(box), FAKE_DOCKER_FAIL="exec ")
+    assert done.returncode != 0
+    assert "the scratch store did not start" in done.stderr
+    assert "FAILED, the scratch store did not start" in box.log_text("backup.log")
+    for step in ("docker rm --force --volumes", "docker volume rm", "docker network rm"):
+        box.index(step)

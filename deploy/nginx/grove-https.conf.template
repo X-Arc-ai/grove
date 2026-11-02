@@ -17,7 +17,8 @@ server {
     ssl_session_tickets off;
 
     add_header Strict-Transport-Security "max-age=31536000" always;
-    # nginx writes a body to disk before the API sees it, so a large body is only for uploads.
+    # nginx writes a body to disk before the API sees it, so no path takes a large one. An upload
+    # route adds its own location, with its limit and proxy_request_buffering off, when it exists.
     client_max_body_size 10m;
 
     proxy_http_version 1.1;
@@ -30,12 +31,6 @@ server {
     proxy_read_timeout 300s;
 
     location / {
-        proxy_pass http://127.0.0.1:8000;
-    }
-
-    # Chat exports with voice notes are large.
-    location /v1/sources/ {
-        client_max_body_size 256m;
         proxy_pass http://127.0.0.1:8000;
     }
 }

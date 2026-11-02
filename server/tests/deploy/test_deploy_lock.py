@@ -6,6 +6,8 @@ import subprocess
 import time
 from pathlib import Path
 
+import pytest
+
 from grove import clock
 from tests.deploy.conftest import DEPLOY
 
@@ -135,9 +137,14 @@ def test_a_lock_inside_its_cap_is_never_taken_over(tmp_path):
 def test_a_normal_release_leaves_no_releaser_running(tmp_path):
     # A cap only this test run uses, so another run on the machine cannot match the process name.
     marker = str(40000 + os.getpid() % 20000)
+    # The class keeps this text from matching itself: Linux pgrep leaves only itself out. The poll
+    # is there because the releaser starts in the background and its sleep comes a moment later.
+    look = (
+        f"for _ in $(seq 100); do pgrep -f -- 'slee[p] {marker}' >/dev/null && exit 8; "
+        "sleep 0.1; done; exit 1"
+    )
     done = subprocess.run(
-        # The class keeps this text from matching itself: Linux pgrep leaves only itself out.
-        ["bash", str(SCRIPT), "bash", "-c", f"pgrep -f -- 'slee[p] {marker}' >/dev/null && exit 8"],
+        ["bash", str(SCRIPT), "bash", "-c", look],
         env=_env(tmp_path, cap=int(marker)),
         capture_output=True,
         text=True,
@@ -179,3 +186,91 @@ def test_a_fresh_lock_folder_with_no_owner_file_is_held_and_says_so(tmp_path):
     assert done.returncode == 75
     assert "no owner file yet" in done.stderr
     assert lock.is_dir()
+
+
+@pytest.mark.parametrize(("signal_", "status"), [(signal.SIGHUP, 129), (signal.SIGTERM, 130)])
+def test_a_signal_to_the_holder_keeps_the_lock_until_the_command_ends(tmp_path, signal_, status):
+    """A closed terminal must not free the lock while the deploy still runs."""
+    lock = tmp_path / "deploy.lock.d"
+    holder = subprocess.Popen(
+        ["bash", str(SCRIPT), "sleep", "3"], env=_env(tmp_path), start_new_session=True
+    )
+    assert _wait_for(lambda: (lock / "owner").exists(), 10)
+    holder.send_signal(signal_)
+    time.sleep(1)
+    assert (lock / "owner").exists()
+    assert holder.wait(timeout=15) == status
+    assert not lock.exists()
+
+
+def test_the_lock_makes_its_parent_folder(tmp_path):
+    parent = tmp_path / "new" / "locks"
+    done = subprocess.run(
+        ["bash", str(SCRIPT), "true"],
+        env=_env(parent),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 0, done.stderr
+    assert parent.is_dir()
+
+
+def test_the_owner_file_names_the_holder_and_when_it_took_the_lock(tmp_path):
+    lock = tmp_path / "deploy.lock.d"
+    done = subprocess.run(
+        ["bash", str(SCRIPT), "cat", str(lock / "owner")],
+        env={**_env(tmp_path), "GROVE_LOCK_HOLDER": "lane-y"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 0, done.stderr
+    fields = dict(line.split("=", 1) for line in done.stdout.splitlines())
+    assert fields["holder"] == "lane-y"
+    assert abs(int(fields["since_epoch"]) - clock.now().timestamp()) < 60
+    assert len(fields["token"]) == 32
+
+
+def test_a_take_over_leaves_no_stale_folder(tmp_path):
+    _owner(tmp_path / "deploy.lock.d", int(clock.now().timestamp()) - 7200)
+    done = subprocess.run(
+        ["bash", str(SCRIPT), "true"],
+        env=_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 0, done.stderr
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_lock_folder_with_no_owner_file_inside_its_cap_is_held(tmp_path):
+    lock = tmp_path / "deploy.lock.d"
+    lock.mkdir()
+    half_an_hour_ago = clock.now().timestamp() - 1800
+    os.utime(lock, (half_an_hour_ago, half_an_hour_ago))
+    done = subprocess.run(
+        ["bash", str(SCRIPT), "true"],
+        env=_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 75
+    assert lock.is_dir()
+
+
+@pytest.mark.parametrize(
+    ("args", "cap"), [([], "3600"), (["true"], "soon"), (["true"], "0"), (["true"], "-1")]
+)
+def test_a_bad_call_takes_no_lock(tmp_path, args, cap):
+    done = subprocess.run(
+        ["bash", str(SCRIPT), *args],
+        env={**_env(tmp_path), "GROVE_LOCK_CAP_SECONDS": cap},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 2
+    assert not (tmp_path / "deploy.lock.d").exists()

@@ -3,17 +3,21 @@
 import json
 import os
 from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
 # The driver's time types, through the store module: only server/grove/store/ imports neo4j.
 from grove.store.dump_fingerprint import (
+    _CONSTRAINTS,
     _INDEXES,
+    _LINKS,
     _NODES,
     MISMATCH,
     Date,
     DateTime,
     Duration,
+    Point,
     StoreMoved,
     UnknownValue,
     _read,
@@ -25,6 +29,7 @@ from grove.store.dump_fingerprint import (
     node_digest,
     schema_digest,
 )
+from grove.store.errors import ScopeError
 from grove.writer.testing import plant_link, plant_node
 
 # ---- the encoding, with no store --------------------------------------------------------------
@@ -222,3 +227,86 @@ def test_the_live_index_rows_carry_their_options(driver, migrated):
     assert fulltext
     for row in fulltext:
         assert row["options"]["indexConfig"]["fulltext.analyzer"]
+
+
+# ---- review round five ------------------------------------------------------------------------
+
+
+def test_the_encoding_keeps_a_zone_name_nanoseconds_a_srid_and_bytes_apart():
+    fixed = DateTime(2026, 7, 1, 9, 0, 0, tzinfo=timezone(timedelta(hours=2)))
+    named = DateTime(2026, 7, 1, 9, 0, 0, tzinfo=ZoneInfo("Europe/Paris"))
+    assert encode(fixed) != encode(named)
+    assert encode(Duration(seconds=1)) != encode(Duration(seconds=1, nanoseconds=1))
+
+    class Wgs84(Point):
+        srid = 4326
+
+    class Cartesian(Point):
+        srid = 7203
+
+    assert encode(Wgs84((1.0, 2.0))) != encode(Cartesian((1.0, 2.0)))
+    assert encode(b"ab") != encode(b"ab".hex())
+
+
+def test_the_combined_digest_counts_equal_links_and_ignores_their_order():
+    counts = {"relationships": 2}
+    one, two = "1" * 64, "2" * 64
+    assert combine([], [one, two], None, counts) == combine([], [two, one], None, counts)
+    assert combine([], [one, one], None, counts) != combine([], [one], None, counts)
+
+
+def test_the_schema_digest_ignores_the_order_of_its_rows():
+    first, second = {"name": "a"}, {"name": "b"}
+    assert schema_digest([first, second], "indexes") == schema_digest([second, first], "indexes")
+    assert schema_digest([first], "indexes") != schema_digest([first], "constraints")
+
+
+def test_a_bad_world_id_is_refused(driver):
+    with pytest.raises(ScopeError):
+        dump_fingerprint(driver, world_id="not a world")
+
+
+def test_the_live_schema_rows_keep_every_column_the_digest_needs(driver, migrated):
+    with driver.session(database="neo4j") as session:
+        constraints = [dict(row) for row in session.run(_CONSTRAINTS)]
+        indexes = [dict(row) for row in session.run(_INDEXES)]
+    assert constraints and indexes
+    assert {"name", "type", "entityType", "labelsOrTypes", "properties", "ownedIndex"} == set(
+        constraints[0]
+    )
+    assert {
+        "name",
+        "type",
+        "entityType",
+        "labelsOrTypes",
+        "properties",
+        "indexProvider",
+        "options",
+        "owningConstraint",
+    } == set(indexes[0])
+
+
+def test_the_whole_store_reads_see_this_world_s_rows(driver, world):
+    """The null branch of each filter, which the backup uses. Safe on a shared store: other lanes
+    only add rows."""
+    first, second = _plant_world(driver, world)
+    with driver.session(database="neo4j") as session:
+        nodes = [dict(row) for row in session.run(_NODES, world_id=None)]
+        links = [dict(row) for row in session.run(_LINKS, world_id=None)]
+    assert {first["id"], second["id"]} <= {row["props"].get("id") for row in nodes}
+    mine = [row for row in links if row["props"].get("world_id") == world]
+    assert len(mine) == 1
+    assert mine[0]["type"] == "LINK"
+
+
+def test_a_new_link_moves_the_whole_store_fingerprint(driver, world):
+    if os.environ.get("GROVE_STORE_EXCLUSIVE") != "1":
+        pytest.skip("other lanes write the shared store between two reads")
+    first, second = _plant_world(driver, world)
+    before = dump_fingerprint(driver)
+    assert before["types"]["LINK"] >= 1
+    plant_link(driver, world, second["id"], first["id"], meaning="depends_on")
+    after = dump_fingerprint(driver)
+    assert after["fingerprint"] != before["fingerprint"]
+    assert after["relationships"] == before["relationships"] + 1
+    assert after["types"]["LINK"] == before["types"]["LINK"] + 1

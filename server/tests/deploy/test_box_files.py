@@ -110,9 +110,7 @@ def test_nginx_passes_everything_to_the_api_and_reads_no_user_agent():
         assert "$http_user_agent" not in text
         assert "deny " not in text
     assert "location / {" in https
-    # The two locations differ only in the body limit: every path reaches the API.
-    assert re.findall(r"location (\S+) \{", https) == ["/", "/v1/sources/"]
-    assert https.count("proxy_pass http://127.0.0.1:8000;") == 2
+    assert https.count("proxy_pass http://127.0.0.1:8000;") == 1
     assert "root /var/www/grove-acme;" in http
     assert "return 301 https://$host$request_uri;" in http
 
@@ -219,9 +217,80 @@ def test_no_box_script_runs_a_one_off_container_with_stdin_open():
                 assert path.name == "lib.sh" and line.rstrip().endswith("</dev/null"), path.name
 
 
-def test_only_the_upload_path_takes_a_large_body():
+def test_no_path_takes_a_large_body_yet():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
-    assert re.findall(r"client_max_body_size (\S+);", https) == ["10m", "256m"]
-    upload = https[https.index("location /v1/sources/") :]
-    assert "client_max_body_size 256m;" in upload
-    assert "client_max_body_size 256m;" not in https[: https.index("location /v1/sources/")]
+    assert re.findall(r"client_max_body_size (\S+);", https) == ["10m"]
+
+
+# ---- review round five ------------------------------------------------------------------------
+
+
+def test_neo4j_takes_its_password_from_the_env_file_only():
+    neo4j = SERVICES["neo4j"]
+    assert neo4j["env_file"] == ["/etc/grove/neo4j.env"]
+    assert "NEO4J_AUTH" not in neo4j["environment"]
+    # A clean shutdown before the nightly dump: the default of 10 s can kill the server.
+    assert neo4j["stop_grace_period"] == "2m"
+
+
+def test_the_images_follow_the_build_sha():
+    assert SERVICES["api"]["image"].startswith("grove-api:${GROVE_BUILD_SHA")
+    assert SERVICES["runner"]["image"].startswith("grove-runner:${GROVE_BUILD_SHA")
+    assert SERVICES["api"]["environment"]["GROVE_BUILD_SHA"] == "${GROVE_BUILD_SHA}"
+
+
+def test_the_runner_image_gives_its_user_no_way_up():
+    text = (DEPLOY / "runner.Dockerfile").read_text(encoding="utf-8")
+    assert re.search(r"(?<![A-Z_])HOME=/var/lib/grove-runner(\s|$)", text, re.MULTILINE)
+    assert not re.search(r"(?<![A-Z_])HOME=(?!/var/lib/grove-runner(\s|$))", text, re.MULTILINE)
+    assert re.findall(r"^USER (\S+)$", text, re.MULTILINE) == ["grove-runner"]
+    assert "--shell /usr/sbin/nologin" in text
+    for word in ("sudo", "docker", "--groups", " -G ", "apt-get"):
+        assert word not in text.replace("runner.Dockerfile", ""), word
+
+
+def test_nginx_has_one_location_and_no_rule_that_can_answer_for_the_api():
+    https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
+    assert re.findall(r"^[ \t]*location\b.*$", https, re.MULTILINE) == ["    location / {"]
+    for word in (
+        "auth_basic",
+        "auth_request",
+        "limit_req",
+        "limit_conn",
+        "proxy_hide_header",
+        "return ",
+        "rewrite ",
+        "if (",
+        "deny ",
+    ):
+        assert word not in https, word
+
+
+def test_nginx_passes_what_the_api_and_a_stream_need():
+    https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
+    for line in (
+        "proxy_http_version 1.1;",
+        "proxy_set_header Host $host;",
+        "proxy_set_header X-Forwarded-Proto $scheme;",
+        "proxy_buffering off;",
+        "proxy_read_timeout 300s;",
+        'add_header Strict-Transport-Security "max-age=31536000" always;',
+        "ssl_session_tickets off;",
+    ):
+        assert line in https, line
+
+
+def test_the_units_give_each_step_the_time_it_needs():
+    backup = (DEPLOY / "systemd" / "grove-backup.service").read_text(encoding="utf-8")
+    services = (DEPLOY / "systemd" / "grove-services.service").read_text(encoding="utf-8")
+    for line in (
+        "Type=oneshot",
+        "Requires=docker.service",
+        "After=docker.service",
+        "TimeoutStartSec=1h",
+        # services-up.sh may wait for the lock, then for the store and the API.
+        "TimeoutStopSec=30min",
+    ):
+        assert line in backup.splitlines(), line
+    for line in ("Type=oneshot", "Requires=docker.service", "TimeoutStartSec=30min"):
+        assert line in services.splitlines(), line
