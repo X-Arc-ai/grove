@@ -63,8 +63,9 @@ _SUPPORTING = "MATCH (e:Evidence {target_id: $id, polarity: 'supports', active: 
 
 
 def _before_commit() -> None:
-    """api.py calls this last inside the transaction body: a test replaces it to inject a failure
-    or a kill, with the batch and the request row written and nothing committed."""
+    """The last statement inside the transaction body, from apply_ops or, for apply_batch, from
+    api.py after the request's `saved`: a test replaces it to inject a failure or a kill, with
+    everything written and nothing committed."""
 
 
 @dataclass
@@ -1592,8 +1593,13 @@ def apply_ops(
     ops: list[Any],
     observations: dict[str, dict[str, Any]],
     pre_refused: dict[int, Refusal],
+    before_commit: bool = True,
 ) -> None:
-    """The whole batch inside one write transaction. Raises BatchDeclined on any refusal."""
+    """The whole batch inside one write transaction. Raises BatchDeclined on any refusal.
+
+    A caller that owns its transaction (sign-in's own item) gets the `_before_commit` seam last.
+    apply_batch passes before_commit=False and calls the seam itself, after the request's
+    `saved`, so a kill there leaves both written and nothing committed."""
     run = _Run(tx, stamp, observations)
     for index, op in enumerate(ops):
         if index in pre_refused:
@@ -1618,3 +1624,5 @@ def apply_ops(
             },
             request_id=stamp.request_id,
         )
+    if before_commit:
+        _before_commit()

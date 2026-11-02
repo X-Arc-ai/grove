@@ -12,6 +12,8 @@ import pytest
 from neo4j._sync.work.transaction import TransactionBase
 from neo4j.exceptions import DatabaseError, IncompleteCommit, ServiceUnavailable
 
+from grove import clock
+from grove.ids import new_id
 from grove.writer import (
     BatchDeclined,
     ReceiptUnavailable,
@@ -20,7 +22,8 @@ from grove.writer import (
 )
 from grove.writer import api as api_module
 from grove.writer import apply as apply_module
-from grove.writer.tx import WorldTx
+from grove.writer.history import Stamp
+from grove.writer.tx import WorldTx, WorldWriter
 from tests.writer.helpers import (
     PERSON,
     apply,
@@ -167,6 +170,56 @@ def test_an_injected_commit_failure_raises_write_failed_and_returns_no_receipt(
 
     assert calls, "the hook never ran, so no commit failure was injected"
     assert_nothing_written(driver, world_id, before)
+
+
+class _Crash(Exception):
+    """Raised by the seam, so the transaction rolls back."""
+
+
+def test_a_caller_that_owns_its_transaction_gets_the_seam_last(driver, seeded, chat, monkeypatch):
+    # Sign-in calls apply_ops in its own transaction and proves its atomicity through this seam.
+    world_id = seeded["world_id"]
+    calls = []
+
+    def crash() -> None:
+        calls.append(1)
+        raise _Crash
+
+    monkeypatch.setattr(apply_module, "_before_commit", crash)
+    before = count_rows(driver, world_id)
+    stamp = Stamp(
+        world_id=world_id,
+        at=clock.now(world_id),
+        actor=PERSON.actor,
+        commit_id=new_id(world_id),
+        change_set_id=new_id(world_id),
+        request_id="own-tx-1",
+    )
+
+    def work(tx: WorldTx) -> None:
+        apply_module.apply_ops(
+            tx,
+            stamp=stamp,
+            ops=[create_item("person", "Rowan", "e1")],
+            observations={"e1": observation(chat, "e1", 1)},
+            pre_refused={},
+        )
+
+    with pytest.raises(_Crash):
+        WorldWriter(driver, world_id).transaction(work)
+
+    assert calls == [1]
+    assert_nothing_written(driver, world_id, before)
+
+
+def test_apply_batch_runs_the_seam_once(driver, seeded, chat, monkeypatch):
+    world_id = seeded["world_id"]
+    calls = []
+    monkeypatch.setattr(apply_module, "_before_commit", lambda: calls.append(1))
+
+    apply(driver, world_id, [create_item("person", "Rowan", "e1")], [observation(chat, "e1", 1)])
+
+    assert calls == [1]
 
 
 def test_a_commit_failure_in_a_second_batch_keeps_the_first_and_writes_nothing_more(

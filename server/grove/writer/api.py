@@ -212,7 +212,14 @@ def apply_batch(
         answer = replay_rule(row, fingerprint)
         if answer != APPLY:
             raise _Replay(row, answer)
-        apply_module.apply_ops(tx, stamp=stamp, ops=ops, observations=observations, pre_refused=pre)
+        apply_module.apply_ops(
+            tx,
+            stamp=stamp,
+            ops=ops,
+            observations=observations,
+            pre_refused=pre,
+            before_commit=False,
+        )
         mark_saved(tx, row, stamp, fingerprint, run_id)
         apply_module._before_commit()
 
