@@ -61,6 +61,10 @@ volumes = {HF_CACHE: hf_cache, VLLM_CACHE: vllm_cache}
 image = (
     modal.Image.from_registry(VLLM_IMAGE)
     .entrypoint([])
+    # Modal runs a function on the image's `python`, and this image has only `python3`: with no
+    # link, Modal refuses it ("unable to determine the version of Python"). Modal's own vLLM
+    # example adds the same link.
+    .run_commands('ln -sf "$(which python3)" /usr/bin/python')
     .env(
         {
             "HF_HUB_CACHE": HF_CACHE,
