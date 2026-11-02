@@ -252,7 +252,16 @@ def box(tmp_path: Path) -> Box:
     _write_fake(bin_dir, "git", _FAKE_GIT)
     _write_fake(bin_dir, "curl", _FAKE_CURL)
     _write_fake(bin_dir, "install", _FAKE_INSTALL)
-    for name in ("flock", "nginx", "systemctl", "certbot", "chown", "getent", "useradd", "groupadd"):
+    for name in (
+        "flock",
+        "nginx",
+        "systemctl",
+        "certbot",
+        "chown",
+        "getent",
+        "useradd",
+        "groupadd",
+    ):
         _write_fake(bin_dir, name, _FAKE_LOGGED)
 
     real_install = shutil.which("install")
