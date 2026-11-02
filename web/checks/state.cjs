@@ -1,0 +1,72 @@
+const fs=require('fs'),vm=require('vm'),assert=require('assert');
+const path=require('path'),root=path.join(__dirname,'..');
+async function main(){
+ const store={},events=[];let reloads=0;
+ const sandbox={console,URL,Date,Math,Promise,setTimeout,clearTimeout,CustomEvent:class{constructor(type,init){this.type=type;this.detail=init.detail;}},localStorage:{getItem:k=>store[k]||null,setItem:(k,v)=>store[k]=v}};
+ sandbox.window=sandbox;sandbox.location={href:'http://localhost/'};sandbox.GROVE_FIXTURE=JSON.parse(fs.readFileSync(path.join(root,'fixture.json')));sandbox.__GROVE_SIM_TICK_MS__=20;sandbox.dispatchEvent=e=>events.push(e);sandbox.reloadGrove=()=>{reloads++;};
+ vm.createContext(sandbox);vm.runInContext(fs.readFileSync(path.join(root,'simulation.js'),'utf8'),sandbox);await Promise.resolve();
+ const api=sandbox.GroveSimulation;
+ assert.equal(api.getState().currentNodeCount,0);
+ assert.equal(api.getState().auth,null);api.signIn('email','anas@example.com');assert.equal(api.getState().auth.provider,'email');assert.equal(api.getState().auth.email,'anas@example.com');
+ api.requestExport('chatgpt');api.requestExport('claude');assert.equal(api.getState().currentNodeCount,0);assert(api.getState().pendingExports.chatgpt);assert(JSON.parse(store['grove-minimal-codex-v3']).pendingExports.claude);
+ api.setStep(1);assert.equal(api.getState().currentNodeCount,1);assert.equal(api.getState().currentEdgeCount,0);
+ api.setName('Anas');let detail=await (await sandbox.groveApi('/api/node/grove-self')).json();assert.equal(detail.node.title,'Anas');
+ await api.importSource('conversations',{provider:'chatgpt',name:'chatgpt-export.zip',size:200});
+ assert.equal(api.getState().currentNodeCount,2);assert(!api.getState().pendingExports.chatgpt);assert(api.getState().pendingExports.claude);
+ await api.importSource('conversations',{provider:'claude',name:'claude-export.zip',size:200});
+ await api.importSource('calendar',{provider:'calendar',name:'Calendar',size:0});
+ await new Promise(r=>setTimeout(r,480));
+ const state=api.getState();assert.equal(state.sources.find(s=>s.id==='conversations').status,'ready');assert.deepEqual(Array.from(state.sources[0].providers),['chatgpt','claude']);
+ const graph=await (await sandbox.groveApi('/api/graph')).json(),ids=new Set(graph.elements.nodes.map(n=>n.data.id));
+ assert(ids.has('grove-self'));assert.equal(ids.size,graph.elements.nodes.length);assert(graph.elements.edges.every(e=>ids.has(e.data.source)&&ids.has(e.data.target)));
+ assert(!api.getState().pendingExports.claude);assert.equal(api.getState().accountImports.chatgpt.status,'ready');
+ await api.connectGoogle();assert(api.getState().googleConnected);assert.equal(api.getState().accountImports.gmail.status,'importing');assert.equal(api.getState().accountImports.chatgpt.status,'ready');
+ await new Promise(r=>setTimeout(r,480));assert.equal(api.getState().accountImports.gmail.status,'ready');
+ await api.importSource('notes',{provider:'notion',name:'Notion'});assert.equal(api.getState().accountImports.notion.status,'importing');assert.equal(api.getState().accountImports.drive.status,'ready');
+ const remembered=api.getState().currentNodeCount;api.disconnectSource('notion');assert.equal(api.getState().accountImports.notion.status,'disconnected');assert.equal(api.getState().currentNodeCount,remembered);await api.importSource('notes',{provider:'notion',name:'Notion'});assert.equal(api.getState().accountImports.notion.status,'importing');
+ api.completeOnboarding();api.connectHost('muse');assert(api.getState().connectedHosts.includes('muse'));api.disconnectHost('muse');assert(!api.getState().connectedHosts.includes('muse'));
+ api.resetOnboarding();await api.importSource('chats',{provider:'chats',name:'WhatsApp'});api.disconnectSource('chats');const paused=api.getState().sources.find(s=>s.id==='chats');assert.equal(paused.status,'paused');await new Promise(r=>setTimeout(r,50));assert.equal(api.getState().sources.find(s=>s.id==='chats').loadedCount,paused.loadedCount);await api.importSource('chats',{provider:'chats',name:'WhatsApp'});assert.equal(api.getState().sources.find(s=>s.id==='chats').status,'importing');
+ api.resetOnboarding();assert.equal(api.getState().currentNodeCount,0);assert.equal(api.getState().currentEdgeCount,0);await new Promise(r=>setTimeout(r,50));assert.equal(api.getState().currentNodeCount,0);
+ // Provenance, deduplication, file lifecycle and growth settings.
+ api.signIn('google','anas@example.com');api.setStep(4);assert.equal(api.getState().onboardingStep,4);
+ api.saveGrowth({focus:'Decisions and durable preferences',reading:'Keep the original source',avoid:'Temporary details',confirm:true});
+ assert.equal(api.getState().growth.focus,'Decisions and durable preferences');
+ await api.importSource('notes',{provider:'notion',label:'Notion'});
+ await api.addFile('Research.md','A note','note');await api.addFile('Direction.pptx','');
+ await new Promise(r=>setTimeout(r,480));
+ let snapshot=api.getState();const fileIds=Object.keys(snapshot.files),noteId=fileIds.find(id=>snapshot.files[id].name==='Research.md');
+ assert.equal(fileIds.length,2);assert.equal(snapshot.files[noteId].kind,'note');assert.equal(snapshot.files[fileIds.find(id=>id!==noteId)].kind,'file');assert(snapshot.accountImports[noteId].contribution.nodes>0);
+ for(const [id,a] of Object.entries(snapshot.accountImports)){
+   const d=api.getChanges(id);assert.equal(d.new_nodes.length,a.contribution.nodes);assert.equal(d.new_edges.length,a.contribution.edges);
+ }
+ const nBefore=snapshot.currentNodeCount;
+ await api.addFile('Research.md','A note');assert.equal(Object.keys(api.getState().files).length,2);assert.equal(api.getState().currentNodeCount,nBefore);
+ await api.updateSource('notion');assert.equal(api.getState().accountImports.notion.status,'importing');
+ await new Promise(r=>setTimeout(r,480));assert.equal(api.getState().currentNodeCount,nBefore);
+ const notionIds=new Set(api.getChanges('notion').new_nodes.map(n=>n.id));
+ api.removeFile(noteId);assert(!api.getState().files[noteId]);
+ const remaining=await (await sandbox.groveApi('/api/graph')).json(),remainingIds=new Set(remaining.elements.nodes.map(n=>n.data.id));
+ for(const id of notionIds)assert(remainingIds.has(id),'Shared memories must survive file removal');
+ assert(remaining.elements.edges.every(e=>remainingIds.has(e.data.source)&&remainingIds.has(e.data.target)));
+ const changes=api.getChanges();assert.equal(changes.new_nodes.length,api.getState().nodeDelta);assert.equal(changes.new_edges.length,api.getState().edgeDelta);
+ api.acknowledgeChanges();assert.equal(api.getState().nodeDelta,0);assert.equal(api.getChanges().new_edges.length,0);
+ api.requestExport('grok');api.cancelExport('grok');assert(!api.getState().pendingExports.grok);
+ // The input inbox seeds once, retains answers, and survives a real state reload after logout.
+ api.completeOnboarding();assert.equal(api.getState().requests.length,2);
+ api.answerRequest('focus','   ');assert.equal(api.getState().requests[0].status,'open');
+ api.answerRequest('focus','  Build a thoughtful Grove  ');assert.equal(api.getState().requests[0].answer,'Build a thoughtful Grove');
+ api.answerRequest('focus','Build a useful Grove');assert.equal(api.getState().requests.length,2);
+ api.requestExport('chatgpt');api.requestExport('claude');api.requestExport('chats');const beforeLogout=api.getState();api.signOut();assert.equal(api.getState().auth,null);
+ const reboot={console,URL,Date,Math,Promise,setTimeout,clearTimeout,CustomEvent:sandbox.CustomEvent,localStorage:sandbox.localStorage,GROVE_FIXTURE:sandbox.GROVE_FIXTURE,location:{href:'http://localhost/'},dispatchEvent(){},reloadGrove(){}};
+ reboot.window=reboot;vm.createContext(reboot);vm.runInContext(fs.readFileSync(path.join(root,'simulation.js'),'utf8'),reboot);await Promise.resolve();
+ const restored=reboot.GroveSimulation;assert.equal(restored.getState().auth,null);assert(restored.getState().onboardingComplete);
+ assert.deepEqual(restored.getState().pendingExports,beforeLogout.pendingExports);assert(restored.getState().pendingExports.chats);assert.equal(restored.getState().currentNodeCount,beforeLogout.currentNodeCount);assert.equal(restored.getState().growth.focus,beforeLogout.growth.focus);
+ assert.deepEqual(restored.getState().growthHistory,beforeLogout.growthHistory);assert.equal(restored.getState().requests[0].answer,'Build a useful Grove');assert.equal(restored.getState().requests.length,2);
+ restored.signIn('apple','anas@example.com');assert.deepEqual(restored.getState().pendingExports,beforeLogout.pendingExports);assert(restored.getState().pendingExports.chats);assert.equal(restored.getState().currentNodeCount,beforeLogout.currentNodeCount);assert.equal(restored.getState().requests.length,2);
+ restored.resetOnboarding();assert.equal(restored.getState().requests.length,0);
+ api.signIn('google','anas@example.com');
+ api.clearGrove();assert.equal(api.getState().auth.provider,'google');assert.equal(api.getState().growth.focus,'Decisions and durable preferences');assert.equal(api.getState().currentNodeCount,1);assert.equal(Object.keys(api.getState().files).length,0);
+ api.resetOnboarding();assert.equal(api.getState().requests.length,0);assert.equal(api.getState().auth,null);assert.equal(api.getState().growth.focus,'');
+ assert.equal(Object.keys(api.getState().pendingExports).length,0);assert.equal(Object.keys(api.getState().accountImports).length,0);assert(reloads>3);console.log('PASS: logout persistence and returning sign-in, input inbox lifecycle, distinct file/note kinds, source contributions, shared-memory retention, file deduplication/removal, history updates, four-step onboarding, growth guidance, local deletion, simulated authentication, source disconnect/reconnect and retained memories, paused job cancellation, host disconnect, identity seed, first import, pending export persistence and completion, retained providers, independent account progress, Google connection, concurrent growth, valid edges, outbound connection and reset cancellation');
+}
+main().catch(e=>{console.error(e);process.exitCode=1;});

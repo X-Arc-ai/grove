@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Grove — simulation</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="./favicon.svg" />
+  <!-- All assets vendored locally (viz/vendor/) — a localhost tool must never
+       block first paint on CDN/network availability. -->
+  <link href="./vendor/fonts.css" rel="stylesheet" />
+  <script src="./vendor/d3.min.js"></script>
+  <script src="./vendor/force-graph.min.js"></script>
+  <script src="./vendor/marked.min.js"></script>
+  <link rel="stylesheet" href="./style.css" />
+  <link rel="stylesheet" href="./agents.css" />
+  <link rel="stylesheet" href="./product.css" />
+  <link rel="stylesheet" href="./journey.css" />
+  <link rel="stylesheet" href="./refinements.css" />
+  <link rel="stylesheet" href="./system.css" />
+</head>
+<body class="gp-onboarding-open gp-welcome-open">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-name wm" aria-label="grove"><span>grove</span><span class="wm-dot" aria-hidden="true"></span></div>
+      <div class="brand-stats" id="stats">0 nodes · 0 connections</div>
+      <div id="learning-slot"></div>
+    </div>
+
+    <div class="topbar-actions">
+      <label class="toggle" title="Watch Grove learn, organise and connect">
+        <input type="checkbox" id="agents-toggle" />
+        <span>Your Grove workers</span>
+      </label>
+
+      <a id="health-link" class="icon-btn health-btn" href="#health" title="Grove health" aria-label="Grove health">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l2.5-6 5 12 2.5-6h4"/></svg>
+        <span class="view-link-state health-badge" id="health-state" aria-hidden="true"></span>
+      </a>
+
+      <button id="search-btn" class="icon-btn" title="search" aria-label="search">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      </button>
+
+      <button id="theme-toggle" class="icon-btn" title="toggle theme" aria-label="toggle theme">
+        <svg class="icon-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
+        <svg class="icon-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+
+      <button id="refresh-data" class="icon-btn" title="reload graph" aria-label="reload">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+      </button>
+      <button id="requests-button" class="icon-btn gp-requests-button" aria-label="Grove needs your input" aria-expanded="false">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+      </button>
+      <button id="profile-button" class="icon-btn gp-profile-button" aria-label="Profile and settings" aria-expanded="false">A</button>
+    </div>
+  </header>
+
+  <div id="search-overlay" class="search-overlay" hidden>
+    <input id="search-input" type="text" autocomplete="off" spellcheck="false"
+           placeholder="Search your Grove…" />
+    <div id="search-results" class="search-results"></div>
+  </div>
+
+  <div id="selection-pill" class="selection-pill" hidden></div>
+
+  <aside class="legend" id="legend" aria-label="node type legend">
+    <div class="legend-header">NODE TYPES</div>
+    <div class="legend-list" id="legend-list"></div>
+  </aside>
+
+  <main id="canvas" aria-label="Your Grove, a connected map"></main>
+
+  <aside class="detail" id="detail" aria-hidden="true">
+    <button class="detail-close" id="detail-close" aria-label="close">×</button>
+    <div class="detail-body" id="detail-body"></div>
+  </aside>
+
+  <div id="loading" class="loading">loading graph…</div>
+
+  
+  <script src="./fixture.js"></script>
+  <script src="./simulation.js"></script>
+  <script src="./native-app.js"></script>
+  <script src="./provider-icons.js"></script>
+  <script src="./agents.js"></script>
+  <script src="./app-screens.js"></script>
+  <script src="./motion.js"></script>
+  <script src="./integrations.js"></script>
+  <script src="./entry-visual.js"></script>
+  <script src="./whatsapp-guide.js"></script>
+  <script src="./product.js"></script>
+  <script>
+    // Health entry: the overall state glyph from /api/health (read only).
+    // Shape carries the state with the title text; a failed fetch shows none.
+    (function () {
+      var slot = document.getElementById('health-state');
+      var link = document.getElementById('health-link');
+      var words = { healthy: 'Healthy', degraded: 'Degraded', broken: 'Broken' };
+      var shapes = {
+        healthy: '<circle cx="6" cy="6" r="5"/>',
+        degraded: '<path d="M6 0.8 L11.4 10.6 L0.6 10.6 Z"/>',
+        broken: '<rect x="1.2" y="1.2" width="9.6" height="9.6" rx="1"/>'
+      };
+      window.groveApi('/api/health').then(function (r) { return r.json(); }).then(function (d) {
+        var st = d && d.overall && d.overall.state;
+        if (!shapes[st]) return;
+        slot.innerHTML = '<svg viewBox="0 0 12 12" class="' + st + '">' + shapes[st] + '</svg>';
+        link.title = 'Grove health: ' + words[st].toLowerCase();
+      }).catch(function () {});
+    })();
+  </script>
+</body>
+</html>
