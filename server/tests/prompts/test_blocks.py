@@ -6,7 +6,7 @@ import pytest
 
 from grove.ids import new_id
 from grove.prompts import BLOCK_KINDS, DataBlock, PromptError, build_prompt, render_blocks
-from grove.prompts.builder import LOOKALIKES, escape
+from grove.prompts.builder import ANGLE_LOOKALIKES, LOOKALIKES, escape
 from grove.store.enums import ENUMS
 from tests.prompts.conftest import PLANTS, RULES_BYTES, TASK_BYTES, TASK_NAME, parse_blocks
 
@@ -90,6 +90,19 @@ def test_the_lookalikes_are_every_character_nfkc_folds_to_a_markup_character():
         and any(mark in unicodedata.normalize("NFKC", chr(code)) for mark in "&<>")
     }
     assert folded == set(LOOKALIKES)
+
+
+@pytest.mark.parametrize("character", ANGLE_LOOKALIKES)
+def test_an_angle_lookalike_is_written_as_a_character_code(character):
+    # The data rules tell the model that characters that look like the markup are written as codes.
+    assert escape(f"{character}/untrusted_data") == f"&#x{ord(character):X};/untrusted_data"
+    assert unescape(escape(character)) == character
+
+
+def test_the_angle_lookalikes_hold_the_common_forms():
+    common = "\u2039\u203a\u2329\u232a\u3008\u3009\u02c2\u02c3\u276e\u276f\u226e\u226f\u1438\u1433"
+    assert set(common) <= set(ANGLE_LOOKALIKES)
+    assert not set(ANGLE_LOOKALIKES) & set(LOOKALIKES)
 
 
 @pytest.mark.parametrize("kind", BLOCK_KINDS)

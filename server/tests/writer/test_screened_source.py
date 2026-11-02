@@ -62,6 +62,7 @@ API_KEY_BODY = "Rk4vT9wQ2mZ7xB3nL8pD5sH1jF6gC0yA"
 API_KEY = "".join(("sk-", "proj-", API_KEY_BODY))
 CARD = "4111 1111 1111 1111"
 CODE = "482913"
+SERVICE_CODE = "517-204"
 TOKEN = "Q7xK2mP9vR4tL8wN3jB6"
 RESET_URL = f"https://accounts.fernhollow-mail.example/reset-password?token={TOKEN}"
 EMAIL = "tamsin.reyes@fernhollow-mail.example"
@@ -93,14 +94,15 @@ EXPORT = (
     ("m18", CO_FOUNDER, "Done, see you at the launch."),
     ("m19", THIRD, "The code is 1200 lines, the review will take a day."),
     ("m20", PERSON, "Great work everyone."),
+    ("m21", THIRD, f"Your WhatsApp code: {SERVICE_CODE}"),
 )
 LOCATOR = f"WhatsApp Chat with {CO_FOUNDER} and {THIRD}.txt"
-KEPT_KEYS = [key for key, _, _ in EXPORT if key not in {"m09", "m10", "m12", "m13"}]
+KEPT_KEYS = [key for key, _, _ in EXPORT if key not in {"m09", "m10", "m12", "m13", "m21"}]
 
 EXPECTED_COUNTS = {
     "credential": 1,  # m05
     "payment_card": 1,  # m08
-    "one_time_code": 1,  # m12, dropped
+    "one_time_code": 2,  # m12 and m21, dropped
     "reset_link": 1,  # m13, dropped
     "contact_email": 2,  # m07 and m17: one person, so both are [email 1]
     "contact_phone": 1,  # m07
@@ -116,7 +118,7 @@ EXPECTED_COUNTS = {
 PLANTS: dict[str, tuple[str, ...]] = {
     "api key": (API_KEY, API_KEY_BODY),
     "card": (CARD, CARD.replace(" ", ""), CARD.replace(" ", "-")),
-    "one-time code": (CODE,),
+    "one-time code": (CODE, SERVICE_CODE),
     "reset link": (RESET_URL, TOKEN, "reset-password"),
     "email": (EMAIL, "tamsin.reyes@", "fernhollow"),
     "phone": (PHONE, "447700900123", "7700 900123", "7700900123", "900123"),
@@ -324,7 +326,7 @@ def test_a_chat_export_with_every_d14_plant_keeps_every_value_out(
     assert receipt["source_id"] == source_id
     assert receipt["counts_per_class"] == json.dumps(EXPECTED_COUNTS, sort_keys=True)
 
-    # The kept messages are stored in input order; the four dropped ones are absent and counted.
+    # The kept messages are stored in input order; the five dropped ones are absent and counted.
     assert [message["key"] for message in stored] == KEPT_KEYS
     assert source["external_locator"] == f"WhatsApp Chat with Co-founder and {THIRD}.txt"
     by_key = {message["key"]: message for message in stored}

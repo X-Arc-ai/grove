@@ -39,10 +39,30 @@ def _clusters(text: str, start: int, stop: int) -> Iterator[tuple[int, int]]:
         yield begin, stop
 
 
+# NFKC leaves these alone. A phone types a curly apostrophe by default, and a word processor a
+# non-breaking hyphen, so a form typed with the straight one must still match.
+_LOOK_ALIKES = str.maketrans(
+    {
+        "\u2018": "'",
+        "\u2019": "'",
+        "\u02bc": "'",
+        "\uff07": "'",
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+    }
+)
+
+
 def _normalise(piece: str, fold_case: bool) -> str:
     out = unicodedata.normalize("NFKC", piece)
     if fold_case:
         out = unicodedata.normalize("NFKC", out.casefold())
+    out = out.translate(_LOOK_ALIKES)
+    # A symbol that NFKC spells in letters (U+2122 to "TM") must not glue to the word before it,
+    # or "Kestrel" followed by the sign would read as one longer word.
+    if out[:1].isalnum() and unicodedata.category(piece[0]).startswith("S"):
+        out = " " + out
     # Format characters (zero-width space, soft hyphen, joiners) are invisible: dropping them
     # from the copy stops "Or<ZWSP>la" from dodging a match.
     return "".join(ch for ch in out if unicodedata.category(ch) != "Cf")
@@ -145,8 +165,7 @@ class RenameMap:
             key = name_key(form)
             _check_key(key, f"the form of {where}", source)
             label = label.strip()
-            if not label:
-                raise ConfigError(f"{source}: the label of {where} is empty")
+            _check_key(label, f"the label of {where}", source)
             seen = found.get(key)
             if seen is None:
                 found[key] = (position, label)

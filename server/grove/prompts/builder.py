@@ -29,7 +29,12 @@ _ESCAPES = {"&": "&amp;", "<": "&lt;", ">": "&gt;"}
 # NFKC folds these six to &, < or > (small and full-width forms). A model may read them as the
 # ASCII ones, so they become character references too and no look-alike can pass for a tag.
 LOOKALIKES = "\ufe60\ufe64\ufe65\uff06\uff1c\uff1e"
-_ESCAPE = re.compile("[&<>" + LOOKALIKES + "]")
+# These do not fold to < or >, but a reader or a model can take them for angle brackets.
+ANGLE_LOOKALIKES = (
+    "\u02c2\u02c3\u1433\u1438\u2039\u203a\u226e\u226f\u2329\u232a\u276e\u276f\u27e8\u27e9"
+    "\u29fc\u29fd\u3008\u3009"
+)
+_ESCAPE = re.compile("[&<>" + LOOKALIKES + ANGLE_LOOKALIKES + "]")
 _BUILT = object()
 
 
