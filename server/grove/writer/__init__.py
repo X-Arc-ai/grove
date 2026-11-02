@@ -16,7 +16,13 @@ from grove.writer.errors import (
     WriteOutcomeUnknown,
 )
 from grove.writer.receipts import Receipt, ReceiptLine, render_receipt, short_id
-from grove.writer.sources import record_connector, record_episode, record_source
+from grove.writer.sources import (
+    add_screened_source,
+    record_connector,
+    record_episode,
+    record_source,
+    write_screened_source,
+)
 
 __all__ = [
     "HTTP_STATUS",
@@ -30,10 +36,12 @@ __all__ = [
     "Refusal",
     "WriteFailed",
     "WriteOutcomeUnknown",
+    "add_screened_source",
     "apply_batch",
     "record_connector",
     "record_episode",
     "record_source",
     "render_receipt",
     "short_id",
+    "write_screened_source",
 ]
