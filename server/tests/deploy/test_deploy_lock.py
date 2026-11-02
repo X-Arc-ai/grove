@@ -6,6 +6,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from grove import clock
 from tests.deploy.conftest import DEPLOY
 
 SCRIPT = DEPLOY / "with-deploy-lock.sh"
@@ -81,3 +82,66 @@ def test_the_releaser_never_frees_a_lock_that_another_holder_took(tmp_path):
     (lock / "owner").write_text("token=someone-else\n")
     time.sleep(4)
     assert (lock / "owner").read_text() == "token=someone-else\n"
+
+
+def _owner(lock: Path, since_epoch: int, token: str = "someone-else") -> None:
+    lock.mkdir()
+    (lock / "owner").write_text(f"token={token}\nholder=lane-x\nsince_epoch={since_epoch}\n")
+
+
+def test_a_kill_of_the_holder_s_whole_group_still_frees_the_lock_after_the_cap(tmp_path):
+    lock = tmp_path / "deploy.lock.d"
+    holder = subprocess.Popen(
+        ["bash", str(SCRIPT), "sleep", "30"], env=_env(tmp_path, cap=2), start_new_session=True
+    )
+    assert _wait_for(lambda: (lock / "owner").exists(), 10)
+    os.killpg(holder.pid, signal.SIGKILL)
+    holder.wait(timeout=10)
+    assert lock.exists()
+    assert _wait_for(lambda: not lock.exists(), 10)
+
+
+def test_a_lock_past_its_cap_with_no_releaser_is_taken_over(tmp_path):
+    lock = tmp_path / "deploy.lock.d"
+    now = int(clock.now().timestamp())
+    _owner(lock, now - 7200)
+    done = subprocess.run(
+        ["bash", str(SCRIPT), "bash", "-c", f"grep -q '^holder=lane-y$' {lock}/owner && exit 9"],
+        env={**_env(tmp_path), "GROVE_LOCK_HOLDER": "lane-y"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 9, done.stderr
+    assert "took over a deploy lock past its cap" in done.stderr
+    assert "someone-else" not in done.stderr
+    assert not lock.exists()
+
+
+def test_a_lock_inside_its_cap_is_never_taken_over(tmp_path):
+    lock = tmp_path / "deploy.lock.d"
+    _owner(lock, int(clock.now().timestamp()) - 60)
+    done = subprocess.run(
+        ["bash", str(SCRIPT), "true"],
+        env=_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 75
+    assert (lock / "owner").read_text().startswith("token=someone-else")
+
+
+def test_a_normal_release_leaves_no_releaser_running(tmp_path):
+    marker = "4321"
+    done = subprocess.run(
+        ["bash", str(SCRIPT), "bash", "-c", f"pgrep -f -- 'sleep {marker}' >/dev/null && exit 8"],
+        env=_env(tmp_path, cap=int(marker)),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 8, done.stderr
+    assert _wait_for(
+        lambda: subprocess.run(["pgrep", "-f", "--", f"sleep {marker}"]).returncode == 1, 5
+    )

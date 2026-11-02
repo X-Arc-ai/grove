@@ -130,10 +130,13 @@ url = args[-1]
 out = args[args.index("--output") + 1]
 headers = args[args.index("--dump-header") + 1]
 method = args[args.index("--request") + 1]
+agent = args[args.index("--user-agent") + 1]
 parts = urlsplit(url)
 base = f"{parts.scheme}://{parts.netloc}"
 hdr = ["HTTP/1.1 200 OK"]
-if parts.path == "/healthz":
+if agent == os.environ.get("FAKE_REFUSE_AGENT"):
+    status, body = 403, {}
+elif parts.path == "/healthz":
     state = Path(os.environ["GROVE_STATE"]) / "deployed.sha"
     served = state.read_text().strip() if state.exists() else None
     build = os.environ.get("FAKE_SERVED_BUILD") or served

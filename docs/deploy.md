@@ -45,7 +45,7 @@ transport in their place.
 | `/etc/grove/*.env` | The secret files below. | 600, root |
 | `/etc/grove/google-oauth.json` | Google's Web client file, mounted read-only into the API at `/run/grove/google-oauth.json` (`GROVE_GOOGLE_OAUTH_FILE`). | 400, uid 10001 |
 | `/var/lib/grove/deployed.sha` | The sha the box serves. | root |
-| `/var/log/grove/deploy.log`, `backup.log` | Two lines per deploy (its start and its result), one per dump, one per restore check, and one per removed dump. | 640, root |
+| `/var/log/grove/deploy.log`, `backup.log` | A start line for each deploy that reaches its build and a result line for each that reaches its smoke, both with the previous sha; one line per dump, per restore check and per removed dump. | 640, root |
 | `/var/backups/grove/` | `grove-<UTC stamp>.dump`, its `.fingerprint.json` and its `.dump.sha256`. | 700, files 600 |
 | `/var/lib/grove-runner` | The runner's HOME. The host user `grove-runner` owns it; it has no sudo and is not in the docker group. | 700 |
 
@@ -82,11 +82,11 @@ deploy/with-deploy-lock.sh ssh -n root@app.grove.x-arc.ai /opt/grove/src/deploy/
 ```
 
 `with-deploy-lock.sh` takes `~/.grove/locks/deploy.lock.d` (a `mkdir` lock with an owner file) and
-starts a detached releaser. The releaser frees the lock one hour after it was taken, whether the
-holder still runs or not, and only while the owner file still holds its own token. It exits 75 when
-the lock is held. If the operator's machine restarts while it holds the lock, the releaser is gone
-too: remove the folder by hand after checking its owner file. Give ssh the operator's own key
-options; they are not part of this repo.
+starts a detached releaser in a process group of its own. The releaser frees the lock one hour
+after it was taken, whether the holder still runs or not, and only while the owner file still holds
+its own token. If the releaser is gone too (the machine restarted, or a kill took both), the next
+caller takes over a lock that is past its cap and says so. It exits 75 when the lock is held. Give
+ssh the operator's own key options; they are not part of this repo.
 
 On the box, `deploy/deploy.sh <sha>`:
 
@@ -102,6 +102,9 @@ On the box, `deploy/deploy.sh <sha>`:
    migrations from the image's copy of `server/`, starts `api` and `runner`, and records the sha;
 7. runs `deploy/smoke.sh` against the public host, writes the result to `deploy.log`, and removes
    the images of every build except this one and the one it replaced.
+
+If `apply.sh` fails before the new build serves, `deploy.sh` moves the checkout back to the sha
+the box serves.
 
 `--ref <branch>` with `GROVE_ALLOW_BRANCH_DEPLOY=1` deploys a sha of another branch, to try a
 change on the box before its merge; without the variable only `develop` deploys. To roll back,
@@ -135,7 +138,10 @@ Neo4j Community has no online backup: a dump needs the server stopped. `grove-ba
 The API is down for the length of the dump: 34 seconds on the first run, with a store that held
 only its schema. If a step fails, or systemd stops the script, it starts Neo4j, the API and the
 runner again before it exits. The unit's `ExecStopPost` runs `deploy/services-up.sh` after every
-run, so a script that was killed outright also leaves the services running. The backup needs the
+run, so a script that was killed outright also leaves the services running, and
+`grove-services.service` runs it at every boot, for a host that went down in the dump window.
+`services-up.sh` first removes a one-off container that a killed run left, so nothing else holds
+the store, and waits until the API's health check reads the store. The backup needs the
 fingerprint before the dump: if that read fails, no dump is made, and the unit fails.
 
 `deploy/restore-check.sh <dump>` refuses a dump with no checksum file or a wrong checksum, loads it

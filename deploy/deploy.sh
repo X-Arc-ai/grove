@@ -4,7 +4,9 @@
 # The commit must be on origin/<branch>: develop, unless --ref names another branch and
 # GROVE_ALLOW_BRANCH_DEPLOY=1 says that is meant (a try on the box before a merge). The checkout pulls
 # from GitHub with the box's read-only deploy key; nothing is pushed to the box. This script takes
-# the box lock, moves the checkout, and hands over to that commit's own apply.sh.
+# the box lock, moves the checkout, and runs that commit's own apply.sh. If apply.sh fails before
+# the new build serves, the checkout goes back to the sha the box serves, so the nightly backup
+# never runs new scripts against old services.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -46,4 +48,15 @@ git -C "$GROVE_SRC" merge-base --is-ancestor "$sha" "origin/$ref" ||
 [ -z "$(git -C "$GROVE_SRC" status --porcelain)" ] || die "the checkout in $GROVE_SRC has local changes"
 git -C "$GROVE_SRC" checkout --quiet --detach "$sha"
 
-exec "$GROVE_SRC/deploy/apply.sh" "$sha" "$ref"
+# bash keeps reading this file from the inode it opened, so the checkout cannot change the lines
+# still to run.
+status=0
+"$GROVE_SRC/deploy/apply.sh" "$sha" "$ref" || status=$?
+if [ "$status" != 0 ]; then
+    served=$(tr -d '[:space:]' <"$GROVE_STATE/deployed.sha" 2>/dev/null || true)
+    if [ -n "$served" ] && [ "$served" != "$sha" ]; then
+        git -C "$GROVE_SRC" checkout --quiet --detach "$served"
+        log "the deploy of $sha failed before it served; the checkout is back at $served"
+    fi
+fi
+exit "$status"

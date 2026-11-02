@@ -55,8 +55,12 @@ if [ ! -f "$GROVE_LETSENCRYPT_DIR/live/$host/fullchain.pem" ]; then
     else
         account=(--register-unsafely-without-email)
     fi
-    certbot certonly --webroot --webroot-path "$GROVE_ACME_ROOT" --domain "$host" \
-        --non-interactive --agree-tos --keep-until-expiring "${account[@]}"
+    if ! certbot certonly --webroot --webroot-path "$GROVE_ACME_ROOT" --domain "$host" \
+        --non-interactive --agree-tos --keep-until-expiring "${account[@]}"; then
+        restore_sites
+        nginx -t && systemctl reload nginx
+        die "certbot got no certificate for $host; the old sites are back"
+    fi
 fi
 render grove-https.conf
 
@@ -64,10 +68,12 @@ install -d "$GROVE_LETSENCRYPT_DIR/renewal-hooks/deploy"
 install -m 755 "$here/certbot-reload-nginx.sh" \
     "$GROVE_LETSENCRYPT_DIR/renewal-hooks/deploy/grove-reload-nginx.sh"
 install -m 644 "$here/logrotate.conf" "${GROVE_LOGROTATE_DIR:-/etc/logrotate.d}/grove"
-for unit in grove-backup.service grove-backup.timer; do
+for unit in grove-backup.service grove-backup.timer grove-services.service; do
     install -m 644 "$here/systemd/$unit" "$GROVE_SYSTEMD_DIR/$unit"
 done
 systemctl daemon-reload
 systemctl enable --now grove-backup.timer
+# Enabled for the next boot only: started now, it would wait for the lock this deploy holds.
+systemctl enable grove-services.service
 
 checked_reload
