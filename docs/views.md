@@ -48,6 +48,7 @@ Signin owns the session rows and the cookie. The views only read them.
 - A session is valid while `revoked_at` is absent and `expires_at` is later than the clock provider's now.
 - `:Session.user_id` leads to the `:World` whose `owner_user_id` is that user. When there are several, the oldest by `created_at` wins.
 - `:World.self_item_id`, which may be absent, names the person's own item. Signin writes it; see the open points of `docs/store-map.md`.
+- Signin must create the user's `:World` row before it sets the cookie. A valid session whose user owns no `:World` reads as signed out: it gets the same 401 as no session.
 
 No valid session means a 401 for every endpoint, before any parameter is read.
 
@@ -62,7 +63,7 @@ Every error is typed (B.3) and can never look like an empty result:
 | Status | Code | When |
 |---|---|---|
 | 400 | `invalid_arguments` | A bad `as_of` or `known_as_of`, or a bad positions body. `details.field` names the field. |
-| 401 | `unauthenticated` | No cookie, or an unknown, expired or revoked session. |
+| 401 | `unauthenticated` | No cookie, an unknown, expired or revoked session, or a session whose user owns no `:World`. |
 | 404 | `not_found` | An unknown route, or a node id that is no item of this world (or no item in the time window). |
 | 500 | `internal` | A failure of the server. |
 | 503 | `unavailable` | The store cannot be reached. `retryable` is true. |

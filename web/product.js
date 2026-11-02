@@ -8,7 +8,8 @@
   var SIGNIN_COPY = {
     email: 'We could not send a code to that address. Check it and try again.',
     code: 'That code doesn’t match. Check it and try again.',
-    offline: 'Grove could not be reached. Try again in a moment.'
+    offline: 'Grove could not be reached. Try again in a moment.',
+    logout: 'Grove could not sign you out. Try again.'
   };
   var icons = window.GroveIcons || {};
   var ui = { step: api.getState().onboardingStep || 0, panel: null, guide: null, guideStep:0, tour: 0, tourNode: null, error: '', host: null, hostStage: 0 };
@@ -63,7 +64,10 @@
     var body=ui.authStage==='checking'?'<div class="gp-auth-loading" role="status" aria-label="Checking your sign-in"><span></span><span></span><span></span></div>':code?'<div class="gp-auth-intro"><h2>Check your inbox</h2><p>Enter the code sent to '+esc(ui.email)+'</p></div><form data-code-form><label for="gp-code">Verification code</label><input id="gp-code" class="gp-code-input" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" aria-label="Six digit code" placeholder="000000" value="'+esc(ui.code)+'" required><button class="gp-primary gp-wide">Continue</button></form><button class="gp-text" data-action="auth-back">Use another email</button>':'<div class="gp-signin-options"><button data-signin="google">'+icon('google')+'Continue with Google</button><button data-signin="apple"'+(ui.appleNote?' aria-disabled="true"':'')+'>'+icon('apple')+(ui.appleNote?'Not available yet':'Continue with Apple')+'</button></div><div class="gp-auth-divider"><span>or</span></div><form data-email-form><label for="gp-email">Email address</label><input id="gp-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" value="'+esc(ui.email)+'" required><button class="gp-primary gp-wide">Continue with email</button></form>';
     return '<div class="gp-backdrop gp-entry-backdrop"><section class="gp-entry" role="dialog" aria-modal="true" aria-labelledby="gp-title"><div class="gp-entry-art" aria-hidden="true">'+(window.GroveEntryVisual||'')+'</div><div class="gp-auth"><header class="gp-auth-brand"><h1 id="gp-title" tabindex="-1">'+wordmark()+'</h1><p>Give your AI a world to understand</p></header><div class="gp-auth-form">'+body+'</div></div></section></div>';
   }
-  function finishSignIn(provider){authEpoch++;ui.error='';api.signIn(provider,ui.email||'anas@example.com');ui.authStage=null;ui.panel=null;if(api.getState().onboardingComplete){render(true);if(live&&window.reloadGrove)window.reloadGrove();}else setStep(api.getState().onboardingStep||0);}
+  // The example address is fixture mode only. Live mode knows the typed address for the email
+  // code and none for Google (the server holds it), so the account shows no made-up address.
+  function signInEmail(provider){return live?(provider==='email'?ui.email:''):(ui.email||'anas@example.com');}
+  function finishSignIn(provider){authEpoch++;ui.error='';api.signIn(provider,signInEmail(provider));ui.authStage=null;ui.panel=null;if(api.getState().onboardingComplete){render(true);if(live&&window.reloadGrove)window.reloadGrove();}else setStep(api.getState().onboardingStep||0);}
   // Sign-in calls. Live mode: Google signs in on its own pages; email posts the address, then
   // the code; a failure shows in the sign-in error slot. Fixture mode (the checks) has no server:
   // any six-digit code is accepted. Apple has no sign-in yet (decision 24).
@@ -90,6 +94,24 @@
       if(api.getState().auth)api.signOut();
       endTour();ui.panel=null;ui.guide=null;ui.authStage='signin';render(true);
     },function(){if(ui.authStage==='checking'){ui.authStage='signin';ui.error=SIGNIN_COPY.offline;render(true);}});
+  }
+  // Live mode, the session is over (a confirmed logout, or a 401 from a live call): the local
+  // sign-in ends, the graph leaves memory and the screen, panels close and the sign-in card shows.
+  // A person already on the sign-in card (checking, the email code) keeps the step they are on.
+  function endSession(){
+    var onCard=!api.getState().auth&&!!ui.authStage;
+    api.signOut();
+    if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
+    if(onCard)return;
+    endTour();ui.panel=null;ui.guide=null;ui.confirm=null;ui.host=null;ui.authStage='signin';ui.error='';ui.email='';ui.code='';ui.logoutError='';
+    render(true);
+  }
+  // Logout signs out here only when the server confirms it, or when the session is already gone.
+  function logout(){
+    ui.logoutError='';
+    var failed=function(){ui.logoutError=SIGNIN_COPY.logout;render(true);};
+    var gone=function(){return live.session().then(function(res){if(res.status===401)endSession();else failed();},failed);};
+    return live.logout().then(function(res){if(res.ok)endSession();else return gone();},gone);
   }
 
   function stepper(){return '<div class="gp-stepper" aria-label="Step '+ui.step+' of 4"><span class="gp-step-number">0'+ui.step+' <em>/ 04</em></span><div class="gp-step-track" aria-hidden="true">'+[1,2,3,4].map(function(n){return '<i class="'+(ui.step>=n?'is-done':'')+'"></i>';}).join('')+'</div></div>';}
@@ -191,9 +213,15 @@
     return '<div class="gp-confirm-backdrop"><section class="gp-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="gp-confirm-title" aria-describedby="gp-confirm-copy"><header><h2 id="gp-confirm-title" tabindex="-1">'+esc(title)+'</h2><button class="gp-icon" data-action="cancel-confirm" aria-label="Close confirmation">×</button></header><p id="gp-confirm-copy">'+copy+'</p><div class="gp-confirm-actions"><button class="gp-small" data-action="cancel-confirm">Cancel</button><button class="gp-small gp-danger" data-action="confirm-delete">'+(disconnect?'Disconnect':'Remove file')+'</button></div></section></div>';
   }
   function growthForm(s){var g=ui.growthDraft||s.growth;return '<h2>My Grove</h2><p class="gp-section-copy">A little guidance, entirely up to you</p><form data-growth-form class="gp-growth-form"><label><span class="gp-field-label">Focus on '+info('Tell Grove which work, people, or ideas deserve more attention. Leave this blank to let your sources lead.')+'</span><textarea name="focus" rows="2" placeholder="The work, people, and ideas that matter to you">'+esc(g.focus)+'</textarea></label><label><span class="gp-field-label">How to read my sources '+info('Set the context for interpretation. For example, a plan is a possibility until there is evidence it happened.')+'</span><textarea name="reading" rows="2" placeholder="Treat plans as possibilities until I confirm what happened">'+esc(g.reading)+'</textarea></label><label><span class="gp-field-label">Leave out '+info('Describe topics or details that should not shape your Grove, such as temporary logistics or routine chatter.')+'</span><textarea name="avoid" rows="2" placeholder="Routine chatter, temporary details, or topics to ignore">'+esc(g.avoid)+'</textarea></label><div class="gp-check-row"><label class="gp-check-label"><input type="checkbox" name="confirm" '+(g.confirm?'checked':'')+'>Ask before changing an established preference</label>'+info('Grove will bring a question to your input inbox before replacing a preference it has already learned.')+'</div><footer><span class="gp-save-note gp-positive" role="status">'+esc(ui.notice)+'</span><button class="gp-small">Save guidance</button></footer></form>';}
+  // The sim's example name is fixture mode only; live mode with no name known says 'You'.
+  function shownName(state){return state.name||(live?'You':'Anas');}
   function accountSettings(state){
-    var name=ui.editName?'<form data-name-form class="gp-name-edit"><label for="gp-name">Name</label><div class="gp-input-row"><input id="gp-name" name="name" value="'+esc(ui.nameDraft)+'" autocomplete="name" maxlength="100" required><button class="gp-small" type="submit">Save</button><button class="gp-text" type="button" data-action="cancel-name">Cancel</button></div></form>':'<div class="gp-setting-row"><span><strong>Name</strong><small>'+esc(state.name||'Anas')+'</small></span><button class="gp-text" data-action="edit-name">Edit</button></div>';
-    return '<h2>Account</h2><p class="gp-section-copy">Your identity and access</p><section class="gp-account-section"><h3>Profile</h3>'+name+'<div class="gp-setting-row"><span><strong>Email</strong><small>'+esc(state.auth&&state.auth.email||'anas@example.com')+'</small></span><span class="gp-positive">Verified</span></div></section><section class="gp-account-section"><h3>Sign-in</h3><div class="gp-setting-row"><span><strong>'+esc(state.auth&&state.auth.provider==='google'?'Google':state.auth&&state.auth.provider==='apple'?'Apple':'Email code')+'</strong><small>This device</small></span><button class="gp-small" data-action="logout">Log out</button></div></section><section class="gp-account-section"><h3>Your data</h3><div class="gp-setting-row"><span><strong>Download my Grove</strong><small>Keep a copy of your sources and guidance</small></span><button class="gp-text" data-action="download-data">Download ↗</button></div></section>';
+    var name=ui.editName?'<form data-name-form class="gp-name-edit"><label for="gp-name">Name</label><div class="gp-input-row"><input id="gp-name" name="name" value="'+esc(ui.nameDraft)+'" autocomplete="name" maxlength="100" required><button class="gp-small" type="submit">Save</button><button class="gp-text" type="button" data-action="cancel-name">Cancel</button></div></form>':'<div class="gp-setting-row"><span><strong>Name</strong><small>'+esc(shownName(state))+'</small></span><button class="gp-text" data-action="edit-name">Edit</button></div>';
+    var method=state.auth&&state.auth.provider==='google'?'Google':state.auth&&state.auth.provider==='apple'?'Apple':'Email code';
+    // Live mode shows only the address the sign-in knows; with none (Google), the sign-in method.
+    var email=state.auth&&state.auth.email||(live?'':'anas@example.com');
+    var emailRow=email?'<div class="gp-setting-row"><span><strong>Email</strong><small>'+esc(email)+'</small></span><span class="gp-positive">Verified</span></div>':'<div class="gp-setting-row"><span><strong>Email</strong><small>Signed in with '+esc(method)+'</small></span></div>';
+    return '<h2>Account</h2><p class="gp-section-copy">Your identity and access</p><section class="gp-account-section"><h3>Profile</h3>'+name+emailRow+'</section><section class="gp-account-section"><h3>Sign-in</h3><div class="gp-setting-row"><span><strong>'+esc(method)+'</strong><small>This device</small></span><button class="gp-small" data-action="logout">Log out</button></div>'+(ui.logoutError?'<p class="gp-footnote" role="alert">'+esc(ui.logoutError)+'</p>':'')+'</section><section class="gp-account-section"><h3>Your data</h3><div class="gp-setting-row"><span><strong>Download my Grove</strong><small>Keep a copy of your sources and guidance</small></span><button class="gp-text" data-action="download-data">Download ↗</button></div></section>';
   }
   function requestsPanel(){
     var items=(api.getState().requests||[]).filter(function(r){return r.status==='open';}),r=items.find(function(r){return r.id===ui.requestId;})||items[0],index=items.indexOf(r);
@@ -272,14 +300,14 @@
       });
     },1800);
   }
-  function render(force){var s=api.getState(),onboard=!s.auth||!s.onboardingComplete;if(!s.auth&&!ui.authStage)ui.authStage='signin';var shape=[onboard,ui.step,ui.panel,ui.guide,ui.guideStep,ui.guideStage,ui.settingsTab,ui.host,ui.authStage,ui.sourceTab,ui.filePicker,ui.noteEditor,ui.confirm&&JSON.stringify(ui.confirm),ui.requestTab,ui.requestId,(s.requests||[]).map(function(r){return r.id+':'+r.status;}).join(','),Object.keys(s.pendingExports).join(','),Object.keys(s.accountImports).map(function(id){return id+':'+s.accountImports[id].status;}).join(','),(s.connectedHosts||[]).join(','),(s.mcpClients||[]).map(function(c){return c.id;}).join(',')].join('|');
+  function render(force){var s=api.getState(),onboard=!s.auth||!s.onboardingComplete;if(!s.auth&&!ui.authStage)ui.authStage='signin';if(ui.panel!=='profile'||ui.settingsTab!=='account')ui.logoutError='';var shape=[onboard,ui.step,ui.panel,ui.guide,ui.guideStep,ui.guideStage,ui.settingsTab,ui.host,ui.authStage,ui.sourceTab,ui.filePicker,ui.noteEditor,ui.confirm&&JSON.stringify(ui.confirm),ui.requestTab,ui.requestId,(s.requests||[]).map(function(r){return r.id+':'+r.status;}).join(','),Object.keys(s.pendingExports).join(','),Object.keys(s.accountImports).map(function(id){return id+':'+s.accountImports[id].status;}).join(','),(s.connectedHosts||[]).join(','),(s.mcpClients||[]).map(function(c){return c.id;}).join(',')].join('|');
     if(force||shape!==lastShape){lastShape=shape;var content=ui.authStage?signIn():ui.guide?guide():onboard?(ui.step===0?welcome():setup()):ui.panel==='profile'?profile():ui.panel==='health'?health():ui.panel==='connections'?connections():ui.panel==='sources'?sourcesPanel():ui.panel==='requests'?requestsPanel():'';if(ui.confirm)content='<div class="gp-confirm-context" inert aria-hidden="true">'+content.replace('aria-modal="true"','aria-modal="false"')+'</div>'+confirmation();modalRoot.innerHTML=content;if(ui.error&&content){var err=document.createElement('p');err.className='gp-footnote';err.setAttribute('role','alert');err.textContent=ui.error;var dialog=modalRoot.querySelector('.gp-auth-form')||modalRoot.querySelector('section');if(dialog)dialog.appendChild(err);}bind();if(ui.confirmScroll!=null){var pane=modalRoot.querySelector('.gp-settings-content');if(pane)pane.scrollTop=ui.confirmScroll;if(!ui.confirm)ui.confirmScroll=null;}fitGuide();positionRequests();if(window.GroveEntryScene)window.GroveEntryScene.mount(modalRoot.querySelector('.gp-entry-canvas'));settleEntrance();if(force&&content){focus(ui.confirm?'#gp-confirm-title':ui.confirmReturn||'#gp-title');if(!ui.confirm)ui.confirmReturn=null;}}
     document.body.classList.toggle('gp-onboarding-open',onboard);document.body.classList.toggle('gp-welcome-open',onboard&&ui.step===0&&!ui.authStage);document.body.classList.toggle('gp-auth-open',!!ui.authStage);document.body.classList.toggle('gp-modal-open',(!!ui.panel&&ui.panel!=='requests')||!!ui.guide);document.body.classList.toggle('gp-tour-open',!!ui.tour);
     var fullModal=onboard||!!ui.guide||['profile','health','connections','sources'].includes(ui.panel);
     document.querySelectorAll('.topbar,#search-overlay,#selection-pill,#legend,#canvas,#detail').forEach(function(el){el.inert=fullModal;});
     document.getElementById('profile-button').hidden=onboard;document.getElementById('profile-button').setAttribute('aria-expanded',String(ui.panel==='profile'||ui.panel==='sources'));
     var exportCount=pendingExports(s).length,profileLabel=exportCount?'Settings, '+exportCount+' conversation '+(exportCount===1?'export':'exports')+' to upload':needsHistory(s)?'Settings, conversation history to add':'Profile and settings';
-    var profileButton=document.getElementById('profile-button');profileButton.textContent=(s.name||'Anas').charAt(0).toUpperCase();profileButton.classList.toggle('has-pending',needsHistory(s));profileButton.setAttribute('aria-label',profileLabel);profileButton.setAttribute('title',exportCount?exportCount+' conversation '+(exportCount===1?'export':'exports')+' to upload':needsHistory(s)?'Add your conversation history':'Settings');
+    var profileButton=document.getElementById('profile-button');profileButton.textContent=shownName(s).charAt(0).toUpperCase();profileButton.classList.toggle('has-pending',needsHistory(s));profileButton.setAttribute('aria-label',profileLabel);profileButton.setAttribute('title',exportCount?exportCount+' conversation '+(exportCount===1?'export':'exports')+' to upload':needsHistory(s)?'Add your conversation history':'Settings');
     var bottom=onboard?'':'<button class="gp-accounts-trigger" data-action="connections" aria-label="Take Grove to your AI"><span class="gp-host-cta">Take Grove to your AI '+arrow()+'</span><span class="gp-provider-stack">'+HOST_ORDER.map(function(id){return '<span class="'+(s.connectedHosts.includes(id)?'is-connected':'')+'">'+icon(id)+'<small>'+PROVIDERS[id].label+'</small></span>';}).join('')+'</span></button>'+(s.currentNodeCount?'<button class="gp-types-toggle" data-action="types">Node types</button>':'');
     if(chrome.innerHTML!==bottom){chrome.innerHTML=bottom;bindChrome();}
     var rq=document.getElementById('requests-button'),pending=(s.requests||[]).filter(function(r){return r.status==='open';}).length;rq.hidden=onboard;rq.classList.toggle('has-pending',pending>0);rq.setAttribute('aria-label','Grove needs your input'+(pending?', '+pending+(pending===1?' question':' questions'):''));rq.setAttribute('aria-expanded',String(ui.panel==='requests'));
@@ -308,7 +336,7 @@
     if(action==='start')move(function(){setStep(1);});
     else if(action==='auth-close'){authEpoch++;ui.authStage=null;render(true);}
     else if(action==='auth-back'){ui.error='';ui.authStage='signin';render(true);}
-    else if(action==='edit-name'){ui.editName=true;ui.nameDraft=api.getState().name||'Anas';render(true);focus('#gp-name');}
+    else if(action==='edit-name'){ui.editName=true;ui.nameDraft=api.getState().name||(live?'':'Anas');render(true);focus('#gp-name');}
     else if(action==='cancel-name'){ui.editName=false;render(true);}
     else if(action==='request-prev'||action==='request-next'){var items=api.getState().requests.filter(function(r){return r.status==='open';}),i=items.findIndex(function(r){return r.id===ui.requestId;});var next=Math.max(0,Math.min(items.length-1,i+(action==='request-prev'?-1:1)));if(items[next])ui.requestId=items[next].id;render(true);}
     else if(action==='copy-mcp'){var input=modalRoot.querySelector('#gp-mcp-url');function copied(){ui.mcpCopied=true;var b=modalRoot.querySelector('[data-action="copy-mcp"]');if(b)b.textContent='Copied';}function select(){if(input){input.select();try{if(document.execCommand('copy'))copied();}catch(e){}}}if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(MCP_URL).then(copied,select);else select();}
@@ -349,7 +377,7 @@
     }
     else if(action==='guide-next')move(function(){ui.guideStep++;render(true);});
     else if(action==='guide-prev')move(function(){ui.guideStep=Math.max(0,ui.guideStep-1);render(true);});
-    else if(action==='logout'){endTour();ui.panel=null;ui.guide=null;ui.authStage='signin';ui.error='';ui.email='';var signOut=function(){api.signOut();render(true);};if(live)live.logout().then(signOut,signOut);else signOut();}
+    else if(action==='logout'){if(live){logout();return;}endTour();ui.panel=null;ui.guide=null;ui.authStage='signin';ui.error='';ui.email='';api.signOut();render(true);}
     else if(action==='download-data'){var payload=JSON.stringify(api.getState(),null,2),a=document.createElement('a');a.href='data:application/json;charset=utf-8,'+encodeURIComponent(payload);a.download='my-grove.json';a.click();}
     else if(action==='close'){ui.confirm=null;ui.panel=null;ui.guide=null;ui.host=null;render();}
     else if(action==='calendar')importSource('calendar',{name:'Google Calendar',size:0},'calendar');
@@ -450,6 +478,7 @@
   document.addEventListener('keydown',function(e){if(e.key==='Escape'){if(ui.confirm){handle('cancel-confirm');}else if(ui.guide){ui.guide=null;render();}else if(ui.panel){ui.panel=null;ui.host=null;render();}else if(ui.tour)endTour();}if(e.key==='Tab'&&modalRoot.querySelector('[aria-modal="true"]')){var activeDialog=modalRoot.querySelector('[aria-modal="true"]'),els=Array.from(activeDialog.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),a[href],[tabindex="0"]'));var first=els[0],last=els[els.length-1];if(!els.length)return;if(!activeDialog.contains(document.activeElement)){e.preventDefault();(e.shiftKey?last:first).focus();}else if(e.shiftKey&&(document.activeElement===first||!els.includes(document.activeElement))){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});
   modalRoot.addEventListener('click',function(e){if(e.target.classList.contains('gp-confirm-backdrop')){handle('cancel-confirm');return;}if(e.target.classList.contains('gp-backdrop')&&!ui.confirm&&api.getState().onboardingComplete){ui.panel=null;ui.guide=null;ui.host=null;render();}});
   window.addEventListener('grove:care',updateLive);
+  window.addEventListener('grove:unauthenticated',function(){if(live)endSession();});
   window.addEventListener('grove:change',function(){render();maybeTour();});
   window.addEventListener('grove:graph-rendered',function(){maybeTour();renderTour();});
   window.addEventListener('grove:node-opened',function(){if(ui.tour===1){ui.tour=2;renderTour();}});

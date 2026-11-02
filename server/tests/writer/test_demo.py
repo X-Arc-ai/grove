@@ -1,5 +1,6 @@
 """The demo seeder: a synthetic world from the web checks' fixture, t_ worlds only."""
 
+import ast
 import json
 import stat
 from collections import Counter
@@ -9,7 +10,7 @@ import pytest
 
 from grove.store.connection import DATABASE
 from grove.store.query import PlatformQuery, WorldQuery
-from grove.writer import demo
+from grove.writer import demo, testing
 from grove.writer.testing import session_token_hash
 from grove.writer.worlds import load_starter_set
 
@@ -196,3 +197,19 @@ def test_the_cli_writes_the_token_file_600_and_prints_no_token(
     assert len(WorldQuery(driver, world).read("MATCH (i:Item) RETURN i.id AS id")) == (
         len(small["elements"]["nodes"]) + 3
     )
+
+
+def test_the_demo_imports_only_public_names_of_the_test_helpers():
+    """demo.py is a module of its own, so it takes no private name of grove.writer.testing."""
+    tree = ast.parse(Path(demo.__file__).read_text(encoding="utf-8"))
+    taken = [
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "grove.writer.testing"
+        for alias in node.names
+    ]
+    assert "refuse_real_world" in taken
+    assert not [name for name in taken if name.startswith("_")], taken
+    assert testing.refuse_real_world("t_demo_" + "0" * 32) is None
+    with pytest.raises(ValueError, match="t_ worlds only"):
+        testing.refuse_real_world("a-real-world")

@@ -140,6 +140,12 @@ RAW_BODIES = [
         "application/x-www-form-urlencoded",
     ),
     ("no type", b'{"positions": [{"id": "x", "x": 1.0, "y": 1.0}]}', ""),
+    # Deeper than the parser's recursion limit, yet far under the 2 MiB cap.
+    (
+        "deeply nested",
+        b'{"positions": ' + b"[" * 100_000 + b"]" * 100_000 + b"}",
+        "application/json",
+    ),
 ]
 
 
@@ -150,6 +156,8 @@ def test_a_raw_body_that_is_not_plain_json_is_a_typed_400(world, client_for, nam
     response = client.post(POSITIONS, content=raw, headers=headers)
     assert response.status_code == 400, name
     assert response.json()["error"]["code"] == "invalid_arguments"
+    if name == "deeply nested":
+        assert response.json()["error"]["details"] == {"field": "body"}
 
 
 def test_json_with_a_charset_is_accepted(world, client_for, items):

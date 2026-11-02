@@ -60,9 +60,11 @@
     try {
       var stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (!stored || stored.version !== VERSION) return value;
-      value.auth = Object.prototype.hasOwnProperty.call(stored,'auth') ? stored.auth : (stored.onboardingComplete ? {provider:'email',email:'anas@example.com'} : null);
+      value.auth = Object.prototype.hasOwnProperty.call(stored,'auth') ? stored.auth : (stored.onboardingComplete && !LIVE ? {provider:'email',email:'anas@example.com'} : null);
       value.growthHistory = Array.isArray(stored.growthHistory) ? stored.growthHistory.filter(function(p){return p&&Number.isFinite(p.nodes)&&Number.isFinite(p.edges)&&p.nodes>=0&&p.edges>=0;}).slice(-240) : [];
-      value.requests = Array.isArray(stored.requests) ? stored.requests : [];
+      // Live mode keeps no local questions (views-b brings them from the server); an older page
+      // saved some with store titles in them, so they are dropped here.
+      value.requests = !LIVE && Array.isArray(stored.requests) ? stored.requests : [];
       value.requestsSeeded = !!stored.requestsSeeded;
       value.mcpClients = Array.isArray(stored.mcpClients) ? stored.mcpClients.filter(function(c){return c&&typeof c.id==='string'&&typeof c.name==='string';}) : [];
       value.pendingExports = stored.pendingExports && typeof stored.pendingExports === 'object' ? stored.pendingExports : {};
@@ -179,7 +181,8 @@
     else {ids=state.recentNodes;edges=state.recentEdges;}
     return {new_nodes:graph.nodes.filter(function(n){return ids.includes(n.data.id);}).map(function(n){return n.data;}),new_edges:graph.edges.filter(function(e){return edges.includes(e.data.id);}).map(function(e){return e.data;})};
   }
-  function selfNode(){return {data:{id:'grove-self',type:'person',label:state.name||'Anas',status:'active',summary:'Your world, connected through the sources you bring to Grove',created_at:'2026-10-28T00:00:00Z'}};}
+  // The sim's example name is fixture mode only; live mode with no name known shows 'You'.
+  function selfNode(){return {data:{id:'grove-self',type:'person',label:state.name||(LIVE?'You':'Anas'),status:'active',summary:'Your world, connected through the sources you bring to Grove',created_at:'2026-10-28T00:00:00Z'}};}
   // Live mode: the last graph payload, with the self item renamed to the identity node's id.
   var live = { selfId: null, nodes: [], edges: [] };
   function isHubKind(type) { var style = ((window.GroveLive && window.GroveLive.KIND_STYLE) || {})[type] || type; return style === 'company' || style === 'project'; }
@@ -315,7 +318,8 @@
   function acknowledgeChanges(){state.recentNodes=[];state.recentEdges=[];state.nodeDelta=0;state.edgeDelta=0;save();return getState();}
   function cancelExport(id){delete state.pendingExports[id];save();return getState();}
   function seedRequests(){
-    if(!state.onboardingComplete||!fixture||!Object.keys(state.accountImports).length)return;
+    // Live mode: the questions come from the server (views-b); none are made from store titles.
+    if(LIVE||!state.onboardingComplete||!fixture||!Object.keys(state.accountImports).length)return;
     if(state.requestsSeeded&&state.requests.every(function(r){return r.targetLabel||r.status==='answered';}))return;
     var graph=visibleElements(fixture),nodes=graph.nodes.map(function(n){return n.data;}),map={};nodes.forEach(function(n){map[n.id]=n;});
     var node=nodes.find(function(n){return n.type==='project';})||nodes.find(function(n){return n.id!=='grove-self';});
@@ -336,7 +340,8 @@
   }
   function removeMcpClient(id){state.mcpClients=state.mcpClients.filter(function(c){return c.id!==id;});save();return getState();}
   function answerRequest(id,answer){var r=state.requests.find(function(r){return r.id===id;});var text=String(answer||'').trim().slice(0,2000);if(!r||!text)return getState();r.answer=text;r.status='answered';r.answeredAt=new Date().toISOString();save();return getState();}
-  function signOut(){state.auth=null;save();return getState();}
+  // Live mode: the last graph payload goes too, so no item of the session stays in memory.
+  function signOut(){state.auth=null;if(LIVE)live={selfId:null,nodes:[],edges:[]};save();return getState();}
   function saveGrowth(value){['focus','reading','avoid'].forEach(function(k){state.growth[k]=String(value[k]||'').trim().slice(0,1500);});state.growth.confirm=!!value.confirm;save();return getState();}
   function clearGrove(){var auth=state.auth,name=state.name,growth=state.growth;resetOnboarding();state.auth=auth;state.name=name;state.growth=growth;state.onboardingStep=1;save({reload:true});return getState();}
 
@@ -351,8 +356,9 @@
   }
 
   function signIn(provider,email) {
-    state.auth={provider:provider,email:String(email||'anas@example.com').trim()};
-    if(!state.name)state.name='Anas';
+    // The example identity is fixture mode only: live mode keeps the email the sign-in knows ('' if none).
+    state.auth={provider:provider,email:String(email||(LIVE?'':'anas@example.com')).trim()};
+    if(!state.name&&!LIVE)state.name='Anas';
     save();return getState();
   }
   function disconnectSource(provider) {

@@ -21,7 +21,8 @@ _PLANTED_FOR = "planted_for"
 _PURGE_BATCH = 1000
 
 
-def _refuse_real_world(world_id: str) -> None:
+def refuse_real_world(world_id: str) -> None:
+    """Raise ValueError unless world_id names a t_ test world."""
     if _TEST_WORLD.fullmatch(world_id) is None:
         raise ValueError("test helpers work on t_ worlds only")
 
@@ -34,7 +35,7 @@ def plant_node(
     primitive plants a row of the store-wide sentinel world and ties it to this test world, so
     the purge of the test world removes it.
     """
-    _refuse_real_world(world_id)
+    refuse_real_world(world_id)
     # Every label is checked against the catalogue, so splicing it into the text is safe.
     labels = label.split(":")
     if labels == [_WORLD_LABEL]:
@@ -61,8 +62,8 @@ def plant_link(
     **props: Any,
 ) -> dict[str, Any]:
     """to_world plants a link that crosses worlds, which only a test of the wall may want."""
-    _refuse_real_world(world_id)
-    _refuse_real_world(to_world or world_id)
+    refuse_real_world(world_id)
+    refuse_real_world(to_world or world_id)
     row = {
         "id": new_id(world_id),
         **props,
@@ -121,7 +122,7 @@ def plant_session(
     The token is fresh random text; only its hash is stored. expires_at defaults to one hour after
     the clock's now. The user and the session carry planted_for, so the purge removes them.
     """
-    _refuse_real_world(world_id)
+    refuse_real_world(world_id)
     at = clock.now()
     user_id = user_id or new_id()
     token = secrets.token_urlsafe(32)
@@ -146,19 +147,19 @@ def plant_session(
 
 def set_self_item(driver: Driver, world_id: str, item_id: str | None) -> None:
     """Set or clear World.self_item_id, the column signin owns, on a test world's row."""
-    _refuse_real_world(world_id)
+    refuse_real_world(world_id)
     with driver.session(database=DATABASE) as session:
         session.run(_SET_SELF_ITEM, world_id=world_id, item_id=item_id).consume()
 
 
 def seed_test_world(driver: Driver, world_id: str, *, owner_user_id: str) -> dict[str, Any]:
     """create_world for a t_ world: the :World row and the starter set, as a real world has."""
-    _refuse_real_world(world_id)
+    refuse_real_world(world_id)
     return create_world(driver, world_id, owner_user_id=owner_user_id)
 
 
 def purge_test_world(driver: Driver, world_id: str) -> None:
-    _refuse_real_world(world_id)
+    refuse_real_world(world_id)
     with driver.session(database=DATABASE) as session:
         for key in ("world_id", _PLANTED_FOR):
             while True:

@@ -117,7 +117,8 @@ async def post_positions(request: Request, session: Session) -> dict[str, int]:
         raise invalid_arguments("the body must be application/json", "content-type")
     try:
         body = json.loads(await _capped_body(request), parse_constant=_refuse_constant)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # RecursionError: a body nested deeper than the parser's limit, which fits in the cap.
         raise invalid_arguments("the body is not valid JSON", "body") from None
     if not isinstance(body, dict) or set(body) != {"positions"}:
         raise invalid_arguments("the body must be an object with positions only", "body")

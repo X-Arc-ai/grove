@@ -34,7 +34,6 @@
   var CLOSE_MS = 750;            // a section closing
   var READY_MS = 2600;           // the page has opened and settled; containers are read from the map
   var START = -Math.PI / 2;
-  var SPEEDS = [1, 2, 4];
 
   // Mirrors of app.js drawing constants (DENSE default), so a node is drawn exactly as the page draws it.
   var SIZES = { company: 42, project: 38, person: 24, instance: 22, product: 17, client: 16, goal: 13, decision: 13,
@@ -72,7 +71,8 @@
   var writes = [];               // every write CCU and CCCo make in the loop: {p, k, n, at, end, src, turn}
   var marks = {};                // node index -> the writes on it
   var zones = [];                // sections that show as CCCl's zone at some point of the loop
-  var simT = 0, playing = params.get('pause') !== '1', speed = SPEEDS.indexOf(+params.get('speed')) >= 0 ? +params.get('speed') : 1;
+  // The playback bar is gone, and with it every way to pause or speed up the loop.
+  var simT = 0, playing = true, speed = 1;
   var lastTick = 0, installedAt = 0, ready = false;
   var Graph = null, fgById = {}, fgNodesRef = null, nbrsOf = {};
   var col = PALETTE.light, shades = [], theme = null, cream = '#ffffff', accent = '#16a34a';
@@ -1271,9 +1271,15 @@
     if (c <= 0) return 'Cleaned this cycle';
     return 'Cleaned ' + c + (c === 1 ? ' cycle' : ' cycles') + ' ago';
   }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  // An item title as HTML text for the panel line: titles are store text, never markup.
   function label(i) {
-    var n = fg(i), t = (n && n.title) || D.ids[i];
-    return t.length > 42 ? t.slice(0, 41).replace(/[\s,;:.-]+$/, '') + '…' : t;
+    var n = fg(i), t = String((n && n.title) || D.ids[i]);
+    return esc(t.length > 42 ? t.slice(0, 41).replace(/[\s,;:.-]+$/, '') + '…' : t);
   }
   var DONE = { add: 'added this', update: 'updated this', retire: 'retired this', link: 'linked this', unlink: 'unlinked this' };
   var COMING = { add: 'is adding this', update: 'is about to update this', retire: 'is about to retire this', link: 'is about to link this', unlink: 'is about to unlink this' };
@@ -1297,7 +1303,7 @@
       var other = wr.n.length > 1 ? (wr.n[0] === i ? wr.n[1] : wr.n[0]) : null;
       var done = wr.at <= simT, link = wr.k === 'link' || wr.k === 'unlink';
       var head = done ? DONE[wr.k] + (link && other !== null ? ' to ' + label(other) : '') : (wr.p === 'O' ? 'is about to connect this' : COMING[wr.k]);
-      var sub = wr.p === 'U' ? (wr.src ? 'From ' + wr.src : 'From what came in')
+      var sub = wr.p === 'U' ? (wr.src ? 'From ' + esc(wr.src) : 'From what came in')
         : !done ? (other !== null ? 'With ' + label(other) : 'While connecting the brain')
         : link ? 'A new link this round' : 'Updated while connecting the brain';
       return { p: wr.p, head: head, sub: sub };
@@ -1371,17 +1377,9 @@
     following: function(){return following;},
   };
 
+  // Escape stops following an agent. The playback keys left with the playback bar.
   document.addEventListener('keydown', function (e) {
     if (!on || !D || document.querySelector('.gp-dialog') || /input|textarea/i.test((e.target && e.target.tagName) || '')) return;
-    if(e.key==='Escape'&&following){stopFollowing(true);return;}
-    if (e.key === ' ') { e.preventDefault(); playing = !playing; }
-    else if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-      // jump to the next or previous turn
-      var idx = 0;
-      for (var i = 0; i < turns.length; i++) if (simT >= turns[i].t0) idx = i;
-      if (e.key === 'ArrowRight') idx = (idx + 1) % turns.length;
-      else if (simT - turns[idx].t0 < 1500) idx = Math.max(0, idx - 1);
-      simT = turns[idx].t0 + 1;
-    }
+    if (e.key === 'Escape' && following) stopFollowing(true);
   });
 })();
