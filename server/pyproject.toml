@@ -35,5 +35,6 @@ select = ["E", "F", "I", "UP", "B"]
 testpaths = ["tests"]
 markers = [
     "live: calls a model; runs only in a lane, never in CI",
+    "browser: drives a real browser with Playwright; runs only in a lane, never in CI",
 ]
-addopts = "-m 'not live'"
+addopts = "-m 'not live and not browser'"

@@ -163,9 +163,9 @@ const fgPositions=pg=>Object.fromEntries(pg.sandbox.GroveView.nodes().map(n=>[n.
   assert.deepStrictEqual(fgPositions(reload),firstMap,'A reload keeps every position');
 
   // 4. New items arrive: the old ones keep their positions; only the new ones are saved.
-  const fresh=[{id:'n-org',label:'Wrenfield Cooperative',type:'organisation'},{id:'n-t1',label:'Plan the cooperative fair',type:'task'},{id:'n-t2',label:'Order the fair banners',type:'task'},{id:'n-t3',label:'Book the fair hall',type:'task'},{id:'n-t4',label:'Proof the spring catalogue',type:'task'},{id:'n-e1',label:'Open studio day',type:'event'}];
+  const fresh=[{id:'n-org',label:'Wrenfield Cooperative',type:'organisation'},{id:'n-t1',label:'Plan the cooperative fair',type:'task'},{id:'n-t2',label:'Order the fair banners',type:'task'},{id:'n-t3',label:'Book the fair hall',type:'task'},{id:'n-t4',label:'Proof the spring catalogue',type:'task'},{id:'n-e1',label:'Open studio day',type:'event'},{id:'n-o1',label:'Noticed a longer queue at the fair',type:'observation'}];
   fresh.forEach(n=>world.nodes.push(Object.assign({},world.nodes[1],n,{summary:''})));
-  world.edges.push({id:'rn1',source:'n-t1',target:'n-org',verb:'part of',label:'part of'},{id:'rn2',source:'n-t2',target:'n-org',verb:'part of',label:'part of'},{id:'rn3',source:'n-t3',target:'n-org',verb:'part of',label:'part of'},{id:'rn4',source:'n-t4',target:'pr001',verb:'part of',label:'part of'});
+  world.edges.push({id:'rn1',source:'n-t1',target:'n-org',verb:'part of',label:'part of'},{id:'rn2',source:'n-t2',target:'n-org',verb:'part of',label:'part of'},{id:'rn3',source:'n-t3',target:'n-org',verb:'part of',label:'part of'},{id:'rn4',source:'n-t4',target:'pr001',verb:'part of',label:'part of'},{id:'rn5',source:'n-o1',target:'p012',verb:'about',label:'about'});
   const grown=page(server,store,GRAPH_FILES);await settle();
   assert.deepStrictEqual(grown.errors,[]);
   const grownMap=fgPositions(grown);
@@ -173,6 +173,9 @@ const fgPositions=pg=>Object.fromEntries(pg.sandbox.GroveView.nodes().map(n=>[n.
   posts=positionsCalls(server);assert.equal(posts.length,2);
   assert.deepStrictEqual(posts[1].body.positions.map(p=>p.id).sort(),fresh.map(n=>n.id).sort(),'Only the new items are saved');
   const tFair=grownMap['n-t1'],hub=grownMap['n-org'];assert(Math.hypot(tFair.x-hub.x,tFair.y-hub.y)<600,'A new task sits near its new hub');
+  // A new leaf whose only link is to a leaf (no hub of its own) sits by that leaf, not by a hub
+  // one hop away whose seed is elsewhere (the browser test saw such arrivals land 700 px off).
+  const seen=grownMap['n-o1'],friend=grownMap['p012'];assert(Math.hypot(seen.x-friend.x,seen.y-friend.y)<150,'A new leaf sits near the leaf it links to');
 
   // 5. A failed save keeps the map; the next load retries with the same positions.
   const world2=liveWorld();world2.selfId=null;world2.failPositions=true;
@@ -197,6 +200,13 @@ const fgPositions=pg=>Object.fromEntries(pg.sandbox.GroveView.nodes().map(n=>[n.
   assert.equal(S2.getState().currentNodeCount,world2.nodes.length,'Counts are real items only');
   // A signed-out graph read answers a typed error as text.
   world2.graphStatus=401;const denied=await failing.sandbox.groveApi('/api/graph');assert.equal(denied.ok,false);assert.equal(denied.status,401);assert.equal((await denied.json()).error,'Sign in to continue');
+  // A signed-out first load: the graph read is refused and the loading cover steps aside, so the
+  // sign-in card shows (the browser test saw "Unable to open this brain" cover the card).
+  const outWorld=liveWorld();outWorld.session=false;outWorld.graphStatus=401;
+  const signedOut=page(makeServer(outWorld),{},GRAPH_FILES);await settle();
+  assert(signedOut.elements.loading.classList.contains('hidden'),'A signed-out load hides the loading cover');
+  assert(!/Unable to open/.test(signedOut.elements.loading.textContent),'A signed-out load shows no failure text');
+  assert.deepStrictEqual(signedOut.errors,[],'A signed-out load logs no error');
 
   // 6. Sign-in in live mode (product.js): session check, Google, Apple, email code, logout.
   const AUTH_FILES=['live.js','simulation.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'];
