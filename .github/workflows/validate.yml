@@ -88,6 +88,9 @@ jobs:
       - name: Writer lint
         run: uv run python -m grove.lints writer
 
+      - name: Runner lint
+        run: uv run python -m grove.lints runner
+
       - name: Migrations on the empty store, twice
         run: |
           first="$(uv run python -m grove.writer.migrate --require-empty)"
