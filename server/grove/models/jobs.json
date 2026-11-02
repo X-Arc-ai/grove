@@ -33,7 +33,7 @@
     "second_opinion": {"family": "glimmer", "effort": "medium", "at_ceiling": "defer"},
     "consolidation": {"family": "spark", "effort": "high", "at_ceiling": "defer"},
     "explain_break": {"family": "spark", "effort": "low", "at_ceiling": "defer"},
-    "update_pass": {"family": "spark", "effort": "low", "at_ceiling": "continue"},
+    "update_pass": {"family": "spark", "effort": "low", "at_ceiling": "defer"},
     "cleanup_pass": {"family": "spark", "effort": "low", "at_ceiling": "defer"},
     "consolidation_pass": {"family": "spark", "effort": "high", "at_ceiling": "defer"},
     "smoke": {"family": "spark", "effort": "minimal", "at_ceiling": "defer"}

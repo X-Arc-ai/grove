@@ -200,17 +200,29 @@ def load_catalog() -> Catalog:
 
 
 def _https_base(name: str, value: str, allowed) -> str:
-    parts = urlsplit(value)
-    if parts.scheme != "https" or not parts.hostname or parts.username or parts.password:
-        raise NotConfigured(f"{name} must be an https URL with a host and no user part")
     try:
-        port = parts.port
+        parts = urlsplit(value)
+        hostname, port = parts.hostname, parts.port
     except ValueError:
-        port = -1
-    host = parts.hostname.rstrip(".").lower()
+        raise NotConfigured(f"{name} is not a URL") from None
+    bare = parts.username is None and parts.password is None and value == value.strip()
+    if parts.scheme != "https" or not hostname or not bare:
+        raise NotConfigured(f"{name} must be an https URL with a host and no user part")
+    host = hostname.rstrip(".").lower()
     if port not in (None, 443) or not _HOST_TEXT.fullmatch(host) or not allowed(host):
         raise NotConfigured(f"{name} names a host outside the model hosts")
     return value.rstrip("/")
+
+
+def _key(name: str, value: str | None) -> str | None:
+    """A stray newline from an env file would break the header, and the error text quotes it."""
+    if value and any(char.isspace() or not char.isprintable() for char in value):
+        raise NotConfigured(f"{name} holds a space or a control character")
+    return value or None
+
+
+def valid_run_id(run_id: object) -> bool:
+    return isinstance(run_id, str) and bool(run_id) and len(run_id) <= 80 and run_id.isascii()
 
 
 def _meta_host(host: str) -> bool:
@@ -279,11 +291,11 @@ def load_model_settings(env: dict[str, str] | None = None) -> ModelSettings:
             env.get("GROVE_META_BASE_URL") or DEFAULT_META_BASE_URL,
             _meta_host,
         ),
-        meta_key=env.get("MODEL_API_KEY") or None,
+        meta_key=_key("MODEL_API_KEY", env.get("MODEL_API_KEY")),
         glimmer_base_url=(
             _https_base("GROVE_GLIMMER_BASE_URL", glimmer, _glimmer_host) if glimmer else None
         ),
-        glimmer_key=env.get("GROVE_GLIMMER_KEY") or None,
+        glimmer_key=_key("GROVE_GLIMMER_KEY", env.get("GROVE_GLIMMER_KEY")),
         daily_budget=_budget(env.get("GROVE_DAILY_BUDGET_USD")),
         gateway_secret=secret.encode("utf-8") if secret else None,
         gateway_host=env.get("GROVE_GATEWAY_HOST") or DEFAULT_GATEWAY_HOST,

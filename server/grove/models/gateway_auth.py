@@ -12,7 +12,7 @@ import json
 from dataclasses import dataclass
 
 from grove import clock
-from grove.models.config import Catalog
+from grove.models.config import Catalog, valid_run_id
 from grove.models.errors import ModelRefused, Unauthenticated
 from grove.store.errors import ScopeError
 from grove.store.scope import check_world_id
@@ -62,7 +62,7 @@ def mint(
 ) -> str:
     check_world_id(world_id)
     catalog.job(job)
-    if not isinstance(run_id, str) or not run_id or len(run_id) > 80 or not run_id.isascii():
+    if not valid_run_id(run_id):
         raise ModelRefused("run_id must be a short ASCII id")
     if not 0 < ttl_seconds <= MAX_TTL_SECONDS:
         raise ModelRefused(f"ttl_seconds must be between 1 and {MAX_TTL_SECONDS}")

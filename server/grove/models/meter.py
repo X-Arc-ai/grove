@@ -1,9 +1,9 @@
 """Metering and the daily budget (D15): the gate before a call and the record after it.
 
 A job marked `defer` waits once the world's day has reached its ceiling: verification,
-consolidation, second opinions, and the clean-up and consolidation passes. A job marked
-`continue` runs on, because it keeps memory current and is the cheap part: triage, extraction,
-transcription and the update pass. Both kinds are metered the same way.
+consolidation, second opinions, and every agent pass (an agent call stops at the ceiling). A job
+marked `continue` runs on, because it keeps memory current, runs in code and is the cheap part:
+triage, extraction and transcription. Both kinds are metered the same way.
 
 Two calls that pass the gate at the same moment can both run, so a day can end above its ceiling
 by the cost of the calls in flight. The ceiling stops the next deferrable call, not a call that

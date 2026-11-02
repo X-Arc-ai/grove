@@ -1,6 +1,7 @@
 """Typed errors of the model-call layer, in the B.3 shape.
 
-A message never holds a key or a prompt."""
+A message never holds a key. A provider's own words can echo part of a prompt, so they go only to
+the caller that sent that prompt, never to a log."""
 
 from typing import Any
 

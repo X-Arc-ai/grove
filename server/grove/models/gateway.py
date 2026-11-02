@@ -21,7 +21,6 @@ The gateway holds the Meta key and the Glimmer key; the runner holds neither.
 import asyncio
 import json
 import math
-import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -46,16 +45,20 @@ from grove.models.egress import MODEL_LAYER, AsyncAllowlistTransport, EgressPoli
 from grove.models.errors import ModelError, ModelRefused, ProviderError, Unauthenticated
 from grove.models.gateway_auth import RunClaims, verify
 from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, NOT_SENT, asend, reset_after
-from grove.models.layer import (
-    UNKNOWN_SPEND,
-    Usage,
-    chat_usage,
-    clean_tools,
-    default_cache_key,
-    estimate_usage,
-    glimmer_effort_fields,
-)
+from grove.models.layer import default_cache_key, glimmer_effort_fields
 from grove.models.meter import Meter
+from grove.models.shape import (
+    Usage,
+    chat_answer,
+    chat_usage,
+    check_response_format,
+    clean_messages,
+    clean_tools,
+    estimate_usage,
+    may_have_run,
+    redact,
+    usage_or_estimate,
+)
 from grove.store.connection import Driver
 from grove.writer.model_calls import ModelCall
 
@@ -86,13 +89,8 @@ _KNOWN_FIELDS = frozenset(
         *_OUTPUT_FIELDS,
     }
 )
-_RESPONSE_FORMATS = frozenset({"text", "json_object", "json_schema"})
-_ROLES = frozenset({"system", "developer", "user", "assistant", "tool"})
-_MESSAGE_KEYS = ("role", "content", "name", "tool_calls", "tool_call_id")
-_DATA_IMAGE = "data:image/"
 # After the client leaves, how long the pump reads on for the usage chunk.
 DRAIN_SECONDS = 120.0
-_BEARER = re.compile(r"(?i)bearer\s+\S+")
 
 
 def _error(error: ModelError) -> JSONResponse:
@@ -124,50 +122,21 @@ def _effort(claims_job: Any, spec: ModelSpec, catalog: Catalog) -> str | None:
     return spec.efforts[0]
 
 
-def _part(part: object) -> dict:
-    if not isinstance(part, dict):
-        raise ModelRefused("a content part must be an object")
-    if part.get("type") == "text" and isinstance(part.get("text"), str):
-        return {"type": "text", "text": part["text"]}
-    if part.get("type") == "image_url":
-        image = part.get("image_url")
-        url = image.get("url") if isinstance(image, dict) else image
-        if isinstance(url, str) and url.startswith(_DATA_IMAGE):
-            return {"type": "image_url", "image_url": {"url": url}}
-    raise ModelRefused(
-        "only text parts and images as data URLs are taken: a provider never fetches a URL"
-    )
-
-
-def _message(message: object) -> dict:
-    if not isinstance(message, dict) or message.get("role") not in _ROLES:
-        raise ModelRefused("a message must be an object with a known role")
-    out = {key: message[key] for key in _MESSAGE_KEYS if key in message}
-    content = out.get("content")
-    if isinstance(content, list):
-        out["content"] = [_part(part) for part in content]
-    elif content is not None and not isinstance(content, str):
-        raise ModelRefused("message content must be text or a list of parts")
-    return out
-
-
 def upstream_body(body: dict, *, spec: ModelSpec, effort: str | None, job: str) -> dict:
     out = {
         key: value
         for key, value in body.items()
         if key in _KNOWN_FIELDS and key not in _EFFORT_FIELDS
     }
-    messages = out.get("messages")
-    if not isinstance(messages, list) or not messages:
-        raise ModelRefused("messages must be a list with at least one message")
-    out["messages"] = [_message(message) for message in messages]
+    out["messages"] = clean_messages(out.get("messages"))
     if "tools" in out:
         out["tools"] = clean_tools(out["tools"])
-    form = out.get("response_format")
-    if form is not None and (
-        not isinstance(form, dict) or form.get("type") not in _RESPONSE_FORMATS
-    ):
-        raise ModelRefused("response_format must be text, json_object or json_schema")
+    check_response_format(out.get("response_format"))
+    if not isinstance(out.get("stream", False), bool):
+        # A provider could read the text "false" as false, and the meter would look for a stream.
+        raise ModelRefused("stream must be true or false")
+    if not isinstance(out.get("stream_options") or {}, dict):
+        raise ModelRefused("stream_options must be an object")
     n = out.pop("n", 1)
     if n != 1:
         raise ModelRefused("n must be 1")
@@ -263,13 +232,8 @@ class _StreamMeter:
 
 
 def _empty_completion(doc: dict) -> bool:
-    choices = doc.get("choices")
-    choice = choices[0] if isinstance(choices, list) and choices else {}
-    message = choice.get("message") if isinstance(choice, dict) else None
-    if not isinstance(message, dict):
-        return True
-    content = message.get("content")
-    return not (isinstance(content, str) and content.strip()) and not message.get("tool_calls")
+    text, calls, _ = chat_answer(doc)
+    return not text.strip() and not calls
 
 
 class Gateway:
@@ -356,8 +320,8 @@ class Gateway:
             claims = verify(self.secret, self.catalog, _bearer(request))
             try:
                 body = await request.json()
-            except ValueError as exc:
-                raise ModelRefused("the body is not JSON") from exc
+            except (ValueError, RecursionError):
+                raise ModelRefused("the body is not JSON") from None
             if not isinstance(body, dict) or not isinstance(body.get("model"), str):
                 raise ModelRefused("the body must be an object with a model")
             spec = self.catalog.model(body["model"])
@@ -365,13 +329,19 @@ class Gateway:
                 raise ModelRefused("this model does not take chat")
             job = self.catalog.job(claims.job)
             effort = _effort(job, spec, self.catalog)
-            out = upstream_body(body, spec=spec, effort=effort, job=claims.job)
             url, headers = self._route(spec)
+            try:
+                out = upstream_body(body, spec=spec, effort=effort, job=claims.job)
+                messages, tools = json.dumps(out["messages"]), json.dumps(out.get("tools") or [])
+                # A trial build: NaN or a lone surrogate cannot be sent, and it is said here.
+                self.client.build_request("POST", url, json=out)
+            except (ValueError, TypeError, RecursionError):
+                raise ModelRefused("the body cannot be sent as JSON") from None
             await run_in_threadpool(self._admit, claims)
         except ModelError as error:
             return _error(error)
         stream = bool(out.get("stream"))
-        input_chars = len(json.dumps(out.get("messages"))) + len(json.dumps(out.get("tools") or []))
+        input_chars = len(messages) + len(tools)
         started = clock.monotonic()
         attempt = [started]
 
@@ -391,6 +361,9 @@ class Gateway:
                 sleep=self._sleep,
                 attempts=MODAL_ATTEMPTS if spec.route == "modal" else MAX_ATTEMPTS,
             )
+        except ModelError as error:
+            # An egress refusal: nothing left, so nothing is recorded.
+            return _error(error)
         except httpx.RequestError as exc:
             # No answer, or an answer whose body could not be read (a DecodingError). Past a
             # failed connect, the provider may have run the call, so the row carries an estimate.
@@ -407,8 +380,8 @@ class Gateway:
             finally:
                 await response.aclose()
             outcome = "rate_limited" if response.status_code == 429 else "provider_error"
-            spent = response.status_code in UNKNOWN_SPEND
-            usage = estimate_usage(input_chars) if spent else Usage()
+            ran = may_have_run(response.status_code)
+            usage = estimate_usage(input_chars) if ran else Usage()
             await run_in_threadpool(
                 record, claims, spec, effort, usage, outcome, started, attempt[0]
             )
@@ -427,7 +400,8 @@ class Gateway:
                     record, claims, spec, effort, usage, "provider_error", started, attempt[0]
                 )
                 return _error(ProviderError("the model provider's answer is not a JSON object"))
-            usage = chat_usage(doc.get("usage"))
+            text, _, _ = chat_answer(doc)
+            usage = usage_or_estimate(chat_usage(doc.get("usage")), input_chars, len(text))
             # The answer passes on as it came; an empty one is recorded as such (D15).
             outcome = "invalid_output" if _empty_completion(doc) else "ok"
             await run_in_threadpool(
@@ -441,11 +415,7 @@ class Gateway:
         )
 
     def _redact(self, text: str) -> str:
-        """A provider's message with the keys this gateway holds, and any bearer value, removed."""
-        for secret in (self.settings.meta_key, self.settings.glimmer_key):
-            if secret:
-                text = text.replace(secret, "<redacted>")
-        return _BEARER.sub("Bearer <redacted>", text)
+        return redact(text, (self.settings.meta_key, self.settings.glimmer_key))
 
     def _upstream_error(self, response: httpx.Response) -> JSONResponse:
         """The provider's status with its message, in the B.3 shape; nothing else of its body."""
@@ -543,12 +513,11 @@ class Gateway:
             # The cap's cancel lands here too: the record runs first, with no await before it.
             if outcome is None:
                 outcome = "client_closed" if gone.is_set() else "provider_error"
-            usage = (
-                chat_usage(watch.usage) if watch.usage else estimate_usage(input_chars, watch.chars)
-            )
             try:
+                usage = usage_or_estimate(chat_usage(watch.usage), input_chars, watch.chars)
                 self._record(claims, spec, effort, usage, outcome, started, gpu_from)
             finally:
+                # Whatever happened, the client's stream ends.
                 queue.put_nowait(None)
                 try:
                     await response.aclose()

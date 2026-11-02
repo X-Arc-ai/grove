@@ -111,7 +111,7 @@ def test_job_table_marks_which_jobs_continue_and_which_defer_at_the_ceiling(cata
         "triage_fallback": "continue",
         "extraction": "continue",
         "transcription": "continue",
-        "update_pass": "continue",
+        "update_pass": "defer",
         "verification": "defer",
         "second_opinion": "defer",
         "consolidation": "defer",
