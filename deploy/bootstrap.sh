@@ -11,6 +11,10 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/lib.sh
 . "$here/lib.sh"
 
+for tool in docker nginx certbot openssl; do
+    command -v "$tool" >/dev/null || die "$tool is not installed (docs/deploy.md, first setup)"
+done
+
 [ $# -eq 2 ] && [ "$1" = --base-url ] || die "usage: bootstrap.sh --base-url https://<host>"
 base=$2
 [[ $base =~ ^https://[a-z0-9.-]+$ ]] || die "the base URL must be https://<host>, with no path"

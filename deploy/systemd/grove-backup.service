@@ -9,4 +9,5 @@ ExecStart=/opt/grove/src/deploy/backup.sh
 # Runs after every run, also after a KILL that skipped the script's own restart.
 ExecStopPost=/opt/grove/src/deploy/services-up.sh
 TimeoutStartSec=1h
-TimeoutStopSec=10min
+# services-up.sh may wait for the lock, then for the store and the API.
+TimeoutStopSec=30min

@@ -133,7 +133,8 @@ def test_a_lock_inside_its_cap_is_never_taken_over(tmp_path):
 
 
 def test_a_normal_release_leaves_no_releaser_running(tmp_path):
-    marker = "4321"
+    # A cap only this test run uses, so another run on the machine cannot match the process name.
+    marker = str(40000 + os.getpid() % 20000)
     done = subprocess.run(
         ["bash", str(SCRIPT), "bash", "-c", f"pgrep -f -- 'sleep {marker}' >/dev/null && exit 8"],
         env=_env(tmp_path, cap=int(marker)),
@@ -145,3 +146,35 @@ def test_a_normal_release_leaves_no_releaser_running(tmp_path):
     assert _wait_for(
         lambda: subprocess.run(["pgrep", "-f", "--", f"sleep {marker}"]).returncode == 1, 5
     )
+
+
+def test_a_lock_folder_with_no_owner_file_and_past_its_cap_is_taken_over(tmp_path):
+    lock = tmp_path / "deploy.lock.d"
+    lock.mkdir()
+    two_hours_ago = clock.now().timestamp() - 7200
+    os.utime(lock, (two_hours_ago, two_hours_ago))
+    done = subprocess.run(
+        ["bash", str(SCRIPT), "true"],
+        env=_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 0, done.stderr
+    assert "took over" in done.stderr
+    assert not lock.exists()
+
+
+def test_a_fresh_lock_folder_with_no_owner_file_is_held_and_says_so(tmp_path):
+    lock = tmp_path / "deploy.lock.d"
+    lock.mkdir()
+    done = subprocess.run(
+        ["bash", str(SCRIPT), "true"],
+        env=_env(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 75
+    assert "no owner file yet" in done.stderr
+    assert lock.is_dir()

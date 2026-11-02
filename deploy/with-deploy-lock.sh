@@ -24,7 +24,9 @@ owner_field() {
 }
 
 refuse() {
-    echo "the deploy lock is held: $(grep -v '^token=' "$lock/owner" 2>/dev/null | tr '\n' ' ')" >&2
+    local shown
+    shown=$(grep -v '^token=' "$lock/owner" 2>/dev/null | tr '\n' ' ' || true)
+    echo "the deploy lock is held: ${shown:-no owner file yet}" >&2
     exit 75
 }
 
@@ -33,8 +35,12 @@ refuse() {
 take_over_stale() {
     local since old_token stale
     since=$(owner_field since_epoch "$lock")
-    [[ $since =~ ^[0-9]+$ ]] || return 1
-    [ $(($(date +%s) - since)) -ge "$cap" ] || return 1
+    if [[ $since =~ ^[0-9]+$ ]]; then
+        [ $(($(date +%s) - since)) -ge "$cap" ] || return 1
+    else
+        # A holder killed between its mkdir and its owner file: the folder's own age decides.
+        [ -n "$(find "$lock" -maxdepth 0 -mmin +"$((cap / 60))" 2>/dev/null)" ] || return 1
+    fi
     old_token=$(owner_field token "$lock")
     stale="$lock.stale.$$"
     mv "$lock" "$stale" 2>/dev/null || return 1
@@ -42,7 +48,7 @@ take_over_stale() {
         mv "$stale" "$lock" 2>/dev/null || true
         return 1
     fi
-    echo "took over a deploy lock past its cap: $(grep -v '^token=' "$stale/owner" | tr '\n' ' ')" >&2
+    echo "took over a deploy lock past its cap: $(grep -v '^token=' "$stale/owner" 2>/dev/null | tr '\n' ' ' || true)" >&2
     rm -rf "${stale:?}"
     mkdir "$lock" 2>/dev/null
 }

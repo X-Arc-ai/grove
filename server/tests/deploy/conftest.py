@@ -87,7 +87,8 @@ elif args[0] == "ps" or args[1:2] == ["ls"]:
     for stale in os.environ.get("FAKE_STALE", "").split():
         print(stale)
 elif args[0] == "inspect":
-    print(os.environ.get("FAKE_HEALTH", "healthy"))
+    unhealthy = "container-" + os.environ.get("FAKE_UNHEALTHY", "none")
+    print("unhealthy" if args[-1] == unhealthy else os.environ.get("FAKE_HEALTH", "healthy"))
 elif args[0] == "run" and "grove.store.dump_fingerprint" in args:
     live = os.environ.get("FAKE_FP", "a" * 64)
     fingerprint("restore_fingerprints", os.environ.get("FAKE_RESTORE_FP", live))

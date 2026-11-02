@@ -14,7 +14,6 @@ GROVE_SYSTEMD_DIR=${GROVE_SYSTEMD_DIR:-/etc/systemd/system}
 GROVE_LETSENCRYPT_DIR=${GROVE_LETSENCRYPT_DIR:-/etc/letsencrypt}
 GROVE_ACME_ROOT=${GROVE_ACME_ROOT:-/var/www/grove-acme}
 GROVE_PROJECT=grove
-GROVE_NEO4J_VOLUME=grove-neo4j-data
 
 log() {
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
@@ -25,11 +24,17 @@ die() {
     exit 1
 }
 
+# The sha the box runs, or nothing before the first deploy.
+served_sha() {
+    if [ -s "$GROVE_STATE/deployed.sha" ]; then
+        tr -d '[:space:]' <"$GROVE_STATE/deployed.sha"
+    fi
+}
+
 # The deployed sha names the images, so every compose call needs it, a stop as much as a build.
 deployed_sha() {
-    local file="$GROVE_STATE/deployed.sha"
-    [ -s "$file" ] || die "no deployed sha in $file: deploy first"
-    tr -d '[:space:]' <"$file"
+    [ -s "$GROVE_STATE/deployed.sha" ] || die "no deployed sha in $GROVE_STATE: deploy first"
+    served_sha
 }
 
 compose() {
@@ -43,7 +48,7 @@ compose_run() {
     compose run --rm --no-deps -T "$@" </dev/null
 }
 
-# One deploy or backup at a time on the box. The lock lives on fd 9, so an exec keeps it.
+# One deploy or backup at a time on the box. The lock lives on fd 9, so child processes keep it.
 take_lock() {
     local wait_seconds=$1
     install -d -m 700 "$(dirname "$GROVE_LOCK_FILE")"

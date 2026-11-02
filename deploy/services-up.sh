@@ -17,11 +17,18 @@ fi
 # store's lock. The box lock is held, so no live deploy or backup owns one now.
 for id in $(docker ps --all --quiet --filter "label=com.docker.compose.project=$GROVE_PROJECT" \
     --filter "label=com.docker.compose.oneoff=True"); do
-    docker rm --force --volumes "$id" >/dev/null
-    log "removed a one-off container left by a killed run"
+    if docker rm --force --volumes "$id" >/dev/null; then
+        log "removed a one-off container left by a killed run"
+    else
+        log "could not remove one-off container $id"
+    fi
 done
-compose start neo4j
-wait_healthy neo4j || die "neo4j is not healthy"
-compose start api runner
+
+# Each step runs whatever the last one did: this script is the last thing that starts them.
+failed=0
+compose start neo4j || failed=1
+wait_healthy neo4j "${GROVE_SERVICES_TRIES:-300}" || failed=1
+compose start api runner || failed=1
 # The API's health check reads the store, so a healthy API means the database answers.
-wait_healthy api || die "the API is not healthy: the store does not answer"
+wait_healthy api "${GROVE_SERVICES_TRIES:-300}" || failed=1
+[ "$failed" = 0 ] || die "the services are not all healthy"
