@@ -20,10 +20,13 @@ _NEXT_SEQUENCE = (
 )
 # The same row and the same lock, with no change: taken first, before anything is read, so a read
 # that takes no lock of its own (the near-duplicate check, the restatement read, the slot read)
-# sees every batch that committed before this one. A rollback leaves no gap.
+# sees every batch that committed before this one. A rollback leaves no gap. It reads no column:
+# `SET w.next_sequence = w.next_sequence` read the counter before it waited for the lock and wrote
+# that stale value back after, so a batch that waited set the counter back (probed on the store).
+# A marker set and removed in one statement takes the lock and changes nothing.
 _LOCK_WORLD = (
     CYPHER_PREFIX + "MATCH (w:World {id: $world_id}) "
-    "SET w.next_sequence = w.next_sequence RETURN w.id AS id"
+    "SET w.lock_marker = true REMOVE w.lock_marker RETURN w.id AS id"
 )
 
 

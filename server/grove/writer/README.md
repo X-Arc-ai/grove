@@ -58,6 +58,50 @@ Read helpers on the read side, for tests and for later lanes: `grove.store.asof.
 item_id, world_time)` replays an item's change entries to a world time (the head rule of D1),
 and `grove.writer.receipts.short_id(id)` gives the short form a receipt prints.
 
+### What is current (read side)
+
+```python
+from grove.store.current import standings, current_items, standing, has_ended, link_standing
+from grove.store.evidence_counts import distinct_episodes
+```
+
+D3's `current()` is one module, and every read and every guard asks it (S42). Each function that
+takes a `source` takes a `WorldQuery` or a `WorldTx`; in a `WorldTx` it reads that transaction's
+own writes, so a guard inside a batch sees what the batch wrote.
+
+| Function | What it does |
+|---|---|
+| `standings(source, item_ids) -> dict[str, Standing]` | The standing of each item's head row at the world's `clock.now`. An id with no item is left out. |
+| `current_items(source, item_ids) -> list[str]` | The ids, in order, whose standing is `current`. |
+| `standing(row, *, at, lifecycle_class, planned_origin=False, scheduled=None, successors=()) -> Standing` | The pure rule for one row: a head row, or a row from `item_as_of`. `Standing` holds `state` (`current`, `planned`, `reported`, `not_started`, `ended`, `overtaken`), `end_class`, `status_role`, `scheduled` (`{role: value}`), `successors` (`Successor(item_id, link_id, meaning)`) and `reason` (a code), and `is_current`. |
+| `has_ended(row) -> bool` | Rule 1 alone: an end class (`spent` too), a status role in `TERMINAL_ROLES`, or a stop clock. The writer's guards call it. |
+| `link_standing(row, *, at) -> Standing` | A link's state at `at`: `ended`, unless its stop clock lies wholly after `at` (never for `refuted`); `not_started` for a future start; else `current`. |
+| `distinct_episodes(source, target_ids) -> int` | One count of distinct episode ids among the active supporting rows of all the targets together (spec line 766). |
+
+The rules of `standing`, in order: (1) `ended`; (2) `overtaken` by an active "corrected by" or
+"superseded by" successor; (3) a bounded period, or a record that a plan scheduled, reads by its
+evidence and never by a date: confirmed and not inferred goes on (a period also needs a known
+start), reported done and not inferred reads `reported`, anything else reads `planned`; (4)
+`not_started` for a known start after `at`; (5) `current`. The successors and the scheduled values
+ride on every state.
+
+### The resolver
+
+```python
+from grove.writer.resolver import resolve_word, resolve_link_phrase, lexical_candidates
+```
+
+D8's reuse first (S43). The writer's own lookups on `Registry` are its strict form; extraction and
+the clean-up agent use the soft forms below. `Registry.load(source)` takes a `WorldTx` or a
+`WorldQuery`.
+
+| Function | What it does |
+|---|---|
+| `resolve_word(registry, word_type, phrase, *, kind_id=None) -> Resolution` | One phrase against the registry's usable words, in D8's order: an exact id or name, the normalised name, an alias; and only when none matched, the same again with a leading "is" or "are" dropped. `word_type` is `kind`, `meaning` or `property_name`, and `kind_id` is for property names only. `Resolution` holds `outcome` (`resolved`, `none`, `ambiguous`), `target`, `reversed`, `via`, `phrase`, `normalised` and `candidates` (`{id, name, reversed}` of an ambiguous phrase). Raises `Refused` (rule `empty_phrase`) for a phrase that normalises to nothing. |
+| `resolve_link_phrase(registry, phrase) -> LinkWord \| None` | A resolved phrase gives its meaning, with no phrase kept. An unmapped or ambiguous phrase rides on the generic meaning, with its phrase kept and its candidates. `LinkWord` holds `meaning`, `reversed`, `original_phrase`, `candidates` and `outcome`. A phrase that does not resolve gives `None` when the world has not exactly one usable generic meaning with no consequences. |
+| `lexical_candidates(source, kind_id, phrase, *, exclude_distinct_from=None) -> list[Candidate]` | Every item of the kind at trigram similarity 0.3 or more (`CANDIDATE_THRESHOLD`) over its title and its item aliases, best first. `Candidate` holds `item_id`, `score` (3 places) and `ended`: an ended item is flagged, never dropped. With `exclude_distinct_from`, that item and its distinct pairs are left out. |
+| `title_scores(source, phrase, titles) -> dict[str, float]` | The scoring that the candidate band and the near-duplicate gate share. |
+
 ## The caller
 
 ```python
@@ -157,6 +201,13 @@ that could hold text is stored by its hash. A refusal that never reached the req
 `scope_denied` with rule `write_scope` or `queue_worker`, `request_key_reused`, `repair_spent`,
 `lease_lost`, and `not_found` from `enqueue_request` or `apply_request`. A near-duplicate that passes
 on a named `distinct_from` writes a row too, with `override_used` true.
+
+A kind, a meaning or a property name that reaches two usable words is never picked: it is refused
+with `unknown_kind`, `unknown_meaning` or `invalid_arguments`, all with rule `ambiguous_phrase` and
+the candidates in `details`. A phrase that normalises to nothing (`"___"`, `"..."`) is refused with
+`invalid_arguments`, rule `empty_phrase`. The near-duplicate gate weighs only items with no end
+class, at 0.8 (`DEFAULT_THRESHOLD`, Appendix C): one starting value until `ingest-b` calibrates it
+per kind.
 
 ## Receipts
 
@@ -317,9 +368,23 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | A declined request gets one repair; a failed repair spends it, a shape fault too | `invalid_arguments` (rule `repair_spent`) | `test_requests.py` |
 | Only the holder finishes or fails a claimed request; only a queue worker works the queue | `invalid_arguments` (rule `lease_lost`), `scope_denied` (rule `queue_worker`) | `test_requests.py` |
 | "Saved" needs a receipt in hand; an unknown outcome or an unreadable receipt reads "saving" | (none) | `test_requests.py` |
-| A batch takes the world lock first, so two near-duplicate creates cannot both pass | `near_duplicate` | `test_requests.py` |
+| A batch takes the world lock first, so two near-duplicate creates cannot both pass; a batch that waited for it takes the next free sequence | `near_duplicate` | `test_requests.py`, `test_concurrency.py` |
 | A request id holds no text, at every entry point | `ValueError` | `test_requests.py` |
 | Every decline is logged by its operation, in ids and codes, with its near-duplicate candidates; an override is logged too | (none) | `test_declines.py` |
 | A log failure never masks a decline, and a late log never changes a saved row | (none) | `test_declines.py` |
 | A stale version is the only retryable decline | `version_conflict` | `test_declines.py` |
 | A read-only caller is refused by every write of the queue before the store | `scope_denied` | `test_bypass.py` |
+| A pass killed as a real process right after the enqueue, inside the open transaction, or after the commit before the receipt gives one effect; its receipt matches the rows, and one more replay changes nothing | (none) | `test_durability.py` |
+| The same id and batch twice change nothing; a known link restated from a new source gets one evidence row and no second link; an overlapping message adds no row and no text | (none) | `test_idempotency.py` |
+| Two agents on one item: the loser gets a stale version and goes back to the queue, and both changes stand; N replays of one request give one effect; the reads under a link's lock see an end that committed since; a stress loop never loses a link a receipt returned | `version_conflict` | `test_concurrency.py` |
+| One liveness function for every read and every guard: ended (an end class, a terminal role, a stop clock), then overtaken by an active "corrected by" or "superseded by" successor, then the scheduled class by its evidence, then a future start; the successors ride on every state | (none) | `test_current.py` |
+| A bounded period, or a record that a plan scheduled, reads planned or reported until a confirmation, and a period also needs its start; no date moves it; an inferred row never confirms | (none) | `test_current.py` |
+| The earning bars count distinct episodes among the active supporting rows of all the targets together | (none) | `test_evidence_counts.py` |
+| A kind, a meaning or a property name resolves once, in D8's order; a name wins over an alias; a leading "is" or "are" falls away only when nothing matched | (none) | `test_resolver.py` |
+| An alias of a retired or split word reaches nothing | `unknown_kind`, `unknown_meaning` | `test_resolver.py` |
+| A phrase with two usable targets is never picked | `unknown_kind`, `unknown_meaning`, `invalid_arguments` (rule `ambiguous_phrase`) | `test_resolver.py` |
+| A phrase that normalises to nothing is refused | `invalid_arguments` (rule `empty_phrase`) | `test_resolver.py` |
+| A property name resolves per kind: an alias of another kind's property is no match | `invalid_arguments` (rule `unknown_property`) | `test_resolver.py` |
+| An unmapped or ambiguous link phrase rides on the generic meaning with its phrase kept, never on a meaning that carries consequences | (none) | `test_resolver.py` |
+| The candidate band is every item of the kind at 0.3 or more, best first; an ended item is flagged and kept; a distinct pair is left out | (none) | `test_resolver.py`, `test_neardup_labelled.py` |
+| Labelled pairs: reworded titles at 0.86 and 1.0 are refused, pairs at 0.72 come back as candidates, and revision N after N-1 passes only with `distinct_from` and is logged with `override_used` | `near_duplicate` | `test_neardup_labelled.py` |

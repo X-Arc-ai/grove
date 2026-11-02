@@ -13,6 +13,7 @@ from typing import Any
 
 from grove.ids import new_id
 from grove.store.asof import replay
+from grove.store.current import TERMINAL_ROLES, has_ended
 from grove.store.primitives import KIND_BELIEF, PRIMITIVE_MEANING_IDS
 from grove.writer.clocks import (
     Clock,
@@ -26,11 +27,12 @@ from grove.writer.clocks import (
 from grove.writer.declines import write_override_row
 from grove.writer.errors import BatchDeclined, Refusal, Refused
 from grove.writer.history import Stamp, add_entry, add_text, compact, row_json
-from grove.writer.neardup import MAX_CANDIDATES_SHOWN, similarity, threshold_for
+from grove.writer.neardup import MAX_CANDIDATES_SHOWN, threshold_for
 from grove.writer.ops import is_temp, op_label, temp_refs
 from grove.writer.provenance import OBSERVATION_COLUMNS, resolve_observation
 from grove.writer.receipts import short_id
-from grove.writer.registry import TERMINAL_ROLES, Registry
+from grove.writer.registry import Registry
+from grove.writer.resolver import title_scores
 from grove.writer.source_types import claim_fields
 from grove.writer.tx import WorldTx
 
@@ -424,11 +426,8 @@ def _claim_about_now(run: _Run, item: dict[str, Any], kind: dict[str, Any]) -> b
 
 
 def _ended(item: dict[str, Any]) -> bool:
-    return bool(
-        item.get("end_class")
-        or item.get("stopped_being_true_precision")
-        or item.get("status_role") in TERMINAL_ROLES
-    )
+    # Reads and guards share one liveness rule (spec line 2758), so the guard asks current().
+    return has_ended(item)
 
 
 def _head_world_time(run: _Run, item_id: str, field: str) -> datetime | None:
@@ -482,21 +481,16 @@ def _words(run: _Run, prefix: str, clock: Clock | None) -> dict[str, Any]:
 def _near_duplicates(
     run: _Run, kind: dict[str, Any], title: str, distinct_from: list[dict[str, Any]]
 ) -> tuple[list[tuple[str, str]], list[dict[str, Any]]]:
-    """The named pairs, and the candidates at or above the threshold that a pair overrides."""
+    """The named pairs, and the candidates at or above the threshold that a pair overrides.
+
+    The gate weighs only items with no end class, at the resolution level. The resolver's
+    candidate band scores with the same helper, and keeps ended items."""
     rows = run.tx.run(
         "MATCH (i:Item {kind: $kind}) WHERE i.end_class IS NULL "
         "RETURN i.id AS id, i.title AS title",
         kind=kind["id"],
     )
-    scores = {row["id"]: similarity(title, row["title"] or "") for row in rows}
-    if scores:
-        aliases = run.tx.run(
-            "MATCH (a:Alias {target_type: 'item'}) WHERE a.target_id IN $ids "
-            "RETURN a.target_id AS id, a.phrase AS phrase",
-            ids=list(scores),
-        )
-        for alias in aliases:
-            scores[alias["id"]] = max(scores[alias["id"]], similarity(title, alias["phrase"]))
+    scores = title_scores(run.tx, title, {row["id"]: row["title"] for row in rows})
     threshold = threshold_for(kind["id"])
     candidates = sorted(
         ((score, item_id) for item_id, score in scores.items() if score >= threshold),
@@ -1165,6 +1159,10 @@ def _create_link(run: _Run, index: int, op: dict[str, Any]) -> None:
         link_id = existing[0]["l"]["id"]
         if op.get("temp_id"):
             run.temps[op["temp_id"]] = ("link", link_id)
+        _settle(run, plans, link_id)
+        if all(plan.known for plan in plans):
+            # Every row is in the store already: a reason text would be a value no entry names.
+            return
         reason_id = run.text(op["reason"])
         written = _write_evidence(run, plans, "link", link_id, reason_id)
         if written:
@@ -1395,6 +1393,10 @@ def _attach_evidence(run: _Run, index: int, op: dict[str, Any]) -> None:
     if target_type == "belief" and op["polarity"] == "contradicts":
         _judged_this(run, judgments, target_id, op.get("evidence_id"))
         _two_judges(judgments)
+    _settle(run, plans, target_id)
+    if all(plan.known for plan in plans):
+        # The row is in the store already: a reason text would be a value no entry names.
+        return
     reason_id = run.text(op["reason"]) if op.get("reason") else None
     _write_evidence(run, plans, target_type, target_id, reason_id)
 
