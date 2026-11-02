@@ -136,7 +136,8 @@ def test_a_normal_release_leaves_no_releaser_running(tmp_path):
     # A cap only this test run uses, so another run on the machine cannot match the process name.
     marker = str(40000 + os.getpid() % 20000)
     done = subprocess.run(
-        ["bash", str(SCRIPT), "bash", "-c", f"pgrep -f -- 'sleep {marker}' >/dev/null && exit 8"],
+        # The class keeps this text from matching itself: Linux pgrep leaves only itself out.
+        ["bash", str(SCRIPT), "bash", "-c", f"pgrep -f -- 'slee[p] {marker}' >/dev/null && exit 8"],
         env=_env(tmp_path, cap=int(marker)),
         capture_output=True,
         text=True,
@@ -144,7 +145,7 @@ def test_a_normal_release_leaves_no_releaser_running(tmp_path):
     )
     assert done.returncode == 8, done.stderr
     assert _wait_for(
-        lambda: subprocess.run(["pgrep", "-f", "--", f"sleep {marker}"]).returncode == 1, 5
+        lambda: subprocess.run(["pgrep", "-f", "--", f"slee[p] {marker}"]).returncode == 1, 5
     )
 
 

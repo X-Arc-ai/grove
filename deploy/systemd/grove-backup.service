@@ -2,6 +2,8 @@
 Description=Grove daily offline dump of the store, then a restore check
 Requires=docker.service
 After=docker.service
+# A failed or killed run hands over to the unit that keeps trying until the services run.
+OnFailure=grove-services.service
 
 [Service]
 Type=oneshot

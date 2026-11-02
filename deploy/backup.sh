@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The daily offline backup (A.5; Neo4j Community has no online backup): stop the runner and the
-# API, record the dump fingerprint, stop Neo4j, dump, start everything again, keep 30 days of
-# dumps, then load the new dump into a scratch store and compare its fingerprint.
+# API, record the dump fingerprint, stop Neo4j, dump, start everything again, load the new dump
+# into a scratch store and compare its fingerprint, then remove dumps older than 30 days.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -48,6 +48,9 @@ find "$GROVE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '.work-*' -exec r
 log "backup $name: stopping the runner and the API"
 services_down=1
 compose stop runner api
+# A catch-up run after a boot can come before the store is up, or after a backup left it stopped.
+compose start neo4j
+wait_healthy neo4j "${GROVE_SERVICES_TRIES:-300}" || die "neo4j is not healthy, so no dump"
 before=$(compose_run api python -m grove.store.dump_fingerprint)
 fingerprint=$(fingerprint_of "$before")
 

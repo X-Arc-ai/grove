@@ -12,7 +12,7 @@ runs the compose project `grove` from `deploy/compose.yml`.
 | Service | What it is | Network | Runs as |
 |---|---|---|---|
 | `neo4j` | Neo4j Community, the pin of `docker-compose.dev.yml`. Heap 1 GB, page cache 512 MB, Cypher 25 by default. Data in the volume `grove-neo4j-data`. | `store` (internal) | the image's user |
-| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
+| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body, and 256 MB under `/v1/sources/` for uploads. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
 | `runner` | OpenCode 1.18.32, checked against its release checksum, with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`. A placeholder process runs until the `runner` lane lands its loop. | `runner` (internal) | uid 10002 `grove-runner` |
 
 An internal network has no route out. So the store reaches nothing but the API, and the runner
@@ -44,8 +44,8 @@ transport in their place.
 | `/opt/grove/src` | The checkout. It pulls from GitHub with the box's deploy key `/root/.ssh/grove_deploy`, which GitHub holds as read-only. | root |
 | `/etc/grove/*.env` | The secret files below. | 600, root |
 | `/etc/grove/google-oauth.json` | Google's Web client file, mounted read-only into the API at `/run/grove/google-oauth.json` (`GROVE_GOOGLE_OAUTH_FILE`). | 400, uid 10001 |
-| `/var/lib/grove/deployed.sha`, `previous.sha` | The sha the box runs, and the one it replaced. | root |
-| `/var/log/grove/deploy.log`, `backup.log` | A start line for each deploy that reaches its build and a result line for each that reaches its smoke, both with the previous sha; one line per dump, per restore check and per removed dump. | 640, root |
+| `/var/lib/grove/deployed.sha`, `previous.sha` | The sha the box runs, and the last different sha it replaced. | root |
+| `/var/log/grove/deploy.log`, `backup.log` | A start line for each deploy that reaches its build, and a result line (`served, smoke ok`, `served, smoke FAILED` or `runs, services NOT healthy`) for each that reaches its service start. One line per dump, per restore check, per removed dump and per failed backup. | 640, root |
 | `/var/backups/grove/` | `grove-<UTC stamp>.dump`, its `.fingerprint.json` and its `.dump.sha256`. | 700, files 600 |
 | `/var/lib/grove-runner` | The runner's HOME. The host user `grove-runner` owns it; it has no sudo and is not in the docker group. | 700 |
 
@@ -94,23 +94,23 @@ On the box, `deploy/deploy.sh <sha>`:
 2. fetches `develop` from GitHub and refuses a sha that is not on it, and a checkout with local
    changes or ignored files;
 3. checks out the sha and hands over to that commit's own `deploy/apply.sh`, which
-4. refuses to go on if a secret file is missing or readable by group or others;
+4. refuses to go on if a secret file is missing or readable by group or others, if an env file has another owner, or if `/etc/grove` is open to group or others;
 5. installs the host files of that commit (`deploy/install-host.sh`): the nginx sites, the
    certificate on first use (certbot, webroot), the backup units, the certbot reload hook and log
    rotation. If `nginx -t` refuses the new sites, the old ones go back and the deploy stops;
 6. builds the `api` and `runner` images (the only build on the box), starts `neo4j`, runs the
-   migrations from the image's copy of `server/`, starts `api` and `runner`, and records the sha;
+   migrations from the image's copy of `server/`, records the sha, and starts `api` and `runner`;
 7. runs `deploy/smoke.sh` against the public host, writes the result to `deploy.log`, and removes
    the images of every build except this one and the one it last replaced.
 
 If `apply.sh` fails before compose replaces the containers, `deploy.sh` moves the checkout back to
-the sha the box still runs. From that point on, `deployed.sha` and the checkout name the new build,
-also when it does not turn healthy; `deploy.log` says so, and a deploy of the previous sha rolls it
-back.
+the sha the box still runs and installs that commit's host files again. From that point on,
+`deployed.sha` and the checkout name the new build, also when it does not turn healthy; `deploy.log`
+says so, and a deploy of the previous sha rolls it back.
 
 `--ref <branch>` with `GROVE_ALLOW_BRANCH_DEPLOY=1` deploys a sha of another branch, to try a
 change on the box before its merge; without the variable only `develop` deploys. To roll back,
-deploy the previous sha: `deploy.log` names it on every line.
+deploy the sha in `/var/lib/grove/previous.sha`; a redeploy of one sha leaves it as it is.
 
 The smoke checks also run from any machine:
 
@@ -130,7 +130,8 @@ Neo4j Community has no online backup: a dump needs the server stopped. `grove-ba
 1. takes the box lock, so no deploy runs during it, and removes the work folder that a killed
    backup left;
 2. stops the runner and the API, so nothing writes;
-3. records the dump fingerprint of the store;
+3. starts Neo4j if a boot or a failed run left it stopped, waits until it is healthy, and records
+   the dump fingerprint of the store;
 4. stops Neo4j and runs `neo4j-admin database dump`;
 5. starts Neo4j, checks that the fingerprint did not move, and starts the API and the runner;
 6. keeps the dump with its fingerprint and checksum;
@@ -140,11 +141,12 @@ Neo4j Community has no online backup: a dump needs the server stopped. `grove-ba
 The API is down for the length of the dump: 34 seconds on the first run, with a store that held
 only its schema. If a step fails, or systemd stops the script, it starts Neo4j, the API and the
 runner again before it exits. The unit's `ExecStopPost` runs `deploy/services-up.sh` after every
-run, so a script that was killed outright also leaves the services running, and
-`grove-services.service` runs it at every boot, for a host that went down in the dump window, and
-tries again each minute until it succeeds. `services-up.sh` first removes a one-off container that
-a killed run left, so nothing else holds the store, tries every start whatever the last one did,
-and waits until the API's health check reads the store. The backup needs the
+run, so a script that was killed outright also leaves the services running.
+`grove-services.service` runs it too, at every boot and after any failed backup (`OnFailure`), and
+tries again each minute until it succeeds, for a host that went down in the dump window or a store
+that took long to come back. `services-up.sh` first removes a one-off container that a killed run
+left, so nothing else holds the store. compose refuses to start the API while the store reports
+unhealthy, so the script keeps starting it until the API's health check reads the store. The backup needs the
 fingerprint before the dump: if that read fails, no dump is made, and the unit fails.
 
 `deploy/restore-check.sh <dump>` refuses a dump with no checksum file or a wrong checksum, loads it

@@ -58,7 +58,11 @@ if [ "$status" != 0 ]; then
     served=$(served_sha)
     if [ -n "$served" ] && [ "$served" != "$sha" ]; then
         git -C "$GROVE_SRC" checkout --quiet --detach "$served"
-        log "the deploy of $sha failed before it served; the checkout is back at $served"
+        # apply.sh may have installed the failed commit's sites and units; the served commit's go
+        # back, so no unit names a script this checkout does not hold.
+        "$GROVE_SRC/deploy/install-host.sh" </dev/null ||
+            log "could not reinstall the host files of $served"
+        log "the deploy of $sha failed before it served; the checkout and host files are back at $served"
     fi
 fi
 exit "$status"

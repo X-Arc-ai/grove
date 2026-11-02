@@ -67,7 +67,8 @@ public_base_url() {
 
 public_host() {
     local base
-    base=$(public_base_url)
+    # exit, not die: set -e is off inside a command substitution, and an empty host must not pass.
+    base=$(public_base_url) || exit 1
     printf '%s\n' "${base#https://}"
 }
 
@@ -78,19 +79,30 @@ neo4j_image() {
     printf '%s\n' "$image"
 }
 
+is_healthy() {
+    local id state
+    id=$(compose ps --quiet "$1" 2>/dev/null || true)
+    [ -n "$id" ] || return 1
+    state=$(docker inspect --format '{{.State.Health.Status}}' "$id" 2>/dev/null || true)
+    [ "$state" = healthy ]
+}
+
 # Returns 1, never exits, so an EXIT trap can call it.
 wait_healthy() {
-    local service=$1 tries=${2:-90} id state
+    local service=$1 tries=${2:-90}
     for _ in $(seq "$tries"); do
-        id=$(compose ps --quiet "$service" 2>/dev/null || true)
-        if [ -n "$id" ]; then
-            state=$(docker inspect --format '{{.State.Health.Status}}' "$id" 2>/dev/null || true)
-            [ "$state" = healthy ] && return 0
-        fi
+        is_healthy "$service" && return 0
         sleep "${GROVE_POLL_SECONDS:-2}"
     done
     log "error: $service is not healthy" >&2
     return 1
+}
+
+# A state file, written whole: an empty deployed.sha would read as nothing deployed.
+write_state() {
+    mkdir -p "$GROVE_STATE"
+    printf '%s\n' "$2" >"$GROVE_STATE/$1.tmp"
+    mv "$GROVE_STATE/$1.tmp" "$GROVE_STATE/$1"
 }
 
 # A log line that also goes to one of the box's log files.

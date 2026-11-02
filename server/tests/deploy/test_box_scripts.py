@@ -559,7 +559,7 @@ def test_a_failed_apply_moves_the_checkout_back_to_the_served_sha(box):
         f"git checkout --quiet --detach {OTHER_SHA}",
     ]
     assert (box.root / "fake" / "HEAD").read_text() == OTHER_SHA
-    assert f"the checkout is back at {OTHER_SHA}" in done.stdout + done.stderr
+    assert f"host files are back at {OTHER_SHA}" in done.stdout + done.stderr
 
 
 def test_a_deploy_whose_smoke_fails_keeps_the_checkout_at_the_build_it_serves(box):
@@ -759,8 +759,9 @@ def test_certbot_registers_with_the_given_address_or_with_none(box):
 def test_the_services_script_starts_the_writers_even_when_the_store_is_slow(box):
     box.deployed()
     done = box.run("services-up.sh", FAKE_UNHEALTHY="neo4j", GROVE_SERVICES_TRIES="2")
-    assert done.returncode != 0
-    assert "not all healthy" in done.stderr
+    # The API's own check reads the store, so it decides, not the store's port check.
+    assert done.returncode == 0, done.stderr
+    assert "neo4j is not healthy yet" in done.stdout + done.stderr
     start = box.index("start neo4j")
     box.index("start api runner", start)
 
@@ -795,3 +796,113 @@ def test_the_boot_unit_keeps_trying(box):
     assert "Restart=on-failure" in unit
     assert "RestartSec=60" in unit
     assert "StartLimitIntervalSec=0" in unit
+
+
+# ---- review round four ------------------------------------------------------------------------
+
+
+def test_a_failed_build_puts_the_host_files_of_the_served_commit_back(box):
+    box.deployed(OTHER_SHA)
+    done = box.run("deploy.sh", SHA, FAKE_DOCKER_FAIL="build api runner")
+    assert done.returncode != 0
+    back = box.index(f"git checkout --quiet --detach {OTHER_SHA}")
+    # install-host.sh runs again from the restored checkout.
+    box.index("systemctl daemon-reload", back)
+    box.index("nginx -t", back)
+    assert f"the checkout and host files are back at {OTHER_SHA}" in done.stdout + done.stderr
+
+
+def test_the_services_script_starts_the_writers_again_after_compose_refused_them(box):
+    """Real compose refuses `start api` while the store reports unhealthy."""
+    box.deployed()
+    done = box.run("services-up.sh", FAKE_START_REFUSALS="2", GROVE_SERVICES_TRIES="5")
+    assert done.returncode == 0, done.stderr
+    starts = [call for call in box.calls() if call.endswith("start api runner")]
+    assert len(starts) == 3
+
+
+def test_the_services_script_gives_up_after_its_tries_and_says_so(box):
+    box.deployed()
+    done = box.run("services-up.sh", FAKE_START_REFUSALS="99", GROVE_SERVICES_TRIES="3")
+    assert done.returncode != 0
+    assert "not all healthy" in done.stderr
+    assert len([call for call in box.calls() if call.endswith("start api runner")]) == 3
+
+
+def test_a_failed_backup_hands_over_to_the_unit_that_keeps_trying(box):
+    unit = (box.src / "deploy" / "systemd" / "grove-backup.service").read_text()
+    assert "OnFailure=grove-services.service" in unit
+
+
+def test_a_backup_waits_for_the_store_before_its_first_read(box):
+    box.deployed()
+    done = box.run("backup.sh")
+    assert done.returncode == 0, done.stderr
+    stop = box.index("stop runner api")
+    start = box.index("start neo4j", stop)
+    probe = box.index("ps --quiet neo4j", start)
+    assert probe < box.index("grove.store.dump_fingerprint", start)
+
+
+def test_a_backup_makes_no_dump_while_the_store_is_unhealthy(box):
+    box.deployed()
+    done = box.run("backup.sh", FAKE_UNHEALTHY="neo4j", GROVE_SERVICES_TRIES="2")
+    assert done.returncode != 0
+    assert "neo4j is not healthy, so no dump" in done.stderr
+    assert not [call for call in box.calls() if "neo4j-admin" in call]
+    box.index("start api runner")
+
+
+def test_a_later_failure_on_the_first_certificate_makes_the_old_sites_live_again(box):
+    (box.root / "letsencrypt" / "live" / HOST / "fullchain.pem").unlink()
+    done = box.run("deploy.sh", SHA, FAKE_FAIL_CALL="systemctl daemon-reload")
+    assert done.returncode != 0
+    certbot = box.index("certbot certonly")
+    assert box.index("systemctl reload-or-restart nginx") < certbot
+    box.index("systemctl reload-or-restart nginx", certbot)
+
+
+def test_a_base_url_with_a_path_stops_the_deploy_before_any_site_is_written(box):
+    (box.etc / "api.env").write_text("GROVE_PUBLIC_BASE_URL=https://app.example/\n")
+    (box.etc / "api.env").chmod(0o600)
+    (box.root / "letsencrypt" / "live" / HOST / "fullchain.pem").unlink()
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "must be https://<host>" in done.stderr
+    assert not (box.nginx / "sites-available" / "grove-http.conf").exists()
+    assert not [call for call in box.calls() if call.startswith(("certbot", "nginx", "docker"))]
+
+
+def test_a_failed_write_of_the_state_file_keeps_the_old_record(box):
+    box.deployed(OTHER_SHA)
+    # A folder in the place of the temporary file makes the whole-file write fail.
+    (box.state / "deployed.sha.tmp").mkdir()
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert (box.state / "deployed.sha").read_text().strip() == OTHER_SHA
+    assert not [call for call in box.calls() if "--remove-orphans api runner" in call]
+
+
+def test_a_deploy_leaves_no_temporary_state_file(box):
+    box.deployed(OTHER_SHA)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    assert sorted(path.name for path in box.state.iterdir()) == ["deployed.sha", "previous.sha"]
+
+
+def test_apply_refuses_an_env_file_with_another_owner(box):
+    fake_id = box.root / "bin" / "id"
+    fake_id.write_text("#!/bin/sh\necho 54321\n")
+    fake_id.chmod(0o755)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "has another owner" in done.stderr
+    assert not [call for call in box.calls() if call.startswith("docker")]
+
+
+def test_apply_refuses_a_secret_folder_open_to_others(box):
+    box.etc.chmod(0o750)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "open to group or others" in done.stderr
+    assert not [call for call in box.calls() if call.startswith("docker")]

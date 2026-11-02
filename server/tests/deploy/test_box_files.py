@@ -109,9 +109,10 @@ def test_nginx_passes_everything_to_the_api_and_reads_no_user_agent():
         assert "server_name __GROVE_HOST__;" in text
         assert "$http_user_agent" not in text
         assert "deny " not in text
-    assert "proxy_pass http://127.0.0.1:8000;" in https
     assert "location / {" in https
-    assert re.findall(r"location ", https) == ["location "]
+    # The two locations differ only in the body limit: every path reaches the API.
+    assert re.findall(r"location (\S+) \{", https) == ["/", "/v1/sources/"]
+    assert https.count("proxy_pass http://127.0.0.1:8000;") == 2
     assert "root /var/www/grove-acme;" in http
     assert "return 301 https://$host$request_uri;" in http
 
@@ -216,3 +217,11 @@ def test_no_box_script_runs_a_one_off_container_with_stdin_open():
         for line in text.splitlines():
             if "compose run" in line and not line.lstrip().startswith("#"):
                 assert path.name == "lib.sh" and line.rstrip().endswith("</dev/null"), path.name
+
+
+def test_only_the_upload_path_takes_a_large_body():
+    https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
+    assert re.findall(r"client_max_body_size (\S+);", https) == ["10m", "256m"]
+    upload = https[https.index("location /v1/sources/") :]
+    assert "client_max_body_size 256m;" in upload
+    assert "client_max_body_size 256m;" not in https[: https.index("location /v1/sources/")]
