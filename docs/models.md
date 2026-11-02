@@ -87,7 +87,7 @@ OpenCode 1.18.32 sends this through the `@ai-sdk/openai-compatible` provider: `P
 
 The first boot ran on 2026-11-02, on synthetic text, on an H100. The cold start took about three minutes, and it stayed inside the 503 retry window. `reasoning_strength` changes the reasoning: two calls at `low` wrote 72 and 71 output tokens, and two at `high` wrote 182 and 141, on the same question. vLLM logs that it could not find the parser's reasoning token ids, so `reasoning_tokens` reads 0 on a Glimmer row, and D15's reasoning share cannot use these rows yet.
 
-The rows in `model_calls` do not hold the true cost of this route. A short session cost 0.30 USD of GPU time, and its rows sum to 0.025 USD: the cold start and the idle minute are missing. The workspace has no spend limit, so read the true figure with `modal billing report --for "this month"`.
+The rows in `model_calls` do not hold the true cost of this route. A short session cost 0.30 USD of GPU time, and its rows sum to 0.025 USD: the cold start and the idle minute are missing. One call after a quiet time costs about 0.27 USD of GPU at the H100 price: 0.20 for the cold start and 0.07 for the idle minute. So a call every four minutes bills a GPU all day, about 95 USD, and a shorter idle window does not change that much. The workspace has no spend limit, so read the true figure with `modal billing report --for "this month"`.
 
 ## Settings
 
