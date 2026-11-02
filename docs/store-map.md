@@ -142,6 +142,8 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S36. The world id form** (spec lines 3081, 3087, 3092). A world id is a lowercase UUID (`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`), or the test form `t_<slice>_<that uuid>` with the slice `[a-z0-9-]+`. `check_world_id` refuses any other text, and the primitive sentinel `''` stays a separate path. The full-text analyzer splits on hyphens and folds case, and with this form the token sequence of one world id never occurs inside another's unless both share the UUID. So the world phrase of S17 is exact in practice, and one world's rows cannot use up another world's `LIMIT`. This replaces the earlier pattern `[A-Za-z0-9_-]{1,80}`, under which `t_x_<h>` was a token prefix of `t_x_<h>-000`.
 
+**S37. Metering and the budget** (spec lines 2659, 2694, 3120, 3122). The `models` lane writes `model_calls` and `budgets` together: `record_model_call` in `server/grove/writer/model_calls.py` creates the `:ModelCall` and adds its cost to the day's `:Budget` in one transaction, so `spent` is always the sum of the day's recorded costs. This replaces "budgets by the runner" in S20. The operator sets a ceiling with `set_budget_ceiling`; an absent `ceiling` means no ceiling. A budget row that does not exist yet takes the ceiling of `GROVE_DAILY_BUDGET_USD`. `state` turns `reached` in the transaction where `spent` reaches `ceiling`. At `reached`, the jobs that `server/grove/models/jobs.json` marks `defer` are refused with `budget_reached` before any request leaves, and the jobs marked `continue` (triage, extraction, transcription, the update pass) still run, as D15 says (line 2659). Calls that pass the gate at the same moment can end the day above the ceiling by the cost of the calls in flight. `model_calls` gains four properties: `route` (`meta`, `modal`), `outcome` (`ok`, `invalid_output`, `rate_limited`, `provider_error`, `client_closed`), `reasoning_tokens` (the reasoning share of `output_tokens`, line 2694) and `latency_ms`. A failed call is recorded with its outcome and its tokens, zero when the provider sent none, so the share of calls that wrote nothing counts every call. The price table is `server/grove/models/prices.json` (S24).
+
 ## Open points for later lanes
 
 | Point | Spec lines | Owner lane |
@@ -863,7 +865,7 @@ Keys: `model_calls_id_unique` (id).
 
 Indexes: `model_calls_world_id_day_idx` (world_id, day).
 
-Written only by the model-call layer (S20).
+Written only by the model-call layer (S20), with the budget it spends in the same transaction (S37).
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -879,6 +881,10 @@ Written only by the model-call layer (S20).
 | at | `at` | `instant` | b1 |  |
 | day | `day` | `date` | ruling | S24: a DATE from the clock provider; B.1 names it only in the index |
 | (none) | `audio_seconds` | `float` | ruling | S24, line 2684: voice calls |
+| (none) | `route` | `code` | ruling | S37: meta or modal |
+| (none) | `outcome` | `code` | ruling | S37: ok, invalid_output, rate_limited, provider_error, client_closed |
+| (none) | `reasoning_tokens` | `int` | ruling | S37, line 2694: the reasoning share of the output tokens |
+| (none) | `latency_ms` | `int` | ruling | S37, line 2694: from the request to the answer |
 
 ### judgments
 
@@ -911,7 +917,7 @@ Keys: `budgets_world_id_day_unique` (world_id, day).
 
 Indexes: none.
 
-Written by the runner (S20).
+Written by the model-call layer, with each model call, and by the operator's ceiling (S37).
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
