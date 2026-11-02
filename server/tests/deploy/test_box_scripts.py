@@ -1,11 +1,15 @@
 """The box scripts against fake commands: what they run, in which order, and what they refuse."""
 
+import fcntl
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import time
+
+import pytest
 
 from grove import clock
 from tests.deploy.conftest import BASE, FP, HOST, OTHER_SHA, SHA
@@ -539,3 +543,148 @@ def test_a_backup_removes_the_work_folder_of_a_killed_backup(box):
     assert done.returncode == 0, done.stderr
     assert not stale.exists()
     assert len([name for name in _backup_files(box) if name.endswith(".dump")]) == 1
+
+
+# ---- review round two -------------------------------------------------------------------------
+
+
+def test_a_failed_apply_moves_the_checkout_back_to_the_served_sha(box):
+    box.deployed(OTHER_SHA)
+    (box.etc / "google-oauth.json").unlink()
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    checkouts = [call for call in box.calls() if call.startswith("git checkout")]
+    assert checkouts == [
+        f"git checkout --quiet --detach {SHA}",
+        f"git checkout --quiet --detach {OTHER_SHA}",
+    ]
+    assert (box.root / "fake" / "HEAD").read_text() == OTHER_SHA
+    assert f"the checkout is back at {OTHER_SHA}" in done.stdout + done.stderr
+
+
+def test_a_deploy_whose_smoke_fails_keeps_the_checkout_at_the_build_it_serves(box):
+    box.deployed(OTHER_SHA)
+    done = box.run("deploy.sh", SHA, FAKE_SERVED_BUILD=OTHER_SHA)
+    assert done.returncode != 0
+    assert (box.state / "deployed.sha").read_text().strip() == SHA
+    assert (box.root / "fake" / "HEAD").read_text() == SHA
+
+
+def test_the_boot_unit_is_enabled_and_runs_the_services_script(box):
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    unit = (box.root / "systemd" / "grove-services.service").read_text()
+    assert "ExecStart=/opt/grove/src/deploy/services-up.sh" in unit
+    assert "WantedBy=multi-user.target" in unit
+    assert "After=docker.service" in unit
+    assert "systemctl enable grove-services.service" in box.calls()
+    # Started inside a deploy, it would wait for the lock that the deploy holds.
+    assert "systemctl enable --now grove-services.service" not in box.calls()
+
+
+def test_the_services_script_removes_left_one_off_containers_before_the_store_starts(box):
+    box.deployed()
+    done = box.run("services-up.sh", FAKE_STALE="oneoff-dump")
+    assert done.returncode == 0, done.stderr
+    listing = box.index("label=com.docker.compose.oneoff=True")
+    assert "label=com.docker.compose.project=grove" in box.calls()[listing]
+    removed = box.index("docker rm --force --volumes oneoff-dump", listing)
+    start = box.index("start neo4j", removed)
+    box.index("start api runner", start)
+    box.index("ps --quiet api", start)
+
+
+def test_the_services_script_fails_when_the_api_never_reads_the_store(box):
+    box.deployed()
+    done = box.run("services-up.sh", FAKE_HEALTH="unhealthy", GROVE_POLL_SECONDS="0")
+    assert done.returncode != 0
+    assert "is not healthy" in done.stderr
+
+
+def test_a_certbot_failure_brings_the_old_sites_back_and_says_so(box):
+    (box.root / "letsencrypt" / "live" / HOST / "fullchain.pem").unlink()
+    https = box.nginx / "sites-available" / "grove-https.conf"
+    https.write_text("the old site\n")
+    (box.nginx / "sites-enabled" / "grove-https.conf").symlink_to(https)
+    done = box.run("deploy.sh", SHA, FAKE_CERTBOT_STATUS="1")
+    assert done.returncode != 0
+    assert "certbot got no certificate" in done.stderr
+    assert (box.nginx / "sites-enabled" / "grove-https.conf").resolve() == https
+    assert https.read_text() == "the old site\n"
+
+
+def test_the_certbot_reload_hook_is_installed(box):
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    hook = box.root / "letsencrypt" / "renewal-hooks" / "deploy" / "grove-reload-nginx.sh"
+    assert hook.is_file() and os.access(hook, os.X_OK)
+
+
+def test_a_restore_check_never_names_the_live_volume(box):
+    box.deployed()
+    done = box.run("restore-check.sh", _planted_dump(box))
+    assert done.returncode == 0, done.stderr
+    assert not [call for call in box.calls() if "grove-neo4j-data" in call]
+    for kind in ("docker ps --all --quiet", "docker volume ls", "docker network ls"):
+        listing = box.calls()[box.index(kind)]
+        assert "--filter name=grove-restorecheck-" in listing, kind
+
+
+def test_the_smoke_fails_when_meta_s_fetcher_is_refused(box):
+    done = box.run("deploy.sh", SHA, FAKE_REFUSE_AGENT="meta-webindexer/1.1")
+    assert done.returncode != 0
+    assert "answered 403 to meta-webindexer/1.1" in done.stderr
+
+
+@pytest.mark.parametrize("mode", [0o640, 0o620, 0o610, 0o604, 0o602, 0o601])
+def test_apply_refuses_every_group_or_other_bit(box, mode):
+    (box.etc / "neo4j.env").chmod(mode)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "readable by group or others" in done.stderr
+
+
+def test_retention_keeps_a_dump_just_under_thirty_days_and_drops_one_just_over(box):
+    box.deployed()
+    now = clock.now().timestamp()
+    ages = {"grove-20261003T120000Z": 29.5, "grove-20261002T000000Z": 30.5}
+    for stem, days in ages.items():
+        path = box.backups / f"{stem}.dump"
+        path.write_text("old\n")
+        os.utime(path, (now - days * 86400, now - days * 86400))
+    done = box.run("backup.sh")
+    assert done.returncode == 0, done.stderr
+    assert (box.backups / "grove-20261003T120000Z.dump").exists()
+    assert not (box.backups / "grove-20261002T000000Z.dump").exists()
+
+
+def test_the_runner_home_belongs_to_the_runner_alone(box):
+    home = box.root / "runner-home"
+    done = box.run("bootstrap.sh", "--base-url", BASE, GROVE_RUNNER_HOME=str(home))
+    assert done.returncode == 0, done.stderr
+    assert oct(home.stat().st_mode & 0o777) == "0o700"
+
+
+REAL_FLOCK = shutil.which("flock")
+
+
+@pytest.mark.skipif(REAL_FLOCK is None, reason="no flock(1) on this machine")
+def test_with_a_real_flock_the_backup_reenters_the_lock_for_its_restore_check(box):
+    (box.root / "bin" / "flock").unlink()
+    box.deployed()
+    done = box.run("backup.sh")
+    assert done.returncode == 0, done.stderr
+    assert "matches" in box.log_text("backup.log")
+
+
+@pytest.mark.skipif(REAL_FLOCK is None, reason="no flock(1) on this machine")
+def test_with_a_real_flock_a_held_lock_stops_a_deploy(box):
+    (box.root / "bin" / "flock").unlink()
+    lock = box.root / "lock" / "grove-deploy.lock"
+    lock.parent.mkdir(mode=0o700)
+    with open(lock, "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        done = box.run("deploy.sh", SHA, GROVE_DEPLOY_WAIT_SECONDS="1")
+    assert done.returncode != 0
+    assert "holds" in done.stderr
+    assert not [call for call in box.calls() if call.startswith("git ")]
