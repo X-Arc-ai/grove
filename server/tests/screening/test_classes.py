@@ -25,8 +25,15 @@ def test_every_masked_class_has_a_mask_and_only_pay_is_opt_in():
         "credential",
         "payment_card",
         "pay_amount",
+        "one_time_code",
+        "reset_link",
         "contact_email",
         "contact_phone",
         "contact_handle",
     }
     assert OPT_IN_CLASSES == {"pay_amount"}
+
+
+def test_a_weak_candidate_has_a_mask_that_names_only_its_class():
+    assert MASKS["one_time_code"] == "[code]"
+    assert MASKS["reset_link"] == "[link]"

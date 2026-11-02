@@ -45,6 +45,8 @@ PGP_BLOCK = joined(
 )
 GITHUB_OAUTH_TOKEN = joined("gh", "o_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8")
 GITHUB_SERVER_TOKEN = joined("gh", "s_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8")
+LONG_TOKEN = "Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw"
+HEX_32 = "0123456789abcdef0123456789abcdef"
 # The other providers a chat or a dev session shows, each in its real shape.
 PROVIDER_KEYS = {
     "sendgrid": joined(
@@ -64,6 +66,38 @@ PROVIDER_KEYS = {
     "replicate": joined("r8", "_", "Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw2eRt6"),
     "stripe-webhook": joined("wh", "sec_", "Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw"),
     "perplexity": joined("pp", "lx-", "Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw2eRt6yUi9oPa"),
+    "telegram-bot": joined("123456789", ":AAE", LONG_TOKEN),
+    "discord-bot": joined("MTIzNDU2Nzg5MDEyMzQ1Njc4", ".GaBcDe.", "Kq8vN2xP7mZ4tR9wLm3sXaHj5bV"),
+    "slack-client": joined("xo", "xc-1234567890-", LONG_TOKEN),
+    "slack-cookie": joined("xo", "xd-", LONG_TOKEN, "%2B", LONG_TOKEN),
+    "slack-refresh": joined("xo", "xe-1-", LONG_TOKEN),
+    "slack-app": joined("xa", "pp-1-A012345-0123456-", LONG_TOKEN),
+    "xai": joined("xa", "i-", LONG_TOKEN, LONG_TOKEN),
+    "shopify-admin": joined("shp", "at_", HEX_32),
+    "shopify-secret": joined("shp", "ss_", HEX_32),
+    "supabase": joined("sb", "p_", HEX_32, "01234567"),
+    "notion": joined("nt", "n_", LONG_TOKEN),
+    "resend": joined("re", "_", LONG_TOKEN),
+    "vercel": joined("ver", "cel_", LONG_TOKEN),
+    "vercel-personal": joined("vc", "p_", LONG_TOKEN),
+    "sentry": joined("snt", "rys_", LONG_TOKEN),
+    "vault": joined("hv", "s.", LONG_TOKEN),
+    "terraform": joined("atlas", "v1-", LONG_TOKEN),
+    "doppler": joined("dp", ".pt.", LONG_TOKEN),
+    "databricks": joined("da", "pi", HEX_32),
+    "pypi": joined("py", "pi-AgEIcHlwaS5vcmc", LONG_TOKEN, LONG_TOKEN),
+    "langsmith": joined("ls", "v2_pt_", HEX_32, "_abcdef0123"),
+    "together": joined("tg", "p_v1_", LONG_TOKEN),
+    "fly": joined("fo", "1_", LONG_TOKEN),
+    "pulumi": joined("pu", "l-", HEX_32, "01234567"),
+    "gitlab-runner": joined("gl", "rt-", "Kq8vN2xP7mZ4tR9wLm3sXaHj"),
+    "gitlab-deploy": joined("gl", "dt-", "Kq8vN2xP7mZ4tR9wLm3sXaHj"),
+    "twilio": joined("S", "K", HEX_32),
+    "mailchimp": joined(HEX_32, "-us21"),
+    "meta-page": joined("EA", "AG", LONG_TOKEN, LONG_TOKEN),
+    "meta-app": joined("EA", "AB", LONG_TOKEN, LONG_TOKEN),
+    "instagram": joined("IG", "QVJ", LONG_TOKEN, LONG_TOKEN),
+    "age": joined("AGE-SECRET-", "KEY-1", "QYQSZQGP" * 8),
 }
 SLACK_WEBHOOK_PATH = joined("T01ABCD2EFG/", "B02HIJK3LMN/", "aBcDeFgHiJkLmNoPqRsTuVwX")
 DISCORD_WEBHOOK_PATH = joined(

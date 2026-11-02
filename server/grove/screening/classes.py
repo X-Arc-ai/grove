@@ -22,6 +22,9 @@ MASKS = {
     CREDENTIAL: "[credential]",
     PAYMENT_CARD: "[card]",
     PAY_AMOUNT: "[amount]",
+    # A strong signal drops the message. A weak candidate is masked and the message stays.
+    ONE_TIME_CODE: "[code]",
+    RESET_LINK: "[link]",
 }
 # A contact identifier becomes "[email 3]": the number tells two people apart without the value.
 CONTACT_WORDS = {CONTACT_EMAIL: "email", CONTACT_PHONE: "phone", CONTACT_HANDLE: "handle"}

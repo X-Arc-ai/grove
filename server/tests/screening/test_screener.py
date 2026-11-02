@@ -19,6 +19,7 @@ from tests.screening._plants import (
     CARD_VISA,
     DB_SECRET,
     DENYLIST,
+    GITHUB_TOKEN,
     OPENAI_KEY,
     OWN_EMAIL,
     OWN_HANDLE,
@@ -319,9 +320,143 @@ def test_a_denylisted_locator_in_a_glue_form_keeps_the_source_out():
     assert dict(screened.counts) == {"denylisted": 1}
 
 
+LOCATOR_UNDERSCORES = [
+    pytest.param(
+        "WhatsApp_Chat_with_Kestrel.txt",
+        "WhatsApp_Chat_with_[kept out].txt",
+        {"denylisted": 1},
+        id="denylist-term-in-words",
+    ),
+    pytest.param(
+        "kestrel_export.json", "[kept out]_export.json", {"denylisted": 1}, id="denylist-term-first"
+    ),
+    pytest.param("_Kestrel_.txt", "_[kept out]_.txt", {"denylisted": 1}, id="denylist-in-markup"),
+    pytest.param(
+        "WhatsApp Chat - Brightwell_Logistics.zip",
+        "WhatsApp Chat - [kept out].zip",
+        {"denylisted": 1},
+        id="denylist-two-words",
+    ),
+    pytest.param(
+        "brightwell_logistics_contract.md",
+        "[kept out]_contract.md",
+        {"denylisted": 1},
+        id="denylist-two-words-any-case",
+    ),
+    pytest.param(
+        "WhatsApp_Chat_with_Orla_Vance.txt",
+        "WhatsApp_Chat_with_Co-founder.txt",
+        {"renamed": 1},
+        id="rename-two-words",
+    ),
+    pytest.param(
+        "export_0612345678.zip", "export_[phone 1].zip", {"contact_phone": 1}, id="phone-local"
+    ),
+    pytest.param(
+        "export-0612345678.txt", "export-[phone 1].txt", {"contact_phone": 1}, id="phone-after-dash"
+    ),
+    pytest.param(
+        "WhatsApp_Chat_with_+212612345678.txt",
+        "WhatsApp_Chat_with_[phone 1].txt",
+        {"contact_phone": 1},
+        id="phone-international",
+    ),
+]
+
+
+@pytest.mark.parametrize("locator, expected, counts", LOCATOR_UNDERSCORES)
+def test_an_underscore_in_a_file_name_reads_as_a_space(locator, expected, counts):
+    screen = screener(rename=RENAME, denylist=["Kestrel", "Brightwell Logistics"])
+    screened = screen.screen_source(locator, [Message("m1", None, "hello")])
+    assert (screened.locator, dict(screened.counts)) == (expected, counts)
+    assert screened.dropped_whole is ("denylisted" in counts)
+    assert len(screened.messages) == (0 if "denylisted" in counts else 1)
+
+
+@pytest.mark.parametrize(
+    "locator",
+    [
+        pytest.param("IMG_20261102_0930.jpg", id="camera-file"),
+        pytest.param("Screenshot_2026-11-02_at_10.15.00.png", id="screenshot"),
+        pytest.param("backup_2026_11_02.tar.gz", id="dated-backup"),
+        pytest.param("report_v1_2_3.pdf", id="version"),
+        pytest.param("bergquist_notes.txt", id="a-longer-word"),
+    ],
+)
+def test_a_file_name_with_no_value_stays(locator):
+    screen = screener(rename=RENAME, denylist=["Kestrel", "Quist"])
+    screened = screen.screen_source(locator, [Message("m1", None, "hello")])
+    assert (screened.locator, dict(screened.counts)) == (locator, {})
+
+
+def test_a_file_name_keeps_the_own_identifiers_that_hold_an_underscore():
+    screen = Screener(
+        ScreeningConfig(
+            own_identifiers=frozenset({"0612345678", "me_x@own.example", "@own_handle"})
+        )
+    )
+    for locator in ("export_0612345678.zip", "me_x@own.example_chat.txt", "chat_@own_handle.txt"):
+        screened = screen.screen_source(locator, [])
+        assert (screened.locator, dict(screened.counts)) == (locator, {})
+
+
+def test_a_key_in_a_file_name_goes_whole_with_its_underscore():
+    screened = screener().screen_source(f"export {GITHUB_TOKEN}.txt", [])
+    assert screened.locator == "export [credential].txt"
+    assert dict(screened.counts) == {"credential": 1}
+
+
+def test_the_underscore_is_a_word_character_outside_the_file_name():
+    """The rule is for the locator alone: acme_corp in a message or a key stays one word."""
+    screen = screener(rename=RENAME, denylist=["Kestrel"])
+    text = "kestrel_corp and orla_vance and export_0612345678"
+    screened = screen.screen_source("", [Message(text, "kestrel_corp", text)])
+    message = screened.messages[0]
+    assert (message.key, message.sender, message.text) == (text, "kestrel_corp", text)
+    assert dict(screened.counts) == {}
+
+
 def test_a_service_sender_in_a_glue_form_drops_its_code():
     assert screen_one(screener(), "Enter 4829 now", sender="_Uber_") == (
         None,
+        {"one_time_code": 1},
+    )
+
+
+def test_a_weak_code_in_a_glue_form_is_masked_and_counts_once():
+    assert screen_one(screener(), "*the code is 482910.*") == (
+        "*the code is [code].*",
+        {"one_time_code": 1},
+    )
+
+
+def test_a_weak_mask_wins_the_span_over_a_later_step():
+    # The URL holds a credential: one span, one class, and no part of the value stays.
+    assert screen_one(screener(), "https://login.example.com/x?token=KqvNxPmZtRwLmsXaHjbVc") == (
+        "[link]",
+        {"reset_link": 1},
+    )
+
+
+def test_a_weak_candidate_is_masked_in_the_text_only():
+    # A sender and a key go through steps 3 to 6, not through step 2.
+    screened = screener().screen_source(
+        "the code is 4821.txt",
+        [Message("the code is 4821.", "the code is 4821.", "the code is 4821.")],
+    )
+    message = screened.messages[0]
+    assert (screened.locator, message.key, message.sender) == (
+        "the code is 4821.txt",
+        "the code is 4821.",
+        "the code is 4821.",
+    )
+    assert message.text == "the code is [code]."
+    assert dict(screened.counts) == {"one_time_code": 1}
+
+
+def test_a_weak_code_from_a_person_like_sender_uses_the_read_view_of_the_sender():
+    assert screen_one(screener(), "I sent 1500 today", sender="*Ahmed Accounts*") == (
+        "I sent [code] today",
         {"one_time_code": 1},
     )
 

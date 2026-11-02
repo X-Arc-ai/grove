@@ -25,8 +25,10 @@ from tests.screening._plants import (
     GITHUB_TOKEN,
     GITLAB_TOKEN,
     GOOGLE_KEY,
+    HEX_32,
     HF_TOKEN,
     JWT,
+    LONG_TOKEN,
     NPM_TOKEN,
     OPENAI_KEY,
     PEM_BLOCK,
@@ -41,6 +43,10 @@ from tests.screening._plants import (
 )
 
 CRED = {"credential": 1}
+LINK_TOKEN = "Kq8vN2xP7mZ4tR9wLm3s"
+RESET_URL = f"https://app.example.com/reset-password/{LINK_TOKEN}"
+# A mail service's tracking link: no link word, so only the sentence around it can tell.
+WRAPPED_LINK = f"https://u1234.ct.sendgrid.net/ls/click?upn={LINK_TOKEN}{LINK_TOKEN}"
 
 CREDENTIALS = [
     pytest.param(
@@ -134,6 +140,21 @@ CREDENTIALS = [
     ),
     # The value right after "=": the entropy rule reads it, whatever the name.
     pytest.param(f"key={ENTROPY_TOKEN}", "key=[credential]", id="key-equals-token"),
+    # A context word and base64 with a slash: a random part keeps it a candidate.
+    pytest.param(
+        "api key Kq8vN2xP7mZ4tR9w/Lm3sXaB1cD5fG7hJ9",
+        "api key [credential]",
+        id="base64-with-a-slash",
+    ),
+    pytest.param(
+        "aws secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        "aws secret [credential]",
+        id="aws-secret-with-slashes",
+    ),
+    # The ids of a model API still go after a word that says secret.
+    pytest.param(
+        "token: req_011CabcDEFghiJKLmno123", "token: [credential]", id="id-shape-right-after-token"
+    ),
     pytest.param(f"signing_key={ENTROPY_TOKEN}", "signing_key=[credential]", id="signing-key"),
     pytest.param(f"license_key={ENTROPY_TOKEN}", "license_key=[credential]", id="license-key"),
     pytest.param(
@@ -224,12 +245,311 @@ CREDENTIALS = [
         "Authorization: Bearer [credential]",
         id="bearer-with-no-digit",
     ),
+    # A PIN or a security code with no word between the label and the digits.
+    pytest.param("PIN 4821", "PIN [credential]", id="pin-space"),
+    pytest.param(
+        "New debit card arrived, PIN 7316.",
+        "New debit card arrived, PIN [credential].",
+        id="pin-in-a-chat",
+    ),
+    pytest.param("PIN-4821", "PIN-[credential]", id="pin-dash"),
+    pytest.param("pin4821", "pin[credential]", id="pin-glued"),
+    pytest.param("CVV: 123", "CVV: [credential]", id="cvv"),
+    pytest.param("cvc 1234", "cvc [credential]", id="cvc"),
+    # French and Darija, and the English form with only a space.
+    pytest.param("Mot de passe : Tr0ub4dor3", "Mot de passe : [credential]", id="french-password"),
+    pytest.param(
+        "le mot de passe est Tr0ub4dor3", "le mot de passe est [credential]", id="french-est"
+    ),
+    pytest.param("le mdp c'est Tr0ub4dor3", "le mdp c'est [credential]", id="french-cest"),
+    pytest.param(
+        "identifiant: orla mdp: Tr0ub4dor3", "identifiant: orla mdp: [credential]", id="french-pair"
+    ),
+    pytest.param("mdp Tr0ub4dor3", "mdp [credential]", id="french-space"),
+    pytest.param("password Tr0ub4dor3", "password [credential]", id="password-space"),
+    pytest.param("code wifi: Tr0ub4dor3", "code wifi: [credential]", id="french-wifi"),
+    pytest.param("password dyali: Tr0ub4dor3", "password dyali: [credential]", id="darija-mine"),
+    pytest.param(
+        "l password dyal wifi howa Tr0ub4dor3",
+        "l password dyal wifi howa [credential]",
+        id="darija-is",
+    ),
+    pytest.param("jeton: Kq8vN2xP7mZ4tR9wLm3s", "jeton: [credential]", id="french-token"),
+    pytest.param(
+        "la cl\u00e9 est Kq8vN2xP7mZ4tR9wLm3s", "la cl\u00e9 est [credential]", id="french-key"
+    ),
 ]
 
 
 @pytest.mark.parametrize("text, expected", CREDENTIALS)
 def test_credentials(text, expected):
     assert screen_one(screener(), text) == (expected, CRED)
+
+
+PASSWORD = "Tr0ub4dor3"
+# Each form holds VALUE once. The whole value goes, one span, and every word around it stays.
+VALUE_FORMS = [
+    # Words between the password word and its value, or no separator at all.
+    ("the password for prod is VALUE", PASSWORD),
+    ("password for root: VALUE", PASSWORD),
+    ("password to the admin panel: VALUE", PASSWORD),
+    ("Password of the wifi is VALUE", PASSWORD),
+    ("password? it's VALUE", PASSWORD),
+    ("the password will be VALUE", PASSWORD),
+    ("password should be VALUE", PASSWORD),
+    ("changed the password to VALUE", PASSWORD),
+    ("I set the password to VALUE", PASSWORD),
+    ("the password for prod is VALUE.", "482910"),
+    ("wifi password VALUE", PASSWORD),
+    ("admin password VALUE", PASSWORD),
+    ("use password VALUE", PASSWORD),
+    ("log in with password VALUE", PASSWORD),
+    ("username orla password VALUE", PASSWORD),
+    ("pwd VALUE", PASSWORD),
+    ("user orla pass VALUE", PASSWORD),
+    ("u: orla p: VALUE", PASSWORD),
+    ("creds are admin / VALUE", "hunter2"),
+    ("credentials are admin:VALUE", "hunter2"),
+    ("login: admin:VALUE", "hunter2"),
+    ("log in with admin / VALUE", "hunter2"),
+    # A secret word glued to the word before it.
+    ('const openaiKey = "VALUE";', LONG_TOKEN),
+    ('masterKey: "VALUE"', LONG_TOKEN),
+    ('{"appKey":"VALUE"}', LONG_TOKEN),
+    ("XApiKey: VALUE", LONG_TOKEN),
+    ("apikey VALUE", LONG_TOKEN),
+    ("authtoken=VALUE", LONG_TOKEN),
+    ("accesstoken: VALUE", LONG_TOKEN),
+    ('mytoken="VALUE"', LONG_TOKEN),
+    ("clientsecret=VALUE", LONG_TOKEN),
+    ("OPENAIKEY=VALUE", LONG_TOKEN),
+    ("openaikey=VALUE", HEX_32),
+    ("DefaultEndpointsProtocol=https;AccountName=foo;AccountKey=VALUE;EndpointSuffix=x", "Ab3dE=="),
+    (
+        "Endpoint=sb://x.servicebus.windows.net/;SharedAccessKeyName=root;SharedAccessKey=VALUE",
+        "A1b2",
+    ),
+    ("//registry.npmjs.org/:_authToken=VALUE", "3f2a1b4c-5d6e-7f80-9a1b-2c3d4e5f6a7b"),
+    ("PGPASSWORD=VALUE", "S3cr3tPw"),
+    ("DBPASSWORD=VALUE", "S3cr3tPw"),
+    ("ADMINPASS=VALUE", "S3cr3tPw"),
+    ("dbpassword=VALUE", "S3cr3tPw"),
+    ("adminpassword: VALUE", "S3cr3tPw"),
+    ("mysqlpass=VALUE", "S3cr3tPw"),
+    ("GITHUBTOKEN=VALUE", "abc123xyz"),
+    # A value that reads like code to a loose guard, and is not.
+    ("DB_PASSWORD=VALUE", "hunter2.Bank1"),
+    ("JWT_SECRET=VALUE", "mysecret.Value2026"),
+    ("DB_PASSWORD=VALUE", "rabat.summer"),
+    ("password=VALUE", "s3cret.Value9"),
+    ("token: VALUE", "abc123.DEF456ghi"),
+    ("api_key=VALUE", "prod.Kq8vN2xP7mZ4tR9w"),
+    ("the password is VALUE", "hunter2.Bank1"),
+    ("DB_PASSWORD=VALUE", "$ecret1234"),
+    ("password=VALUE", "$uperS3cret"),
+    ("password: VALUE", "$3cr3tP@ss"),
+    ("my password is VALUE", "$uperS3cret"),
+    ("password: VALUE", "Tr0ub(4)dor3"),
+    ("password=VALUE", "abcd1234(x)"),
+    ("password=VALUE", "abcd1234[x]"),
+    ("password=VALUE", "abcd1234<x"),
+    ("wifi password: VALUE", "Summer(2024)!"),
+    # A symbol inside the value, and a bracket around it.
+    ("password=VALUE", "P@ss,w0rd9"),
+    ("the password is VALUE", "P@ss,w0rd9"),
+    ("docker run -e DB_PASSWORD=VALUE img", "P@ss;w0rd9"),
+    ("password: VALUE", "Tr0ub'4dor3"),
+    ("password: VALUE", 'Tr0ub"4dor3'),
+    ("password: VALUE", "Tr0ub{4}dor3"),
+    ("password: VALUE", "O'Brien1!"),
+    ("DB_PASSWORD=VALUE", "O'Brien1!"),
+    ("password: VALUE", "{Tr0ub4dor3}"),
+    ("password: VALUE", "<Tr0ub4dor3>"),
+    ("password: VALUE", "[Tr0ub4dor3]"),
+    ("password: VALUE", "(Tr0ub4dor3)"),
+    ("DB_PASSWORD=VALUE", "(Tr0ub4dor3)"),
+    ("password: VALUE", "Tr0ub<4>dor3"),
+    ("password: VALUE", "Tr0ub[4]dor3"),
+    ("api_key=VALUE", "Ab3,Xy9Zq7Lm2"),
+    ("f(password=VALUE)", "hunter2"),
+    ("password=VALUE,user=orla", "pw1x"),
+    ("Password=VALUE;Server=db", "pw1x"),
+    # A label says the rest of the line is the value.
+    ("password: VALUE", "correct horse battery staple"),
+    ("passphrase = VALUE", "correct horse battery staple"),
+    ("DB_PASSWORD: VALUE", "correct horse battery"),
+    ("Password: VALUE", "My Dog Rex 2024"),
+    ("wifi password: VALUE", "my dog rex"),
+    ("password - VALUE", "my dog rex"),
+    ("password=VALUE", "correct horse battery staple"),
+    ("passphrase: VALUE", "a cat on mars"),
+    ("Password: VALUE", "Rex 2024"),
+    ("password: VALUE, user: orla", "my dog rex"),
+    ("password: VALUE  # the staging box", "my dog rex"),
+    ("password: VALUE // the staging box", "my dog rex"),
+    ("password: VALUE host: db", "my dog rex"),
+    ("mysql --password=VALUE -h db", "my dog rex"),
+    # CLI flags.
+    ("mysql -u root -pVALUE db", "S3cr3tPw"),
+    ("sshpass -p VALUE ssh host", "S3cr3tPw"),
+    ("docker login -u me -p VALUE", "S3cr3tPw"),
+    ("docker login --password VALUE", "S3cr3tPw"),
+    ("psql --pass VALUE", "S3cr3tPw"),
+    ("--api-key VALUE", "abc123xyz"),
+    ("--token VALUE", "abc123xyz"),
+    ("--client-secret VALUE", "abc123xyz"),
+    ("--secret-key VALUE", "abc123xyz"),
+    ("--access-key VALUE", "abc123xyz"),
+    ("cypher-shell -u neo4j -p VALUE", "S3cr3tPw"),
+    ("neo4j-admin dbms set-initial-password VALUE", "S3cr3tPw"),
+    ("redis-cli -a VALUE", "S3cr3tPw"),
+    ("mongosh -u orla -p VALUE", "S3cr3tPw"),
+    ("machine api.example.com login me password VALUE", "S3cr3tPw"),
+    # SQL and Cypher.
+    ("ALTER USER orla WITH PASSWORD 'VALUE';", "S3cr3tPw"),
+    ("CREATE USER orla IDENTIFIED BY 'VALUE';", "S3cr3tPw"),
+    ("CREATE USER orla SET PASSWORD 'VALUE'", "S3cr3tPw"),
+    ("ALTER USER orla SET PASSWORD 'VALUE' CHANGE NOT REQUIRED", "S3cr3tPw"),
+    # Code.
+    ('GraphDatabase.driver(uri, auth=("neo4j", "VALUE"))', "S3cr3tPw"),
+    ('requests.get(url, auth=("orla", "VALUE"))', "S3cr3tPw"),
+    ('HTTPBasicAuth("orla", "VALUE")', "S3cr3tPw"),
+    ('login("orla", "VALUE")', "S3cr3tPw"),
+    ('config["password"] = "VALUE"', "S3cr3tPw"),
+    ('cfg.get("password", "VALUE")', "S3cr3tPw"),
+    ('os.getenv("DB_PASSWORD", "VALUE")', "S3cr3tPw"),
+    ('setenv("DB_PASSWORD", "VALUE")', "S3cr3tPw"),
+    # Markup.
+    ("<password>VALUE</password>", "S3cr3tPw"),
+    ("<apiKey>VALUE</apiKey>", LONG_TOKEN),
+    ('<input name="password" value="VALUE">', "S3cr3tPw"),
+    # The name on one field and the value on the next.
+    ("- name: DB_PASSWORD\n  value: VALUE", "S3cr3tPw"),
+    ('env:\n  - name: API_KEY\n    value: "VALUE"', LONG_TOKEN),
+    ('{"name": "DB_PASSWORD", "value": "VALUE"}', "S3cr3tPw"),
+    ("- name: DB_PASSWORD value: VALUE", "S3cr3tPw"),
+    ("[{name: DB_PASSWORD, value: VALUE}]", "S3cr3tPw"),
+    ("password: >\n  VALUE", "S3cr3tPw"),
+    # A token alone on its line, under a line that says what it is.
+    ("the token:\n```\nVALUE\n```", LONG_TOKEN),
+    ("here is the api key\n```\nVALUE\n```", LONG_TOKEN),
+    ("API key below\nVALUE", LONG_TOKEN),
+    ("here is the key\nVALUE", LONG_TOKEN),
+    ("my key:\n\nVALUE", LONG_TOKEN),
+    ("Secret\nVALUE", LONG_TOKEN),
+    ("cat <<EOF\ntoken\nVALUE\nEOF", LONG_TOKEN),
+    ("the api key:\nVALUE", "3f2a9c1d8e7b6a5f4e3d2c1b0a9f8e7d"),
+    # Formats with no context word, in the places they appear.
+    (
+        "Use this token to access the HTTP API:\nVALUE\nKeep your token secure",
+        PROVIDER_KEYS["telegram-bot"],
+    ),
+    ("https://api.telegram.org/VALUE/sendMessage", "bot" + PROVIDER_KEYS["telegram-bot"]),
+    (
+        "https://b.s3.amazonaws.com/k?X-Amz-Date=20261102T000000Z&X-Amz-Signature=VALUE",
+        HEX_32 + HEX_32,
+    ),
+    (
+        "https://acme.webhook.office.com/webhookb2/VALUE",
+        f"{LONG_TOKEN}/IncomingWebhook/{LONG_TOKEN}",
+    ),
+    # Session cookies, and an Authorization line whatever its scheme.
+    ("Cookie: sessionid=VALUE", LONG_TOKEN),
+    ("Cookie: session=VALUE", LONG_TOKEN),
+    ("Set-Cookie: sid=VALUE; HttpOnly", LONG_TOKEN),
+    ("Set-Cookie: JSESSIONID=VALUE; Path=/", "0123456789ABCDEF0123456789ABCDEF"),
+    ("cookie: connect.sid=VALUE", f"s%3A{LONG_TOKEN}"),
+    ("-b 'session=VALUE'", LONG_TOKEN),
+    ('curl https://app.example.net/dashboard --cookie "session=VALUE"', LONG_TOKEN),
+    ("curl 'https://app.example.net/x' -b 'sessionid=VALUE; theme=dark' --compressed", LONG_TOKEN),
+    ("Set-Cookie: laravel_session=VALUE; path=/; httponly", LONG_TOKEN),
+    ("SESSION_COOKIE=VALUE", LONG_TOKEN),
+    ("Authorization: Bearer VALUE", "abc123def456"),
+    ("authorization: bearer VALUE", "abc123def456"),
+    ("Bearer VALUE", "abc123def456"),
+    ("Authorization: VALUE", "abc123def456"),
+    ("Authorization: Token VALUE", "abc123def456"),
+    ("Authorization: token VALUE", "0123456789abcdef"),
+    ("Authorization: Token VALUE", "9944b09199c62bcf9418ad846dd0e4bbdfc6ee4b"),
+    ("Bearer: VALUE", LONG_TOKEN),
+    ("bearer=VALUE", LONG_TOKEN),
+]
+
+
+@pytest.mark.parametrize("template, value", VALUE_FORMS)
+def test_a_value_goes_whole_in_every_form(template, value):
+    text = template.replace("VALUE", value)
+    expected = template.replace("VALUE", "[credential]")
+    assert screen_one(screener(), text) == (expected, CRED)
+
+
+@pytest.mark.parametrize(
+    "text, expected, counts",
+    [
+        pytest.param(
+            f"orla.vance@brightwell.example:{PASSWORD}",
+            "[email 1]:[credential]",
+            {"credential": 1, "contact_email": 1},
+            id="address-and-password",
+        ),
+        pytest.param(
+            "tamsin@brightwell.example:hunter2 is the login",
+            "[email 1]:[credential] is the login",
+            {"credential": 1, "contact_email": 1},
+            id="address-and-password-in-a-sentence",
+        ),
+        pytest.param(
+            "tamsin@brightwell.example:8080",
+            "[email 1]:8080",
+            {"contact_email": 1},
+            id="address-and-port",
+        ),
+        pytest.param(
+            "tamsin@brightwell.example:10:30",
+            "[email 1]:10:30",
+            {"contact_email": 1},
+            id="address-and-time",
+        ),
+        pytest.param(
+            "tamsin@brightwell.example:0612345678",
+            "[email 1]:[phone 1]",
+            {"contact_email": 1, "contact_phone": 1},
+            id="address-and-phone",
+        ),
+        pytest.param(
+            "admin:hunter2@db.example.com:5432/app",
+            "admin:[credential]@db.example.com:5432/app",
+            CRED,
+            id="userinfo-with-no-scheme",
+        ),
+        pytest.param(
+            f"user:{PASSWORD}@10.0.0.5:5432",
+            "user:[credential]@10.0.0.5:5432",
+            CRED,
+            id="userinfo-with-an-address-host",
+        ),
+        pytest.param(
+            "Email:tamsin2@brightwell.example",
+            "Email:[email 1]",
+            {"contact_email": 1},
+            id="a-label-is-no-user",
+        ),
+        pytest.param(
+            f"passwords are {PASSWORD} and Hunt3r2",
+            "passwords are [credential] and [credential]",
+            {"credential": 2},
+            id="a-list-of-passwords",
+        ),
+        pytest.param(
+            f"Cookie: _ga=GA1.2.111.222; sessionid={LONG_TOKEN}",
+            "Cookie: _ga=[credential]; sessionid=[credential]",
+            {"credential": 2},
+            id="two-cookies",
+        ),
+    ],
+)
+def test_a_pair_masks_each_part(text, expected, counts):
+    assert screen_one(screener(), text) == (expected, counts)
 
 
 def card(prefix: str) -> str:
@@ -245,7 +565,6 @@ CARDS = [
     pytest.param(
         f"{card('6011' + '1111' * 3 + '12')} long", "[card] long", 1, id="nineteen-digits"
     ),
-    pytest.param("5555 5555 5555 4444 cvv 123", "[card] cvv 123", 1, id="cvv-word-stays"),
     pytest.param("4111 1111 1111 1111 123", "[card] 123", 1, id="cvv-group-after-card"),
     pytest.param(
         "４１１１ １１１１ １１１１ １１１１",
@@ -267,6 +586,13 @@ CARDS = [
 @pytest.mark.parametrize("text, expected, count", CARDS)
 def test_payment_cards(text, expected, count):
     assert screen_one(screener(), text) == (expected, {"payment_card": count})
+
+
+def test_a_security_code_after_a_card_goes_too():
+    assert screen_one(screener(), "5555 5555 5555 4444 cvv 123") == (
+        "[card] cvv [credential]",
+        {"credential": 1, "payment_card": 1},
+    )
 
 
 NOT_CARDS = [
@@ -312,7 +638,6 @@ ONE_TIME_CODES = [
     pytest.param("Enter the code 8841 to continue", None, id="enter-the-code"),
     pytest.param("Your code is 1234.", None, id="your-code-is"),
     pytest.param("security code - 662913 - do not share", None, id="security-code"),
-    pytest.param("code is 7720", None, id="code-is-at-the-end"),
     pytest.param("Code 6612 expires soon", "noreply@accounts.example", id="noreply-sender"),
     pytest.param("Here: 552901", "Security", id="security-sender"),
     pytest.param("verification code: 2026", None, id="year-said-as-the-code"),
@@ -371,12 +696,191 @@ ONE_TIME_CODES = [
     pytest.param("Your login code: 7KQ2-M9PX", None, id="dashed-mixed-code"),
     pytest.param("Your sign-in code is a1b2c3", None, id="short-mixed-code"),
     pytest.param("Your code: K7X9QZ", "noreply@example.com", id="letter-code-from-noreply"),
+    # A verb, a code and a sign-in purpose.
+    pytest.param("Use 482910 to sign in to Kestrel.", None, id="use-to-sign-in"),
+    pytest.param("Use ABC123 to log in.", None, id="use-letters-to-log-in"),
+    pytest.param("Use 482 910 to log in", None, id="use-split-to-log-in"),
+    pytest.param("Enter 482910 on the login page", None, id="enter-on-the-page"),
+    pytest.param("Input 482910 to verify", None, id="input-to-verify"),
+    pytest.param("Reply with 482910 to confirm", None, id="reply-to-confirm"),
+    pytest.param("To log in, use 482910", None, id="purpose-first"),
+    pytest.param("To authorise this transaction enter 482910.", None, id="purpose-first-bank"),
+    pytest.param("Sign in with 482910", None, id="sign-in-with"),
+    pytest.param("Log in using code 482910", None, id="log-in-using-code"),
+    # The verb and the word "code".
+    pytest.param("Use code 482910 to approve your payment of 200 MAD.", None, id="use-code"),
+    pytest.param("Enter code 482910", None, id="enter-code"),
+    pytest.param("Please use this code 482910", None, id="use-this-code"),
+    pytest.param("Use the following code to sign in: 482910", None, id="use-the-following-code"),
+    pytest.param("Here is the code to log in: 482910", None, id="code-to-log-in"),
+    # How long it lasts, and do not share it.
+    pytest.param("482910 expires in 10 minutes", None, id="expires-in"),
+    pytest.param("482910 is valid for 10 minutes.", None, id="valid-for"),
+    pytest.param("Code: 482910. Valid for 5 min.", None, id="valid-for-after-the-code"),
+    pytest.param("This code is valid for 5 minutes: 482910", None, id="valid-for-before-the-code"),
+    pytest.param("482910. Do not share it with anyone.", None, id="do-not-share-it"),
+    pytest.param("Do not give this code to anyone: 482910", None, id="do-not-give"),
+    # Two soft signals settle a number that one signal cannot.
+    pytest.param(
+        "Use 5521 to log in to Fable. It expires in 5 minutes.", None, id="owner-two-signals"
+    ),
+    pytest.param("Your number is 482910. It expires in 5 minutes.", None, id="number-expires"),
+    # The labels that name the code.
+    pytest.param("3D Secure code: 482910", None, id="secure-code"),
+    pytest.param(
+        "Apple Account Code: 482910. Don't share it with anyone.", None, id="account-code"
+    ),
+    pytest.param("Steam Guard code: F7KQ2", None, id="guard-code"),
+    pytest.param("2FA 482910", None, id="2fa"),
+    pytest.param("MFA: 482910", None, id="mfa"),
+    pytest.param("TOTP 482910", None, id="totp"),
+    pytest.param("Fable login: 482910", None, id="login-label"),
+    pytest.param("Your login token is 482910", None, id="login-token"),
+    pytest.param("Verification: 482910", None, id="verification-label"),
+    pytest.param("482910 is your Larkspire login", None, id="is-your-login"),
+    pytest.param("482910 - Kestrel login", None, id="code-then-login"),
+    # A line below that starts with a unit word says nothing about the code.
+    pytest.param(
+        "Your verification code: 482910\nMinutes until it expires: 10", None, id="unit-below"
+    ),
+    pytest.param("Your OTP: 482910\nTime left: 5 minutes", None, id="time-below"),
+    pytest.param("Security code: 482910\nRequest from: Chrome on Mac", None, id="request-below"),
+    pytest.param("Verification code 482910\nItems in your cart", None, id="items-below"),
+    # A code alone on the next line stays a code.
+    pytest.param("Your verification code:\nK7X9QZ\nIt expires soon.", None, id="letters-next-line"),
+    # French and Arabic.
+    pytest.param("Votre code de v\u00e9rification est 482910", None, id="french-verification"),
+    pytest.param("Votre code est : 482910", None, id="french-your-code"),
+    pytest.param("Code de confirmation : 482910", None, id="french-confirmation"),
+    pytest.param("Votre code WhatsApp : 482-910", None, id="french-brand"),
+    pytest.param("Code de connexion Telegram : 48291", None, id="french-login"),
+    pytest.param("482910 est votre code Instagram.", None, id="french-is-your"),
+    pytest.param("G-482910 est votre code de validation Google.", None, id="french-google"),
+    pytest.param("Entrez le code 482910", None, id="french-enter"),
+    pytest.param("Utilisez 482910 pour vous connecter", None, id="french-use"),
+    pytest.param(
+        "\u0631\u0645\u0632 WhatsApp \u0627\u0644\u062e\u0627\u0635 \u0628\u0643: 482-910",
+        None,
+        id="arabic",
+    ),
+    pytest.param("code dyal verification: 482910", None, id="darija-verification"),
+    # A service sender still counts.
+    pytest.param("Here: 552901", "security@kestrel.example", id="service-address"),
 ]
 
 
 @pytest.mark.parametrize("text, sender", ONE_TIME_CODES)
 def test_one_time_codes_drop_the_message(text, sender):
     assert screen_one(screener(), text, sender=sender) == (None, {"one_time_code": 1})
+
+
+WEAK_CODES = [
+    # The bare word "code" is not enough for a drop, so the number goes and the words stay.
+    pytest.param("the code is 482910.", "the code is [code].", None, id="code-is"),
+    pytest.param("code is 7720", "code is [code]", None, id="code-is-at-the-end"),
+    pytest.param(
+        "the port in the code is 8000.",
+        "the port in the code is [code].",
+        None,
+        id="port-in-the-code",
+    ),
+    pytest.param("Code: 482910", "Code: [code]", None, id="code-label"),
+    pytest.param("CODE\n482910", "CODE\n[code]", None, id="code-then-next-line"),
+    pytest.param(
+        "the code they sent me is 482910",
+        "the code they sent me is [code]",
+        None,
+        id="words-between",
+    ),
+    pytest.param("the code was 482910", "the code was [code]", None, id="code-was"),
+    pytest.param("482910 is the code", "[code] is the code", None, id="is-the-code"),
+    pytest.param(
+        "send me the code, it's 4829", "send me the code, it's [code]", None, id="code-its"
+    ),
+    pytest.param("l code dyalk howa 482910", "l code dyalk howa [code]", None, id="darija-is"),
+    # One soft signal cannot settle a number that can be a port or a count.
+    pytest.param(
+        "use 8080 to log in locally", "use [code] to log in locally", None, id="use-a-port"
+    ),
+    pytest.param("Enter 1200 to continue", "Enter [code] to continue", None, id="enter-a-count"),
+    pytest.param("Log in with 5521", "Log in with [code]", None, id="log-in-with-a-short-number"),
+    pytest.param(
+        "use neo4j to verify", "use [code] to verify", None, id="lowercase-word-with-a-digit"
+    ),
+    pytest.param(
+        "the cache entry 4096 expires in 5 minutes",
+        "the cache entry [code] expires in 5 minutes",
+        None,
+        id="short-number-expires",
+    ),
+    pytest.param(
+        "use LUX-1234 to verify", "use [code] to verify", None, id="ticket-key-after-a-verb"
+    ),
+    # Capitals right after a strong phrase: a service may send them, and code cannot tell.
+    pytest.param(
+        "Your verification code is QWERTY", "Your verification code is [code]", None, id="capitals"
+    ),
+    pytest.param(
+        "Your Slack confirmation code: ABC-DEF",
+        "Your Slack confirmation code: [code]",
+        None,
+        id="dashed-capitals",
+    ),
+    # A sha shape right after a phrase: a commit or a code.
+    pytest.param(
+        "a1b2c3d Fix the OTP\n8c937ab Add the tests\n",
+        "a1b2c3d Fix the OTP\n[code] Add the tests\n",
+        None,
+        id="log-line-after-otp",
+    ),
+    pytest.param(
+        "the auth code 8c937ab broke the test",
+        "the auth code [code] broke the test",
+        None,
+        id="sha-after-auth-code",
+    ),
+    pytest.param(
+        "Your verification code is a1b2c3d",
+        "Your verification code is [code]",
+        None,
+        id="code-with-a-sha-shape",
+    ),
+    pytest.param(
+        "8c937ab is your code, I checked",
+        "[code] is your code, I checked",
+        None,
+        id="sha-is-your-code",
+    ),
+    pytest.param("#4821 is your code", "#[code] is your code", None, id="hash-is-your-code"),
+    # A service name near a number, not right before it: dev chat says these about a connector.
+    pytest.param(
+        "we removed the sms code, saved 4000",
+        "we removed the sms code, saved [code]",
+        None,
+        id="sms-code-far",
+    ),
+    pytest.param(
+        "he sent me the WhatsApp code, it is 482910",
+        "he sent me the WhatsApp code, it is [code]",
+        None,
+        id="whatsapp-code-far",
+    ),
+    pytest.param(
+        "Use 482910 as your Instagram code",
+        "Use [code] as your Instagram code",
+        None,
+        id="as-your-brand-code",
+    ),
+    # A sender that can be a person.
+    pytest.param(
+        "I sent 1500 today", "I sent [code] today", "Ahmed Accounts", id="person-with-a-role-word"
+    ),
+]
+
+
+@pytest.mark.parametrize("text, expected, sender", WEAK_CODES)
+def test_a_weak_code_is_masked_and_the_message_stays(text, expected, sender):
+    assert screen_one(screener(), text, sender=sender) == (expected, {"one_time_code": 1})
 
 
 def test_a_year_from_a_security_sender_is_no_code():
@@ -388,6 +892,26 @@ def test_a_year_from_a_security_sender_is_no_code():
 def test_a_service_word_inside_a_name_is_no_service_sender(sender):
     text = "the room holds 1400 people"
     assert screen_one(screener(), text, sender=sender) == (text, {})
+
+
+@pytest.mark.parametrize(
+    "text, sender",
+    [
+        pytest.param(
+            "PR 4821 merged, 1200 lines changed", "noreply@github.com", id="pr-from-noreply"
+        ),
+        pytest.param("Standup moved to room 1204", "no-reply@calendar.example.com", id="room"),
+        pytest.param("Review of PR 1234 is done", "Security Review Bot", id="pr-from-a-bot"),
+        pytest.param("The build took 1500 ms and PR 1234 passed", "auth lane", id="units"),
+        pytest.param("Invoice 48210 is paid", "Karim Accounts", id="invoice"),
+        pytest.param("LUX-1234 is closed", "noreply@linear.app", id="ticket-key"),
+    ],
+)
+def test_a_number_that_names_something_else_stays_whatever_the_sender(text, sender):
+    # The address in a sender is its own class; only the text and the code count are asked about.
+    kept, counts = screen_one(screener(), text, sender=sender)
+    assert kept == text
+    assert "one_time_code" not in counts
 
 
 RESET_LINKS = [
@@ -429,12 +953,152 @@ RESET_LINKS = [
         "curl http://127.0.0.1:8000/v1/verify/0193a2b4-5c6d-7e8f-9a0b-1c2d3e4f5a6b",
         id="local-verify",
     ),
+    # Chat markup and a JSON escape beside the token.
+    pytest.param(f"<{RESET_URL}|Reset>", id="slack-label"),
+    pytest.param(f"**{RESET_URL}**", id="markdown-bold"),
+    pytest.param(f"{RESET_URL}|x", id="pipe"),
+    pytest.param(f'{{"url":"{RESET_URL}\\"}}', id="json-escape"),
+    pytest.param(f"{RESET_URL},and", id="comma-glued"),
+    pytest.param(f"{RESET_URL}*and", id="star-glued"),
+    pytest.param(f"{RESET_URL}\\x", id="backslash-glued"),
+    pytest.param(f"{RESET_URL}$x", id="dollar-glued"),
+    # Words glued together.
+    pytest.param(f"https://app.example.com/verifyemail/{LINK_TOKEN}", id="verifyemail"),
+    pytest.param(f"https://app.example.com/setpassword/{LINK_TOKEN}", id="setpassword"),
+    pytest.param(f"https://app.example.com/pwreset/{LINK_TOKEN}", id="pwreset"),
+    pytest.param(f"https://app.example.com/magiclogin/{LINK_TOKEN}", id="magiclogin"),
+    pytest.param(f"https://app.example.com/authenticate/{LINK_TOKEN}", id="authenticate"),
+    pytest.param(f"https://www.notion.so/loginwithemail#{LINK_TOKEN}", id="loginwithemail"),
+    # A tracking link has no word of its own, so the sentence right before it counts.
+    pytest.param(f"Use this link to log in: {WRAPPED_LINK}", id="link-to-log-in"),
+    pytest.param(f"Click this link to sign in: {WRAPPED_LINK}", id="link-to-sign-in"),
+    pytest.param(f"Here is your one-time link: {WRAPPED_LINK}", id="one-time-link"),
+    pytest.param(f"Your login link: {WRAPPED_LINK}", id="login-link-then-url"),
+    pytest.param(
+        "Please verify your email: https://grove.example/v/abc", id="verify-then-short-url"
+    ),
+    pytest.param("Your login link is below: https://grove.example/go/abcdef", id="gap-words"),
+    # French.
+    pytest.param(
+        f"R\u00e9initialisez votre mot de passe : {WRAPPED_LINK}", id="french-reset-phrase"
+    ),
+    pytest.param(f"Lien de connexion : {WRAPPED_LINK}", id="french-login-link"),
+    pytest.param("Votre lien magique : https://x.example/l/abc", id="french-magic-link"),
+    pytest.param(f"https://app.example.com/reinitialiser/{LINK_TOKEN}", id="french-reset-path"),
+    pytest.param(f"https://app.example.com/connexion/{LINK_TOKEN}", id="french-login-path"),
+    pytest.param(f"https://app.example.com/mot-de-passe/{LINK_TOKEN}", id="french-password-path"),
+    # A host rule holds a path, so a reset page on the same host still counts.
+    pytest.param("https://www.notion.so/invite/Zx81kQ9vLm2Pq7Rt9abc", id="notion-invite"),
+    pytest.param(
+        "https://raw.githubusercontent.com/x-arc-ai/private/auth/Zx81kQ9vLm2Pq7Rt9abc",
+        id="raw-host-token-no-sha",
+    ),
+    pytest.param("https://docs.google.com/reset/Zx81kQ9vLm2Pq7Rt9abc", id="google-host-reset"),
+    pytest.param("https://www.figma.com/reset/Zx81kQ9vLm2Pq7Rt9abc", id="figma-host-reset"),
 ]
 
 
 @pytest.mark.parametrize("text", RESET_LINKS)
 def test_reset_and_magic_links_drop_the_message(text):
     assert screen_one(screener(), text) == (None, {"reset_link": 1})
+
+
+WEAK_LINKS = [
+    # The token holds no digit or no letter, which a real token can: 1 in 17 at 16 characters.
+    pytest.param(
+        "https://app.example.com/reset-password/KqvNxPmZtRwLmsXaHjbVc", "[link]", id="no-digit"
+    ),
+    pytest.param(
+        "https://app.example/reset-password/zxkqvlmpqrtwybnmdhgf", "[link]", id="lowercase-only"
+    ),
+    pytest.param("https://app.example.com/reset/4829103746582910", "[link]", id="no-letter"),
+    pytest.param(
+        "https://github.com/password_reset/abcdefghijklmnopqrstuvwx",
+        "[link]",
+        id="no-digit-code-host",
+    ),
+    pytest.param(
+        "https://x.example/verify/1302448938567139324", "[link]", id="long-id-after-a-word"
+    ),
+    # A URL ends at "|", so a Slack label keeps its words.
+    pytest.param(
+        "<https://app.example.com/reset-password/KqvNxPmZtRwLmsXaHjbVc|Reset it>",
+        "<[link]|Reset it>",
+        id="slack-label-stays",
+    ),
+    # A code in the query beside a link word.
+    pytest.param(
+        "see https://app.example.com/verify?code=482910 now", "see [link] now", id="code-in-query"
+    ),
+    pytest.param("https://app.example.com/auth?code=K7X9QZ", "[link]", id="letters-code-in-query"),
+    # A link word in the host, or a token before the word: the shape allows either reading.
+    pytest.param(f"https://login.example.com/{LINK_TOKEN}", "[link]", id="word-in-the-host"),
+    pytest.param(
+        f"https://passwordreset.microsoftonline.com/?ru={LINK_TOKEN}",
+        "[link]",
+        id="word-glued-in-the-host",
+    ),
+    pytest.param("auth.example.com/0193a2b4c5d6e7f8a9b0", "[link]", id="host-no-scheme"),
+    pytest.param(
+        f"https://app.example.com/{LINK_TOKEN}/verify-email", "[link]", id="token-before-the-word"
+    ),
+    # A long id after a slug of words on a host with no page rule.
+    pytest.param(
+        "https://blog.example.com/login-flow-notes-3f2a9c1e7b4d5a6f8e0c1b2a3d4f5e6a",
+        "[link]",
+        id="slug-with-a-long-id",
+    ),
+    # A phrase that dev chat says about a feature, with the URL further off.
+    pytest.param(
+        "The login link flow is in https://docs.example.com/guides/sessions",
+        "The login link flow is in [link]",
+        id="login-link-far",
+    ),
+    pytest.param(
+        "Plan:\n1. Add magic links later.\n\nRef: https://nextjs.org/docs/app\n",
+        "Plan:\n1. Add magic links later.\n\nRef: [link]\n",
+        id="magic-links-far",
+    ),
+    pytest.param(
+        "use this link to log in, it works once: https://bit.ly/3xYzQ7a",
+        "use this link to log in, it works once: [link]",
+        id="link-to-log-in-far",
+    ),
+    # Common words: only the URL right after them counts.
+    pytest.param(
+        f"Sign in to Kestrel: {WRAPPED_LINK}", "Sign in to Kestrel: [link]", id="sign-in-to"
+    ),
+    pytest.param(
+        f"Confirm your email: {WRAPPED_LINK}", "Confirm your email: [link]", id="confirm-your-email"
+    ),
+    pytest.param(
+        f"Verify your account: {WRAPPED_LINK}",
+        "Verify your account: [link]",
+        id="verify-your-account",
+    ),
+    pytest.param(
+        f"Set a new password here: {WRAPPED_LINK}",
+        "Set a new password here: [link]",
+        id="set-a-new-password",
+    ),
+    pytest.param(
+        f"This link expires in 15 minutes: {WRAPPED_LINK}",
+        "This link expires in 15 minutes: [link]",
+        id="link-expires",
+    ),
+]
+
+
+@pytest.mark.parametrize("text, expected", WEAK_LINKS)
+def test_a_weak_link_is_masked_and_the_message_stays(text, expected):
+    assert screen_one(screener(), text) == (expected, {"reset_link": 1})
+
+
+def test_a_long_tool_output_with_one_phrase_loses_only_its_url():
+    text = f"{'x' * 5000}\nthe magic links line\nhttps://docs.example.com/a\n{'y' * 5000}"
+    kept, counts = screen_one(screener(), text)
+    assert kept == text.replace("https://docs.example.com/a", "[link]")
+    assert counts == {"reset_link": 1}
 
 
 CONTACTS = [
@@ -634,12 +1298,366 @@ CONTACTS = [
         {"contact_handle": 1},
         id="linkedin-link",
     ),
+    # A WhatsApp mention of an unsaved contact, with and without its bidi isolates.
+    pytest.param(
+        "@\u2068+212 612-345678\u2069 can you check",
+        "@\u2068[phone 1]\u2069 can you check",
+        {"contact_phone": 1},
+        id="mention-of-a-number-isolated",
+    ),
+    pytest.param(
+        "@+212612345678 hi",
+        "@[phone 1] hi",
+        {"contact_phone": 1},
+        id="mention-of-a-number",
+    ),
+    pytest.param(
+        "@06 12 34 56 78 hi",
+        "@[phone 1] hi",
+        {"contact_phone": 1},
+        id="mention-of-a-local-number",
+    ),
+    # A number glued to a label or a name: a digit before the mark is what a version has.
+    pytest.param(
+        "Tel.06 12 34 56 78",
+        "Tel.[phone 1]",
+        {"contact_phone": 1},
+        id="label-dot",
+    ),
+    pytest.param(
+        "Tél.+212 612 345 678",
+        "Tél.[phone 1]",
+        {"contact_phone": 1},
+        id="label-dot-plus",
+    ),
+    pytest.param(
+        "T.0612345678",
+        "T.[phone 1]",
+        {"contact_phone": 1},
+        id="one-letter-label",
+    ),
+    pytest.param(
+        "Tel-0612345678",
+        "Tel-[phone 1]",
+        {"contact_phone": 1},
+        id="label-dash",
+    ),
+    pytest.param(
+        "Orla,0612345678",
+        "Orla,[phone 1]",
+        {"contact_phone": 1},
+        id="name-comma",
+    ),
+    pytest.param(
+        "Orla-0612345678",
+        "Orla-[phone 1]",
+        {"contact_phone": 1},
+        id="name-dash",
+    ),
+    pytest.param(
+        "x1,+33612345678",
+        "x1,[phone 1]",
+        {"contact_phone": 1},
+        id="plus-form-after-a-digit",
+    ),
+    pytest.param(
+        "Tel0612345678",
+        "Tel[phone 1]",
+        {"contact_phone": 1},
+        id="label-no-mark",
+    ),
+    pytest.param(
+        "whatsapp0612345678",
+        "whatsapp[phone 1]",
+        {"contact_phone": 1},
+        id="whatsapp-label-no-mark",
+    ),
+    pytest.param(
+        "415 555-0132",
+        "[phone 1]",
+        {"contact_phone": 1},
+        id="us-space-then-dash",
+    ),
+    # Two numbers given together.
+    pytest.param(
+        "0612345678/0698765432",
+        "[phone 1]/[phone 2]",
+        {"contact_phone": 2},
+        id="pair-slash",
+    ),
+    pytest.param(
+        "06 12 34 56 78/06 98 76 54 32",
+        "[phone 1]/[phone 2]",
+        {"contact_phone": 2},
+        id="pair-slash-spaced",
+    ),
+    pytest.param(
+        "0612345678,0698765432",
+        "[phone 1],[phone 2]",
+        {"contact_phone": 2},
+        id="pair-comma",
+    ),
+    pytest.param(
+        "0612345678-0698765432",
+        "[phone 1]-[phone 2]",
+        {"contact_phone": 2},
+        id="pair-dash",
+    ),
+    pytest.param(
+        "+33612345678,+33698765432",
+        "[phone 1],[phone 2]",
+        {"contact_phone": 2},
+        id="pair-plus-comma",
+    ),
+    pytest.param(
+        "415-555-0132/415-555-0133",
+        "[phone 1]/[phone 2]",
+        {"contact_phone": 2},
+        id="pair-us",
+    ),
+    # A link writes "@" as %40 and "+" as %2B.
+    pytest.param(
+        "https://app.example.com/unsubscribe?e=orla.vance%40gmail.example&t=1",
+        "https://app.example.com/unsubscribe?e=[email 1]&t=1",
+        {"contact_email": 1},
+        id="percent-email",
+    ),
+    pytest.param(
+        "https://app.example.com/call?to=%2B212612345678",
+        "https://app.example.com/call?to=%2B[phone 1]",
+        {"contact_phone": 1},
+        id="percent-phone",
+    ),
+    pytest.param(
+        "https://api.whatsapp.com/send/?phone=%2B212612345678&text=hi",
+        "https://api.whatsapp.com/send/?phone=%2B[phone 1]&text=hi",
+        {"contact_phone": 1},
+        id="whatsapp-redirect",
+    ),
+    pytest.param(
+        "viber://chat?number=%2b212612345678",
+        "viber://chat?number=%2b[phone 1]",
+        {"contact_phone": 1},
+        id="percent-phone-lower-case",
+    ),
+    # A place settles that bare digits are a phone.
+    pytest.param(
+        "https://web.whatsapp.com/send?phone=212612345678",
+        "https://web.whatsapp.com/send?phone=[phone 1]",
+        {"contact_phone": 1},
+        id="whatsapp-web-host",
+    ),
+    pytest.param(
+        "https://app.example.com/call?text=hi&phone=212612345678",
+        "https://app.example.com/call?text=hi&phone=[phone 1]",
+        {"contact_phone": 1},
+        id="phone-query-any-host",
+    ),
+    pytest.param(
+        "tel:212612345678",
+        "tel:[phone 1]",
+        {"contact_phone": 1},
+        id="tel-link-bare-digits",
+    ),
+    # Regional and short profile hosts, and a handle that a label or a scheme settles.
+    pytest.param(
+        "https://ma.linkedin.com/in/orla-vance",
+        "https://ma.linkedin.com/in/[handle 1]",
+        {"contact_handle": 1},
+        id="linkedin-regional",
+    ),
+    pytest.param(
+        "https://web.facebook.com/orla.vance",
+        "https://web.facebook.com/[handle 1]",
+        {"contact_handle": 1},
+        id="facebook-web",
+    ),
+    pytest.param(
+        "https://fr-fr.facebook.com/orla.vance",
+        "https://fr-fr.facebook.com/[handle 1]",
+        {"contact_handle": 1},
+        id="facebook-locale",
+    ),
+    pytest.param(
+        "https://fb.com/orla.vance",
+        "https://fb.com/[handle 1]",
+        {"contact_handle": 1},
+        id="fb-com",
+    ),
+    pytest.param(
+        "https://fb.me/orla.vance",
+        "https://fb.me/[handle 1]",
+        {"contact_handle": 1},
+        id="fb-me",
+    ),
+    pytest.param(
+        "https://m.me/orla.vance",
+        "https://m.me/[handle 1]",
+        {"contact_handle": 1},
+        id="messenger-link",
+    ),
+    pytest.param(
+        "https://t.me/s/orlavance",
+        "https://t.me/s/[handle 1]",
+        {"contact_handle": 1},
+        id="telegram-preview",
+    ),
+    pytest.param(
+        "https://www.facebook.com/profile.php?id=100012345678",
+        "https://www.facebook.com/profile.php?id=[handle 1]",
+        {"contact_handle": 1},
+        id="facebook-profile-id",
+    ),
+    pytest.param(
+        "tg://resolve?domain=orlavance",
+        "tg://resolve?domain=[handle 1]",
+        {"contact_handle": 1},
+        id="telegram-scheme",
+    ),
+    pytest.param(
+        "skype:orlavance?call",
+        "skype:[handle 1]?call",
+        {"contact_handle": 1},
+        id="skype-scheme",
+    ),
+    pytest.param(
+        "IG: orla.vance",
+        "IG: [handle 1]",
+        {"contact_handle": 1},
+        id="instagram-label",
+    ),
+    pytest.param(
+        "Telegram: orlavance",
+        "Telegram: [handle 1]",
+        {"contact_handle": 1},
+        id="telegram-label",
+    ),
+    pytest.param(
+        "discord: orlavance",
+        "discord: [handle 1]",
+        {"contact_handle": 1},
+        id="discord-label",
+    ),
+    # Marks around an address are no part of it, and they do not save it.
+    pytest.param(
+        "Orla -orla.vance@gmail.example",
+        "Orla -[email 1]",
+        {"contact_email": 1},
+        id="dash-before",
+    ),
+    pytest.param(
+        "Contact:-orla.vance@gmail.example",
+        "Contact:-[email 1]",
+        {"contact_email": 1},
+        id="label-dash-before",
+    ),
+    pytest.param(
+        "+orla@gmail.example",
+        "+[email 1]",
+        {"contact_email": 1},
+        id="plus-before",
+    ),
+    pytest.param(
+        "%orla@gmail.example",
+        "%[email 1]",
+        {"contact_email": 1},
+        id="percent-before",
+    ),
+    pytest.param(
+        "...orla@gmail.example",
+        "...[email 1]",
+        {"contact_email": 1},
+        id="dots-before",
+    ),
+    pytest.param(
+        "orla.vance@gmail.example-Orla",
+        "[email 1]-Orla",
+        {"contact_email": 1},
+        id="dash-after-word",
+    ),
+    pytest.param(
+        "orla.vance@gmail.example- she is the lead",
+        "[email 1]- she is the lead",
+        {"contact_email": 1},
+        id="dash-after-space",
+    ),
+    pytest.param(
+        "orla.vance@gmail.example-",
+        "[email 1]-",
+        {"contact_email": 1},
+        id="dash-at-end",
+    ),
+    pytest.param(
+        "orla@gmail.com-0612345678",
+        "[email 1]-[phone 1]",
+        {"contact_email": 1, "contact_phone": 1},
+        id="dash-then-phone",
+    ),
+    # A handle that reads like code or a file stays masked where only a person fits.
+    pytest.param(
+        "ask @karim.js and @dr.jane.md",
+        "ask [handle 1] and [handle 2]",
+        {"contact_handle": 2},
+        id="handle-with-a-file-suffix",
+    ),
+    pytest.param(
+        "@447700900123 and @212612345678",
+        "[handle 1] and [handle 2]",
+        {"contact_handle": 2},
+        id="phone-length-mentions",
+    ),
+    pytest.param(
+        "@2pac and @9lives",
+        "[handle 1] and [handle 2]",
+        {"contact_handle": 2},
+        id="digit-led-names",
+    ),
+    pytest.param(
+        "@415.555.0132 hi",
+        "[handle 1] hi",
+        {"contact_handle": 1},
+        id="dotted-phone-mention",
+    ),
+    pytest.param(
+        "ping `@orla` on Telegram",
+        "ping `[handle 1]` on Telegram",
+        {"contact_handle": 1},
+        id="handle-in-backticks",
+    ),
+    pytest.param(
+        "12345+tamsin@users.noreply.github.com",
+        "[email 1]",
+        {"contact_email": 1},
+        id="github-noreply-holds-a-login",
+    ),
+    pytest.param(
+        "ask @a-very-long-login-name-of-thirty-five-chars",
+        "ask [handle 1]",
+        {"contact_handle": 1},
+        id="handle-past-39-characters",
+    ),
 ]
 
 
 @pytest.mark.parametrize("text, expected, counts", CONTACTS)
 def test_contact_identifiers(text, expected, counts):
     assert screen_one(screener(), text) == (expected, counts)
+
+
+def test_an_encoded_contact_is_one_value_with_its_plain_form():
+    text = (
+        "orla@brightwell-mail.example or orla%40brightwell-mail.example, "
+        "+212612345678 or %2B212612345678"
+    )
+    assert screen_one(screener(), text) == (
+        "[email 1] or [email 1], [phone 1] or %2B[phone 1]",
+        {"contact_email": 2, "contact_phone": 2},
+    )
+
+
+def test_an_own_address_stays_when_a_link_encodes_it():
+    text = "https://x.example/?e=me%40grove-dev.example"
+    assert screen_one(screener(own=("me@grove-dev.example",)), text) == (text, {})
 
 
 # The forms that glue a value to a word character. Every class must read through each of them.
@@ -845,7 +1863,7 @@ def test_a_glue_form_hides_no_assignment(text, expected):
         ),
         pytest.param(
             "password: a*_bcde1 ok",
-            "password: [credential] ok",
+            "password: [credential]",
             CRED,
             id="password-star-underscore",
         ),
@@ -920,6 +1938,121 @@ PAY = [
         id="amount-before-the-pay-word",
     ),
 ]
+# The forms a person writes pay in, each with the text it must become.
+PAY_FORMS = [
+    # A bare figure before a period.
+    ("25000 a month", "[amount] a month"),
+    ("25000 monthly", "[amount] monthly"),
+    ("25000 every month", "[amount] every month"),
+    ("25000/month", "[amount]/month"),
+    ("25000 / mois", "[amount] / mois"),
+    ("25000/mois", "[amount]/mois"),
+    ("25000 par mois", "[amount] par mois"),
+    ("25000 per mo", "[amount] per mo"),
+    ("300000 a year", "[amount] a year"),
+    ("300000 per year", "[amount] per year"),
+    ("300000 par an", "[amount] par an"),
+    ("he is paid 25000 a month", "he is paid [amount] a month"),
+    ("I pay Tamsin 25000 every month", "I pay Tamsin [amount] every month"),
+    # Nothing tells this one from "25000 a month", so the opt-in class masks it (SC10).
+    ("we ingest 25000 a month", "we ingest [amount] a month"),
+    # A bare figure right after a weak pay word.
+    ("a bonus of 5000", "a bonus of [amount]"),
+    ("bonus: 5000", "bonus: [amount]"),
+    ("bonus is 5000", "bonus is [amount]"),
+    ("a raise of 5000", "a raise of [amount]"),
+    ("my rate is 300", "my rate is [amount]"),
+    ("rate: 3000", "rate: [amount]"),
+    ("day rate 3000", "day rate [amount]"),
+    ("paid 25000", "paid [amount]"),
+    ("he is paid 25000", "he is paid [amount]"),
+    ("paying 25000", "paying [amount]"),
+    ("we are paying him 25000", "we are paying him [amount]"),
+    ("pay me 25000", "pay me [amount]"),
+    ("I pay Tamsin 25000", "I pay Tamsin [amount]"),
+    ("she makes 25000", "she makes [amount]"),
+    ("I make 25000", "I make [amount]"),
+    ("makes 25,000", "makes [amount]"),
+    ("she makes 2000", "she makes [amount]"),
+    ("pay me 2000", "pay me [amount]"),
+    # A free gap after a weak pay word.
+    ("the rate we agreed is 3000", "the rate we agreed is [amount]"),
+    ("they pay me roughly 25000", "they pay me roughly [amount]"),
+    ("my bonus was only 5000", "my bonus was only [amount]"),
+    ("bonus this year is 5000", "bonus this year is [amount]"),
+    # Nothing tells this one from a sum, so the opt-in class masks it (SC10).
+    ("make the timeout 3000", "make the timeout [amount]"),
+    # A figure of four digits or more after a near word.
+    ("base 120000", "base [amount]"),
+    ("net 18000", "net [amount]"),
+    ("offer: 120000", "offer: [amount]"),
+    ("he gets 25000", "he gets [amount]"),
+    ("prime de 5000", "prime de [amount]"),
+    # What may follow that figure.
+    ("paid 25000 this year", "paid [amount] this year"),
+    ("paid 25000, thanks", "paid [amount], thanks"),
+    ("rate: 3000\nsee the sheet", "rate: [amount]\nsee the sheet"),
+    # A bare figure a few words after a strong pay word.
+    ("salary raised to 25000", "salary raised to [amount]"),
+    ("salary was raised to 25000", "salary was raised to [amount]"),
+    ("salary - 25000", "salary - [amount]"),
+    ("salary -> 25000", "salary -> [amount]"),
+    ("salary at 25000", "salary at [amount]"),
+    ("my salary in 2026 was 25000", "my salary in 2026 was [amount]"),
+    ("my salary is 2000", "my salary is [amount]"),
+    # Words that say pay, each with an amount that names its money or has a suffix.
+    ("total comp 250k", "total comp [amount]"),
+    ("TC is $250k", "TC is [amount]"),
+    ("base 120k", "base [amount]"),
+    ("OTE 150k", "OTE [amount]"),
+    ("offer: 120k", "offer: [amount]"),
+    ("they offered me $120k", "they offered me [amount]"),
+    ("take home is 18k", "take home is [amount]"),
+    ("take-home 18000", "take-home [amount]"),
+    ("package 300k", "package [amount]"),
+    ("package of 300000 dirhams", "package of [amount]"),
+    ("he gets 25000 dh", "he gets [amount]"),
+    ("he gets 25000 dh tomorrow", "he gets [amount] tomorrow"),
+    ("net 18000 dh", "net [amount]"),
+    ("5000 bucks a month", "[amount] a month"),
+    ("5 grand a month", "[amount] a month"),
+    # French and Arabic.
+    ("je suis pay\u00e9 25000 dh", "je suis pay\u00e9 [amount]"),
+    ("pay\u00e9e 25000 dh", "pay\u00e9e [amount]"),
+    ("il gagne 25k", "il gagne [amount]"),
+    ("je touche 25000 dh", "je touche [amount]"),
+    ("ils m'ont propos\u00e9 30000 dh brut", "ils m'ont propos\u00e9 [amount] brut"),
+    ("r\u00e9mun\u00e9ration 25000 dh", "r\u00e9mun\u00e9ration [amount]"),
+    ("remuneration: 25000 MAD", "remuneration: [amount]"),
+    ("prime de 5000 dh", "prime de [amount]"),
+    ("augmentation de 2000 dh", "augmentation de [amount]"),
+    ("ma paye est de 25000", "ma paye est de [amount]"),
+    ("salaire dyali 25000", "salaire dyali [amount]"),
+    ("TJM 3000", "TJM [amount]"),
+    (
+        "\u0631\u0627\u062a\u0628\u064a 25000 \u062f\u0631\u0647\u0645",
+        "\u0631\u0627\u062a\u0628\u064a [amount]",
+    ),
+    ("\u0627\u0644\u0631\u0627\u062a\u0628 25000", "\u0627\u0644\u0631\u0627\u062a\u0628 [amount]"),
+    # A range leaves no end behind.
+    ("25,000-30,000 MAD salary", "[amount] salary"),
+    ("salary 25000-30000", "salary [amount]"),
+    ("salary 25000 to 30000", "salary [amount]"),
+    ("25 000 - 30 000 MAD a month", "[amount] a month"),
+    ("salary between 25000 and 30000 MAD", "salary between [amount]"),
+    (
+        "They offered 25,000-30,000 MAD salary for the role",
+        "They offered [amount] salary for the role",
+    ),
+    ("Salary range is 25 000 - 30 000 MAD a month", "Salary range is [amount] a month"),
+    ("MAD 25,000 - 30,000 per month", "[amount] per month"),
+    ("de 25000 \u00e0 30000 dh par mois", "de [amount] par mois"),
+    ("25-30k salary", "[amount] salary"),
+    ("$25k-$30k salary", "[amount] salary"),
+    ("paid 25000-30000 last year", "paid [amount] last year"),
+    ("paid 25000 and 3 days off", "paid [amount] and 3 days off"),
+]
+PAY += [pytest.param(text, expected, id=text) for text, expected in PAY_FORMS]
 
 
 @pytest.mark.parametrize("text, expected", PAY)
@@ -955,6 +2088,8 @@ DEV_TEXT = [
     pytest.param("@app.route('/v1/items')", id="dotted-decorator"),
     pytest.param("npm i @types/node and import x from '@scope/pkg'", id="npm-scopes"),
     pytest.param("icon@2x.png and git@github.com:X-Arc-ai/grove.git", id="file-and-ssh-remote"),
+    pytest.param("git@heroku.com:brightwell2.git", id="remote-of-the-git-user"),
+    pytest.param("rsync -a . deploy@box.example.com:/var/www", id="scp-absolute-path"),
     pytest.param("the code is 1200 lines", id="code-is-lines"),
     pytest.param("error code 500, HTTP status code 404, exit code 2", id="error-codes"),
     pytest.param(
@@ -992,6 +2127,33 @@ DEV_TEXT = [
     pytest.param("the verification code feature ships in 2026", id="year-near-a-phrase"),
     pytest.param("we hit 30k downloads in the first week", id="k-number-without-pay-word"),
     pytest.param("the rate limit is 60 per minute", id="pay-word-without-amount"),
+    # A bare figure that the words around it do not make pay, with the class on.
+    pytest.param("the rate limit is 3000 per minute", id="rate-limit-per-minute"),
+    pytest.param("rate limit: 3000", id="rate-limit-with-a-label"),
+    pytest.param("rate: 3000 req/s", id="rate-with-a-unit"),
+    pytest.param("rate is 300%", id="rate-in-percent"),
+    pytest.param("salary up 300% and 500 %", id="salary-in-percent"),
+    pytest.param("makes 5000 requests a day", id="makes-then-a-noun"),
+    pytest.param("raises 5000 errors", id="raises-then-a-noun"),
+    pytest.param("paid plan has 5000 seats", id="paid-plan"),
+    pytest.param("pay attention to line 300.", id="pay-attention"),
+    pytest.param("paid in 2026.", id="year-after-paid"),
+    pytest.param("the bonus for 2025.", id="year-after-bonus"),
+    pytest.param("1200 tests a month", id="figure-then-a-noun-then-a-period"),
+    pytest.param("rate: 3000/s", id="figure-per-second"),
+    pytest.param("the package has 300k downloads", id="package-with-other-words"),
+    pytest.param("package 300k downloads", id="package-then-a-noun"),
+    pytest.param("make sure the port is 8000.", id="make-sure-the-port"),
+    pytest.param("base 256", id="base-then-a-figure"),
+    pytest.param("net 443", id="net-then-a-figure"),
+    pytest.param("the request gets 200", id="gets-then-a-figure"),
+    pytest.param("tc 3000 and ote 3000 and tjm 3000", id="short-words-in-lower-case"),
+    pytest.param("the salary 2026 budget", id="year-after-salary"),
+    pytest.param("salary slip #48213", id="reference-after-salary"),
+    pytest.param("salary in /tmp/300/x", id="path-after-salary"),
+    pytest.param("salary 3.12345", id="decimal-after-salary"),
+    pytest.param("salary PO-2026-00417", id="order-number-after-salary"),
+    pytest.param("salary is late and the five other things 300", id="figure-far-from-salary"),
     pytest.param("meet @ 10 in room 0", id="lone-at-sign"),
     # Decorators in diffs, in numbered tool output and in prose.
     pytest.param("+@pytest.fixture\n+def world(neo4j):", id="decorator-in-a-diff"),
@@ -1058,6 +2220,114 @@ DEV_TEXT = [
         "driver = GraphDatabase.driver(uri, user=user, password=password)", id="password-passed-on"
     ),
     pytest.param("password = settings.neo4j_password", id="password-from-settings"),
+    # The guards hold after a value started to run on past its first symbol.
+    pytest.param("password={password}", id="template-with-braces"),
+    pytest.param("DB_PASSWORD={db_password}", id="env-template"),
+    pytest.param("password: <your-password>", id="placeholder"),
+    pytest.param("password: [REDACTED]", id="redacted"),
+    pytest.param("the password is (optional)", id="optional-in-brackets"),
+    pytest.param("password=%(password)s", id="format-placeholder"),
+    pytest.param("token=get_token()", id="a-call"),
+    pytest.param("connect(password=password,user=user)", id="same-name-then-next-argument"),
+    pytest.param("connect(password=pw,user=user)", id="short-name-then-next-argument"),
+    pytest.param("token = uuid4()", id="callee-with-a-digit"),
+    pytest.param("password = base64.b64encode(raw)", id="dotted-callee-with-a-digit"),
+    pytest.param("token: Optional[str] = None", id="generic-annotation"),
+    pytest.param("secret: Record<string, string>", id="ts-generic"),
+    pytest.param("password: str | None = None", id="union-annotation"),
+    pytest.param("password: None  # no auth on the dev store", id="none-with-a-comment"),
+    pytest.param("token = oauth2.token", id="reference-with-a-digit-to-a-token"),
+    pytest.param("secret = s3.secret", id="reference-with-a-digit-to-a-secret"),
+    pytest.param("password=$password", id="lower-case-variable"),
+    pytest.param("token=$token", id="lower-case-variable-token"),
+    pytest.param("API_KEY=$API_KEY", id="upper-case-variable"),
+    pytest.param("API_KEY=${API_KEY}", id="braced-variable"),
+    pytest.param("    api_key=settings.api_key,", id="reference-in-a-call"),
+    pytest.param("if password == confirm:", id="a-comparison"),
+    pytest.param("token::Token", id="a-path-in-code"),
+    pytest.param('cypher-shell -u neo4j -p "$NEO4J_PASSWORD"', id="client-flag-variable"),
+    pytest.param("docker login -u me --password-stdin", id="password-stdin"),
+    pytest.param("docker run -p 8080:80 img", id="docker-maps-a-port"),
+    pytest.param("psql -h db -p 5432 -U orla", id="psql-names-a-port"),
+    pytest.param("redis-cli -h cache -p 6379", id="redis-names-a-port"),
+    pytest.param("mysql -u root -p grove_db", id="mysql-names-a-database"),
+    pytest.param("--token is required, see --password", id="flags-in-prose"),
+    pytest.param("fields = ['password', 'email']", id="a-list-of-field-names"),
+    pytest.param(
+        "- name: API_KEY\n  valueFrom:\n    secretKeyRef:\n      name: api\n      key: apiKey",
+        id="value-from-a-secret",
+    ),
+    pytest.param("password:\n  user: orla", id="a-mapping-under-the-name"),
+    pytest.param("- name: API_KEY\n  value: ${API_KEY}", id="value-is-a-variable"),
+    pytest.param("BYPASS=abcd1234 and compass: north", id="words-that-end-in-pass"),
+    pytest.param("OLDPWD=/tmp/grove2", id="old-working-folder"),
+    # Dev talk beside the password word, where no value follows.
+    pytest.param("password sha256 hashing is done in the writer", id="password-sha256"),
+    pytest.param("password oauth2 flow needs a redirect", id="password-oauth2"),
+    pytest.param("password reset-link expires in 1h", id="password-reset-link"),
+    pytest.param("pwd /tmp/grove", id="working-folder"),
+    pytest.param("we moved the password to argon2id", id="password-to-an-algorithm"),
+    pytest.param("the password expiry is 3600 seconds", id="password-expiry-with-a-unit"),
+    pytest.param("password policy: min 8 chars", id="password-policy"),
+    pytest.param("the password for prod is in the vault", id="password-is-in-a-place"),
+    pytest.param("login: https://app.example.com", id="login-url"),
+    pytest.param("login: db.example.com:8080", id="login-host-and-port"),
+    pytest.param("log in with google / github", id="log-in-with-providers"),
+    # A cookie line with no secret, and a session id outside one.
+    pytest.param("Cookie: theme=dark; lang=en", id="plain-cookies"),
+    pytest.param(
+        "Set-Cookie: theme=dark; Path=/v2/items; Domain=app2.example.com; "
+        "Expires=2026-11-02T00:00:00Z; Max-Age=3600",
+        id="cookie-attributes",
+    ),
+    pytest.param("Cookie: side=left", id="cookie-name-that-holds-sid"),
+    pytest.param("git checkout -b my-branch", id="git-branch-flag"),
+    pytest.param("see session_012XQTypAwWMW7QG7EmGeu5j for the run", id="session-id-in-a-link"),
+    pytest.param("authorization: required for v2", id="authorization-in-prose"),
+    pytest.param("Authorization: Bearer $TOKEN", id="authorization-variable"),
+    # A model API's ids and token counts stay beside a context word.
+    pytest.param(
+        '{"id":"msg_01ABCDefGHIjkLMnoPQRstUV","type":"message",'
+        '"usage":{"input_tokens":12,"output_tokens":300}}',
+        id="message-id-beside-counters",
+    ),
+    pytest.param(
+        "request_id=req_011CabcDEFghiJKLmno123 input_tokens=1200 output_tokens=300",
+        id="request-id-beside-counters",
+    ),
+    pytest.param(
+        "API Error: 529 overloaded, request_id: req_011CabcDEFghiJKLmno123", id="api-error"
+    ),
+    pytest.param(
+        '{"tool_use_id":"toolu_01ABcdEFghIJklMNopQRstUV","content":"token limit reached"}',
+        id="tool-id-beside-the-word-token",
+    ),
+    pytest.param(
+        '{"id":"chatcmpl-AbCdEfGhIjKlMnOpQrStUvWxYz012",'
+        '"usage":{"prompt_tokens":12,"completion_tokens":5}}',
+        id="completion-id-beside-counters",
+    ),
+    pytest.param(
+        '{"call_id":"call_AbCdEfGhIjKlMnOpQrStUvWx","output":"token limit"}', id="call-id"
+    ),
+    pytest.param(
+        '{"response_id":"resp_0193f2a47b3c7d2e8f1a2b3c4d5e6f70","usage":{"input_tokens":12}}',
+        id="response-id-hex-tail",
+    ),
+    pytest.param("session_012XQTypAwWMW7QG7EmGeu5j used 1200 tokens", id="session-id-and-a-count"),
+    pytest.param("the token limit hit on msg_013ZvaZCMHLNnXjNJJKqJ2EF, retrying", id="id-in-prose"),
+    pytest.param("run 01HZX3K9Q4M7V2P8R6T1Y5W0NB used input_tokens=12", id="ulid-beside-a-counter"),
+    pytest.param("run 01HZX3K9Q4M7V2P8R6T1Y5W0NB used 1,200 tokens", id="ulid-beside-a-count"),
+    # A path or a route with capitals and a digit is no key, and "/api/" is no context word.
+    pytest.param("see web/src/components/v2/TokenPanel.tsx for the token refresh", id="next-path"),
+    pytest.param("the api route lives in src/app/api/v1/SourceList.tsx", id="next-api-route"),
+    pytest.param("docs/D14/API-keys-plan.md", id="doc-path-with-keys"),
+    pytest.param("GET /api/v2/Items/ListAll returns 200", id="api-route"),
+    pytest.param(
+        "the api design is in thoughts/runs/2026-11-01-grove-build/lanes/screening/DESIGN.md",
+        id="capitalised-file-name",
+    ),
+    pytest.param("GET /api/v2/Kq8vN2xP7mZ4tR9wLm3s returns 200", id="id-in-an-api-route"),
     pytest.param('password = input("Password: ")', id="password-from-input"),
     pytest.param('user, _, password = value.partition("/")', id="password-from-a-call"),
     pytest.param('    "password": password,', id="password-in-a-dict"),
@@ -1151,7 +2421,6 @@ DEV_TEXT = [
         "github.com/nextauthjs/next-auth/commit/3f2a9c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4a39",
         id="github-commit-no-scheme",
     ),
-    pytest.param("auth.example.com/0193a2b4c5d6e7f8a9b0", id="link-word-only-in-the-host"),
     # Dev talk about the login feature, with a number that names something else.
     pytest.param("refactor the auth code, PR #1234 has it", id="auth-code-pr"),
     pytest.param("the auth code now listens on port 8000", id="auth-code-port"),
@@ -1236,6 +2505,174 @@ DEV_TEXT = [
     pytest.param("C:\\temp\\new\\run_1234", id="windows-path"),
     # A file path is no bare host.
     pytest.param("see grove.screening.py/detectors and auth.py/tokens", id="file-path-is-no-host"),
+    # A number beside a sign-in word that names something else, or has no purpose beside it.
+    pytest.param("Use 5432 to connect to Postgres.", id="use-port-to-connect"),
+    pytest.param("use 3000 to run the dev server", id="use-port-to-run"),
+    pytest.param("Use 1200 as the limit.", id="use-as-a-limit"),
+    pytest.param("Enter 8080 as the port to sign in to the dev box", id="enter-as-the-port"),
+    pytest.param("Use port 5432 to log in to Postgres", id="use-port-word-to-log-in"),
+    pytest.param("use 1200 lines max", id="use-with-a-unit"),
+    pytest.param("use 2026 as the year", id="use-a-year"),
+    pytest.param("use 8080 for the api", id="use-for"),
+    pytest.param("type 8080 in the port field", id="type-in-a-field"),
+    pytest.param("Log in with the admin user, then hit 8000.", id="log-in-with-a-word"),
+    pytest.param("the test user can log in, 1934 pass", id="log-in-then-a-count"),
+    # How long a thing lasts is no code by itself.
+    pytest.param("The token expires in 3600 seconds.", id="token-expires-in"),
+    pytest.param("The session expires in 1800.", id="session-expires-in"),
+    pytest.param("Valid for 1200 requests.", id="valid-for-requests"),
+    pytest.param(
+        "use the login flow from PR 1234, it expires in 5 minutes", id="expires-beside-a-pr"
+    ),
+    pytest.param("run 1234 is valid for 10 minutes", id="valid-beside-a-run"),
+    pytest.param("expires in 2026", id="expires-in-a-year"),
+    # A count with a noun, whatever the phrase before it.
+    pytest.param("the WhatsApp code parsed 8400 messages", id="whatsapp-messages"),
+    pytest.param("The WhatsApp code: 2300 messages in 14 chats", id="whatsapp-label-messages"),
+    pytest.param("do we need the telegram code? it pulled 5000 msgs", id="telegram-msgs"),
+    pytest.param("the google code in the calendar connector reads 1200 events", id="google-events"),
+    pytest.param("the recovery code restored 1200 snapshots", id="recovery-snapshots"),
+    pytest.param("launch code ready, 4200 added", id="launch-code-far"),
+    pytest.param("le code est 1200 lignes", id="french-code-lines"),
+    pytest.param("votre code est propre", id="french-your-code-prose"),
+    # A name is no code: an algorithm or a format right after a phrase.
+    pytest.param("we store the OTP sha256 only", id="otp-sha256"),
+    pytest.param("sign the OTP HS256 with the key", id="otp-hs256"),
+    pytest.param("the OTP x509 cert", id="otp-x509"),
+    # A reference before "is your code".
+    pytest.param("PR 1234 is your code, right?", id="pr-is-your-code"),
+    pytest.param("line 1420 is your code", id="line-is-your-code"),
+    pytest.param("issue #4821 is your code to fix", id="issue-is-your-code"),
+    # A code page is no link, whatever phrase the text says.
+    pytest.param(
+        "The magic link bug is fixed in https://github.com/X-Arc-ai/grove/pull/14", id="phrase-pr"
+    ),
+    pytest.param(
+        "The page says verify your email. PR: https://github.com/X-Arc-ai/grove/pull/15",
+        id="verify-pr",
+    ),
+    pytest.param(
+        "Magic link ticket is here https://linear.app/x-arc/issue/LUX-123/magic-link",
+        id="phrase-ticket",
+    ),
+    pytest.param(
+        "reset your password in the CLI: https://github.com/X-Arc-ai/grove/blob/main/README.md",
+        id="strong-phrase-code-page",
+    ),
+    # Common words with a URL that does not follow them.
+    pytest.param(
+        "Sign in to Vercel and open https://vercel.com/x-arc/grove/deployments",
+        id="sign-in-then-other-words",
+    ),
+    pytest.param(
+        "sign in to staging first: https://staging.grove.x-arc.ai/", id="sign-in-two-words"
+    ),
+    pytest.param(
+        "we need a screen to set a new password, design is at https://figma.com/file/abc/grove",
+        id="set-a-new-password-far",
+    ),
+    pytest.param(
+        "after signup the user must confirm your email, docs: https://docs.example.com/auth",
+        id="confirm-far",
+    ),
+    # A slug of words that ends in a short id, and the pages with a rule of their own.
+    pytest.param(
+        "Good read: https://medium.com/@tamsin/how-to-reset-a-neo4j-password-3f2a9c1e7b4d",
+        id="medium-reset",
+    ),
+    pytest.param(
+        "https://towardsdatascience.com/activation-functions-explained-3f2a9c1e7b4d",
+        id="blog-activation",
+    ),
+    pytest.param(
+        "Notes: https://www.notion.so/xarc/Login-flow-notes-3f2a9c1e7b4d5a6f8e0c1b2a3d4f5e6a",
+        id="notion-page",
+    ),
+    pytest.param(
+        "https://www.notion.so/Auth-rework-plan-0193f2a47b3c7d2e8f1a2b3c4d5e6f70",
+        id="notion-root-page",
+    ),
+    pytest.param(
+        "curl -O https://raw.githubusercontent.com/nextauthjs/next-auth/3f2a9c1e7b4d5a6f8e0c1b2a3d4f5e6a7b8c9d0e/README.md",
+        id="raw-sha",
+    ),
+    pytest.param("https://www.figma.com/file/AbCdEfGhIjKlMnOpQrStUv/Login-flow", id="figma-file"),
+    pytest.param(
+        "https://docs.google.com/document/d/1AbCdEfGhIjKlMnOpQrStUvWxYz0123456/edit#heading=h.auth",
+        id="google-doc",
+    ),
+    # A client id is public, so an authorize link with no other value is no token.
+    pytest.param(
+        "https://github.com/login/oauth/authorize?client_id=Iv1.8a61f9b3a7aba766&scope=repo",
+        id="authorize-client-id",
+    ),
+    # Contact shapes that name no person.
+    pytest.param("v1.0612345678", id="version-with-a-long-part"),
+    pytest.param("1.0612345678", id="decimal-with-a-long-part"),
+    pytest.param("x1-0612345678", id="digit-before-a-dash"),
+    pytest.param("runs/0123456789", id="path-digit-run"),
+    pytest.param("1,000,000,000", id="thousands"),
+    pytest.param("s3://b/2026/0123456789/0123456789", id="path-of-digit-runs"),
+    pytest.param("foo-0.1.20240101", id="package-with-a-dated-build"),
+    pytest.param("https://api.x.com/v2/tweets", id="api-subdomain"),
+    pytest.param("https://docs.x.com/overview", id="docs-subdomain"),
+    pytest.param("https://developers.facebook.com/docs/graph-api", id="facebook-docs"),
+    pytest.param("https://developer.x.com/en/docs", id="x-docs"),
+    pytest.param("Telegram: the bot is ready", id="service-label-in-prose"),
+    pytest.param("Telegram: 12 messages", id="service-label-and-a-count"),
+    pytest.param("ig: that's fine", id="slang-label"),
+    pytest.param("git@github.com-work:org/repo.git", id="ssh-host-alias"),
+    pytest.param("deploy@git.brightwell.example-work:org/repo.git", id="ssh-host-alias-any-host"),
+    pytest.param("ssh deploy@web.prod-01", id="numbered-host"),
+    pytest.param("deploy@web.prod-01:/var/log", id="numbered-host-path"),
+    pytest.param("read @CLAUDE.md and @docs/store-map.md first", id="file-mention-capitals"),
+    pytest.param("look at @README.md", id="readme-mention"),
+    pytest.param(
+        "check @package.json and @pyproject.toml and @detectors.py", id="file-mention-suffix"
+    ),
+    pytest.param("see @detectors.py:1051", id="file-mention-with-line"),
+    pytest.param("@CLAUDE.md\nsummarise it", id="file-mention-first-on-line"),
+    pytest.param("use @agent-code-reviewer on this", id="agent-mention"),
+    pytest.param("Standup @10:30 tomorrow", id="at-a-time"),
+    pytest.param("call @3pm, lunch @1pm, demo @14:30", id="at-times"),
+    pytest.param("Meeting @9am", id="at-am"),
+    pytest.param("2 seats @20 each", id="at-a-price"),
+    pytest.param("5 units @120 each, total 600", id="at-a-unit-price"),
+    pytest.param("Rdv @15h", id="at-french-hour"),
+    pytest.param("Reunion demain @14h30", id="at-french-time"),
+    pytest.param("upgrade to @1.2.3 and pin @latest", id="version-and-tag"),
+    pytest.param("installed next @15.0.3", id="at-a-version"),
+    pytest.param("use the logo @2x", id="at-a-scale"),
+    pytest.param("add `@retry` to the function", id="named-decorator-in-backticks"),
+    pytest.param(
+        "use @field_validator and @model_validator here", id="pydantic-decorators-in-prose"
+    ),
+    pytest.param(
+        "the @pytest decorator, @mcp.tool and @tenacity.retry", id="decorator-modules-in-prose"
+    ),
+    pytest.param("wrap it in @login_required", id="login-required"),
+    pytest.param('server/grove/x.py:12:@field_validator("name")', id="grep-decorator-call"),
+    pytest.param(
+        "server/grove/x.py:42:    @retry(stop=stop_after_attempt(3))", id="grep-decorator-indented"
+    ),
+    pytest.param("42:@retry(stop=3)", id="line-number-decorator-call"),
+    pytest.param("use @retry(stop=3) here", id="decorator-call-in-prose"),
+    pytest.param("the `@cached(ttl=60)` line", id="decorator-call-in-backticks"),
+    pytest.param(
+        "the read runs under `@unit_of_work(timeout=...)` in tx.py", id="writer-decorator"
+    ),
+    pytest.param(
+        "the Modal class uses @modal.enter(snap=True) and @modal.web_server(8000)",
+        id="runner-decorators",
+    ),
+    pytest.param("Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>", id="commit-trailer"),
+    pytest.param('user = make_user(email="test@example.com")', id="placeholder-address-in-code"),
+    pytest.param(
+        "docs say to use user@example.com as the placeholder", id="placeholder-address-in-prose"
+    ),
+    pytest.param("ssh -T git@github.com", id="ssh-user-git"),
+    pytest.param("git clone ssh://git@github.com/X-Arc-ai/grove.git", id="ssh-url-user-git"),
+    pytest.param("git@github.com: Permission denied (publickey).", id="ssh-error-line"),
 ]
 
 
