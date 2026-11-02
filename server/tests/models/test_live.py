@@ -323,13 +323,18 @@ def test_live_ceiling_defers_and_ingest_continues(driver, world, evidence):
     assert len(after) == 2, "a refused call never reaches the provider and writes no row"
 
 
-def test_live_glimmer_endpoint_answers(driver, world, evidence):
+def _glimmer_settings() -> ModelSettings:
     settings = live_settings()
     if not (settings.glimmer_base_url and settings.glimmer_key):
         pytest.fail(
             "BLOCKED: the Glimmer endpoint is not deployed: GROVE_GLIMMER_BASE_URL and "
-            "GROVE_GLIMMER_KEY are unset (the Modal token is owed)"
+            "GROVE_GLIMMER_KEY are unset"
         )
+    return settings
+
+
+def test_live_glimmer_endpoint_answers(driver, world, evidence):
+    settings = _glimmer_settings()
     with ModelLayer(driver, settings=settings) as layer:
         result = layer.chat(
             world,
@@ -347,3 +352,100 @@ def test_live_glimmer_endpoint_answers(driver, world, evidence):
     assert result.text.strip()
     assert rows and rows[-1]["route"] == "modal" and rows[-1]["outcome"] == "ok"
     assert rows[-1]["cost"] > 0
+
+
+def test_live_glimmer_effort_changes_the_reasoning(driver, world, evidence):
+    # vLLM drops a wrong effort field without an error, so only the tokens can show the right one
+    # took effect: the same question at high spends more of them than at low.
+    settings = _glimmer_settings()
+    asked = [
+        {
+            "role": "user",
+            "content": "The synthetic orchard has 17 rows of 23 crates, and 40 crates moved out. "
+            "How many crates are left? Answer with the number only.",
+        }
+    ]
+    with ModelLayer(driver, settings=settings) as layer:
+        low = [
+            layer.chat(world, job="second_opinion", effort="low", messages=asked) for _ in range(2)
+        ]
+        high = [
+            layer.chat(world, job="second_opinion", effort="high", messages=asked) for _ in range(2)
+        ]
+        rows = layer.meter.calls(world, _today(world))
+    low_tokens = [result.usage.output_tokens for result in low]
+    high_tokens = [result.usage.output_tokens for result in high]
+    evidence(
+        rows,
+        low_output_tokens=low_tokens,
+        high_output_tokens=high_tokens,
+        answers=[result.text for result in (*low, *high)],
+    )
+    assert all(row["route"] == "modal" and row["outcome"] == "ok" for row in rows)
+    assert [row["effort"] for row in rows] == ["low", "low", "high", "high"]
+    assert sum(high_tokens) > sum(low_tokens)
+
+
+def test_live_glimmer_tool_round_trip_through_the_gateway(driver, world, evidence):
+    settings = _glimmer_settings()
+    catalog = load_catalog()
+    gateway = Gateway(driver, settings=settings, catalog=catalog)
+    token = mint(
+        settings.gateway_secret, catalog, world_id=world, run_id="live-run-3", job="second_opinion"
+    )
+    messages = [
+        {"role": "system", "content": "You are a test agent for a synthetic orchard store."},
+        {"role": "user", "content": "Call the brain_status tool once, with verbose false."},
+    ]
+    with _Served(gateway) as base, httpx.Client(timeout=300) as client:
+        headers = {"Authorization": f"Bearer {token}"}
+        first = {
+            "model": "muse-glimmer-30b",
+            "max_tokens": 8192,
+            "messages": messages,
+            "tools": [BRAIN_STATUS],
+            "tool_choice": "auto",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        with client.stream(
+            "POST", f"{base}/chat/completions", json=first, headers=headers
+        ) as response:
+            assert response.status_code == 200, response.read()
+            lines = [line for line in response.iter_lines() if line]
+        call = _stream_tool_call(lines)
+        assert call["name"] == "brain_status" and call["id"], lines[-3:]
+        follow = {
+            "model": "muse-glimmer-30b",
+            "max_tokens": 8192,
+            "tools": [BRAIN_STATUS],
+            "messages": messages
+            + [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": call["id"],
+                            "type": "function",
+                            "function": {"name": call["name"], "arguments": call["arguments"]},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": call["id"], "content": '{"items": 4}'},
+            ],
+        }
+        answer = client.post(f"{base}/chat/completions", json=follow, headers=headers)
+        assert answer.status_code == 200, answer.text
+        final = answer.json()["choices"][0]["message"]
+    rows = gateway.meter.calls(world, _today(world))
+    evidence(
+        rows,
+        tool_call={"name": call["name"], "arguments": call["arguments"]},
+        final_answer=final.get("content"),
+    )
+    assert final.get("content") or final.get("tool_calls")
+    assert len(rows) == 2
+    for row in rows:
+        assert row["job"] == "second_opinion" and row["run_id"] == "live-run-3"
+        assert row["route"] == "modal" and row["outcome"] == "ok" and row["cost"] > 0
