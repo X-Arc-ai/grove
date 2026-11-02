@@ -64,7 +64,7 @@ A filter in `MATCH` or `WHERE` reads with no lock. A probe raced two transaction
 | The job queue | `:Job`. A claim checks the state in one of the two forms above. There is no `SKIP LOCKED`. `runner` must build the claim, with a two-transaction race test. |
 | Row-level security | The query layer. No store rule exists. |
 | Backups | A whole-store offline dump each day with the server stopped, kept 30 days. A.5 asks for snapshots of the snapshot-only tables; the whole-store dump is a change from A.5 (S21). |
-| Restore | `neo4j-admin database load` into a stopped store, then rebuild the projections from history, replay the forget ledger and compare fingerprints. `writer-b` and `deploy-a` own it. It has not run on this store. |
+| Restore | `neo4j-admin database load` into a stopped store, then rebuild the projections from history, replay the forget ledger and compare fingerprints. `deploy-a` runs the dump and its load into a scratch store each day, with a matching dump fingerprint (`docs/deploy.md`). The rebuild, the replay and D3's fingerprint belong to `writer-b` and have not run. |
 
 ## Rulings
 
@@ -108,7 +108,7 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S19. The value index and sources** (spec lines 2525, 2560). The value index leaves out `sources`, as line 2560 does. A forget reaches a source span by its locator. So a value the person names inside source text has no index path; see the open points.
 
-**S20. Writes outside the agents** (spec lines 2501, 3120, 3121). `model_calls` and `judgments` are written only by the model-call layer, sessions and OAuth rows by sign-in, job claims and budgets by the runner. Each such write must be a function in `server/grove/writer/`, and only its owner calls it. `models`, `signin`, `hosts-a` and `runner` build them. The writer rule stands: only `server/grove/writer/` opens write transactions, and the writer lint enforces it.
+**S20. Writes outside the agents** (spec lines 2501, 3120, 3121). `model_calls` and `judgments` are written only by the model-call layer, sessions and OAuth rows by sign-in, job claims by the runner, and budgets by the model-call layer (S39 replaced "budgets by the runner"). Each such write must be a function in `server/grove/writer/`, and only its owner calls it. `models`, `signin`, `hosts-a` and `runner` build them. The writer rule stands: only `server/grove/writer/` opens write transactions, and the writer lint enforces it.
 
 **S21. Restore groups** (spec lines 806 to 808). Projection: items, links, evidence, kinds, meanings, property_names, aliases, capabilities, beliefs. Snapshot: the 32 others. Ledger: forget_ledger. Platform rows restore as they were, and tokens are stored hashed. A snapshot is the whole-store offline dump, and the rebuild replaces the projection rows after the load. The catalogue records the group per table.
 
@@ -142,6 +142,12 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S36. The world id form** (spec lines 3081, 3087, 3092). A world id is a lowercase UUID (`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`), or the test form `t_<slice>_<that uuid>` with the slice `[a-z0-9-]+`. `check_world_id` refuses any other text, and the primitive sentinel `''` stays a separate path. The full-text analyzer splits on hyphens and folds case, and with this form the token sequence of one world id never occurs inside another's unless both share the UUID. So the world phrase of S17 is exact in practice, and one world's rows cannot use up another world's `LIMIT`. This replaces the earlier pattern `[A-Za-z0-9_-]{1,80}`, under which `t_x_<h>` was a token prefix of `t_x_<h>-000`.
 
+**S37. Receipts and short ids** (spec lines 733, 737, 2529, and S4). A stored receipt (`Receipt.to_json()`, the future `requests.receipt`) holds ids and codes only: symbol, entity type, entity id, field, value id, end class and flags. `render_receipt` reads titles, kind names, meaning names and values fresh, so a forget that replaces a value also changes how an old receipt reads. The receipt is built after the commit from the change entries of the batch's change set, in a new read transaction. A short id is the last 8 hex digits of the id: the random part of a UUIDv7, because ids made in the same millisecond share their first digits. One batch is one commit and one change set. The writer's public API is `server/grove/writer/README.md`.
+
+**S38. Locators** (spec lines 739, 3046 to 3059, and S27). The writer checks that a locator resolves inside its stored source with four schemes: `line:N` or `line:N-M` (1-based lines of the content), `char:A-B` (offsets in the content), `key:<token>` (a token of 4 or more characters that occurs in the content: a record id, an event id, a commit sha) and `whole` (the whole source). Each connector type allows a fixed set of schemes in code (`grove/writer/provenance.py`), and a source that holds only a pointer resolves only `whole`. `ingest-a` may narrow a type's set when it lands its parsers.
+
+**S39. Metering and the budget** (spec lines 2659, 2694, 3120, 3122). The `models` lane writes `model_calls` and `budgets` together: `record_model_call` in `server/grove/writer/model_calls.py` creates the `:ModelCall` and adds its cost to the day's `:Budget` in one transaction, so `spent` is always the sum of the day's recorded costs. This replaces "budgets by the runner" in S20. The operator sets a ceiling with `set_budget_ceiling`; an absent `ceiling` means no ceiling. A budget row that does not exist yet takes the ceiling of `GROVE_DAILY_BUDGET_USD`. `state` turns `reached` in the transaction where `spent` reaches `ceiling`. At `reached`, the jobs that `server/grove/models/jobs.json` marks `defer` are refused with `budget_reached` before any request leaves, and the jobs marked `continue` (triage, extraction and transcription, run in code) still run, as D15 says (line 2659). Every gateway call stops at the ceiling, whatever job its token names: the build plan says an agent call stops there, and the plan outranks D15. A pass that waits leaves its requests queued for the reset. Calls that pass the gate at the same moment can end the day above the ceiling by the cost of the calls in flight. `model_calls` gains five properties: `usage_estimated`, `route` (`meta`, `modal`), `outcome` (`ok`, `invalid_output`, `rate_limited`, `provider_error`, `client_closed`), `reasoning_tokens` (the reasoning share of `output_tokens`, line 2694) and `latency_ms`. A failed call is recorded with its outcome, so the share of calls that wrote nothing counts every call. Its tokens are zero when the provider did no work (a refusal, a 429, a 503, a connection that never opened), and an estimate of the input when it may have run the call; `usage_estimated` marks an estimate. The price table is `server/grove/models/prices.json` (S24).
+
 ## Open points for later lanes
 
 | Point | Spec lines | Owner lane |
@@ -152,7 +158,6 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | The names of the verification bands. `verifications.band` is a code until then. | 957 | `truth-clock` |
 | The stakes value of an R2 mark, and a mark's clocks. | 1247, 1254, 1270 | `walk` |
 | Where a search term's type and language live. `items.search_terms` holds the text of each term. | 2076, 2098 | `ingest-b` |
-| A stored receipt holds ids and codes, because a title in it would be a copy no forget reaches. The writer reads titles fresh when it shows a receipt. | 733, 737, 2529 | `writer-a` |
 | The deferral count: stored, or derived from `verifications`. | 2159, 2174 | `cleanup` |
 | The value lists of `property_names.value_type` and `meanings.direction`. | 1583, 3241 | `ontology` |
 | The grade rows of controls, and findings raised by agent runs: their run id and their text. | 2198, 2376, 2427 | `evals`, `cleanup` |
@@ -160,12 +165,41 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | Rows outside the S12 list that change after they are written carry no version: `requests`, `jobs`, `support_changed.taken_at`, `ontology_change_log.undone_by`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, `run_records`, and the finished times of `audit_runs` and `area_audits`. | 3081 | `writer-a` |
 | The value index must gain the status words, `items.status` and `kinds.status_vocabulary` (S31). Until then, a forget of a status word renames the word in the kind. | 2560, 2561 | `forget` |
 | `why` of a contradiction from `grove.cleanup.v1` (the `grove.extract.v1` form) has no value-id column in `contradictions`. | 2087, 2199, 3133 | `beliefs` |
-| Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. | none; a build fact | `deploy-a` |
-| `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. | 354, 991 | `deploy-a` |
-| The daily dump and the restore have not run on this store. | 806 to 808, 3065 | `deploy-a`, `writer-b` |
+| Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. Closed by `deploy-a`: the API image holds `server/` as in a checkout with an editable install, and a deploy runs the migrations from it (`docs/deploy.md`). | none; a build fact | `deploy-a` |
+| `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. Closed by `deploy-a`: `deploy/compose.yml` sets it for `api` and `runner`, and a test checks it. | 354, 991 | `deploy-a` |
+| D3's restore has not run on this store: rebuild the projections from history, replay the forget ledger, compare D3's fingerprint. The daily dump and its load into a scratch store run on the box since `deploy-a`, checked by the dump fingerprint (`docs/deploy.md`). | 806 to 808, 3065 | `writer-b` |
+| An upload route adds its own nginx location, with its body limit and `proxy_request_buffering off`. Every other path takes at most 10 MB (`deploy/nginx/grove-https.conf.template`). | none; a build fact | `ingest-a` |
+| The runner still reaches the host's sshd and nginx through the gateway of its internal network. A host firewall rule for its bridge goes with the egress allowlist. | none; a build fact | `runner`, `models` |
+| `/etc/grove/runner.env` holds no token yet, and `deploy/runner-placeholder.sh` runs in place of the loop. The backup stops the runner; the loop must leave a killed pass's requests queued. | none; a build fact | `runner` |
+| The API reads Google's client file at `GROVE_GOOGLE_OAUTH_FILE`; the secret files of `docs/deploy.md` are on the box, except `modal.env`, which is still owed. | none; a build fact | `signin`, `models` |
+| `/mcp` and the metadata in `server/grove/api/wellknown.py` are placeholders. uvicorn runs without `--proxy-headers`, so a redirect it makes names `http`. | none; a build fact | `hosts-a` |
+| The verdicts of a judge call: A.1 has the model-call layer record them in `judgments`, and no writer exists yet. | 996, 3121 | `truth-clock` |
+| The job table has no row for load-bearing verification: `verification` waits at the ceiling, and D15 defers only the low-stakes claims. | 2659 | `truth-clock` |
+| A run token needs a minter, a `token_cap` per pass and a holder for `GROVE_GATEWAY_SECRET`. A pass that gets `budget_reached` leaves its requests queued. | 2659 | `runner` |
+| A call's receipt: `ModelLayer.attach_receipt` takes a `model_call_id`. A gateway row has no id for its caller, so it joins its receipts through its run id and the run's record. | 2659, 3120 | `ingest-b`, `runner` |
+| The backfill's calls use the jobs `backfill_triage` and `backfill_extraction`, which stop at the ceiling. `extraction` continues past it. A background poll treats a 429 as a passing failure, so a long stated reset can end and cancel a run: the backfill must set its parallelism under Meta's limits. | 2688 | `ingest-b`, `film-backfill` |
+| Voice Transcribe takes WAV only here, with no contact names and no language bias: the forms probed for those two fields were refused. | 2673 | `ingest-a` |
+| `brain fetch` must send through `AllowlistTransport`, which checks each redirect hop, and not call `EgressPolicy.check` and then use another client. | 2559 | `cleanup` |
+| Glimmer's idle time bills on Modal and not in `model_calls`: a call every five minutes keeps a GPU up, about 95 USD a day at the H100 price, and triage continues at the ceiling. A spend limit on the Modal workspace is the backstop, or a shorter idle window. | 2659 | `models` (the Modal step), `deploy-b` |
 | `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
-| The neo4j driver logs the parameters of every query at DEBUG, and so the screened content of each source write. Production must keep the `neo4j` logger above DEBUG, because logs hold ids, counts and operation names only. | 2534 | `deploy-a` |
-| `WorldTx` and `WorldWriter` have no public read of their world id. `grove.writer.sources` reads the private one inside the writer package (SC16). | none; a build fact | `writer-a` |
+| The person's own item. The views read an optional `World.self_item_id` and mark that item as the person's own (`self_item_id` in the session and graph answers). Nothing writes it yet: signin must add the column to the `worlds` row and write it when onboarding makes the person's item. | none; a build fact | `signin` |
+| `known_as_of` and `as_of` on the view endpoints filter the current head of each row, not its history: a row changed after the given time shows its newest values. A read of the history must replace that filter. | none; a build fact | `writer-b`, `views-c` |
+| The session contract the views read: the cookie `grove_session`; `:Session.token_hash` is the lowercase sha256 hex of the cookie value; a session is valid while `revoked_at` is absent and `expires_at` is later than the clock's now; `:Session.user_id` leads to the oldest `:World` with that `owner_user_id`. `docs/views.md` states it in full. | none; a build fact | `signin` |
+| A `map_positions` row keeps `item_id` and its coordinates after its item is forgotten. The forget of an item must remove its map position too. | none; a build fact | `forget` |
+| The views' account, sources, questions and workers still use the simulation's local browser state. It survives the end of a session: the typed name and its initial, the guidance text, file names and connected hosts. A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b`, `signin` |
+| The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`. Closed by `deploy-a`: the API image runs `web/build.py` and sets that variable, and the deploy smoke asks for the page. | none; a build fact | `deploy-a` |
+| `change_status` and `end_item` do not trigger the walk yet, and `reopen_item` does not yet send an R1 ending back as a proposal. | 3160 to 3162 | `walk` |
+| The writer takes the source type of a row from the connector and the statement class only. These wait for code: an automated sender confirming its own action, a decision's named speaker, a forwarded row's original author, and confirming evidence for the start of a period that took place. | 1074, 1112 | `truth-clock` |
+| A late terminal status that goes to history only stores its status entry but no `stopped_being_true` entry, because nothing clears a stop entry when a later live status moves the head. An as-of read at that time shows the status with no end time, and `change_status` refuses an explicit end time on this path (rule `stopped_on_history_only`). | 3160 | `writer-b` |
+| A judgment marked correlated counts toward the two judges of a contradiction: D9 and B.2 ask only for two models. | 3165 | `beliefs` |
+| `create_link`'s restatement path and `_end_prior` read `active_key` again under the lock, with no test of their own. A test needs a second interleaving harness. | 762, 772 | `writer-a2` |
+| A `link_not_found` for a link id that a receipt had just returned appeared once under parallel load and did not come back in 18 runs. The concurrency tests must watch for it. | 772 | `writer-a2` |
+| The near-duplicate test rewords one word. Calibration needs a stronger pair. | 772 | `writer-a2` |
+| The writer lint has no allowance yet for the bookkeeping tables of the model-call layer and the job runner, and must name them. | 772 | `models`, `runner` |
+| `record_connector`, `record_source` and `record_episode` take no `Caller`, so the read-only refusal does not reach them. A layer that exposes them to a token checks its scope first. | 772 | `hosts-b` |
+| The gateway is not a compose service yet: `python -m grove.models.gateway` needs `MODEL_API_KEY`, `GROVE_GATEWAY_SECRET`, `NEO4J_AUTH` and the Glimmer variables (`docs/models.md`), and none of the new ones is on the box. The runner network must reach it. | none; a build fact | `runner`, `deploy-b` |
+| The neo4j driver logs the parameters of every query at DEBUG, and so the screened content of each source write. Production must keep the `neo4j` logger above DEBUG, because logs hold ids, counts and operation names only. | 2534 | `deploy-b` |
+| `WorldTx` and `WorldWriter` have no public read of their world id. `grove.writer.sources` reads the private one inside the writer package (SC16). | none; a build fact | `writer-a2` |
 
 A point that a later lane resolves leaves the table above and is listed here with its ruling.
 
@@ -179,7 +213,7 @@ These are not in this slice. Each owner lane adds its rows here and in the catal
 
 | Rows | Owner lane |
 |---|---|
-| Map positions per item | `views-a` |
+| Map positions per item: the table `map_positions` (`:MapPosition`), under "Tables of later lanes" below. `server/grove/writer/positions.py` is its only writer, and `docs/views.md` has the endpoint that fills it. | `views-a` |
 | My Grove guidance | `views-b` |
 | Pending exports | `views-b` |
 | Eval scripts and their results | `evals` |
@@ -978,7 +1012,7 @@ Keys: `model_calls_id_unique` (id).
 
 Indexes: `model_calls_world_id_day_idx` (world_id, day).
 
-Written only by the model-call layer (S20).
+Written only by the model-call layer (S20), with the budget it spends in the same transaction (S39).
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -994,6 +1028,11 @@ Written only by the model-call layer (S20).
 | at | `at` | `instant` | b1 |  |
 | day | `day` | `date` | ruling | S24: a DATE from the clock provider; B.1 names it only in the index |
 | (none) | `audio_seconds` | `float` | ruling | S24, line 2684: voice calls |
+| (none) | `route` | `code` | ruling | S39: meta or modal |
+| (none) | `outcome` | `code` | ruling | S39: ok, invalid_output, rate_limited, provider_error, client_closed |
+| (none) | `reasoning_tokens` | `int` | ruling | S39, line 2694: the reasoning share of the output tokens |
+| (none) | `latency_ms` | `int` | ruling | S39, line 2694: from the request to the answer |
+| (none) | `usage_estimated` | `bool` | ruling | S39: true when the tokens are an estimate |
 
 ### judgments
 
@@ -1026,7 +1065,7 @@ Keys: `budgets_world_id_day_unique` (world_id, day).
 
 Indexes: none.
 
-Written by the runner (S20).
+Written by the model-call layer, with each model call, and by the operator's ceiling (S39).
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -1592,6 +1631,27 @@ Indexes: none.
 | (none) | `scope` | `code` | convention | the default scope is grove |
 | (none) | `checksum` | `code` | convention |  |
 | (none) | `applied_at` | `instant` | convention |  |
+
+## Tables of later lanes
+
+### map_positions
+
+`:MapPosition`, node. Scope world. Restore group snapshot. Owner views-a.
+
+Keys: `map_positions_id_unique` (id); `map_positions_world_id_item_id_unique` (world_id, item_id).
+
+Indexes: none.
+
+Where the map drew an item first. Insert-only: a position is never moved, so an item keeps its place after a reload and after new items arrive. Only server/grove/writer/positions.py writes it. One row per item: the (world_id, item_id) key turns a second placement that races the first into a kept one. A view preference, not a claim about the world, so it has no history and restores with the snapshot.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| (none) | `id` | `id` | convention | UUIDv7 text from new_id() (S4) |
+| (none) | `world_id` | `id` | convention | the world of the item |
+| (none) | `item_id` | `id` | convention | an item id of the same world |
+| (none) | `x` | `float` | convention | the map's own units; finite, at most 1e7 either way |
+| (none) | `y` | `float` | convention | the map's own units; finite, at most 1e7 either way |
+| (none) | `placed_at` | `instant` | convention | from the clock provider, when the map first placed it |
 
 ## Full-text indexes
 

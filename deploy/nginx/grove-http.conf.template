@@ -1,0 +1,15 @@
+# Port 80 for the public host: the certificate's challenge files, and a redirect for the rest.
+# install-host.sh writes the host name in place of the marker.
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __GROVE_HOST__;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/grove-acme;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
