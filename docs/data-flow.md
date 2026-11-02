@@ -25,5 +25,7 @@ layer sends nothing to a host outside its egress allowlist.
 
 ## Open
 
-The handling of a screening candidate that code cannot settle is not fixed yet. The `forget` lane
-states it here: a candidate is either dropped or read by Glimmer on Modal.
+Screening runs in code on Grove's server and calls no model. Today it drops or masks every
+candidate in code. A candidate that code cannot settle is treated as sensitive: it is masked, or
+its message is dropped. No screened span goes to Glimmer or to any other model. The `forget` lane
+states the final rule here.
