@@ -357,13 +357,28 @@ def _declared_property(run: _Run, kind: dict[str, Any], name: str) -> dict[str, 
     return declared
 
 
+def _spelled_once(sent: dict[str, tuple[str, Any]], name: str, key: str, value: Any) -> None:
+    """Two spellings of one property in one operation (an alias, a case form) with different
+    values would keep the last and lose the other with no refusal, so the operation is refused."""
+    if name in sent and sent[name][1] != value:
+        raise Refused(
+            "invalid_arguments",
+            "property_named_twice",
+            f"two spellings of property {name!r} carry different values: send one",
+            {"property": name, "keys": [sent[name][0], key]},
+        )
+    sent.setdefault(name, (key, value))
+
+
 def _check_properties(run: _Run, kind: dict[str, Any], properties: dict[str, Any]) -> dict:
     """The properties under their declared names. A state property sits only on a record, and a
     record holds at most one (D1, D4)."""
     named: dict[str, Any] = {}
+    sent: dict[str, tuple[str, Any]] = {}
     state: list[str] = []
     for name, value in properties.items():
         declared = _declared_property(run, kind, name)
+        _spelled_once(sent, declared["name"], name, value)
         named[declared["name"]] = value
         if declared.get("temporal_class") == "state":
             state.append(declared["name"])
@@ -670,8 +685,10 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             else:
                 merged = json.loads(item.get("properties") or "{}")
             old = json.loads(item.get("properties") or "{}") or None
+            sent: dict[str, tuple[str, Any]] = {}
             for key, part in value.items():
                 name_of = _declared_property(run, kind, key)["name"]
+                _spelled_once(sent, name_of, key, part)
                 if part is None:
                     merged.pop(name_of, None)
                 else:

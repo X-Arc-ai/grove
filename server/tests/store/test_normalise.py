@@ -31,6 +31,14 @@ SURROGATES = range(0xD800, 0xE000)
         ("gated", "gated"),
         ("", ""),
         ("---", ""),
+        # Invisible format characters fall away, so a phrase that reads the same is the same.
+        ("‎Rowan Okonkwo", "rowan okonkwo"),
+        ("﻿Rowan Okonkwo", "rowan okonkwo"),
+        ("Ro­wan Okon­kwo", "rowan okonkwo"),
+        ("Ro​wan Okon​kwo", "rowan okonkwo"),
+        ("R​o​w​a​n", "rowan"),
+        ("gated⁠on", "gatedon"),
+        ("​‍﻿", ""),
     ],
 )
 def test_normal_form(phrase, expected):
@@ -47,6 +55,11 @@ def test_a_letter_of_another_script_stays():
 
 def test_an_emoji_stays_so_the_phrase_is_not_empty():
     assert normalise_phrase("\U0001f3e0") == "\U0001f3e0"
+
+
+def test_an_emoji_with_a_joiner_stays_so_the_phrase_is_not_empty():
+    family = "\U0001f468‍\U0001f469‍\U0001f467"
+    assert normalise_phrase(family) == "\U0001f468\U0001f469\U0001f467"
 
 
 def test_a_compatibility_capital_is_folded():

@@ -10,9 +10,11 @@ Every read and every guard asks this module, so no reader filters on its own (sp
 3. the scheduled class reads its evidence first, and no date moves it (D4; D5 rule 3, spec 1075,
    1187). The class is a bounded period, or a record that a plan scheduled: one with a planned
    origin (an active supporting row of source type planned, which stays when a report arrives)
-   or a scheduled start. Confirmed and not inferred goes on to rule 4, and a period needs a known
-   start for that, because a period gets its start only when a source confirms it took place.
-   Reported done and not inferred reads reported. Anything else reads planned.
+   or a scheduled start. Confirmed and not inferred goes on to rule 4, and a period or a record
+   with a scheduled start needs a known start for that: a period gets its start only when a
+   source confirms it took place, and a confirmed booking does not prove the trip (spec 1078).
+   Only the presence of the start role is read, never its date. Reported done and not inferred
+   reads reported. Anything else reads planned.
 4. not_started: a known start wholly after the time read.
 5. current. Outside the scheduled class an unknown start counts as started.
 
@@ -145,13 +147,20 @@ def in_scheduled_class(
     return lifecycle_class == "record" and (planned_origin or "start" in scheduled)
 
 
-def _by_evidence(row: Mapping[str, Any], lifecycle_class: str | None) -> tuple[str, str] | None:
-    """Rule 3: the state the evidence gives, or None when the evidence lets rule 4 decide."""
+def _by_evidence(
+    row: Mapping[str, Any], lifecycle_class: str | None, scheduled: Mapping[str, Any]
+) -> tuple[str, str] | None:
+    """Rule 3: the state the evidence gives, or None when the evidence lets rule 4 decide.
+
+    A confirmed row with an unknown start keeps a bounded period, and a record with a scheduled
+    start, planned: the row can confirm a booking and not the occurrence (spec 1078), and only
+    the presence of the role is read, never its date (spec 1075)."""
     if row.get("derivation") == "inferred":
         return "planned", "inferred"
     source_type = row.get("derived_source_type")
     if source_type == "confirmed":
-        if lifecycle_class == "bounded_period" and not _known_start(row):
+        needs_start = lifecycle_class == "bounded_period" or "start" in scheduled
+        if needs_start and not _known_start(row):
             return "planned", "start_unknown"
         return None
     if source_type == "reported_done":
@@ -184,7 +193,7 @@ def standing(
     if after:
         return made("overtaken", "successor")
     if in_scheduled_class(lifecycle_class, planned_origin=planned_origin, scheduled=held):
-        decided = _by_evidence(row, lifecycle_class)
+        decided = _by_evidence(row, lifecycle_class, held)
         if decided is not None:
             return made(*decided)
     start = _instant(row.get("became_true_earliest"))

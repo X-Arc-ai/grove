@@ -2,7 +2,11 @@
 
 import unicodedata
 
-_MARK = "Mn"
+# Combining marks (accents) and format characters fall away. A format character (a zero-width
+# space or joiner, a soft hyphen, a byte order mark, a direction mark) is invisible, so two
+# phrases that read the same must not differ by one. The screening lane drops them for its own
+# matching too.
+_DROPPED = frozenset({"Mn", "Cf"})
 # ASCII punctuation also sits in these three symbol categories. Other symbols, emoji among them,
 # stay: a phrase made of one must not normalise to nothing.
 _PUNCTUATION_SYMBOLS = frozenset({"Sc", "Sk", "Sm"})
@@ -14,7 +18,8 @@ def _is_punctuation(char: str) -> bool:
 
 
 def normalise_phrase(phrase: str) -> str:
-    """Case, accents, underscores, hyphens, punctuation and spacing fall away (lines 1386, 1589).
+    """Case, accents, underscores, hyphens, punctuation, invisible format characters and spacing
+    fall away (lines 1386, 1589).
 
     Line 1386 also names script, and this build does not fold it (ruling S34): `Москва` and
     `Moskva` stay two phrases, because transliteration needs a language model or a table the build
@@ -27,6 +32,6 @@ def normalise_phrase(phrase: str) -> str:
     kept = (
         " " if _is_punctuation(char) else char
         for char in folded
-        if unicodedata.category(char) != _MARK
+        if unicodedata.category(char) not in _DROPPED
     )
     return " ".join("".join(kept).split())
