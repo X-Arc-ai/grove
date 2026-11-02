@@ -123,6 +123,19 @@ ENUMS: dict[str, tuple[str, ...]] = {
     "mention_state": ("open", "resolved", "question", "expired"),
     # S27: B.1 also names runner; decision 6 leaves server as the one reachable value.
     "screened_where": ("server",),
+    # D14 lines 2505 to 2520 and slice row 4: the classes a screening receipt counts.
+    "screening_class": (
+        "credential",
+        "payment_card",
+        "one_time_code",
+        "reset_link",
+        "contact_email",
+        "contact_phone",
+        "contact_handle",
+        "pay_amount",
+        "denylisted",
+        "renamed",
+    ),
     # Line 3114.
     "entity_type": ("item", "link", "evidence", "registry_row", "belief"),
     # Lines 750, 3116.
