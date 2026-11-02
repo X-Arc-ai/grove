@@ -961,7 +961,14 @@ def test_a_scratch_store_that_never_starts_fails_the_check_and_cleans_up(box):
         box.index(step)
 
 
-def test_the_smoke_fails_when_the_page_does_not_answer(box):
-    done = box.run("deploy.sh", SHA, FAKE_NO_PAGE="1")
+@pytest.mark.parametrize("path", ["/", "/signin", "/privacy"])
+def test_the_smoke_fails_when_a_page_does_not_answer(box, path):
+    done = box.run("deploy.sh", SHA, FAKE_NO_PAGE=path)
     assert done.returncode != 0
-    assert "with no page" in done.stderr
+    assert f"{path} answered 404 with no page" in done.stderr
+
+
+def test_the_smoke_asks_for_every_page(box):
+    assert box.run("deploy.sh", SHA).returncode == 0
+    box.index(f"{BASE}/signin")
+    box.index(f"{BASE}/privacy")

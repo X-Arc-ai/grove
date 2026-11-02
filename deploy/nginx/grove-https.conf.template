@@ -2,6 +2,11 @@
 # user agent, so Meta's metadata fetcher (meta-webindexer/1.1) gets the same answers as anyone.
 # Every TLS setting is in this file: a box gets only the certificate from certbot, and ECDHE
 # ciphers need no dhparam file.
+
+# Each address may ask for a sign-in code at a steady rate, on top of the API's own limits per
+# mail address. A code costs a mail, so this stops a flood before it reaches the API.
+limit_req_zone $binary_remote_addr zone=grove_email:1m rate=10r/m;
+
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
@@ -31,6 +36,12 @@ server {
     proxy_read_timeout 300s;
 
     location / {
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    location /v1/auth/email/ {
+        limit_req zone=grove_email burst=10 nodelay;
+        limit_req_status 429;
         proxy_pass http://127.0.0.1:8000;
     }
 }

@@ -19,6 +19,16 @@ _SHA = re.compile(r"[0-9a-f]{40}")
 class ApiSettings:
     public_base_url: str
     build_sha: str | None = None
+    google_oauth_file: str | None = None
+
+    @property
+    def secure_cookies(self) -> bool:
+        """A loopback run has no TLS, and a browser drops a Secure cookie there."""
+        return self.public_base_url.startswith("https://")
+
+    @property
+    def google_callback_url(self) -> str:
+        return f"{self.public_base_url}/v1/auth/google/callback"
 
     @property
     def mcp_url(self) -> str:
@@ -58,4 +68,5 @@ def load_api_settings() -> ApiSettings:
     return ApiSettings(
         public_base_url=parse_base_url(base_url),
         build_sha=parse_build_sha(os.environ.get("GROVE_BUILD_SHA")),
+        google_oauth_file=os.environ.get("GROVE_GOOGLE_OAUTH_FILE") or None,
     )

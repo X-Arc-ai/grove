@@ -1,8 +1,8 @@
 """The API process: `uv run uvicorn --factory grove.api.app:create_app` from server/.
 
 The driver opens at startup from the environment (NEO4J_AUTH, GROVE_NEO4J_URI) unless a caller
-hands one in. GROVE_WEB_DIST names a folder whose index.html GET / returns: the API image builds
-the page and sets it, and a local run can set it too.
+hands one in. GROVE_WEB_DIST names the folder of the built pages (home.html, index.html and
+privacy.html): the API image builds them and sets it, and a local run can set it too.
 """
 
 import os
@@ -10,14 +10,19 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 
 from grove.api import health, wellknown
+from grove.api.auth import AUTH_PREFIX, AuthDeps
+from grove.api.auth import router as auth_router
 from grove.api.config import ApiSettings, load_api_settings
 from grove.api.errors import install_error_handlers, not_found
+from grove.api.mail import Mailer
 from grove.api.views import PREFIX, router
 from grove.store.connection import Driver, open_driver
+from grove.views.session import SESSION_COOKIE
 
 WEB_DIST_ENV = "GROVE_WEB_DIST"
 # A store that is down must not hold a probe for the driver's default 30 s.
@@ -28,14 +33,27 @@ def _open_driver() -> Driver:
     return open_driver(**DRIVER_OPTIONS)
 
 
-def _add_web_page(app: FastAPI, folder: str) -> None:
-    page = Path(folder) / "index.html"
+def _add_web_pages(app: FastAPI, folder: str) -> None:
+    def page(name: str, headers: dict[str, str] | None = None) -> FileResponse:
+        path = Path(folder) / name
+        if not path.is_file():
+            raise not_found("no built page")
+        return FileResponse(path, media_type="text/html", headers=headers)
 
     @app.get("/", include_in_schema=False)
-    def index() -> FileResponse:
-        if not page.is_file():
-            raise not_found("no built page")
-        return FileResponse(page, media_type="text/html")
+    def root(request: Request) -> FileResponse:
+        """No store read: with a cookie, the page itself asks the session and shows the sign-in
+        card on a 401."""
+        name = "index.html" if request.cookies.get(SESSION_COOKIE) else "home.html"
+        return page(name, {"Cache-Control": "no-store", "Vary": "Cookie"})
+
+    @app.get("/signin", include_in_schema=False)
+    def signin() -> FileResponse:
+        return page("index.html", {"Cache-Control": "no-store"})
+
+    @app.get("/privacy", include_in_schema=False)
+    def privacy() -> FileResponse:
+        return page("privacy.html")
 
 
 def create_app(
@@ -43,8 +61,12 @@ def create_app(
     *,
     driver: Driver | None = None,
     driver_factory: Callable[[], Driver] = _open_driver,
+    mailer: Mailer | None = None,
+    google_http: httpx.Client | None = None,
+    world_id_for: Callable[[str], str] | None = None,
 ) -> FastAPI:
-    """With a driver, the caller owns it: the app never closes it."""
+    """With a driver, the caller owns it: the app never closes it. With no mailer or google_http,
+    sign-in loads the real one at first use. world_id_for gives a test its own t_ worlds."""
     settings = settings or load_api_settings()
 
     @asynccontextmanager
@@ -60,6 +82,7 @@ def create_app(
 
     app = FastAPI(title="Grove", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
+    app.state.auth = AuthDeps(mailer=mailer, google_http=google_http, world_id_for=world_id_for)
     if driver is not None:
         app.state.driver = driver
     install_error_handlers(app)
@@ -68,16 +91,17 @@ def create_app(
     async def no_store(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        """The views answer with the person's own data: no cache keeps a copy."""
+        """The views and sign-in answer with the person's own data: no cache keeps a copy."""
         response = await call_next(request)
-        if request.url.path.startswith(PREFIX):
+        if request.url.path.startswith((PREFIX, AUTH_PREFIX)):
             response.headers["Cache-Control"] = "no-store"
         return response
 
     app.include_router(health.router)
     app.include_router(wellknown.router)
     app.include_router(router)
+    app.include_router(auth_router)
     folder = os.environ.get(WEB_DIST_ENV)
     if folder:
-        _add_web_page(app, folder)
+        _add_web_pages(app, folder)
     return app
