@@ -1,1 +1,1 @@
-"""The web layer: FastAPI behind nginx on the public host."""
+"""The HTTP API (FastAPI). create_app in grove.api.app builds it; docs/views.md has the contract."""

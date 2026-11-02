@@ -8,4 +8,5 @@
 server/tests
 docs
 evals
-web
+web/checks
+web/dist

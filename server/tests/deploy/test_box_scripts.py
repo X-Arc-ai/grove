@@ -959,3 +959,9 @@ def test_a_scratch_store_that_never_starts_fails_the_check_and_cleans_up(box):
     assert "FAILED, the scratch store did not start" in box.log_text("backup.log")
     for step in ("docker rm --force --volumes", "docker volume rm", "docker network rm"):
         box.index(step)
+
+
+def test_the_smoke_fails_when_the_page_does_not_answer(box):
+    done = box.run("deploy.sh", SHA, FAKE_NO_PAGE="1")
+    assert done.returncode != 0
+    assert "with no page" in done.stderr

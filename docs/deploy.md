@@ -30,6 +30,7 @@ any client.
 
 | Path | Answer |
 |---|---|
+| `GET /` | The built page of the views: the API image runs `web/build.py` and sets `GROVE_WEB_DIST`. `docs/views.md` has the view endpoints. |
 | `GET /healthz` | `{"status": "ok", "store": "ok", "build": "<sha>"}`, or 503 with `"store": "unreachable"`. No sign-in. D13's health views are `/v1/health/person` and `/v1/health/operator`, built later. |
 | `GET /.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp` | The protected-resource metadata (RFC 9728): `resource` is `<base>/mcp`, the authorization server is `<base>`, and the scopes of A.3. |
 | `/mcp` | 401 with `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource"`. |
@@ -119,7 +120,7 @@ The smoke checks also run from any machine:
 deploy/smoke.sh https://app.grove.x-arc.ai <sha>
 ```
 
-They check that `/healthz` answers ok for that build, that both metadata paths name
+They check that `/healthz` answers ok for that build, that `/` answers with the page, that both metadata paths name
 `<base>/mcp` (also for `meta-webindexer/1.1`), and that an unauthenticated `/mcp` call gets 401 with
 the metadata URL.
 

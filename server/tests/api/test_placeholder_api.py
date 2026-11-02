@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from grove import clock
 from grove.api.app import create_app
-from grove.api.config import ApiSettings, parse_base_url, parse_build_sha
+from grove.api.config import ApiSettings, load_api_settings, parse_base_url, parse_build_sha
 from grove.config import ConfigError
 from grove.store.connection import open_driver
 from grove.store.probe import READ_ACCESS, DriverError, Neo4jError, store_reachable
@@ -144,11 +144,19 @@ def _free_port() -> int:
 
 
 @pytest.fixture
-def served(driver):
+def served(driver, tmp_path):
     """The real app under uvicorn, as on the box, with a loopback base URL."""
     port = _free_port()
     base = f"http://127.0.0.1:{port}"
-    env = {**os.environ, "GROVE_PUBLIC_BASE_URL": base, "GROVE_BUILD_SHA": SHA}
+    pages = tmp_path / "dist"
+    pages.mkdir()
+    (pages / "index.html").write_text("<!doctype html><title>Grove</title>")
+    env = {
+        **os.environ,
+        "GROVE_PUBLIC_BASE_URL": base,
+        "GROVE_BUILD_SHA": SHA,
+        "GROVE_WEB_DIST": str(pages),
+    }
     process = subprocess.Popen(
         [sys.executable, "-m", "uvicorn", "grove.api.app:create_app", "--factory"]
         + ["--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],
@@ -178,6 +186,7 @@ def test_the_deploy_smoke_passes_against_the_real_app(served):
     assert done.returncode == 0, done.stderr
     assert done.stdout.splitlines() == [
         f"ok healthz build={SHA}",
+        "ok / page",
         "ok /.well-known/oauth-protected-resource",
         "ok /.well-known/oauth-protected-resource/mcp",
         "ok /mcp 401",
@@ -261,3 +270,26 @@ def test_the_app_closes_its_driver_at_shutdown():
     with TestClient(create_app(settings, driver_factory=lambda: driver)):
         assert driver.closed is False
     assert driver.closed is True
+
+
+def test_production_refuses_a_missing_base_url_and_a_local_run_has_a_default(monkeypatch):
+    monkeypatch.delenv("GROVE_PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setenv("GROVE_ENV", "production")
+    with pytest.raises(ConfigError):
+        load_api_settings()
+    monkeypatch.setenv("GROVE_ENV", "development")
+    assert load_api_settings().public_base_url == "http://127.0.0.1:8000"
+
+
+def test_the_merged_app_serves_the_views_beside_the_probes(driver, migrated):
+    settings = ApiSettings(public_base_url="https://grove.example")
+    with TestClient(create_app(settings, driver=driver)) as test_client:
+        assert test_client.get("/healthz").status_code == 200
+        metadata = "/.well-known/oauth-protected-resource"
+        assert test_client.get(metadata).json()["resource"] == "https://grove.example/mcp"
+        # The views' router, with its sign-in rule and its no-store middleware.
+        views = test_client.get("/v1/views/health")
+        assert views.status_code == 401
+        assert views.headers["cache-control"] == "no-store"
+    # The caller owns a driver it handed in: the app did not close it.
+    driver.verify_connectivity()

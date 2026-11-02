@@ -153,6 +153,9 @@ base = f"{parts.scheme}://{parts.netloc}"
 hdr = ["HTTP/1.1 200 OK"]
 if agent == os.environ.get("FAKE_REFUSE_AGENT"):
     status, body = 403, {}
+elif parts.path == "/" and "FAKE_NO_PAGE" not in os.environ:
+    status, body = 200, {}
+    hdr = ["HTTP/1.1 200 OK", "content-type: text/html"]
 elif parts.path == "/healthz":
     state = Path(os.environ["GROVE_STATE"]) / "deployed.sha"
     served = state.read_text().strip() if state.exists() else None

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The checks after a deploy, from the box or from any machine: smoke.sh https://<host> [<sha>]
 #
-# The health probe answers with the store up and, given a sha, with that build. The
-# protected-resource metadata names <base>/mcp at both paths, also for Meta's fetcher, and an
-# unauthenticated /mcp call gets 401 with the metadata URL.
+# The health probe answers with the store up and, given a sha, with that build. The page answers
+# at /. The protected-resource metadata names <base>/mcp at both paths, also for Meta's fetcher,
+# and an unauthenticated /mcp call gets 401 with the metadata URL.
 set -euo pipefail
 
 [ $# -ge 1 ] || {
@@ -48,6 +48,13 @@ done
     exit 1
 }
 echo "ok healthz${sha:+ build=$sha}"
+
+status=$(fetch GET "$base/" grove-smoke)
+[ "$status" = 200 ] && grep -qi '^content-type: text/html' "$work/headers" || {
+    echo "smoke: $base/ answered $status with no page" >&2
+    exit 1
+}
+echo "ok / page"
 
 for path in /.well-known/oauth-protected-resource /.well-known/oauth-protected-resource/mcp; do
     for agent in grove-smoke "$fetcher_agent"; do
