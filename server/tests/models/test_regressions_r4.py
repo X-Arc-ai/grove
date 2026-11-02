@@ -474,7 +474,7 @@ def test_the_glimmer_server_scales_to_zero_and_stays_locked():
     assert "min_containers=0," in text
     assert "max_containers=2," in text
     assert "unauthenticated=False," in text
-    assert "scaledown_window=IDLE_SECONDS," in text and "IDLE_SECONDS = 300" in text
+    assert "scaledown_window=IDLE_SECONDS," in text and "IDLE_SECONDS = 60" in text
     assert """'{"reasoning_strength": "low"}',""" in text
 
 
