@@ -59,6 +59,54 @@ def load(clean_env, rename=None, denylist=None) -> ScreeningConfig:
     return ScreeningConfig.from_environment()
 
 
+@pytest.fixture
+def private_lists(tmp_path):
+    rename = tmp_path / "rename.json"
+    rename.write_text('{"Orla Vance": "Co-founder"}', encoding="utf-8")
+    denylist = tmp_path / "denylist.txt"
+    denylist.write_text("Brightwell Logistics\n", encoding="utf-8")
+    rename.chmod(0o600)
+    denylist.chmod(0o600)
+    return {RENAME_MAP_VAR: rename, DENYLIST_VAR: denylist}
+
+
+@pytest.mark.parametrize("missing", [RENAME_MAP_VAR, DENYLIST_VAR])
+def test_production_refuses_a_list_that_is_not_named(clean_env, private_lists, missing):
+    clean_env.setenv("GROVE_ENV", "production")
+    for variable, path in private_lists.items():
+        if variable != missing:
+            clean_env.setenv(variable, str(path))
+    with pytest.raises(ConfigError) as caught:
+        ScreeningConfig.from_environment()
+    assert_clean(caught.value, missing)
+
+
+def test_production_refuses_when_neither_list_is_named(clean_env):
+    clean_env.setenv("GROVE_ENV", "production")
+    with pytest.raises(ConfigError, match="production"):
+        ScreeningConfig.from_environment()
+
+
+def test_production_loads_both_lists_when_they_are_named(clean_env, private_lists):
+    clean_env.setenv("GROVE_ENV", "production")
+    for variable, path in private_lists.items():
+        clean_env.setenv(variable, str(path))
+    config = ScreeningConfig.from_environment()
+    assert config.rename.form_count == 1
+    assert config.denylist.term_count == 1
+
+
+@pytest.mark.parametrize("env", [None, "development", "test"])
+def test_outside_production_an_unset_list_stays_empty(clean_env, env):
+    if env is None:
+        clean_env.delenv("GROVE_ENV", raising=False)
+    else:
+        clean_env.setenv("GROVE_ENV", env)
+    config = ScreeningConfig.from_environment()
+    assert config.rename.form_count == 0
+    assert config.denylist.term_count == 0
+
+
 def test_unset_variables_give_empty_lists(clean_env):
     config = load(clean_env)
     assert config.rename.form_count == 0

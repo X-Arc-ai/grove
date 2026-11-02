@@ -39,7 +39,8 @@ from grove.store.catalogue import (
 )
 from grove.store.enums import ENUMS
 from grove.store.query import WorldQuery
-from grove.writer.sources import add_screened_source, write_screened_source
+from grove.writer.errors import InvalidRecord
+from grove.writer.sources import add_screened_source, record_connector, write_screened_source
 from grove.writer.testing import plant_node
 from grove.writer.tx import WorldTx, WorldWriter
 
@@ -282,7 +283,7 @@ def test_a_chat_export_with_every_d14_plant_keeps_every_value_out(
 
     # The order of SC1: mint the id, screen in code, then one write transaction.
     source_id = new_id(world)
-    connector_id = new_id(world)
+    connector_id = record_connector(driver, world, "whatsapp")
     screened = export_screener().screen_source(LOCATOR, export_messages())
     result = add_screened_source(
         WorldWriter(driver, world),
@@ -311,9 +312,10 @@ def test_a_chat_export_with_every_d14_plant_keeps_every_value_out(
     request = "\n".join(part["content"] for part in prompt.messages())
     run_log = "\n".join(record.getMessage() for record in caplog.records)
 
-    # Exactly one source and one receipt; nothing else reached the world.
+    # The connector this test made, one source and one receipt; nothing else reached the world.
     assert result == {"source_id": source_id, "counts": EXPECTED_COUNTS, "kept_messages": 18}
     assert Counter(tuple(row["labels"]) for row in rows) == {
+        ("Connector",): 1,
         ("ScreeningReceipt",): 1,
         ("Source",): 1,
     }
@@ -582,7 +584,7 @@ def _fits(type_class: str, value: object) -> bool:
 def test_writes_exactly_the_catalogue_properties(driver, world, test_clock):
     test_clock.set(WORLD_TIME, world)
     screened = small_source()
-    source_id, connector_id = new_id(world), new_id(world)
+    source_id, connector_id = new_id(world), record_connector(driver, world, "whatsapp")
     add_screened_source(
         WorldWriter(driver, world),
         screened,
@@ -631,12 +633,13 @@ def test_writes_exactly_the_catalogue_properties(driver, world, test_clock):
 def test_the_times_come_from_the_world_clock_on_every_write(driver, world, test_clock):
     test_clock.set(WORLD_TIME, world)
     writer = WorldWriter(driver, world)
+    connector_id = record_connector(driver, world, "whatsapp")
     first = add_screened_source(
-        writer, small_source(), connector_id=new_id(world), parser_version=PARSER
+        writer, small_source(), connector_id=connector_id, parser_version=PARSER
     )
     later = test_clock.advance(world_id=world, minutes=5)
     second = add_screened_source(
-        writer, small_source(), connector_id=new_id(world), parser_version=PARSER
+        writer, small_source(), connector_id=connector_id, parser_version=PARSER
     )
 
     times = {}
@@ -646,7 +649,7 @@ def test_the_times_come_from_the_world_clock_on_every_write(driver, world, test_
             times.setdefault(node["id"], {}).update(
                 received_at=node["received_at"], touched_at=node["touched_at"]
             )
-        else:
+        elif row["labels"] == ["ScreeningReceipt"]:
             times.setdefault(node["source_id"], {})["screened_at"] = node["screened_at"]
     # The store-wide default of the test clock is STORE_TIME: the world's own time must win.
     assert times == {
@@ -662,7 +665,7 @@ def test_add_screened_source_mints_the_id_on_the_world_clock_and_returns_no_text
     result = add_screened_source(
         WorldWriter(driver, world),
         small_source(),
-        connector_id=new_id(world),
+        connector_id=record_connector(driver, world, "whatsapp"),
         parser_version=PARSER,
     )
     assert set(result) == {"source_id", "counts", "kept_messages"}
@@ -676,17 +679,18 @@ def test_add_screened_source_mints_the_id_on_the_world_clock_and_returns_no_text
 
 def test_the_source_and_its_receipt_commit_together_or_not_at_all(driver, world, test_clock):
     source_id = new_id(world)
+    connector_id = record_connector(driver, world, "whatsapp")
     # A receipt that already names the id: the receipt write fails inside the transaction.
     plant_node(driver, world, "ScreeningReceipt", source_id=source_id, screened_where="server")
     with pytest.raises(ConstraintError):
         add_screened_source(
             WorldWriter(driver, world),
             small_source(),
-            connector_id=new_id(world),
+            connector_id=connector_id,
             parser_version=PARSER,
             source_id=source_id,
         )
-    rows = world_rows(driver, world)
+    rows = [row for row in world_rows(driver, world) if row["labels"] != ["Connector"]]
     assert [row["labels"] for row in rows] == [["ScreeningReceipt"]]
     assert "counts_per_class" not in rows[0]["n"]
 
@@ -697,19 +701,34 @@ class _LaterStepFailed(RuntimeError):
 
 def test_write_screened_source_writes_in_the_callers_transaction(driver, world, test_clock):
     """A later step of the caller (the request row of writer-a2) fails: nothing of it commits."""
+    connector_id = record_connector(driver, world, "whatsapp")
 
     def work(tx: WorldTx) -> None:
         write_screened_source(
             tx,
             small_source(),
             source_id=new_id(world),
-            connector_id=new_id(world),
+            connector_id=connector_id,
             parser_version=PARSER,
         )
         raise _LaterStepFailed
 
     with pytest.raises(_LaterStepFailed):
         WorldWriter(driver, world).transaction(work)
+    assert [row["labels"] for row in world_rows(driver, world)] == [["Connector"]]
+
+
+def test_refuses_a_connector_this_world_does_not_have(driver, world, make_world, test_clock):
+    """As record_source does: a source row never cites a connector that is not there."""
+    elsewhere = record_connector(driver, make_world(), "whatsapp")
+    for connector_id in (new_id(world), elsewhere):
+        with pytest.raises(InvalidRecord, match="no such connector"):
+            add_screened_source(
+                WorldWriter(driver, world),
+                small_source(),
+                connector_id=connector_id,
+                parser_version=PARSER,
+            )
     assert world_rows(driver, world) == []
 
 
@@ -736,7 +755,10 @@ def test_every_screened_source_is_stored_with_its_receipt(
     """A source kept out whole is still a row: its receipt needs the source id, and the coverage
     table shows what was kept out (D13)."""
     result = add_screened_source(
-        WorldWriter(driver, world), make(), connector_id=new_id(world), parser_version=PARSER
+        WorldWriter(driver, world),
+        make(),
+        connector_id=record_connector(driver, world, "whatsapp"),
+        parser_version=PARSER,
     )
     source = one(driver, world, "Source")
     receipt = one(driver, world, "ScreeningReceipt")

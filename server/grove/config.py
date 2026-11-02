@@ -55,6 +55,8 @@ def load_settings() -> Settings:
 class ScreeningSettings:
     """Where the rename map and the denylist live. None means the variable is unset: empty.
 
+    Only outside production: with GROVE_ENV=production an unset variable is a ConfigError.
+
     The paths have no repr: a home folder path can hold a name that R1 keeps out of logs.
     """
 
@@ -65,6 +67,10 @@ class ScreeningSettings:
 def _optional_path(variable: str) -> Path | None:
     value = os.environ.get(variable)
     if value is None:
+        # On the box an unset variable would screen real text with an empty list and no error, and
+        # real names would reach the sources table and the model. So production refuses it.
+        if os.environ.get("GROVE_ENV") == "production":
+            raise ConfigError(f"{variable} is not set, and production needs it")
         return None
     # An empty value is a deploy mistake, not a choice: running without the list would let its
     # names through, so it fails closed.
