@@ -36,10 +36,12 @@ any client.
 | `/v1/auth/*` | Sign-in and logout. `docs/signin.md` has the routes. nginx limits `/v1/auth/email/` per address to 10 requests a minute with a burst of 10, and answers 429 above that. |
 | `GET /healthz` | `{"status": "ok", "store": "ok", "build": "<sha>"}`, or 503 with `"store": "unreachable"`. No sign-in. D13's health views are `/v1/health/person` and `/v1/health/operator`, built later. |
 | `GET /.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp` | The protected-resource metadata (RFC 9728): `resource` is `<base>/mcp`, the authorization server is `<base>`, and the scopes of A.3. |
-| `/mcp` | 401 with `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource"`. |
+| `GET /.well-known/oauth-authorization-server`, `/.well-known/oauth-authorization-server/mcp` and `/.well-known/openid-configuration` | The authorization server metadata (RFC 8414): the issuer `<base>` and its endpoints. |
+| `/register`, `/authorize`, `/authorize/decision`, `/token`, `/revoke` | The OAuth 2.1 authorization server of `/mcp`. `/authorize` fills `consent.html` of `GROVE_WEB_DIST`. nginx limits `/register` and `/token` per address to 30 requests a minute with a burst of 20, and answers 429 above that. |
+| `/mcp` | The MCP transport. With no token: 401 with `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource", scope="grove.read grove.write"`. |
 
-The metadata and `/mcp` are placeholders: `hosts-a` builds the authorization server and the MCP
-transport in their place.
+`docs/hosts.md` has the authorization server and the MCP transport that answer at these paths: every
+endpoint, the consent page, the exact `WWW-Authenticate` headers, and how a host connects.
 
 ## Files on the box
 
