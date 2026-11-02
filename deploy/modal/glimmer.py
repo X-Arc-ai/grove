@@ -66,6 +66,9 @@ image = (
             "HF_HUB_CACHE": HF_CACHE,
             "HF_XET_HIGH_PERFORMANCE": "1",
             "VLLM_MEDIA_URL_ALLOW_REDIRECTS": "0",
+            # vLLM reports usage stats by default: this host sends nothing to any other host.
+            "VLLM_NO_USAGE_STATS": "1",
+            "DO_NOT_TRACK": "1",
         }
     )
 )

@@ -94,7 +94,7 @@ def verify(secret: bytes, catalog: Catalog, token: str) -> RunClaims:
         raise Unauthenticated("the run token's claims are malformed") from exc
     if not isinstance(expires, int) or expires <= _epoch():
         raise Unauthenticated("the run token has expired")
-    if job not in catalog.jobs or not isinstance(run_id, str):
+    if not isinstance(job, str) or job not in catalog.jobs or not isinstance(run_id, str):
         raise Unauthenticated("the run token names no known job")
     if cap is not None and not _positive_int(cap):
         raise Unauthenticated("the run token's cap is malformed")

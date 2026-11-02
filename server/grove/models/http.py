@@ -8,6 +8,7 @@ import math
 import re
 import time
 from collections.abc import Awaitable, Callable
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 
 import httpx
 
@@ -21,6 +22,12 @@ _RETRY_STATUS = frozenset({503})
 NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 _DURATION = re.compile(r"(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m(?!s))?(?:(\d+(?:\.\d+)?)s)?")
 _RESET_HEADERS = ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens")
+
+
+def no_cookies() -> CookieJar:
+    """A jar that keeps nothing. One client serves all worlds, so a cookie a provider sets on a
+    call of one world must not go out on the next call of another."""
+    return CookieJar(policy=DefaultCookiePolicy(allowed_domains=[]))
 
 
 def _seconds(value: str) -> float | None:

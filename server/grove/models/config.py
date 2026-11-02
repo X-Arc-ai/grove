@@ -205,7 +205,8 @@ def _https_base(name: str, value: str, allowed) -> str:
         hostname, port = parts.hostname, parts.port
     except ValueError:
         raise NotConfigured(f"{name} is not a URL") from None
-    bare = parts.username is None and parts.password is None and value == value.strip()
+    spaced = any(char.isspace() for char in value)
+    bare = parts.username is None and parts.password is None and not spaced
     if parts.scheme != "https" or not hostname or not bare:
         raise NotConfigured(f"{name} must be an https URL with a host and no user part")
     host = hostname.rstrip(".").lower()

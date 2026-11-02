@@ -50,7 +50,14 @@ from grove.models.errors import (
     Unauthenticated,
 )
 from grove.models.gateway_auth import RunClaims, verify
-from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, NOT_SENT, asend, reset_after
+from grove.models.http import (
+    MAX_ATTEMPTS,
+    MODAL_ATTEMPTS,
+    NOT_SENT,
+    asend,
+    no_cookies,
+    reset_after,
+)
 from grove.models.layer import default_cache_key, glimmer_effort_fields
 from grove.models.meter import Meter
 from grove.models.shape import (
@@ -73,6 +80,7 @@ _TIMEOUT = httpx.Timeout(600.0, connect=10.0)
 # let a caller pick its own effort outside the model's list.
 _META_REFUSED = ("stop", "logprobs", "top_logprobs")
 _EFFORT_FIELDS = ("reasoning_effort", "chat_template_kwargs")
+_GLIMMER_DROPPED = ("prompt_cache_key", "temperature", "top_p", "stop")
 _OUTPUT_FIELDS = ("max_tokens", "max_completion_tokens")
 # Everything else an agent sends is dropped, so a field such as `store`, `ignore_eos` or
 # `chat_template` never reaches a provider.
@@ -195,7 +203,10 @@ def upstream_body(
             if key:
                 out["prompt_cache_key"] = key
     else:
-        out.pop("prompt_cache_key", None)
+        # D15: Glimmer runs on its own sampling, never greedy, and never stops on `<|eom|>`. The
+        # server applies the model's generation config.
+        for field in _GLIMMER_DROPPED:
+            out.pop(field, None)
         out.update(glimmer_effort_fields(effort))
     return out
 
@@ -231,7 +242,7 @@ class _StreamMeter:
             return
         try:
             event = json.loads(data)
-        except ValueError:
+        except (ValueError, RecursionError):
             return
         if not isinstance(event, dict):
             return
@@ -285,6 +296,7 @@ class Gateway:
             transport=AsyncAllowlistTransport(self.policy, MODEL_LAYER, inner=transport),
             timeout=_TIMEOUT,
             follow_redirects=False,
+            cookies=no_cookies(),
         )
 
     def _route(self, spec: ModelSpec) -> tuple[str, dict[str, str]]:
@@ -334,6 +346,7 @@ class Gateway:
                 reasoning_tokens=min(usage.reasoning_tokens, usage.output_tokens),
                 cost=cost,
                 latency_ms=int(seconds * 1000),
+                usage_estimated=usage.estimated,
             ),
         )
 
@@ -366,7 +379,13 @@ class Gateway:
                 self.client.build_request("POST", url, json=out)
             except (ValueError, TypeError, RecursionError):
                 raise ModelRefused("the body cannot be sent as JSON") from None
-            await run_in_threadpool(self._admit, claims)
+            try:
+                await run_in_threadpool(self._admit, claims)
+            except ModelError:
+                raise
+            except Exception:
+                # The store cannot answer: the gate fails closed, with a typed error.
+                raise ProviderError("the budget could not be read") from None
         except ModelError as error:
             return _error(error)
         stream = bool(out.get("stream"))
@@ -436,7 +455,8 @@ class Gateway:
             await run_in_threadpool(
                 record, claims, spec, effort, usage, outcome, started, attempt[0]
             )
-            return JSONResponse(doc)
+            # The provider's bytes: its answer may hold what JSONResponse refuses to encode.
+            return Response(response.content, media_type="application/json")
         return StreamingResponse(
             self._relay(response, claims, spec, effort, started, attempt[0], input_chars),
             media_type="text/event-stream",
@@ -451,7 +471,7 @@ class Gateway:
         try:
             doc = response.json()
             message = self._redact(str(doc["error"]["message"]))
-        except (ValueError, KeyError, TypeError, httpx.StreamError):
+        except (ValueError, KeyError, TypeError, RecursionError, httpx.StreamError):
             # httpx.StreamError: the body could not be read, so only the status is known.
             message = ""
         code = "rate_limited" if response.status_code == 429 else "provider_error"

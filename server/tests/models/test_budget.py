@@ -39,6 +39,8 @@ SPARK = "muse-spark-1.3"
 GLIMMER = "muse-glimmer-30b"
 CATALOG = load_catalog()
 DEFER_JOBS = (
+    "backfill_triage",
+    "backfill_extraction",
     "update_pass",
     "verification",
     "second_opinion",
@@ -756,6 +758,7 @@ def test_meter_calls_returns_the_day_rows_oldest_first(driver, make_world):
         "latency_ms": 2400,
         "at": ten,
         "day": DAY,
+        "usage_estimated": None,
     }
     assert by_id[third] == {
         "id": third,
@@ -774,6 +777,7 @@ def test_meter_calls_returns_the_day_rows_oldest_first(driver, make_world):
         "latency_ms": None,
         "at": eleven,
         "day": DAY,
+        "usage_estimated": None,
     }
     assert by_id[first]["outcome"] == "invalid_output"
     assert [(row["at"], row["cost"]) for row in gauge.calls(world, NEXT_DAY)] == [

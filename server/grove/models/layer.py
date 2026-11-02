@@ -14,7 +14,6 @@ and the gateway use Chat Completions, which an OpenAI-compatible server speaks.
 
 import hashlib
 import json
-import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -45,15 +44,15 @@ from grove.models.errors import (
     ProviderError,
     RateLimited,
 )
-from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, NOT_SENT, reset_after, send
+from grove.models.http import MAX_ATTEMPTS, MODAL_ATTEMPTS, NOT_SENT, no_cookies, reset_after, send
 from grove.models.meter import Meter
 from grove.models.shape import (
     REF_KEYS,
     Usage,
     chat_answer,
     chat_usage,
-    check_responses_input,
     clean_messages,
+    clean_responses_input,
     clean_tools,
     estimate_usage,
     may_have_run,
@@ -163,14 +162,17 @@ def _audio_seconds(stated: object, sent: float) -> float:
     """The provider's duration in milliseconds as seconds, when it can be true of the audio sent.
     An infinite or absurd value would lose the row or close the day's budget."""
     known = isinstance(stated, int | float) and not isinstance(stated, bool)
-    if known and math.isfinite(stated) and 0 < stated <= sent * 2000:
+    # A comparison and not math.isfinite: a very long integer is a value it cannot convert. The
+    # provider's figure counts up to twice the API's limit: a WAV header can understate the audio.
+    if known and 0 < stated <= audio.API_LIMIT_SECONDS * 2000:
         return stated / 1000
     return sent
 
 
 def default_cache_key(job: str, prefix: str | None, world_id: str = "") -> str | None:
-    """One key per shared prefix (D15): the job and a digest of the stable instructions. The world
-    goes into the digest, so a call cannot learn from `cached_tokens` what another world sent."""
+    """One key per shared prefix (D15): the job and a digest of the stable instructions, per world.
+    The key turns the cache on. It does not partition it: Meta matches on content, so another key
+    with the same prefix reads the cache (probe of 2026-11-02)."""
     if not prefix:
         return None
     digest = hashlib.sha256(f"{world_id}\0{prefix}".encode()).hexdigest()[:24]
@@ -185,11 +187,26 @@ def glimmer_effort_fields(effort: str | None) -> dict[str, Any]:
     return {"chat_template_kwargs": {"reasoning_strength": effort}} if effort else {}
 
 
+def _finished(doc: dict) -> bool:
+    status = doc.get("status")
+    return isinstance(status, str) and status in _TERMINAL
+
+
+def _sendable_chars(body: dict) -> int:
+    """The body's length, once it is known to send. A chat export with a cut emoji holds a lone
+    surrogate, which cannot be encoded: that is a refusal, not a raw error from the client."""
+    try:
+        json.dumps(body, ensure_ascii=False, allow_nan=False).encode("utf-8")
+        return len(json.dumps(body))
+    except (ValueError, TypeError, RecursionError):
+        raise ModelRefused("the call cannot be sent as JSON") from None
+
+
 def _provider_message(response: httpx.Response, secrets: tuple[str | None, ...]) -> str:
     """The provider's error message, cut short, with the keys this layer holds taken out."""
     try:
         doc = response.json()
-    except ValueError:
+    except (ValueError, RecursionError):
         return ""
     error = doc.get("error") if isinstance(doc, dict) else None
     message = error.get("message") if isinstance(error, dict) else None
@@ -217,6 +234,7 @@ class ModelLayer:
             transport=AllowlistTransport(self.policy, MODEL_LAYER, inner=transport),
             timeout=_TIMEOUT,
             follow_redirects=False,
+            cookies=no_cookies(),
         )
 
     def close(self) -> None:
@@ -227,6 +245,10 @@ class ModelLayer:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    def attach_receipt(self, world_id: str, model_call_id: str, receipt: str) -> None:
+        """The receipt a call led to (D15): `model_call_id` is on the Result."""
+        self.meter.attach_receipt(world_id, model_call_id, receipt)
 
     # The steps every call shares.
 
@@ -291,6 +313,7 @@ class ModelLayer:
             cost=cost,
             audio_seconds=audio_seconds,
             latency_ms=int(seconds * 1000),
+            usage_estimated=usage.estimated,
         )
         call_id, budget = self.meter.record(world_id, call)
         return call_id, budget, cost
@@ -453,7 +476,7 @@ class ModelLayer:
             raise ModelRefused(
                 f"max_output_tokens must be from {MIN_OUTPUT_TOKENS} to {MAX_OUTPUT_TOKENS}"
             )
-        check_responses_input(input)
+        input = clean_responses_input(input)
         validator = check_schema(schema) if schema is not None else None
         job_row, spec, chosen = self._prepare(world_id, job, effort, run_id, family="spark")
         body: dict[str, Any] = {
@@ -482,8 +505,8 @@ class ModelLayer:
             }
         base = self.settings.meta_base_url
         headers = self._meta_headers()
+        request_chars = _sendable_chars(body)
         started = clock.monotonic()
-        request_chars = len(json.dumps(body))
         doc, _ = self._send(
             world_id,
             lambda: self._http.build_request(
@@ -562,7 +585,7 @@ class ModelLayer:
         pause = 1.0
         misses = 0
         try:
-            while doc.get("status") not in _TERMINAL:
+            while not _finished(doc):
                 if clock.monotonic() > deadline:
                     raise ProviderError("a background response did not finish in time")
                 self._sleep(pause)
@@ -705,8 +728,8 @@ class ModelLayer:
                 "type": "json_schema",
                 "json_schema": {"name": schema_name, "strict": True, "schema": schema},
             }
+        request_chars = _sendable_chars(body)
         started = clock.monotonic()
-        request_chars = len(json.dumps(body))
         doc, attempt = self._send(
             world_id,
             lambda: self._http.build_request(
@@ -723,6 +746,11 @@ class ModelLayer:
         usage = usage_or_estimate(chat_usage(doc.get("usage")), request_chars, len(text))
         empty = not text.strip() and not tool_calls
         data, misfit = (None, None) if empty or not text else _structured(text, validator)
+        if validator is not None and not text and tool_calls and not tools:
+            # No tools were offered and a schema was asked for: there is nothing to validate.
+            misfit = InvalidOutput("the answer holds a tool call and no text to check")
+        elif finish == "length" and not empty and not tool_calls:
+            misfit = misfit or InvalidOutput("the answer was cut at the output limit")
         call_id, budget, cost = self._record(
             world_id,
             job=job,

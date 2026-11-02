@@ -77,6 +77,7 @@ class ModelCall:
     cost: float = 0.0
     audio_seconds: float | None = None
     latency_ms: int | None = None
+    usage_estimated: bool = False
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,7 @@ def _row(call: ModelCall) -> dict:
             None if call.audio_seconds is None else _money("audio_seconds", call.audio_seconds)
         ),
         "latency_ms": None if call.latency_ms is None else _count("latency_ms", call.latency_ms),
+        "usage_estimated": True if call.usage_estimated is True else None,
         "at": call.at.astimezone(UTC),
     }
     return {key: value for key, value in row.items() if value is not None}

@@ -1,6 +1,7 @@
 """WAV audio for Voice Transcribe, which takes files of up to 10 minutes: longer audio is split."""
 
 import io
+import struct
 import wave
 from dataclasses import dataclass
 
@@ -9,6 +10,9 @@ from grove.models.errors import AudioTooLong, ModelRefused
 API_LIMIT_SECONDS = 600
 # A margin under the limit, so a header's rounding never puts a piece over it.
 PIECE_SECONDS = 590
+# About six hours. The header states the rate, so a small crafted file could ask for any number of
+# calls, and transcription runs on at the ceiling.
+MAX_PIECES = 36
 
 
 @dataclass(frozen=True)
@@ -21,7 +25,7 @@ def wav_seconds(data: bytes) -> float:
     try:
         with wave.open(io.BytesIO(data), "rb") as reader:
             return reader.getnframes() / reader.getframerate()
-    except (wave.Error, EOFError, ZeroDivisionError) as exc:
+    except (wave.Error, EOFError, ZeroDivisionError, struct.error) as exc:
         raise ModelRefused("the audio is not a readable WAV file") from exc
 
 
@@ -41,12 +45,14 @@ def split_wav(data: bytes, piece_seconds: int = PIECE_SECONDS) -> list[Piece]:
                 frames = reader.readframes(frames_per_piece)
                 if not frames:
                     break
+                if len(pieces) == MAX_PIECES:
+                    raise AudioTooLong(f"a file may take at most {MAX_PIECES} pieces")
                 out = io.BytesIO()
                 with wave.open(out, "wb") as writer:
                     writer.setparams(params)
                     writer.writeframes(frames)
                 count = len(frames) // (params.sampwidth * params.nchannels)
                 pieces.append(Piece(data=out.getvalue(), seconds=count / rate))
-    except (wave.Error, EOFError) as exc:
+    except (wave.Error, EOFError, ZeroDivisionError, struct.error) as exc:
         raise ModelRefused("the audio is not a readable WAV file") from exc
     return pieces
