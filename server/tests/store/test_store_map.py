@@ -132,6 +132,10 @@ def test_public_docs_point_to_no_private_plan():
     assert "Meta Model API, Spark 1.3, Standard mode" in flow
     record = (REPO / "HACKATHON.md").read_text(encoding="utf-8")
     assert record.count("the simulation of the views (the sim)") == 1
+    assert (
+        "The vendored public font CSS for Inter and JetBrains Mono: `web/vendor/fonts.css`"
+        in " ".join(record.split())
+    )
     compose = (REPO / "docker-compose.dev.yml").read_text(encoding="utf-8")
     assert "lane" not in compose.splitlines()[0]
 
@@ -148,3 +152,10 @@ def test_the_open_points_of_review_round_one():
         "`history_values.forgotten_at`, `budgets.spent`",
     ):
         assert phrase in points, phrase
+
+
+def test_the_open_points_hand_a_forgotten_items_map_position_to_forget():
+    head = doc_text().split(BEGIN, 1)[0]
+    open_points = head.split("## Open points for later lanes", 1)[1].split("\n## ", 1)[0]
+    row = next(line for line in open_points.splitlines() if "`map_positions`" in line)
+    assert "after its item is forgotten" in row and row.endswith("| `forget` |")

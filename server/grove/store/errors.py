@@ -1,8 +1,11 @@
 """What the store layer raises."""
 
-from neo4j.exceptions import Neo4jError
+from neo4j.exceptions import Neo4jError, ServiceUnavailable, SessionExpired
 
-__all__ = ["Neo4jError", "ScopeError", "WorldLeak"]
+__all__ = ["STORE_UNAVAILABLE", "Neo4jError", "ScopeError", "WorldLeak"]
+
+# The store cannot be reached right now; a caller may try again.
+STORE_UNAVAILABLE = (ServiceUnavailable, SessionExpired)
 
 
 class ScopeError(ValueError):

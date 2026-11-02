@@ -178,6 +178,12 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | `brain fetch` must send through `AllowlistTransport`, which checks each redirect hop, and not call `EgressPolicy.check` and then use another client. | 2559 | `cleanup` |
 | Glimmer's idle time bills on Modal and not in `model_calls`: a call every five minutes keeps a GPU up, about 95 USD a day at the H100 price, and triage continues at the ceiling. A spend limit on the Modal workspace is the backstop, or a shorter idle window. | 2659 | `models` (the Modal step), `deploy-b` |
 | `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
+| The person's own item. The views read an optional `World.self_item_id` and mark that item as the person's own (`self_item_id` in the session and graph answers). Nothing writes it yet: signin must add the column to the `worlds` row and write it when onboarding makes the person's item. | none; a build fact | `signin` |
+| `known_as_of` and `as_of` on the view endpoints filter the current head of each row, not its history: a row changed after the given time shows its newest values. A read of the history must replace that filter. | none; a build fact | `writer-b`, `views-c` |
+| The session contract the views read: the cookie `grove_session`; `:Session.token_hash` is the lowercase sha256 hex of the cookie value; a session is valid while `revoked_at` is absent and `expires_at` is later than the clock's now; `:Session.user_id` leads to the oldest `:World` with that `owner_user_id`. `docs/views.md` states it in full. | none; a build fact | `signin` |
+| A `map_positions` row keeps `item_id` and its coordinates after its item is forgotten. The forget of an item must remove its map position too. | none; a build fact | `forget` |
+| The views' account, sources, questions and workers still use the simulation's local browser state. It survives the end of a session: the typed name and its initial, the guidance text, file names and connected hosts. A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b`, `signin` |
+| The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`, so the image must run `web/build.py` and set that variable. | none; a build fact | `deploy-a`, `deploy-b` |
 | `change_status` and `end_item` do not trigger the walk yet, and `reopen_item` does not yet send an R1 ending back as a proposal. | 3160 to 3162 | `walk` |
 | The writer takes the source type of a row from the connector and the statement class only. These wait for code: an automated sender confirming its own action, a decision's named speaker, a forwarded row's original author, and confirming evidence for the start of a period that took place. | 1074, 1112 | `truth-clock` |
 | A late terminal status that goes to history only stores its status entry but no `stopped_being_true` entry, because nothing clears a stop entry when a later live status moves the head. An as-of read at that time shows the status with no end time, and `change_status` refuses an explicit end time on this path (rule `stopped_on_history_only`). | 3160 | `writer-b` |
@@ -194,7 +200,7 @@ These are not in this slice. Each owner lane adds its rows here and in the catal
 
 | Rows | Owner lane |
 |---|---|
-| Map positions per item | `views-a` |
+| Map positions per item: the table `map_positions` (`:MapPosition`), under "Tables of later lanes" below. `server/grove/writer/positions.py` is its only writer, and `docs/views.md` has the endpoint that fills it. | `views-a` |
 | My Grove guidance | `views-b` |
 | Pending exports | `views-b` |
 | Eval scripts and their results | `evals` |
@@ -1504,6 +1510,27 @@ Indexes: none.
 | (none) | `scope` | `code` | convention | the default scope is grove |
 | (none) | `checksum` | `code` | convention |  |
 | (none) | `applied_at` | `instant` | convention |  |
+
+## Tables of later lanes
+
+### map_positions
+
+`:MapPosition`, node. Scope world. Restore group snapshot. Owner views-a.
+
+Keys: `map_positions_id_unique` (id); `map_positions_world_id_item_id_unique` (world_id, item_id).
+
+Indexes: none.
+
+Where the map drew an item first. Insert-only: a position is never moved, so an item keeps its place after a reload and after new items arrive. Only server/grove/writer/positions.py writes it. One row per item: the (world_id, item_id) key turns a second placement that races the first into a kept one. A view preference, not a claim about the world, so it has no history and restores with the snapshot.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| (none) | `id` | `id` | convention | UUIDv7 text from new_id() (S4) |
+| (none) | `world_id` | `id` | convention | the world of the item |
+| (none) | `item_id` | `id` | convention | an item id of the same world |
+| (none) | `x` | `float` | convention | the map's own units; finite, at most 1e7 either way |
+| (none) | `y` | `float` | convention | the map's own units; finite, at most 1e7 either way |
+| (none) | `placed_at` | `instant` | convention | from the clock provider, when the map first placed it |
 
 ## Full-text indexes
 
