@@ -1,4 +1,4 @@
-"""The model-call layer's writes: one model_calls row per call, and the budget it spends (S20, S37).
+"""The model-call layer's writes: one model_calls row per call, and the budget it spends (S20, S39).
 
 Only grove.models calls these. The row and the budget move in one transaction, so the day's
 `spent` is always the sum of the day's recorded costs. The budget's state turns `reached` in the

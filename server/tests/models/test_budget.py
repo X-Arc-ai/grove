@@ -1,4 +1,4 @@
-"""The model-call writes and the meter against the live dev store (D15, S20, S37).
+"""The model-call writes and the meter against the live dev store (D15, S20, S39).
 
 Every call is a model_calls row, and its cost moves the world's day budget in the same
 transaction. Once the day's ceiling is reached, a deferrable job waits for the next midnight UTC
