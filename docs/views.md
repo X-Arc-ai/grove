@@ -15,7 +15,7 @@ uv run uvicorn --factory grove.api.app:create_app --host 127.0.0.1 --port 8765
 
 `create_app` opens the store driver at startup from `NEO4J_AUTH` and `GROVE_NEO4J_URI` (default `bolt://127.0.0.1:57687`) and closes it at shutdown. A caller that hands in a driver, as the tests do, owns it.
 
-For a local run only, `GROVE_WEB_DIST` names a folder whose `index.html` `GET /` returns, for example `GROVE_WEB_DIST=../web/dist`. In production nginx serves the page and passes `/v1/` to this process.
+`GROVE_WEB_DIST` names a folder whose `index.html` `GET /` returns, for example `GROVE_WEB_DIST=../web/dist` in a local run. In production the API image builds the page and sets it, and nginx passes every path to this process.
 
 ### A synthetic world to look at
 

@@ -1,0 +1,121 @@
+# The box's services. deploy.sh runs it with the project name grove and GROVE_BUILD_SHA set.
+# Secret values live only in /etc/grove/*.env on the box (docs/deploy.md); none is in this file.
+name: grove
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "5"
+
+services:
+  neo4j:
+    # Multi-arch index digest of neo4j:2026.10.1-community, the pin of docker-compose.dev.yml.
+    image: neo4j:2026.10.1-community@sha256:44ad2a2504fd7d27df1d1e976f2d481e4266a0814d3657f2d5df62124ce657f1
+    restart: unless-stopped
+    env_file:
+      - /etc/grove/neo4j.env
+    environment:
+      NEO4J_server_memory_heap_initial__size: 1g
+      NEO4J_server_memory_heap_max__size: 1g
+      NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_db_query_default__language: CYPHER_25
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    networks: [store]
+    # A clean shutdown before the nightly dump; no port leaves the store network.
+    stop_grace_period: 2m
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    logging: *logging
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/api.Dockerfile
+    image: grove-api:${GROVE_BUILD_SHA:?deploy.sh sets GROVE_BUILD_SHA}
+    restart: unless-stopped
+    init: true
+    env_file:
+      - /etc/grove/api.env
+      - /etc/grove/neo4j.env
+      - path: /etc/grove/model-api.env
+        required: false
+      - path: /etc/grove/modal.env
+        required: false
+      - path: /etc/grove/resend.env
+        required: false
+    environment:
+      GROVE_ENV: production
+      GROVE_NEO4J_URI: bolt://neo4j:7687
+      GROVE_BUILD_SHA: ${GROVE_BUILD_SHA}
+      GROVE_GOOGLE_OAUTH_FILE: /run/grove/google-oauth.json
+    volumes:
+      - type: bind
+        source: /etc/grove/google-oauth.json
+        target: /run/grove/google-oauth.json
+        read_only: true
+        bind:
+          create_host_path: false
+    # nginx on the host is the only way in.
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [store, runner, egress]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 10s
+    logging: *logging
+
+  runner:
+    build:
+      context: ..
+      dockerfile: deploy/runner.Dockerfile
+    image: grove-runner:${GROVE_BUILD_SHA:?deploy.sh sets GROVE_BUILD_SHA}
+    restart: unless-stopped
+    init: true
+    user: "10002:10002"
+    # The runner token only: no store credential and no model key reach this service.
+    env_file:
+      - path: /etc/grove/runner.env
+        required: false
+    environment:
+      GROVE_ENV: production
+      GROVE_API_URL: http://api:8000
+    volumes:
+      - /var/lib/grove-runner:/var/lib/grove-runner
+    # The runner network is internal: the runner reaches the API and nothing else.
+    networks: [runner]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      api:
+        condition: service_started
+    logging: *logging
+
+networks:
+  store:
+    internal: true
+  runner:
+    internal: true
+  egress: {}
+
+volumes:
+  neo4j-data:
+    name: grove-neo4j-data
+  neo4j-logs:
+    name: grove-neo4j-logs
