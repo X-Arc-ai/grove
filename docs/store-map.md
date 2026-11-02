@@ -142,6 +142,10 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S36. The world id form** (spec lines 3081, 3087, 3092). A world id is a lowercase UUID (`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`), or the test form `t_<slice>_<that uuid>` with the slice `[a-z0-9-]+`. `check_world_id` refuses any other text, and the primitive sentinel `''` stays a separate path. The full-text analyzer splits on hyphens and folds case, and with this form the token sequence of one world id never occurs inside another's unless both share the UUID. So the world phrase of S17 is exact in practice, and one world's rows cannot use up another world's `LIMIT`. This replaces the earlier pattern `[A-Za-z0-9_-]{1,80}`, under which `t_x_<h>` was a token prefix of `t_x_<h>-000`.
 
+**S37. Receipts and short ids** (spec lines 733, 737, 2529, and S4). A stored receipt (`Receipt.to_json()`, the future `requests.receipt`) holds ids and codes only: symbol, entity type, entity id, field, value id, end class and flags. `render_receipt` reads titles, kind names, meaning names and values fresh, so a forget that replaces a value also changes how an old receipt reads. The receipt is built after the commit from the change entries of the batch's change set, in a new read transaction. A short id is the last 8 hex digits of the id: the random part of a UUIDv7, because ids made in the same millisecond share their first digits. One batch is one commit and one change set. The writer's public API is `server/grove/writer/README.md`.
+
+**S38. Locators** (spec lines 739, 3046 to 3059, and S27). The writer checks that a locator resolves inside its stored source with four schemes: `line:N` or `line:N-M` (1-based lines of the content), `char:A-B` (offsets in the content), `key:<token>` (a token of 4 or more characters that occurs in the content: a record id, an event id, a commit sha) and `whole` (the whole source). Each connector type allows a fixed set of schemes in code (`grove/writer/provenance.py`), and a source that holds only a pointer resolves only `whole`. `ingest-a` may narrow a type's set when it lands its parsers.
+
 ## Open points for later lanes
 
 | Point | Spec lines | Owner lane |
@@ -152,7 +156,6 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | The names of the verification bands. `verifications.band` is a code until then. | 957 | `truth-clock` |
 | The stakes value of an R2 mark, and a mark's clocks. | 1247, 1254, 1270 | `walk` |
 | Where a search term's type and language live. `items.search_terms` holds the text of each term. | 2076, 2098 | `ingest-b` |
-| A stored receipt holds ids and codes, because a title in it would be a copy no forget reaches. The writer reads titles fresh when it shows a receipt. | 733, 737, 2529 | `writer-a` |
 | The deferral count: stored, or derived from `verifications`. | 2159, 2174 | `cleanup` |
 | The value lists of `property_names.value_type` and `meanings.direction`. | 1583, 3241 | `ontology` |
 | A request row needs its source id before screening has finished. | 750, 2462, 2505 | `screening` |
@@ -165,6 +168,15 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. | 354, 991 | `deploy-a` |
 | The daily dump and the restore have not run on this store. | 806 to 808, 3065 | `deploy-a`, `writer-b` |
 | `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
+| `change_status` and `end_item` do not trigger the walk yet, and `reopen_item` does not yet send an R1 ending back as a proposal. | 3160 to 3162 | `walk` |
+| The writer takes the source type of a row from the connector and the statement class only. These wait for code: an automated sender confirming its own action, a decision's named speaker, a forwarded row's original author, and confirming evidence for the start of a period that took place. | 1074, 1112 | `truth-clock` |
+| A late terminal status that goes to history only stores its status entry but no `stopped_being_true` entry, because nothing clears a stop entry when a later live status moves the head. An as-of read at that time shows the status with no end time, and `change_status` refuses an explicit end time on this path (rule `stopped_on_history_only`). | 3160 | `writer-b` |
+| A judgment marked correlated counts toward the two judges of a contradiction: D9 and B.2 ask only for two models. | 3165 | `beliefs` |
+| `create_link`'s restatement path and `_end_prior` read `active_key` again under the lock, with no test of their own. A test needs a second interleaving harness. | 762, 772 | `writer-a2` |
+| A `link_not_found` for a link id that a receipt had just returned appeared once under parallel load and did not come back in 18 runs. The concurrency tests must watch for it. | 772 | `writer-a2` |
+| The near-duplicate test rewords one word. Calibration needs a stronger pair. | 772 | `writer-a2` |
+| The writer lint has no allowance yet for the bookkeeping tables of the model-call layer and the job runner, and must name them. | 772 | `models`, `runner` |
+| `record_connector`, `record_source` and `record_episode` take no `Caller`, so the read-only refusal does not reach them. A layer that exposes them to a token checks its scope first. | 772 | `hosts-b` |
 
 ## Added by later lanes
 
