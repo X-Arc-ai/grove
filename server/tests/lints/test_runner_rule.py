@@ -213,7 +213,7 @@ def test_a_plain_scalar_that_goes_on_in_the_next_line_is_red(repo):
 
 @pytest.mark.parametrize(
     "line",
-    ["runs-on: ubuntu-latest ", "runs-on: ${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}"],
+    ["runs-on: ubuntu-latest\u00a0", "runs-on: ${{ vars.XARC_CI_RUNNER ||\u00a0'ubuntu-latest' }}"],
 )
 def test_a_no_break_space_makes_the_value_differ(repo, line):
     repo.plant(FRESH, workflow(line))
@@ -284,6 +284,61 @@ def test_a_uses_key_outside_jobs_is_clean(repo):
         "    steps:\n"
         "      - run: echo ok\n"
     )
+    repo.plant(FRESH, text)
+    assert_clean(repo.lint("runner"))
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "runs-on\t: grove-ci",
+        "RUNS-ON: grove-ci",
+        "{env: {A: b}, runs-on: grove-ci}",
+    ],
+)
+def test_a_runs_on_in_another_single_line_spelling_is_red(repo, line):
+    repo.plant(FRESH, workflow(line))
+    result = repo.lint("runner")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert f"{FRESH}:5: runner/" in result.stdout
+
+
+def test_a_flow_mapping_on_a_column_0_line_is_red(repo):
+    repo.plant(FRESH, "on: push\njobs: {build: {runs-on: grove-ci, steps: [{run: echo}]}}\n")
+    assert_red(repo.lint("runner"), f"{FRESH}:2: runner/unreadable")
+
+
+def test_a_call_with_a_tab_before_the_colon_is_red(repo):
+    call = "  release:\n    uses\t: someorg/other/.github/workflows/b.yml@v1\n"
+    repo.plant(FRESH, workflow("runs-on: ubuntu-latest", more_jobs=call))
+    assert_red(repo.lint("runner"), f"{FRESH}:14: runner/reusable-call")
+
+
+def test_a_job_that_is_only_an_alias_is_red(repo):
+    repo.plant(FRESH, workflow("runs-on: ubuntu-latest", more_jobs="  release: *call\n"))
+    assert_red(repo.lint("runner"), f"{FRESH}:13: runner/unreadable")
+
+
+@pytest.mark.parametrize("mark", ["\u2028", "\u2029", "\x85", "\x0b", "\x0c"])
+def test_a_line_break_that_yaml_does_not_break_at_is_red(repo, mark):
+    step = f'      - name: "a{mark} z: | #"\n'
+    text = workflow("runs-on: ubuntu-latest").replace("      - run: echo ok\n", step)
+    repo.plant(FRESH, text + "  later:\n    runs-on: grove-ci\n")
+    result = repo.lint("runner")
+    assert_red(result, f"{FRESH}:12: runner/unreadable")
+    assert f"{FRESH}:14: runner/not-allowed" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "if: ${{ inputs.uses-cache }}",
+        "name: Check ${{ contains(github.event.head_commit.message, 'uses') }}",
+        "with: {ref: main}",
+    ],
+)
+def test_an_expression_or_a_flow_map_without_runs_on_or_uses_is_clean(repo, line):
+    text = workflow("runs-on: ubuntu-latest").replace("      - run: echo ok\n", f"      - {line}\n")
     repo.plant(FRESH, text)
     assert_clean(repo.lint("runner"))
 

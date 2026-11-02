@@ -22,9 +22,10 @@ variable and the pool are removed, so a public repository never has a self-hoste
 
 `python -m grove.lints runner` keeps that fallback true. It reads every file under
 `.github/workflows/` and allows two `runs-on` values only: the expression above and
-`ubuntu-latest`. The project has no YAML parser, so the lint reads the files line by line, and it
-fails closed: a line whose structure it cannot read is a finding, never a skip. The text inside a
-block scalar (`run: |`, `key: >-`) is not structure and is not read. Its findings:
+`ubuntu-latest`. The project has no YAML parser, so the lint reads the files line by line. On one
+line it fails closed: a structural line it cannot read is a finding, never a skip. The text inside
+a block scalar (`run: |`, `key: >-`) is not structure and is not read. Keys compare without case.
+Its findings:
 
 | Finding | Meaning |
 |---|---|
@@ -32,12 +33,22 @@ block scalar (`run: |`, `key: >-`) is not structure and is not read. Its finding
 | `runner/block-form` | `runs-on:` with its value on the lines below it (a list, `group:`, a plain scalar that goes on in the next line) |
 | `runner/reusable-call` | a job that calls a workflow of another repository, whose runner is out of reach |
 | `runner/symlink` | a workflow file, `.github/workflows` or `.github` that is a symbolic link |
-| `runner/unreadable` | a line the scanner cannot read: an explicit `?` key, a tag, anchor or alias in a key's place, a merge key `<<`, a double-quoted key with an escape, a flow mapping that holds `runs-on` or `uses`, or a line at column 0 that is not a key |
+| `runner/unreadable` | a line the scanner cannot read: an explicit `?` key, a tag, anchor or alias in a key's place, a merge key `<<`, a double-quoted key with an escape, a flow mapping that holds `runs-on` or `uses` on that line, a job that is only an alias, a line at column 0 that is not a key, or a line break that YAML does not break at (NEL, U+2028, U+2029, VT, FF) |
 
 A job that calls a workflow of this repository (`uses: ./.github/workflows/...`) is allowed: the
 lint reads the called file too. Values are compared after quotes and a trailing comment are
 dropped and spaces and tabs collapsed; any other whitespace, such as a no-break space, makes the
-value differ. The lint cannot see a workflow file that a job writes at run time.
+value differ.
+
+Out of the lint's reach: YAML structure that spans lines, which only a parser can follow (a flow
+collection or a quoted scalar that goes on over several lines, with `runs-on` or `uses` on a later
+line), and a workflow file that a job writes at run time. Each of these is a deliberate act, not
+an accident. Failing closed has a cost too: text that looks like a flow mapping with `runs-on` or
+`uses`, also inside a quoted value, is a finding.
+
+The guarantee for a public repository does not rest on this lint. The variable and the pool are
+removed before the repository goes public, so a label that no runner carries makes a job queue in
+plain view; it never runs on a self-hosted runner.
 
 Run it locally from `server/`:
 
