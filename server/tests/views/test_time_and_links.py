@@ -69,6 +69,72 @@ def test_without_filters_all_items_and_only_active_links(world, client_for, time
     assert graph["time"] == {"min": "2026-09-01", "max": "2026-10-01"}
 
 
+def test_as_of_equal_to_the_stop_bound_leaves_the_row_out(world, client_for, timeline):
+    """The interval holds T while the stop is later than T: the stop itself is outside."""
+    client = client_for(world)
+    just_before = client.get("/v1/views/graph", params={"as_of": z(T1 - timedelta(seconds=1))})
+    assert "Ended" in labels(just_before.json())
+    at_the_stop = client.get("/v1/views/graph", params={"as_of": z(T1)}).json()
+    assert "Ended" not in labels(at_the_stop)
+
+    link_before = client.get("/v1/views/graph", params={"as_of": z(T2 - timedelta(seconds=1))})
+    assert timeline["closed"] in edge_ids(link_before.json())
+    link_at_stop = client.get("/v1/views/graph", params={"as_of": z(T2)}).json()
+    assert timeline["closed"] not in edge_ids(link_at_stop)
+
+
+def test_a_row_with_two_stop_bounds_uses_the_latest(driver, world, client_for):
+    """The stop lies between two bounds: invalid_at and as_of both read the latest one."""
+    meaning = plant_node(driver, world, "Meaning", **MEANING)["id"]
+    bounds = {"stopped_being_true_earliest": T1, "stopped_being_true_latest": T2}
+    unsure = plant_node(
+        driver, world, "Item", title="Unsure", recorded=T0, became_true_earliest=T0, **bounds
+    )["id"]
+    other = plant_node(driver, world, "Item", title="Other", recorded=T0)["id"]
+    link = plant_link(
+        driver,
+        world,
+        unsure,
+        other,
+        meaning=meaning,
+        recorded=T0,
+        became_true_earliest=T0,
+        **bounds,
+    )["id"]
+    client = client_for(world)
+
+    plain = client.get("/v1/views/graph").json()
+    item = next(w["data"] for w in plain["elements"]["nodes"] if w["data"]["id"] == unsure)
+    assert item["invalid_at"] == "2026-10-01T09:00:00.000Z"
+    assert client.get(f"/v1/views/node/{unsure}").json()["node"]["invalid_at"] == item["invalid_at"]
+
+    between = client.get("/v1/views/graph", params={"as_of": z(T1 + timedelta(days=1))}).json()
+    assert "Unsure" in labels(between)
+    assert edge_ids(between) == {link}
+    shown = between["elements"]["edges"][0]["data"]
+    assert shown["invalid_at"] == "2026-10-01T09:00:00.000Z"
+
+    at_latest = client.get("/v1/views/graph", params={"as_of": z(T2)}).json()
+    assert "Unsure" not in labels(at_latest)
+    assert edge_ids(at_latest) == set()
+
+
+def test_time_max_comes_from_a_stop_later_than_every_start(driver, world, client_for):
+    plant_node(driver, world, "Item", title="Short", recorded=T1, became_true_earliest=T1)
+    plant_node(
+        driver,
+        world,
+        "Item",
+        title="Long",
+        recorded=T0,
+        became_true_earliest=T0,
+        stopped_being_true_earliest=T3,
+        stopped_being_true_latest=T3,
+    )
+    graph = client_for(world).get("/v1/views/graph").json()
+    assert graph["time"] == {"min": "2026-09-01", "max": "2026-10-15"}
+
+
 def test_health_counts_only_the_active_links(driver, world, client_for):
     meaning = plant_node(driver, world, "Meaning", **MEANING)["id"]
     first = plant_node(driver, world, "Item", title="First", recorded=T0)["id"]

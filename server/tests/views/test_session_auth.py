@@ -1,6 +1,6 @@
 """Every view endpoint answers a typed 401 unless the cookie names a live session."""
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -69,6 +69,19 @@ def test_an_unknown_token_is_401(app, world, client_for, method, path, body):
 def test_an_expired_session_is_401(world, client_for, method, path, body):
     client = client_for(world, expires_at=clock.now() - timedelta(seconds=1))
     assert_unauthenticated(call(client, method, path, body))
+
+
+def test_a_session_that_expires_at_this_moment_is_401(world, client_for):
+    """A session is valid while expires_at is later than now: equal to now is over."""
+    frozen = clock.TestClock()
+    frozen.set(datetime(2026, 11, 2, 9, 0, tzinfo=UTC))
+    with clock.using(frozen):
+        at = frozen.now()
+        assert_unauthenticated(client_for(world, expires_at=at).get("/v1/views/session"))
+        later = client_for(world, expires_at=at + timedelta(milliseconds=1))
+        assert later.get("/v1/views/session").status_code == 200
+        frozen.advance(milliseconds=1)
+        assert_unauthenticated(later.get("/v1/views/session"))
 
 
 @pytest.mark.parametrize(("method", "path", "body"), CALLS)

@@ -177,6 +177,44 @@ def test_a_body_over_the_cap_is_a_typed_400(world, client_for):
     assert response.json()["error"]["details"] == {"field": "body"}
 
 
+def chunks(*parts):
+    """A body with no declared length: httpx sends a generator as Transfer-Encoding: chunked."""
+
+    def stream():
+        yield from parts
+
+    return stream()
+
+
+def test_a_chunked_body_over_the_cap_is_a_typed_400(world, client_for):
+    client = client_for(world)
+    filler = b" " * (1024 * 1024)
+    response = client.post(
+        POSITIONS,
+        content=chunks(b'{"positions": [', filler, filler, filler, b"]}"),
+        headers={"content-type": "application/json"},
+    )
+    assert "content-length" not in response.request.headers
+    assert response.request.headers["transfer-encoding"] == "chunked"
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "invalid_arguments"
+    assert error["details"] == {"field": "body"}
+    assert error["message"] == "the body is too large"
+
+
+def test_a_chunked_body_under_the_cap_is_read(world, client_for, items):
+    client = client_for(world)
+    raw = json.dumps(entries((items[0], 1.0, 2.0))).encode()
+    response = client.post(
+        POSITIONS,
+        content=chunks(raw[:9], raw[9:]),
+        headers={"content-type": "application/json"},
+    )
+    assert "content-length" not in response.request.headers
+    assert response.json() == {"placed": 1, "kept": 0, "unknown": 0}
+
+
 def test_5000_entries_are_accepted(driver, world, client_for, items):
     client = client_for(world)
     body = entries(*((f"missing-{n}", float(n), float(-n)) for n in range(4999)), (items[0], 1, 2))
