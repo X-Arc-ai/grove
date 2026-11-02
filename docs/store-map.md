@@ -142,6 +142,10 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S36. The world id form** (spec lines 3081, 3087, 3092). A world id is a lowercase UUID (`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`), or the test form `t_<slice>_<that uuid>` with the slice `[a-z0-9-]+`. `check_world_id` refuses any other text, and the primitive sentinel `''` stays a separate path. The full-text analyzer splits on hyphens and folds case, and with this form the token sequence of one world id never occurs inside another's unless both share the UUID. So the world phrase of S17 is exact in practice, and one world's rows cannot use up another world's `LIMIT`. This replaces the earlier pattern `[A-Za-z0-9_-]{1,80}`, under which `t_x_<h>` was a token prefix of `t_x_<h>-000`.
 
+**S37. Receipts and short ids** (spec lines 733, 737, 2529, and S4). A stored receipt (`Receipt.to_json()`, the future `requests.receipt`) holds ids and codes only: symbol, entity type, entity id, field, value id, end class and flags. `render_receipt` reads titles, kind names, meaning names and values fresh, so a forget that replaces a value also changes how an old receipt reads. The receipt is built after the commit from the change entries of the batch's change set, in a new read transaction. A short id is the last 8 hex digits of the id: the random part of a UUIDv7, because ids made in the same millisecond share their first digits. One batch is one commit and one change set. The writer's public API is `server/grove/writer/README.md`.
+
+**S38. Locators** (spec lines 739, 3046 to 3059, and S27). The writer checks that a locator resolves inside its stored source with four schemes: `line:N` or `line:N-M` (1-based lines of the content), `char:A-B` (offsets in the content), `key:<token>` (a token of 4 or more characters that occurs in the content: a record id, an event id, a commit sha) and `whole` (the whole source). Each connector type allows a fixed set of schemes in code (`grove/writer/provenance.py`), and a source that holds only a pointer resolves only `whole`. `ingest-a` may narrow a type's set when it lands its parsers.
+
 ## Open points for later lanes
 
 | Point | Spec lines | Owner lane |
@@ -152,7 +156,6 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | The names of the verification bands. `verifications.band` is a code until then. | 957 | `truth-clock` |
 | The stakes value of an R2 mark, and a mark's clocks. | 1247, 1254, 1270 | `walk` |
 | Where a search term's type and language live. `items.search_terms` holds the text of each term. | 2076, 2098 | `ingest-b` |
-| A stored receipt holds ids and codes, because a title in it would be a copy no forget reaches. The writer reads titles fresh when it shows a receipt. | 733, 737, 2529 | `writer-a` |
 | The deferral count: stored, or derived from `verifications`. | 2159, 2174 | `cleanup` |
 | The value lists of `property_names.value_type` and `meanings.direction`. | 1583, 3241 | `ontology` |
 | A request row needs its source id before screening has finished. | 750, 2462, 2505 | `screening` |
