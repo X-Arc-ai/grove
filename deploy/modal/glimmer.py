@@ -7,9 +7,10 @@ synthetic or screened text reaches it.
 What runs: vLLM 0.32.0 (native Glimmer support since 0.28.0) with the BF16 weights at a pinned
 revision, on one 80 GB GPU (A100 80 GB, then H100). The weights need about 60 GB, so a 48 GB card
 does not fit them. No container runs while there is no traffic (min_containers 0); an idle one
-stops after one minute, so a call costs at most about 0.07 USD of idle GPU after it. A server
-scaled to zero answers 503 until a container is up and queues nothing, so the layer retries 503 on
-this route for about ten minutes. The first cold start took about three minutes, on an H100.
+stops after one minute. A server scaled to zero answers 503 until a container is up and queues
+nothing, so the layer retries 503 on this route for about ten minutes. The first cold start took
+about three minutes on an H100. So one call after a quiet time costs about 0.27 USD of GPU: 0.20
+for the cold start and 0.07 for the idle minute. A call every four minutes bills a GPU all day.
 
 Effort: Glimmer's template reads `reasoning_strength` (low, medium, high, xhigh; default high).
 The layer sends it in `chat_template_kwargs` on every call; the server default is low. vLLM
