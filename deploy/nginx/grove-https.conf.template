@@ -1,0 +1,28 @@
+# The public host: TLS here, everything else in the API on 127.0.0.1:8000. No rule looks at the
+# user agent, so Meta's metadata fetcher (meta-webindexer/1.1) gets the same answers as anyone.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name __GROVE_HOST__;
+
+    ssl_certificate /etc/letsencrypt/live/__GROVE_HOST__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__GROVE_HOST__/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    # Chat exports with voice notes are large.
+    client_max_body_size 256m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        # MCP over streamable HTTP may answer with a stream.
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}

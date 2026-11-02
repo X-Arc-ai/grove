@@ -1,0 +1,9 @@
+[Unit]
+Description=Grove daily offline dump of the store, then a restore check
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/grove/src/deploy/backup.sh
+TimeoutStartSec=1h
