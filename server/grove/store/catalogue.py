@@ -990,10 +990,22 @@ MODEL_CALLS = Table(
             spec="day",
         ),
         _ruling("audio_seconds", "float", "S24, line 2684: voice calls"),
+        _ruling("route", "code", "S39: meta or modal"),
+        _ruling(
+            "outcome",
+            "code",
+            "S39: ok, invalid_output, rate_limited, provider_error, client_closed",
+        ),
+        _ruling(
+            "reasoning_tokens", "int", "S39, line 2694: the reasoning share of the output tokens"
+        ),
+        _ruling("latency_ms", "int", "S39, line 2694: from the request to the answer"),
+        _ruling("usage_estimated", "bool", "S39: true when the tokens are an estimate"),
     ),
     uniques=_keys("model_calls", ("id",)),
     indexes=_ranges("model_calls", ("world_id", "day")),
-    notes="Written only by the model-call layer (S20).",
+    notes="Written only by the model-call layer (S20), with the budget it spends in the same "
+    "transaction (S39).",
 )
 
 JUDGMENTS = Table(
@@ -1040,7 +1052,8 @@ BUDGETS = Table(
         _col("state", "enum:budget_state"),
     ),
     uniques=_keys("budgets", ("world_id", "day")),
-    notes="Written by the runner (S20).",
+    notes="Written by the model-call layer, with each model call, and by the operator's ceiling "
+    "(S39).",
 )
 
 # Truth, consequence and belief.

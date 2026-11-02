@@ -108,7 +108,7 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S19. The value index and sources** (spec lines 2525, 2560). The value index leaves out `sources`, as line 2560 does. A forget reaches a source span by its locator. So a value the person names inside source text has no index path; see the open points.
 
-**S20. Writes outside the agents** (spec lines 2501, 3120, 3121). `model_calls` and `judgments` are written only by the model-call layer, sessions and OAuth rows by sign-in, job claims and budgets by the runner. Each such write must be a function in `server/grove/writer/`, and only its owner calls it. `models`, `signin`, `hosts-a` and `runner` build them. The writer rule stands: only `server/grove/writer/` opens write transactions, and the writer lint enforces it.
+**S20. Writes outside the agents** (spec lines 2501, 3120, 3121). `model_calls` and `judgments` are written only by the model-call layer, sessions and OAuth rows by sign-in, job claims by the runner, and budgets by the model-call layer (S39 replaced "budgets by the runner"). Each such write must be a function in `server/grove/writer/`, and only its owner calls it. `models`, `signin`, `hosts-a` and `runner` build them. The writer rule stands: only `server/grove/writer/` opens write transactions, and the writer lint enforces it.
 
 **S21. Restore groups** (spec lines 806 to 808). Projection: items, links, evidence, kinds, meanings, property_names, aliases, capabilities, beliefs. Snapshot: the 32 others. Ledger: forget_ledger. Platform rows restore as they were, and tokens are stored hashed. A snapshot is the whole-store offline dump, and the rebuild replaces the projection rows after the load. The catalogue records the group per table.
 
@@ -146,6 +146,8 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S38. Locators** (spec lines 739, 3046 to 3059, and S27). The writer checks that a locator resolves inside its stored source with four schemes: `line:N` or `line:N-M` (1-based lines of the content), `char:A-B` (offsets in the content), `key:<token>` (a token of 4 or more characters that occurs in the content: a record id, an event id, a commit sha) and `whole` (the whole source). Each connector type allows a fixed set of schemes in code (`grove/writer/provenance.py`), and a source that holds only a pointer resolves only `whole`. `ingest-a` may narrow a type's set when it lands its parsers.
 
+**S39. Metering and the budget** (spec lines 2659, 2694, 3120, 3122). The `models` lane writes `model_calls` and `budgets` together: `record_model_call` in `server/grove/writer/model_calls.py` creates the `:ModelCall` and adds its cost to the day's `:Budget` in one transaction, so `spent` is always the sum of the day's recorded costs. This replaces "budgets by the runner" in S20. The operator sets a ceiling with `set_budget_ceiling`; an absent `ceiling` means no ceiling. A budget row that does not exist yet takes the ceiling of `GROVE_DAILY_BUDGET_USD`. `state` turns `reached` in the transaction where `spent` reaches `ceiling`. At `reached`, the jobs that `server/grove/models/jobs.json` marks `defer` are refused with `budget_reached` before any request leaves, and the jobs marked `continue` (triage, extraction and transcription, run in code) still run, as D15 says (line 2659). Every gateway call stops at the ceiling, whatever job its token names: the build plan says an agent call stops there, and the plan outranks D15. A pass that waits leaves its requests queued for the reset. Calls that pass the gate at the same moment can end the day above the ceiling by the cost of the calls in flight. `model_calls` gains five properties: `usage_estimated`, `route` (`meta`, `modal`), `outcome` (`ok`, `invalid_output`, `rate_limited`, `provider_error`, `client_closed`), `reasoning_tokens` (the reasoning share of `output_tokens`, line 2694) and `latency_ms`. A failed call is recorded with its outcome, so the share of calls that wrote nothing counts every call. Its tokens are zero when the provider did no work (a refusal, a 429, a 503, a connection that never opened), and an estimate of the input when it may have run the call; `usage_estimated` marks an estimate. The price table is `server/grove/models/prices.json` (S24).
+
 ## Open points for later lanes
 
 | Point | Spec lines | Owner lane |
@@ -167,6 +169,14 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. | none; a build fact | `deploy-a` |
 | `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. | 354, 991 | `deploy-a` |
 | The daily dump and the restore have not run on this store. | 806 to 808, 3065 | `deploy-a`, `writer-b` |
+| The verdicts of a judge call: A.1 has the model-call layer record them in `judgments`, and no writer exists yet. | 996, 3121 | `truth-clock` |
+| The job table has no row for load-bearing verification: `verification` waits at the ceiling, and D15 defers only the low-stakes claims. | 2659 | `truth-clock` |
+| A run token needs a minter, a `token_cap` per pass and a holder for `GROVE_GATEWAY_SECRET`. A pass that gets `budget_reached` leaves its requests queued. | 2659 | `runner` |
+| A call's receipt: `ModelLayer.attach_receipt` takes a `model_call_id`. A gateway row has no id for its caller, so it joins its receipts through its run id and the run's record. | 2659, 3120 | `ingest-b`, `runner` |
+| The backfill's calls use the jobs `backfill_triage` and `backfill_extraction`, which stop at the ceiling. `extraction` continues past it. A background poll treats a 429 as a passing failure, so a long stated reset can end and cancel a run: the backfill must set its parallelism under Meta's limits. | 2688 | `ingest-b`, `film-backfill` |
+| Voice Transcribe takes WAV only here, with no contact names and no language bias: the forms probed for those two fields were refused. | 2673 | `ingest-a` |
+| `brain fetch` must send through `AllowlistTransport`, which checks each redirect hop, and not call `EgressPolicy.check` and then use another client. | 2559 | `cleanup` |
+| Glimmer's idle time bills on Modal and not in `model_calls`: a call every five minutes keeps a GPU up, about 95 USD a day at the H100 price, and triage continues at the ceiling. A spend limit on the Modal workspace is the backstop, or a shorter idle window. | 2659 | `models` (the Modal step), `deploy-b` |
 | `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
 | `change_status` and `end_item` do not trigger the walk yet, and `reopen_item` does not yet send an R1 ending back as a proposal. | 3160 to 3162 | `walk` |
 | The writer takes the source type of a row from the connector and the statement class only. These wait for code: an automated sender confirming its own action, a decision's named speaker, a forwarded row's original author, and confirming evidence for the start of a period that took place. | 1074, 1112 | `truth-clock` |
@@ -875,7 +885,7 @@ Keys: `model_calls_id_unique` (id).
 
 Indexes: `model_calls_world_id_day_idx` (world_id, day).
 
-Written only by the model-call layer (S20).
+Written only by the model-call layer (S20), with the budget it spends in the same transaction (S39).
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -891,6 +901,11 @@ Written only by the model-call layer (S20).
 | at | `at` | `instant` | b1 |  |
 | day | `day` | `date` | ruling | S24: a DATE from the clock provider; B.1 names it only in the index |
 | (none) | `audio_seconds` | `float` | ruling | S24, line 2684: voice calls |
+| (none) | `route` | `code` | ruling | S39: meta or modal |
+| (none) | `outcome` | `code` | ruling | S39: ok, invalid_output, rate_limited, provider_error, client_closed |
+| (none) | `reasoning_tokens` | `int` | ruling | S39, line 2694: the reasoning share of the output tokens |
+| (none) | `latency_ms` | `int` | ruling | S39, line 2694: from the request to the answer |
+| (none) | `usage_estimated` | `bool` | ruling | S39: true when the tokens are an estimate |
 
 ### judgments
 
@@ -923,7 +938,7 @@ Keys: `budgets_world_id_day_unique` (world_id, day).
 
 Indexes: none.
 
-Written by the runner (S20).
+Written by the model-call layer, with each model call, and by the operator's ceiling (S39).
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
