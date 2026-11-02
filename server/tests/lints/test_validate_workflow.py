@@ -1,4 +1,4 @@
-"""The workflow, read as text: the project carries no YAML parser and needs none for these."""
+"""The workflow, read as text: these checks need no parser."""
 
 import re
 
