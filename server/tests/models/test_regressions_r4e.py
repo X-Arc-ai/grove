@@ -510,3 +510,13 @@ def test_an_ordinary_number_still_passes_the_validator(driver, world, test_clock
     with layer_for(driver, handler) as layer:
         result = layer.respond(world, job="extraction", input="Score it.", schema=NUMBER_SCHEMA)
     assert result.data == {"score": value}
+
+
+def test_the_glimmer_image_gives_modal_a_python():
+    # The first download on Modal failed with "unable to determine the version of Python": the
+    # vLLM image has python3 and no python.
+    app_file = Path(__file__).resolve().parents[3] / "deploy" / "modal" / "glimmer.py"
+    text = app_file.read_text(encoding="utf-8")
+    link = """.run_commands('ln -sf "$(which python3)" /usr/bin/python')"""
+    assert link in text
+    assert text.index(".entrypoint([])") < text.index(link) < text.index(".env(")
