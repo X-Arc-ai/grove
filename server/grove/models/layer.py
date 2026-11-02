@@ -14,6 +14,7 @@ and the gateway use Chat Completions, which an OpenAI-compatible server speaks.
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -132,9 +133,22 @@ def check_schema(schema: dict) -> Draft202012Validator:
     return Draft202012Validator(schema)
 
 
+def _refuse_constant(name: str) -> None:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError("a number past the float range is not a usable value")
+    return value
+
+
 def parse_structured(text: str, validator: Draft202012Validator) -> Any:
+    """The answer as data, or InvalidOutput. Python's JSON reader takes NaN and Infinity, which are
+    not JSON and pass a schema's number checks, so a threshold on them would read false."""
     try:
-        data = json.loads(text)
+        data = json.loads(text, parse_constant=_refuse_constant, parse_float=_finite_float)
         errors = sorted(validator.iter_errors(data), key=lambda error: list(map(str, error.path)))
     except (ValueError, RecursionError) as exc:
         raise InvalidOutput("the answer is not JSON") from exc

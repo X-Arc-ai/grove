@@ -430,3 +430,83 @@ def test_the_glimmer_server_reports_to_no_one():
     app_file = Path(__file__).resolve().parents[3] / "deploy" / "modal" / "glimmer.py"
     text = app_file.read_text(encoding="utf-8")
     assert '"VLLM_NO_USAGE_STATS": "1"' in text and '"DO_NOT_TRACK": "1"' in text
+
+
+TOOL = {
+    "type": "function",
+    "function": {
+        "name": "brain_status",
+        "description": "Report the status of the synthetic orchard store.",
+        "parameters": {"type": "object", "properties": {"verbose": {"type": "boolean"}}},
+    },
+}
+
+
+def test_the_tool_result_leg_of_a_round_trip_passes_through_the_gateway(driver, world, test_clock):
+    # The exact shape of OpenCode's second request: the assistant turn with its call, then the
+    # tool's result linked to it. A refused role or a lost link would break every agent run.
+    call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": "brain_status", "arguments": '{"verbose":false}'},
+    }
+    history = [
+        *MESSAGES,
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        {"role": "tool", "tool_call_id": "call_1", "content": '{"items": 4}'},
+    ]
+    provider = Provider(lambda: httpx.Response(200, json=ANSWER))
+
+    response = post(
+        driver,
+        world,
+        provider,
+        {
+            "model": "muse-spark-1.3",
+            "messages": history,
+            "tools": [TOOL],
+            "tool_choice": "auto",
+            "max_tokens": 8192,
+        },
+    )
+
+    assert response.status_code == 200 and response.json() == ANSWER
+    sent = json.loads(provider.requests[0].content)
+    assert sent["messages"] == history
+    assert sent["tools"] == [TOOL]
+    [row] = rows(driver, world)
+    assert (row["outcome"], row["input_tokens"]) == ("ok", 10)
+
+
+NUMBER_SCHEMA = {"type": "object", "properties": {"score": {"type": "number"}}}
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['{"score": NaN}', '{"score": Infinity}', '{"score": -Infinity}', '{"score": 1e999}'],
+    ids=["nan", "infinity", "minus-infinity", "past-the-range"],
+)
+def test_a_number_that_is_not_json_is_declined_by_the_validator(driver, world, test_clock, text):
+    answer = {
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    handler = Provider(lambda: httpx.Response(200, json=answer))
+    with layer_for(driver, handler) as layer, pytest.raises(InvalidOutput):
+        layer.respond(world, job="extraction", input="Score it.", schema=NUMBER_SCHEMA)
+    assert [row["outcome"] for row in rows(driver, world)] == ["invalid_output"]
+
+
+@pytest.mark.parametrize("value", [0.5, 1e10, 3, -2.5])
+def test_an_ordinary_number_still_passes_the_validator(driver, world, test_clock, value):
+    text = json.dumps({"score": value})
+    answer = {
+        "status": "completed",
+        "output": [{"type": "message", "content": [{"type": "output_text", "text": text}]}],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    handler = Provider(lambda: httpx.Response(200, json=answer))
+    with layer_for(driver, handler) as layer:
+        result = layer.respond(world, job="extraction", input="Score it.", schema=NUMBER_SCHEMA)
+    assert result.data == {"score": value}
