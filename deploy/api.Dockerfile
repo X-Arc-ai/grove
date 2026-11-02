@@ -15,8 +15,10 @@ RUN uv sync --frozen --no-dev --no-install-project
 # The whole server/ folder, as in a checkout: the migrations are not in the wheel, and the
 # editable install keeps grove.writer.migrate pointed at /app/server/migrations.
 COPY server/ ./
-# The views: one built page, which the API serves at /.
+# The pages the API serves: the views, the homepage and the privacy page. The privacy page's table
+# comes from docs/data-flow.md, the one file of docs/ that reaches the image.
 COPY web/ /app/web/
+COPY docs/data-flow.md /app/docs/data-flow.md
 RUN python /app/web/build.py
 ENV GROVE_WEB_DIST=/app/web/dist
 RUN uv sync --frozen --no-dev \

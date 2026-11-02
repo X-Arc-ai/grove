@@ -49,7 +49,7 @@ def _window(request: Request) -> Window:
 @router.get("/session")
 def get_session(request: Request, session: Session) -> dict[str, Any]:
     world, _ = _queries(request, session)
-    return session_payload(world, session.self_item_id)
+    return session_payload(world, session)
 
 
 @router.get("/graph")
@@ -93,33 +93,39 @@ def _refuse_constant(name: str) -> None:
     raise ValueError(f"{name} is not a number JSON allows")
 
 
-async def _capped_body(request: Request) -> bytes:
+async def _capped_body(request: Request, limit: int) -> bytes:
     declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+    if declared.isdigit() and int(declared) > limit:
         raise invalid_arguments("the body is too large", "body")
     chunks, size = [], 0
     async for chunk in request.stream():
         size += len(chunk)
-        if size > MAX_BODY_BYTES:
+        if size > limit:
             raise invalid_arguments("the body is too large", "body")
         chunks.append(chunk)
     return b"".join(chunks)
 
 
-@router.post("/positions")
-async def post_positions(request: Request, session: Session) -> dict[str, int]:
-    """Insert-only: an item keeps its first position; ids that are no item here write nothing.
-
-    A JSON body is required, which a cross-site form cannot send without a preflight.
-    """
+def check_json_type(request: Request) -> None:
+    """A JSON body is required, which a cross-site form cannot send without a preflight."""
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if media_type != JSON_TYPE:
         raise invalid_arguments("the body must be application/json", "content-type")
+
+
+async def read_json_body(request: Request, limit: int) -> Any:
+    check_json_type(request)
     try:
-        body = json.loads(await _capped_body(request), parse_constant=_refuse_constant)
+        return json.loads(await _capped_body(request, limit), parse_constant=_refuse_constant)
     except (ValueError, RecursionError):
         # RecursionError: a body nested deeper than the parser's limit, which fits in the cap.
         raise invalid_arguments("the body is not valid JSON", "body") from None
+
+
+@router.post("/positions")
+async def post_positions(request: Request, session: Session) -> dict[str, int]:
+    """Insert-only: an item keeps its first position; ids that are no item here write nothing."""
+    body = await read_json_body(request, MAX_BODY_BYTES)
     if not isinstance(body, dict) or set(body) != {"positions"}:
         raise invalid_arguments("the body must be an object with positions only", "body")
     try:

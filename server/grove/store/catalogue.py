@@ -1541,6 +1541,11 @@ WORLDS = _platform(
         _p("created_at", "instant"),
         _p("next_sequence", "int", "S10: starts at 0; advanced by one direct SET"),
         _p("seed_version", "code"),
+        _p(
+            "self_item_id",
+            "id",
+            "S40: the person's own item, set in the transaction that creates it; absent before",
+        ),
     ),
     _keys("worlds", ("id",)),
     _ranges("worlds", ("owner_user_id",)),
@@ -1553,7 +1558,11 @@ USERS = _platform(
     f"{_PLATFORM_OWNER}; signin",
     (
         _p("id", "id"),
-        _p("email_hash", "code", "secrets and contact details stay out of the row"),
+        _p(
+            "email_hash",
+            "code",
+            "S40: sha256 of the salted address; secrets and contact details stay out of the row",
+        ),
         _p("created_at", "instant"),
     ),
     _keys("users", ("id",), ("email_hash",)),
@@ -1568,6 +1577,7 @@ SESSIONS = _platform(
         _p("id", "id"),
         _p("user_id", "id"),
         _p("token_hash", "code"),
+        _p("method", "code", "S40: google or email; a planted test session has none"),
         _p("created_at", "instant"),
         _p("expires_at", "instant"),
         _p("revoked_at", "instant"),

@@ -20,6 +20,9 @@
     logout: '/v1/auth/logout',
   };
 
+  // The server's pages the views name: the address after a sign-in, and the sign-in card's link.
+  var PAGES = { home: '/', signin: '/signin', privacy: '/privacy' };
+
   // Grove's starter kinds draw with the sim's visual types. The data keeps the real kind
   // name (legend, search, panel); only size, tier, hub role and ring colour are borrowed.
   // person, task, event, observation and decision are sim types already; any other kind
@@ -106,12 +109,13 @@
 
   window.GroveLive = {
     ENDPOINTS: ENDPOINTS,
+    PAGES: PAGES,
     KIND_STYLE: KIND_STYLE,
     getJSON: getJSON,
     postJSON: postJSON,
     errorText: errorText,
     savePositions: savePositions,
-    // GET the session: 200 {signed_in, self_item_id} when signed in, 401 otherwise.
+    // GET the session: 200 {signed_in, self_item_id, has_items, account, method} when signed in, 401 otherwise.
     session: function () { return request('GET', ENDPOINTS.session).then(signedIn); },
     // Google signs in on its own pages and comes back to the start of the app.
     googleSignIn: function () { window.location.assign(ENDPOINTS.googleStart); },

@@ -110,7 +110,7 @@ def test_nginx_passes_everything_to_the_api_and_reads_no_user_agent():
         assert "$http_user_agent" not in text
         assert "deny " not in text
     assert "location / {" in https
-    assert https.count("proxy_pass http://127.0.0.1:8000;") == 1
+    assert https.count("proxy_pass http://127.0.0.1:8000;") == 2
     assert "root /var/www/grove-acme;" in http
     assert "return 301 https://$host$request_uri;" in http
 
@@ -249,13 +249,30 @@ def test_the_runner_image_gives_its_user_no_way_up():
         assert word not in text.replace("runner.Dockerfile", ""), word
 
 
-def test_nginx_has_one_location_and_no_rule_that_can_answer_for_the_api():
+def test_nginx_limits_the_email_code_path_and_no_other():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
-    assert re.findall(r"^[ \t]*location\b.*$", https, re.MULTILINE) == ["    location / {"]
+    zone = "limit_req_zone $binary_remote_addr zone=grove_email:1m rate=10r/m;"
+    assert https.index(zone) < https.index("server {")
+    assert https.count("limit_req ") == 1
+    block = https[https.index("location /v1/auth/email/ {") :]
+    block = block[: block.index("}") + 1]
+    for line in (
+        "limit_req zone=grove_email burst=10 nodelay;",
+        "limit_req_status 429;",
+        "proxy_pass http://127.0.0.1:8000;",
+    ):
+        assert line in block, line
+
+
+def test_nginx_has_two_locations_and_no_rule_that_can_answer_for_the_api():
+    https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
+    assert re.findall(r"^[ \t]*location\b.*$", https, re.MULTILINE) == [
+        "    location / {",
+        "    location /v1/auth/email/ {",
+    ]
     for word in (
         "auth_basic",
         "auth_request",
-        "limit_req",
         "limit_conn",
         "proxy_hide_header",
         "return ",
@@ -304,3 +321,14 @@ def test_the_api_image_builds_the_page_and_the_api_serves_it():
     ignored = (REPO / ".dockerignore").read_text(encoding="utf-8").splitlines()
     assert "web" not in ignored
     assert "web/dist" in ignored
+
+
+def test_the_image_gets_the_data_flow_file_for_the_privacy_page_and_no_other_doc():
+    text = (DEPLOY / "api.Dockerfile").read_text(encoding="utf-8")
+    copied = text.index("COPY docs/data-flow.md /app/docs/data-flow.md")
+    assert copied < text.index("RUN python /app/web/build.py")
+    ignored = (REPO / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert "docs/*" in ignored
+    assert "docs" not in ignored
+    # A later line wins in .dockerignore, so the exception must follow the rule it opens.
+    assert ignored.index("!docs/data-flow.md") > ignored.index("docs/*")

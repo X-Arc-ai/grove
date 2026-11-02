@@ -50,7 +50,7 @@
     var sources = {};
     SOURCE_ORDER.forEach(function (id) { sources[id] = blankSource(id); });
     return {
-      schema: 4, growthHistory: [], requests: [], requestsSeeded: false, growth: { focus: '', reading: '', avoid: '', confirm: true }, files: {}, recentNodes: [], recentEdges: [], version: VERSION, auth: null, name: '', onboardingComplete: false, onboardingStep: 0, tourComplete: false,
+      schema: 4, growthHistory: [], requests: [], requestsSeeded: false, growth: { focus: '', reading: '', avoid: '', confirm: true }, files: {}, recentNodes: [], recentEdges: [], version: VERSION, auth: null, account: null, name: '', onboardingComplete: false, onboardingStep: 0, tourComplete: false,
       mcpClients: [], hostConnected: false, connectedHosts: [], pendingExports: {}, accountImports: {}, googleConnected: false, nodeDelta: 0, edgeDelta: 0, updatedAt: null, sources: sources,
     };
   }
@@ -61,6 +61,7 @@
       var stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
       if (!stored || stored.version !== VERSION) return value;
       value.auth = Object.prototype.hasOwnProperty.call(stored,'auth') ? stored.auth : (stored.onboardingComplete && !LIVE ? {provider:'email',email:'anas@example.com'} : null);
+      value.account = typeof stored.account === 'string' && stored.account ? stored.account : null;
       value.growthHistory = Array.isArray(stored.growthHistory) ? stored.growthHistory.filter(function(p){return p&&Number.isFinite(p.nodes)&&Number.isFinite(p.edges)&&p.nodes>=0&&p.edges>=0;}).slice(-240) : [];
       // Live mode keeps no local questions (views-b brings them from the server); an older page
       // saved some with store titles in them, so they are dropped here.
@@ -223,7 +224,7 @@
     var all = LIVE ? live : fixture && fixture.elements ? fixture.elements : { nodes: [], edges: [] };
     var imported = sources.filter(function (s) { return s.status === 'ready'; }).length;
     return {
-      version: VERSION, auth: clone(state.auth), name: state.name, onboardingComplete: state.onboardingComplete,
+      version: VERSION, auth: clone(state.auth), account: state.account, name: state.name, onboardingComplete: state.onboardingComplete,
       onboardingStep: state.onboardingStep, tourComplete: state.tourComplete,
       mcpClients: clone(state.mcpClients), hostConnected: state.hostConnected, connectedHosts: state.connectedHosts.slice(),
       requests: clone(state.requests), growth: clone(state.growth), files: clone(state.files), pendingExports: clone(state.pendingExports), accountImports: Object.fromEntries(Object.entries(state.accountImports).map(function(entry){return [entry[0],Object.assign({},entry[1],{contribution:sourceStats(entry[1])})];})), googleConnected: state.googleConnected,
@@ -345,7 +346,7 @@
   // Live mode: the last graph payload goes too, so no item of the session stays in memory.
   function signOut(){state.auth=null;if(LIVE){liveSession++;live={selfId:null,nodes:[],edges:[]};}save();return getState();}
   function saveGrowth(value){['focus','reading','avoid'].forEach(function(k){state.growth[k]=String(value[k]||'').trim().slice(0,1500);});state.growth.confirm=!!value.confirm;save();return getState();}
-  function clearGrove(){var auth=state.auth,name=state.name,growth=state.growth;resetOnboarding();state.auth=auth;state.name=name;state.growth=growth;state.onboardingStep=1;save({reload:true});return getState();}
+  function clearGrove(){var auth=state.auth,account=state.account,name=state.name,growth=state.growth;resetOnboarding();state.auth=auth;state.account=account;state.name=name;state.growth=growth;state.onboardingStep=1;save({reload:true});return getState();}
 
   function requestExport(id) {
     if (!HOSTS[id] && id!=='chats') return getState();
@@ -379,6 +380,17 @@
     state.nodeDelta = 0; state.edgeDelta = 0;
     save({ reload: before.nodes > 0 || before.edges > 0 }); return getState();
   }
+  // Live mode: this browser's local state belongs to one account. A sign-in that brings another
+  // account resets it first, so nothing of one person shows to the next. Says whether it reset.
+  function bindAccount(account) {
+    if (!LIVE || !account) return false;
+    var other = !!state.account && state.account !== account;
+    if (other) resetOnboarding();
+    state.account = String(account); save();
+    return other;
+  }
+  // Live mode: a person whose world already holds items skips the first-run steps on a new browser.
+  function resumeOnboarding() { state.onboardingStep = 4; state.onboardingComplete = true; state.tourComplete = true; save(); return getState(); }
   function connectHost(providerId) {
     var id = String(providerId || 'claude').toLowerCase();
     if (!HOSTS[id]) throw new Error('Unknown AI host: ' + id);
@@ -499,7 +511,7 @@
   window.GroveSimulation = {
     addMcpClient:addMcpClient, removeMcpClient:removeMcpClient, acknowledgeChanges:acknowledgeChanges, addFile:addFile, removeFile:removeFile, updateSource:updateSource, cancelExport:cancelExport, saveGrowth:saveGrowth, clearGrove:clearGrove, getChanges:getChanges, getState: getState, getSources: getSources, setName: setName, setStep: setStep,
     importSource: importSource, completeOnboarding: completeOnboarding, completeTour: completeTour,
-    signIn: signIn, signOut:signOut, answerRequest:answerRequest, disconnectSource: disconnectSource, disconnectHost: disconnectHost, resetOnboarding: resetOnboarding, connectHost: connectHost, requestExport: requestExport, connectGoogle: connectGoogle,
+    signIn: signIn, signOut:signOut, bindAccount: bindAccount, resumeOnboarding: resumeOnboarding, answerRequest:answerRequest, disconnectSource: disconnectSource, disconnectHost: disconnectHost, resetOnboarding: resetOnboarding, connectHost: connectHost, requestExport: requestExport, connectGoogle: connectGoogle,
     // Live mode: true when no fixture is injected; realId maps a view id back to the item id
     // (the identity node to the self item, null when the identity node is the sim's own).
     isLive: function () { return LIVE; },
