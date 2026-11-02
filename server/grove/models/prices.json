@@ -1,0 +1,23 @@
+{
+  "currency": "USD",
+  "checked": "2026-11-02",
+  "models": {
+    "muse-spark-1.3": {
+      "basis": "tokens",
+      "input_per_million": 1.25,
+      "cached_per_million": 0.15,
+      "output_per_million": 4.25,
+      "source": "Meta Model API list price for Spark 1.3 Standard; reasoning tokens bill as output"
+    },
+    "muse-voice-transcribe-1.0": {
+      "basis": "audio",
+      "per_hour": 0.18,
+      "source": "Meta Model API list price for Voice Transcribe"
+    },
+    "muse-glimmer-30b": {
+      "basis": "gpu_seconds",
+      "per_second": 0.001097,
+      "source": "Modal list price for one H100 (3.95 USD an hour), the dearer of the two GPUs the Modal app asks for (A100 80 GB first, 2.50 USD an hour); each call is charged its whole wall time, an upper bound because one container serves calls in parallel; cold starts and the idle time before scale-down bill on Modal and are not in model_calls"
+    }
+  }
+}

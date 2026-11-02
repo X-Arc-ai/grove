@@ -294,3 +294,13 @@ def test_the_units_give_each_step_the_time_it_needs():
         assert line in backup.splitlines(), line
     for line in ("Type=oneshot", "Requires=docker.service", "TimeoutStartSec=30min"):
         assert line in services.splitlines(), line
+
+
+def test_the_api_image_builds_the_page_and_the_api_serves_it():
+    text = (DEPLOY / "api.Dockerfile").read_text(encoding="utf-8")
+    assert "COPY web/ /app/web/" in text
+    assert "RUN python /app/web/build.py" in text
+    assert "ENV GROVE_WEB_DIST=/app/web/dist" in text
+    ignored = (REPO / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert "web" not in ignored
+    assert "web/dist" in ignored

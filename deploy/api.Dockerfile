@@ -15,6 +15,10 @@ RUN uv sync --frozen --no-dev --no-install-project
 # The whole server/ folder, as in a checkout: the migrations are not in the wheel, and the
 # editable install keeps grove.writer.migrate pointed at /app/server/migrations.
 COPY server/ ./
+# The views: one built page, which the API serves at /.
+COPY web/ /app/web/
+RUN python /app/web/build.py
+ENV GROVE_WEB_DIST=/app/web/dist
 RUN uv sync --frozen --no-dev \
     && groupadd --system --gid 10001 grove-api \
     && useradd --system --uid 10001 --gid 10001 --no-create-home --home-dir /nonexistent \

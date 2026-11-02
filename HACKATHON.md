@@ -15,8 +15,14 @@ The `submission` lane fills this table from the merged pull requests.
 This material predates the event:
 
 - The export-guide screens of the simulation of the views (the sim).
-- The graph visualizer that the sim adapted from earlier Grove code.
-- The worker renderer that the sim adapted from earlier Grove code.
+- The graph visualizer that the sim adapted from earlier Grove code: `web/native-app.js`,
+  `web/style.css` and the page shell in `web/index.html`, imported as delivered by the commit
+  "Import the simulation's views into web/ as delivered". Later commits change them, and the diff
+  of each later commit is event work.
+- The worker renderer that the sim adapted from earlier Grove code: `web/agents.js` and
+  `web/agents.css`, imported the same way.
+- The vendored public font CSS for Inter and JetBrains Mono: `web/vendor/fonts.css`, imported the
+  same way.
 
 ## Prior work
 

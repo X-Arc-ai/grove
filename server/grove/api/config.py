@@ -7,6 +7,8 @@ from urllib.parse import urlsplit
 
 from grove.config import ConfigError
 
+# A local run or a test with no public host. Production has no default: the name is configuration.
+LOCAL_BASE_URL = "http://127.0.0.1:8000"
 # A.3's scopes, in the order the metadata lists them.
 SCOPES = ("grove.read", "grove.write", "grove.sensitive_write")
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -50,7 +52,10 @@ def parse_build_sha(value: str | None) -> str | None:
 
 
 def load_api_settings() -> ApiSettings:
+    base_url = os.environ.get("GROVE_PUBLIC_BASE_URL")
+    if not base_url and os.environ.get("GROVE_ENV") != "production":
+        base_url = LOCAL_BASE_URL
     return ApiSettings(
-        public_base_url=parse_base_url(os.environ.get("GROVE_PUBLIC_BASE_URL")),
+        public_base_url=parse_base_url(base_url),
         build_sha=parse_build_sha(os.environ.get("GROVE_BUILD_SHA")),
     )

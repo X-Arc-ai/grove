@@ -11,6 +11,7 @@ from pathlib import Path
 from grove.store.catalogue import (
     B1_GROUPS,
     FULLTEXT_INDEXES,
+    LATER_TABLES,
     PLATFORM_TABLES,
     TABLES,
     TYPE_CLASSES,
@@ -103,6 +104,9 @@ def generate() -> str:
             lines += _table_section(t)
     lines += ["## Platform rows", ""]
     for t in PLATFORM_TABLES:
+        lines += _table_section(t)
+    lines += ["## Tables of later lanes", ""]
+    for t in LATER_TABLES:
         lines += _table_section(t)
     lines += [
         "## Full-text indexes",
