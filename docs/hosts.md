@@ -249,15 +249,15 @@ GROVE_WEB_DIST=../web/dist uv run uvicorn --factory local_app:app --host 127.0.0
 With no `GROVE_PUBLIC_BASE_URL` the base is `http://127.0.0.1:8000`, so the resource is `http://127.0.0.1:8000/mcp`. Use that exact host everywhere: `localhost` is another origin.
 
 3. Run Muse Code in an isolated HOME, never in your own: set `HOME` to a new empty folder, `XDG_CONFIG_HOME` to `$HOME/.config`, and `XDG_DATA_HOME`, `XDG_STATE_HOME` and `XDG_CACHE_HOME` to folders under `$HOME`. Muse Code then has no settings, no skills and no personal context of yours. Give it its API key in its environment only.
-4. In that HOME, put the server in Muse Code's settings file (`$HOME/.config/muse/settings.json`). The key is `mcpServers` and the type is `"http"`; Muse Code refuses `"streamable_http"`:
+4. In that HOME, put the server in Muse Code's settings file (`$HOME/.config/muse/settings.json`). The key is `mcpServers` and the type is `"http"`; Muse Code refuses `"streamable_http"`. Muse Code 1.4.14 also refuses a file with no `schema_version`:
 
 ```json
-{"mcpServers": {"grove_local": {"type": "http", "url": "http://127.0.0.1:8000/mcp"}}}
+{"schema_version": 1, "mcpServers": {"grove_local": {"type": "http", "url": "http://127.0.0.1:8000/mcp"}}}
 ```
 
 5. Run `muse mcp login grove_local --headless`. Muse Code registers its own client (`client_name` "Muse Code", `token_endpoint_auth_method` `none`) and prints an `/authorize` URL.
 6. Open that URL in a browser. Sign in with an email code: the code is in the uvicorn output. The browser comes back to the consent page. Press Approve.
-7. The browser goes to Muse Code's loopback redirect. Paste that final URL into Muse Code. Muse Code says that it logged in to `grove_local`. It sends `resource=http://127.0.0.1:8000/mcp` with the code. Its redirect is `http://127.0.0.1:<port>/oauth/callback/<random part>`, registered in the same login. The loopback rule lets only the port differ from a registered URI, so a redirect with another path needs a new registration.
+7. The browser goes to Muse Code's loopback redirect. Paste that final URL into Muse Code. Muse Code says that it logged in to `grove_local`. It sends `resource=http://127.0.0.1:8000/mcp` with the code. Its redirect is `http://127.0.0.1:<port>/oauth/callback/<random part>`, registered in the same login. The loopback rule lets only the port differ from a registered URI. A second login reuses the client and the path with a new port, and it passes. `muse mcp logout` calls `POST /revoke` and forgets the client, so the next login registers a new client with a new path. Muse Code 1.4.14 was seen to do both. Muse Code asks for every scope in `scopes_supported`, so its consent page lists `grove.sensitive_write` too.
 8. Ask with the model and the privacy flags pinned on every run:
 
 ```sh
