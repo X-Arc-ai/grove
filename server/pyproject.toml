@@ -5,12 +5,18 @@ description = "Grove: a live, time-aware representation of your world, built on 
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
+    "fastapi>=0.120",
+    "httpx>=0.28,<0.29",
+    "jsonschema>=4.25",
     "neo4j>=6.4,<7",
+    "uvicorn>=0.38",
 ]
 
 [dependency-groups]
 dev = [
+    "httpx>=0.28.1",
     "pytest>=8",
+    "pyyaml>=6,<7",
     "ruff>=0.7",
 ]
 
@@ -32,5 +38,6 @@ select = ["E", "F", "I", "UP", "B"]
 testpaths = ["tests"]
 markers = [
     "live: calls a model; runs only in a lane, never in CI",
+    "browser: drives a real browser with Playwright; runs only in a lane, never in CI",
 ]
-addopts = "-m 'not live'"
+addopts = "-m 'not live and not browser'"

@@ -1,0 +1,838 @@
+/* brain visualization — constellation aesthetic.
+ * Material palette per node type. Cream disks + colored rings.
+ * Premium-minimal. No glow, no gradient, no shadow. */
+
+:root[data-theme="dark"] {
+  --bg: #0a0a0b;
+  --surface: #111113;
+  --border: #222225;
+  --text: #f0f0f0;
+  --text-secondary: #888;
+  --text-muted: #555;
+  --accent: #22c55e;
+
+  /* Constellation node-body — warm cream that reads as "stamped on equipment". */
+  --cream: #f0eede;
+
+  /* Type rings — Material palette, each type a distinct semantic hue.
+     Each must read clearly at 1.5–3px stroke against the cream disk. */
+  --ring-company:       #4fc3f7;     /* light blue — hub */
+  --ring-project:       #ba68c8;     /* purple — hub */
+  --ring-person:        #fff176;     /* yellow */
+  --ring-instance:      #4dd0e1;     /* cyan */
+  --ring-product:       #81c784;     /* green */
+  --ring-client:        #26a69a;     /* teal — distinct from product green */
+  --ring-goal:          #c5e1a5;     /* very light green — pale enough to read against product */
+  --ring-task:          #dce775;     /* lime */
+  --ring-decision:      #ffb74d;     /* orange */
+  --ring-blocker:       #e57373;     /* red */
+  --ring-event:         #90a4ae;     /* blue-gray */
+  --ring-status_change: #90a4ae;
+  --ring-observation:   #90a4ae;
+  --ring-roadmap:       #ba68c8;     /* purple (variant of project) */
+  --ring-pattern:       #7986cb;     /* indigo — distinct from every existing hue */
+
+  --edge: rgba(240, 238, 222, 0.18);
+  --edge-bright: rgba(240, 238, 222, 0.6);
+  --edge-faded: rgba(240, 238, 222, 0.06);
+  --edge-label: rgba(240, 238, 222, 0.5);
+  /* Dense mode (?dense=1) resting edge ink — a step above default so the
+     connective tissue reads at rest without competing with hover/focus. */
+  --edge-dense: rgba(240, 238, 222, 0.26);
+  --edge-rest-dense: rgba(240, 238, 222, 0.13);
+  --label-halo: rgba(10, 10, 11, 0.88);
+}
+
+:root[data-theme="light"] {
+  --bg: #f7f6f1;
+  --surface: #ffffff;
+  --border: #e2e0d6;
+  --text: #1a1a1a;
+  --text-secondary: #6b6b6b;
+  --text-muted: #a0a0a0;
+  --accent: #16a34a;
+
+  /* Light theme: dark ink disks against cream bg, but for the constellation
+     metaphor we keep cream disks too — they read as paper labels on the page. */
+  --cream: #ffffff;
+
+  /* Slightly desaturated/darker variants for legibility on light bg */
+  --ring-company:       #0288d1;
+  --ring-project:       #8e24aa;
+  --ring-person:        #d4a017;
+  --ring-instance:      #0097a7;
+  --ring-product:       #4caf50;
+  --ring-client:        #00897b;     /* teal — distinct from product green */
+  --ring-goal:          #9ccc65;     /* lighter olive-green — separate from product */
+  --ring-task:          #afb42b;
+  --ring-decision:      #f57c00;
+  --ring-blocker:       #d32f2f;
+  --ring-event:         #607d8b;
+  --ring-status_change: #607d8b;
+  --ring-observation:   #607d8b;
+  --ring-roadmap:       #8e24aa;
+  --ring-pattern:       #5c6bc0;     /* indigo — distinct from every existing hue */
+
+  --edge: rgba(60, 55, 40, 0.22);
+  --edge-bright: rgba(60, 55, 40, 0.55);
+  --edge-faded: rgba(60, 55, 40, 0.06);
+  --edge-label: rgba(60, 55, 40, 0.65);
+  --edge-dense: rgba(60, 55, 40, 0.30);
+  --edge-rest-dense: rgba(60, 55, 40, 0.15);
+  --label-halo: rgba(247, 246, 241, 0.92);
+}
+
+/* Grove's starter kinds alias the sim's ring colours in both themes (map in live.js). */
+:root {
+  --ring-organisation:  var(--ring-company);
+  --ring-plan:          var(--ring-project);
+  --ring-place:         var(--ring-instance);
+  --ring-problem:       var(--ring-blocker);
+  --ring-assumption:    var(--ring-pattern);
+  --ring-trip:          var(--ring-goal);
+  --ring-period:        var(--ring-roadmap);
+  --ring-belief:        var(--ring-pattern);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", -apple-system, "Helvetica Neue", system-ui, sans-serif;
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+}
+
+main#canvas {
+  position: fixed;
+  inset: 0;
+  background: var(--bg);
+  cursor: grab;
+}
+main#canvas:active { cursor: grabbing; }
+main#canvas canvas { display: block; }
+
+/* topbar — minimal, no border, sits over canvas */
+.topbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 56px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 16px 24px;
+  z-index: 10;
+  pointer-events: none;
+}
+.topbar > * { pointer-events: auto; }
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.brand-name {
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+.brand-name.wm {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.brand-name .wm-dot {
+  width: 0.42em;
+  height: 0.42em;
+  border-radius: 999px;
+  background: #D4A52A;
+  display: inline-block;
+  transform: translateY(0.06em);
+  box-shadow: 0 0 0 0.5px rgba(212, 165, 42, 0.5);
+}
+.brand-stats {
+  font-family: "JetBrains Mono", ui-monospace, "SF Mono", monospace;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text-secondary);
+  letter-spacing: 0;
+}
+.stats-delta {
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline dotted transparent;
+  transition: text-decoration-color 0.12s;
+}
+.stats-delta:hover { text-decoration-color: var(--accent); }
+
+/* Selection pill — small floating banner shown while a multi-node selection
+   from a stats +N click is active. Bottom-center so it doesn't hide the
+   legend or any other UI. */
+.selection-pill {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px 8px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text);
+  z-index: 20;
+  pointer-events: auto;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+}
+.selection-pill[hidden] { display: none; }
+.selection-clear {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 10.5px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: color 0.12s, border-color 0.12s;
+}
+.selection-clear:hover { color: var(--text); border-color: var(--text-muted); }
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+  margin-right: 6px;
+  letter-spacing: 0.02em;
+}
+.toggle input {
+  appearance: none;
+  width: 26px; height: 14px;
+  background: var(--border);
+  border-radius: 8px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.toggle input::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  transition: all 0.12s;
+}
+.toggle input:checked { background: rgba(34, 197, 94, 0.25); }
+.toggle input:checked::after { left: 14px; background: var(--accent); }
+
+/* health entry (links to /health), with the overall state glyph */
+.view-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 10px;
+  margin-right: 2px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+  text-decoration: none;
+  transition: color 0.12s, border-color 0.12s;
+}
+.view-link:hover { color: var(--text); border-color: var(--border); }
+.view-link-state:empty { display: none; }
+.view-link-state svg { display: block; width: 9px; height: 9px; }
+.view-link-state .healthy { fill: #16a34a; }
+.view-link-state .degraded { fill: #c27c00; }
+.view-link-state .broken { fill: #d03b3b; }
+:root[data-theme="dark"] .view-link-state .healthy { fill: #22c55e; }
+:root[data-theme="dark"] .view-link-state .degraded { fill: #f2b33d; }
+:root[data-theme="dark"] .view-link-state .broken { fill: #ef5a52; }
+
+.icon-btn {
+  width: 32px; height: 32px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  border-radius: 8px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.12s, border-color 0.12s;
+}
+.icon-btn:hover {
+  color: var(--text);
+  border-color: var(--border);
+}
+.icon-btn .icon-moon { display: none; }
+:root[data-theme="light"] .icon-btn .icon-sun { display: none; }
+:root[data-theme="light"] .icon-btn .icon-moon { display: inline-block; }
+
+/* search overlay — appears centered when search clicked */
+.search-overlay {
+  position: fixed;
+  top: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(520px, 90vw);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  z-index: 20;
+  overflow: hidden;
+}
+.search-overlay[hidden] { display: none; }
+#search-input {
+  width: 100%;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  padding: 14px 18px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 13px;
+  outline: none;
+}
+#search-input::placeholder { color: var(--text-muted); }
+.search-results {
+  max-height: 360px;
+  overflow-y: auto;
+}
+.search-results:empty { display: none; }
+.search-result {
+  padding: 10px 18px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.search-result:last-child { border-bottom: none; }
+.search-result:hover, .search-result.active {
+  background: rgba(34, 197, 94, 0.06);
+}
+.search-result-title {
+  font-size: 13px;
+  color: var(--text);
+}
+.search-result-meta {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* slide-in detail panel — overlay over canvas, NOT pushing canvas */
+.detail {
+  position: fixed;
+  top: 0; right: 0; bottom: 0;
+  width: 380px;
+  max-width: 92vw;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  transform: translateX(100%);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 15;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.detail.open { transform: translateX(0); }
+.detail-close {
+  position: absolute;
+  top: 14px; right: 14px;
+  width: 28px; height: 28px;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 300;
+  display: flex; align-items: center; justify-content: center;
+  z-index: 2;
+  line-height: 1;
+}
+.detail-close:hover { color: var(--text); border-color: var(--border); }
+.detail-body {
+  padding: 32px 28px 32px;
+  overflow-y: auto;
+  flex: 1;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+.detail-body::-webkit-scrollbar { width: 6px; }
+.detail-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.detail-type {
+  display: inline-block;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--text-secondary);
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+.detail-title {
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+.detail-id {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+}
+
+.detail-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}
+.detail-status .dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.detail-status .dot.dot-ended { background: var(--text-muted); }
+.detail-status .dot.dot-blocked { background: #c87560; }
+.detail-status .dot.dot-pending { background: #b89a6a; }
+
+.detail-section {
+  margin-bottom: 24px;
+}
+.detail-section h6 {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+  margin-bottom: 12px;
+}
+
+/* required vs optional sections — REQUIRED top, OPTIONAL below.
+ * Header has hairline above, uppercase label, count badge on the right. */
+.props-section {
+  margin-bottom: 12px;
+}
+.props-section + .props-section {
+  margin-top: 12px;
+}
+.props-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  margin-bottom: 10px;
+}
+.props-section-label {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+}
+.props-badge {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.props-badge-ok {
+  color: var(--accent);
+  border-color: rgba(34, 197, 94, 0.3);
+}
+.props-badge-warn {
+  color: #c87560;
+  border-color: rgba(200, 117, 96, 0.3);
+}
+.props-badge-icon {
+  font-size: 10.5px;
+  line-height: 1;
+}
+
+.props-table {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 8px 16px;
+  font-size: 12px;
+  align-items: baseline;
+}
+/* Required keys read heavier; optional lighter; base-table fields very muted
+   so operational metadata recedes visually from schema-significant slots. */
+.props-table .prop-key-required { font-weight: 600; color: var(--text); }
+.props-table .prop-key-optional { font-weight: 400; color: var(--text-secondary); }
+.props-table .prop-key-base {
+  font-weight: 400;
+  color: var(--text-muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+/* Red dot prefix on a required prop whose slot is empty. The user wants to
+   SEE the gaps -- this is the visual flag. */
+.props-table .prop-missing-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #d96b54;
+  margin-right: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+/* Edge-required satisfaction — checkmark green, cross muted-orange */
+.props-table .prop-edge-ok {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+.props-table .prop-check {
+  color: var(--accent);
+  font-weight: 700;
+}
+.props-table .prop-cross {
+  color: #c87560;
+  font-weight: 700;
+  margin-right: 4px;
+}
+.props-table .prop-edge-via {
+  color: var(--text-muted);
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+.props-table .prop-missing {
+  color: #d96b54;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.props-table .prop-key {
+  font-family: "Inter", -apple-system, system-ui, sans-serif;
+  font-weight: 500;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  word-break: break-word;
+  letter-spacing: 0.01em;
+}
+.props-table .prop-val {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11.5px;
+  color: var(--text);
+  word-break: break-word;
+  white-space: normal;
+  line-height: 1.5;
+}
+.props-table .prop-empty {
+  color: var(--text-muted);
+}
+.props-table .prop-bool {
+  font-weight: 700;
+  font-size: 13px;
+  display: inline-block;
+  width: 14px;
+  text-align: center;
+}
+.props-table .prop-true { color: var(--accent); }
+.props-table .prop-false { color: #c87560; }
+.props-table .prop-date {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  color: var(--text);
+}
+.props-table .prop-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.props-table .prop-list li {
+  position: relative;
+  padding-left: 12px;
+}
+.props-table .prop-list li::before {
+  content: '·';
+  position: absolute;
+  left: 2px;
+  color: var(--text-muted);
+}
+.props-table .prop-object {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.props-table .prop-object-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.props-table .prop-object-key {
+  font-family: "Inter", -apple-system, sans-serif;
+  font-weight: 500;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  letter-spacing: 0.01em;
+}
+
+.summary-md {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+}
+.summary-md p { margin: 0 0 10px; }
+.summary-md p:last-child { margin-bottom: 0; }
+.summary-md strong { color: var(--text); font-weight: 600; }
+.summary-md em { color: var(--text-secondary); font-style: italic; }
+.summary-md a { color: var(--accent); text-decoration: none; border-bottom: 1px dotted currentColor; }
+.summary-md code {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  background: var(--bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+}
+.summary-md pre {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  padding: 10px 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 8px 0;
+}
+.summary-md ul, .summary-md ol { margin: 6px 0 10px; padding-left: 22px; }
+.summary-md li { margin: 2px 0; }
+.summary-md hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+.summary-md h1, .summary-md h2, .summary-md h3, .summary-md h4 {
+  font-size: 13px; font-weight: 600;
+  margin: 14px 0 6px;
+  color: var(--text);
+}
+
+.relations-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+}
+.rel-row {
+  display: grid;
+  grid-template-columns: 14px 90px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+}
+.rel-arrow { color: var(--text-muted); }
+.rel-verb { color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.04em; font-size: 9.5px; }
+.rel-target {
+  color: var(--text);
+  cursor: pointer;
+  text-decoration: none;
+  border-bottom: 1px dotted transparent;
+}
+.rel-target:hover { border-bottom-color: var(--text-muted); }
+
+.loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  z-index: 100;
+  letter-spacing: 0.04em;
+}
+.loading.hidden { display: none; }
+
+/* Left-side legend — fixed, shows all 14 node types with click-to-filter.
+ * Sits below the topbar on the left edge. Theme-aware via CSS tokens. */
+.legend {
+  position: fixed;
+  top: 72px;
+  left: 16px;
+  width: 180px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 12px 10px;
+  z-index: 9;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  user-select: none;
+}
+.legend-header {
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+.legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-secondary);
+  transition: background 0.1s, color 0.1s, opacity 0.12s;
+}
+.legend-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+}
+:root[data-theme="light"] .legend-row:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+.legend-row.legend-row-disabled {
+  opacity: 0.32;
+}
+.legend-row.legend-row-disabled:hover {
+  opacity: 0.6;
+}
+.legend-swatch {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--cream);
+  border: 2px solid var(--text-muted);
+  flex-shrink: 0;
+  position: relative;
+}
+.legend-glyph {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.legend-name {
+  font-weight: 400;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+}
+
+/* Collapsible summary block. Long summaries (> 600 chars) render the first
+ * 600 chars + a Show more button. Click expands inline without re-fetching. */
+.summary-md.summary-md-collapsed {
+  position: relative;
+  /* Soft fade-out on the last line so the cut feels intentional, not abrupt. */
+  mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent 100%);
+}
+.summary-md.summary-md-expanded {
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+.summary-show-more {
+  margin-top: 8px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+}
+.summary-show-more:hover {
+  color: var(--text);
+  border-color: var(--text-muted);
+}
+
+/* agents layer (sim) · same tokens and type as style.css */
+
+/* health as an icon like search, theme and refresh; a badge only when something is wrong */
+.health-btn {
+  position: relative;
+  text-decoration: none;
+}
+.health-btn .health-badge {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  line-height: 0;
+}
+.health-btn .health-badge svg {
+  width: 6px;
+  height: 6px;
+}
+.health-btn .health-badge svg.healthy { display: none; }
+

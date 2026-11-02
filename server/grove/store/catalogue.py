@@ -990,10 +990,22 @@ MODEL_CALLS = Table(
             spec="day",
         ),
         _ruling("audio_seconds", "float", "S24, line 2684: voice calls"),
+        _ruling("route", "code", "S39: meta or modal"),
+        _ruling(
+            "outcome",
+            "code",
+            "S39: ok, invalid_output, rate_limited, provider_error, client_closed",
+        ),
+        _ruling(
+            "reasoning_tokens", "int", "S39, line 2694: the reasoning share of the output tokens"
+        ),
+        _ruling("latency_ms", "int", "S39, line 2694: from the request to the answer"),
+        _ruling("usage_estimated", "bool", "S39: true when the tokens are an estimate"),
     ),
     uniques=_keys("model_calls", ("id",)),
     indexes=_ranges("model_calls", ("world_id", "day")),
-    notes="Written only by the model-call layer (S20).",
+    notes="Written only by the model-call layer (S20), with the budget it spends in the same "
+    "transaction (S39).",
 )
 
 JUDGMENTS = Table(
@@ -1040,7 +1052,8 @@ BUDGETS = Table(
         _col("state", "enum:budget_state"),
     ),
     uniques=_keys("budgets", ("world_id", "day")),
-    notes="Written by the runner (S20).",
+    notes="Written by the model-call layer, with each model call, and by the operator's ceiling "
+    "(S39).",
 )
 
 # Truth, consequence and belief.
@@ -1654,6 +1667,37 @@ MIGRATIONS = _platform(
     _keys("migrations", ("name",)),
 )
 
+# Tables beyond B.1 that a later lane adds for its own feature. Each has its own migration.
+
+MAP_POSITIONS = Table(
+    name="map_positions",
+    label="MapPosition",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="views-a",
+    columns=(
+        _convention("id", "id", "UUIDv7 text from new_id() (S4)"),
+        _convention("world_id", "id", "the world of the item"),
+        _convention("item_id", "id", "an item id of the same world"),
+        _convention("x", "float", "the map's own units; finite, at most 1e7 either way"),
+        _convention("y", "float", "the map's own units; finite, at most 1e7 either way"),
+        _convention(
+            "placed_at", "instant", "from the clock provider, when the map first placed it"
+        ),
+    ),
+    uniques=_keys("map_positions", ("id",), ("world_id", "item_id")),
+    notes=(
+        "Where the map drew an item first. Insert-only: a position is never moved, so an item "
+        "keeps its place after a reload and after new items arrive. Only "
+        "server/grove/writer/positions.py writes it. One row per item: the (world_id, item_id) "
+        "key turns a second placement that races the first into a kept one. A view preference, "
+        "not a claim about the world, so it has no history and restores with the snapshot."
+    ),
+)
+
+LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS,)
+
 # B.1's five groups, in B.1 order.
 B1_GROUPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
     (
@@ -1738,7 +1782,7 @@ PLATFORM_TABLES: tuple[Table, ...] = (
 
 _B1: tuple[Table, ...] = tuple(t for _, group in B1_GROUPS for t in group)
 
-TABLES: tuple[Table, ...] = _B1 + PLATFORM_TABLES
+TABLES: tuple[Table, ...] = _B1 + PLATFORM_TABLES + LATER_TABLES
 B1_TABLES: tuple[str, ...] = tuple(t.name for t in _B1)
 
 # S17. Line 2560 names the text properties of grove_value_index.
