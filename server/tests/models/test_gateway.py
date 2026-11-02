@@ -1074,7 +1074,7 @@ def test_run_token_cap_stops_the_run_once_its_tokens_reach_it(driver, world, mak
 def test_upstream_429_is_retried_until_the_stated_reset(driver, world, make_rig):
     rig = make_rig(
         answer(429, headers={"retry-after": "3"}),
-        answer(429, headers={"x-ratelimit-reset-requests": "1m30s"}),
+        answer(429, headers={"x-ratelimit-reset-requests": "45s"}),
         answer(429),
         answer(200, SPARK_DOC),
     )
@@ -1083,7 +1083,7 @@ def test_upstream_429_is_retried_until_the_stated_reset(driver, world, make_rig)
 
     assert response.status_code == 200
     assert response.json() == SPARK_DOC
-    assert rig.waits == [3.0, MAX_WAIT, 8.0]
+    assert rig.waits == [3.0, 45.0, 8.0]
     bodies = rig.upstream.bodies()
     assert len(bodies) == 4
     assert all(body == bodies[0] for body in bodies)
@@ -1091,6 +1091,20 @@ def test_upstream_429_is_retried_until_the_stated_reset(driver, world, make_rig)
         read_rows(driver, world),
         [(expected_row(**SPARK_USAGE, reasoning_tokens=120), SPARK_COST)],
     )
+
+
+def test_upstream_429_with_a_far_reset_returns_at_once_with_the_wait(driver, world, make_rig):
+    # D15: a 429 backs off until the stated reset. Past MAX_WAIT the wait is the caller's, so
+    # nothing is sent again before the reset.
+    rig = make_rig(answer(429, headers={"x-ratelimit-reset-requests": "1m30s"}))
+
+    response = rig.post(token(world), {"model": SPARK, "messages": MESSAGES})
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "90"
+    assert rig.waits == []
+    assert len(rig.upstream.bodies()) == 1
+    assert [row["outcome"] for row in read_rows(driver, world)] == ["rate_limited"]
 
 
 def test_upstream_429_on_every_attempt_returns_rate_limited(driver, world, make_rig):

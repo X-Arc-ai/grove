@@ -1,5 +1,7 @@
-"""Sending with back-off: a 429 waits until the stated reset (D15), a 5xx or a dropped connection
-is tried again a few times. An egress refusal is never tried again."""
+"""Sending with back-off. Only a failure that shows the provider did no work is sent again: a 429,
+which waits for the stated reset (D15), a 503, and a connection that never opened. A read timeout,
+a dropped read, and a 500, 502 or 504 may have run and billed, so they are not sent again: the
+caller records the one attempt. An egress refusal is never tried again."""
 
 import asyncio
 import math
@@ -14,7 +16,9 @@ MAX_ATTEMPTS = 4
 # The back-off doubles to MAX_WAIT, so 15 attempts wait about 10 minutes in all.
 MODAL_ATTEMPTS = 15
 MAX_WAIT = 60.0
-_RETRY_STATUS = frozenset({500, 502, 503, 504})
+_RETRY_STATUS = frozenset({503})
+# The request never reached the provider, so sending it again costs nothing.
+NOT_SENT = (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout)
 _DURATION = re.compile(r"(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m(?!s))?(?:(\d+(?:\.\d+)?)s)?")
 _RESET_HEADERS = ("x-ratelimit-reset-requests", "x-ratelimit-reset-tokens")
 
@@ -66,21 +70,24 @@ def send(
 ) -> httpx.Response:
     """Send the request that `build` makes, and return the last response.
 
-    A 429 after the last attempt is returned to the caller, which raises RateLimited with the
-    reset. A transport error after the last attempt is raised.
+    A 429 after the last attempt, or with a reset too far off to wait for here, is returned to the
+    caller, which raises RateLimited with the reset. A connection that never opened, after the
+    last attempt, is raised; any other transport error is raised at once.
     """
     for attempt in range(1, attempts + 1):
         try:
             response = client.send(build())
-        except httpx.TransportError:
+        except NOT_SENT:
             if attempt == attempts:
                 raise
             sleep(min(2.0**attempt, MAX_WAIT))
             continue
         if response.status_code == 429 and attempt < attempts:
             stated = reset_after(response)
+            if stated is not None and stated > MAX_WAIT:
+                return response
             response.close()
-            sleep(min(stated if stated is not None else 2.0**attempt, MAX_WAIT))
+            sleep(stated if stated is not None else min(2.0**attempt, MAX_WAIT))
             continue
         if response.status_code in _RETRY_STATUS and attempt < attempts:
             response.close()
@@ -102,7 +109,7 @@ async def asend(
     for attempt in range(1, attempts + 1):
         try:
             response = await client.send(build(), stream=stream)
-        except httpx.TransportError:
+        except NOT_SENT:
             if attempt == attempts:
                 raise
             await sleep(min(2.0**attempt, MAX_WAIT))
@@ -110,8 +117,10 @@ async def asend(
         retry = response.status_code == 429 or response.status_code in _RETRY_STATUS
         if retry and attempt < attempts:
             stated = reset_after(response) if response.status_code == 429 else None
+            if stated is not None and stated > MAX_WAIT:
+                return response
             await response.aclose()
-            await sleep(min(stated if stated is not None else 2.0**attempt, MAX_WAIT))
+            await sleep(stated if stated is not None else min(2.0**attempt, MAX_WAIT))
             continue
         return response
     raise AssertionError("unreachable")

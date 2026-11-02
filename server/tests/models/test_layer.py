@@ -415,13 +415,13 @@ def test_respond_cache_key_is_a_stable_digest_of_the_instructions(driver, world,
     assert len(model_calls(driver, world)) == 5
 
 
-@pytest.mark.parametrize("max_output_tokens", [1023, 1, 0])
-def test_respond_refuses_max_output_tokens_under_1024_before_any_request(
+@pytest.mark.parametrize("max_output_tokens", [1023, 1, 0, 65537])
+def test_respond_refuses_max_output_tokens_off_the_range_before_any_request(
     driver, world, make_layer, max_output_tokens
 ):
     provider = FakeProvider()
 
-    with pytest.raises(ModelRefused, match="max_output_tokens must be at least 1024"):
+    with pytest.raises(ModelRefused, match="max_output_tokens must be from 1024 to 65536"):
         make_layer(provider).respond(
             world, job="extraction", input=EVENT, max_output_tokens=max_output_tokens
         )

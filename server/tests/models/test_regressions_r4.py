@@ -184,17 +184,23 @@ def test_a_stream_that_never_finishes_after_the_client_left_is_cut_and_estimated
     response = httpx.Response(200, stream=body)
     input_chars = len(json.dumps(MESSAGES)) + 2
 
-    async def drive() -> None:
+    async def drive() -> list[dict]:
         relay = gateway._relay(response, claims, SPARK, "low", clock.monotonic(), None, input_chars)
         await relay.__anext__()
         await relay.aclose()
         body.gate.set()
+        # The cap must end the read on its own: this waits far less than the 600 s read timeout,
+        # and the row must be there before the gateway closes anything.
+        await gateway.settle(timeout=2.0)
+        found = rows(driver, world)
         await gateway.aclose()
+        return found
 
-    asyncio.run(drive())
+    found = asyncio.run(drive())
+    assert found, "the drain cap did not end the read"
     estimate_in = math.ceil(input_chars / 4)
     estimate_out = math.ceil(len("Row nine.") / 4)
-    assert rows(driver, world) == [
+    assert found == [
         {
             "outcome": "client_closed",
             "input_tokens": estimate_in,
@@ -460,6 +466,16 @@ def test_the_glimmer_server_fetches_no_remote_media():
     text = app_file.read_text(encoding="utf-8")
     assert '"--allowed-media-domains",\n    "media.invalid",' in text
     assert '"VLLM_MEDIA_URL_ALLOW_REDIRECTS": "0"' in text
+
+
+def test_the_glimmer_server_scales_to_zero_and_stays_locked():
+    app_file = Path(__file__).resolve().parents[3] / "deploy" / "modal" / "glimmer.py"
+    text = app_file.read_text(encoding="utf-8")
+    assert "min_containers=0," in text
+    assert "max_containers=2," in text
+    assert "unauthenticated=False," in text
+    assert "scaledown_window=IDLE_SECONDS," in text and "IDLE_SECONDS = 300" in text
+    assert """'{"reasoning_strength": "low"}',""" in text
 
 
 def test_gzip_is_still_read_when_it_is_valid(driver, world, test_clock):
