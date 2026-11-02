@@ -23,6 +23,7 @@ from grove.writer.clocks import (
     parse_instant,
     sort_key,
 )
+from grove.writer.declines import write_override_row
 from grove.writer.errors import BatchDeclined, Refusal, Refused
 from grove.writer.history import Stamp, add_entry, add_text, compact, row_json
 from grove.writer.neardup import MAX_CANDIDATES_SHOWN, similarity, threshold_for
@@ -60,7 +61,8 @@ _SUPPORTING = "MATCH (e:Evidence {target_id: $id, polarity: 'supports', active: 
 
 
 def _before_commit() -> None:
-    """The last statement inside the transaction body: a test replaces it to inject a failure."""
+    """api.py calls this last inside the transaction body: a test replaces it to inject a failure
+    or a kill, with the batch and the request row written and nothing committed."""
 
 
 @dataclass
@@ -479,7 +481,8 @@ def _words(run: _Run, prefix: str, clock: Clock | None) -> dict[str, Any]:
 
 def _near_duplicates(
     run: _Run, kind: dict[str, Any], title: str, distinct_from: list[dict[str, Any]]
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[dict[str, Any]]]:
+    """The named pairs, and the candidates at or above the threshold that a pair overrides."""
     rows = run.tx.run(
         "MATCH (i:Item {kind: $kind}) WHERE i.end_class IS NULL "
         "RETURN i.id AS id, i.title AS title",
@@ -519,7 +522,12 @@ def _near_duplicates(
         )
     for item_id in named:
         _one(run, _READ_ITEM, "item", item_id, lock=False)
-    return list(named.items())
+    overridden = [
+        {"item_id": item_id, "score": round(score, 3)}
+        for score, item_id in candidates
+        if item_id in named
+    ]
+    return list(named.items()), overridden
 
 
 def _record_pairs(
@@ -581,7 +589,7 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
                 f"kind {kind['name']!r} requires {name}",
                 {"field": name},
             )
-    pairs = _near_duplicates(run, kind, op["title"], op.get("distinct_from") or [])
+    pairs, overridden = _near_duplicates(run, kind, op["title"], op.get("distinct_from") or [])
     stopped = None
     if role in TERMINAL_ROLES:
         # A terminal status at create carries its end time: no later than the evidence.
@@ -630,6 +638,8 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     )
     _write_evidence(run, plans, "item", item_id, reason_id)
     _record_pairs(run, item_id, pairs, provenance)
+    if overridden:
+        write_override_row(run.tx, run.stamp.request_id, op["op_id"], overridden, run.at)
     run.touch(item_id, index)
     if role == "done":
         run.done_items[item_id] = index
@@ -1606,4 +1616,3 @@ def apply_ops(
             },
             request_id=stamp.request_id,
         )
-    _before_commit()

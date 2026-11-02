@@ -142,11 +142,19 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S36. The world id form** (spec lines 3081, 3087, 3092). A world id is a lowercase UUID (`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`), or the test form `t_<slice>_<that uuid>` with the slice `[a-z0-9-]+`. `check_world_id` refuses any other text, and the primitive sentinel `''` stays a separate path. The full-text analyzer splits on hyphens and folds case, and with this form the token sequence of one world id never occurs inside another's unless both share the UUID. So the world phrase of S17 is exact in practice, and one world's rows cannot use up another world's `LIMIT`. This replaces the earlier pattern `[A-Za-z0-9_-]{1,80}`, under which `t_x_<h>` was a token prefix of `t_x_<h>-000`.
 
-**S37. Receipts and short ids** (spec lines 733, 737, 2529, and S4). A stored receipt (`Receipt.to_json()`, the future `requests.receipt`) holds ids and codes only: symbol, entity type, entity id, field, value id, end class and flags. `render_receipt` reads titles, kind names, meaning names and values fresh, so a forget that replaces a value also changes how an old receipt reads. The receipt is built after the commit from the change entries of the batch's change set, in a new read transaction. A short id is the last 8 hex digits of the id: the random part of a UUIDv7, because ids made in the same millisecond share their first digits. One batch is one commit and one change set. The writer's public API is `server/grove/writer/README.md`.
+**S37. Receipts and short ids** (spec lines 733, 737, 2529, and S4). A stored receipt (`Receipt.to_json()`, `requests.receipt`) holds ids and codes only: symbol, entity type, entity id, field, value id, end class and flags. `render_receipt` reads titles, kind names, meaning names and values fresh, so a forget that replaces a value also changes how an old receipt reads. The receipt is built after the commit from the change entries of the batch's change set, in a new read transaction. A short id is the last 8 hex digits of the id: the random part of a UUIDv7, because ids made in the same millisecond share their first digits. One batch is one commit and one change set. The writer's public API is `server/grove/writer/README.md`.
 
 **S38. Locators** (spec lines 739, 3046 to 3059, and S27). The writer checks that a locator resolves inside its stored source with four schemes: `line:N` or `line:N-M` (1-based lines of the content), `char:A-B` (offsets in the content), `key:<token>` (a token of 4 or more characters that occurs in the content: a record id, an event id, a commit sha) and `whole` (the whole source). Each connector type allows a fixed set of schemes in code (`grove/writer/provenance.py`), and a source that holds only a pointer resolves only `whole`. `ingest-a` may narrow a type's set when it lands its parsers.
 
 **S39. Metering and the budget** (spec lines 2659, 2694, 3120, 3122). The `models` lane writes `model_calls` and `budgets` together: `record_model_call` in `server/grove/writer/model_calls.py` creates the `:ModelCall` and adds its cost to the day's `:Budget` in one transaction, so `spent` is always the sum of the day's recorded costs. This replaces "budgets by the runner" in S20. The operator sets a ceiling with `set_budget_ceiling`; an absent `ceiling` means no ceiling. A budget row that does not exist yet takes the ceiling of `GROVE_DAILY_BUDGET_USD`. `state` turns `reached` in the transaction where `spent` reaches `ceiling`. At `reached`, the jobs that `server/grove/models/jobs.json` marks `defer` are refused with `budget_reached` before any request leaves, and the jobs marked `continue` (triage, extraction and transcription, run in code) still run, as D15 says (line 2659). Every gateway call stops at the ceiling, whatever job its token names: the build plan says an agent call stops there, and the plan outranks D15. A pass that waits leaves its requests queued for the reset. Calls that pass the gate at the same moment can end the day above the ceiling by the cost of the calls in flight. `model_calls` gains five properties: `usage_estimated`, `route` (`meta`, `modal`), `outcome` (`ok`, `invalid_output`, `rate_limited`, `provider_error`, `client_closed`), `reasoning_tokens` (the reasoning share of `output_tokens`, line 2694) and `latency_ms`. A failed call is recorded with its outcome, so the share of calls that wrote nothing counts every call. Its tokens are zero when the provider did no work (a refusal, a 429, a 503, a connection that never opened), and an estimate of the input when it may have run the call; `usage_estimated` marks an estimate. The price table is `server/grove/models/prices.json` (S24).
+
+**S40. Requests** (spec lines 748, 750, 763, 2029, 3081, 3116). A request commits exactly once, in one batch, and `saved` moves in the same transaction as that commit. There are no stored batches and no list of batches on the row. A kill before the commit rolls everything back, so the next pass extracts again; a kill after the commit leaves `saved`, so no pass runs again. So "exactly one effect" comes from atomicity, not from a model that re-reads what it did. "Applies only the remainder" (line 750) is all or nothing at this grain, and `committed_for_request` answers what a request committed. A pass with more facts for the same words mints another request id (`request_id=None`, or `<key>:2`). A backfill re-ground takes a new id for each try (`<K>:g<N>`), and the unique key on evidence still holds layer 1. A request id is `[A-Za-z0-9_.:-]{1,128}` at every entry point, because it lands on change entries and a receipt prints part of it, so `hosts-b` passes a hash of the host's idempotency key, prefixed with the OAuth client id.
+
+The row adds these columns to B.1: `version` and `touched_at` (S12); `commit_id` and `change_set_id` (the one commit); `fingerprint` and `declined_fingerprint` (sha256 of the batch); `repairs`; `retry_at`, `lease_until` and `claimed_by`; `content_key` (what a second enqueue compares); `verbatim`, `host_message_id`, `said_at` and `about` (B.3's remember fields, because the pass that needs them runs later in another process). The constants live in `server/grove/writer/requests.py`, because Appendix C has no row for them: `MAX_ATTEMPTS` 5, `BACKOFF_SECONDS` (30, 60, 120, 240), indexed by the attempts and capped at the last, and `LEASE_SECONDS` 300. `failed` with a `retry_at` waits for a retry and reads "saving". `failed` with none is surfaced. "Saved" needs the status and a receipt in hand. The receipt attaches right after the commit, because it is a fresh read, so a saved row with no receipt is legal after a crash, and `request_state` rebuilds it from the change set with no write.
+
+Only a row `enqueue_request` wrote has a `source_id`, and only such a row can be claimed. One predicate says what is due: `queued` with `retry_at` absent or past, `failed` with `retry_at` past, `applying` with `lease_until` absent or past. A replay runs the rules on the row twice: with no lock before the world lock, so replays of a saved request never queue behind it, and under the lock, because the first read can be stale. Saved with the same fingerprint writes nothing and reads the receipt. Saved with another fingerprint, or a finish that has none, is refused with rule `request_key_reused`. Declined with the same fingerprint writes nothing and raises the decline again. Declined with a new fingerprint is the one repair attempt (line 748) while `repairs` is 0, and is refused with rule `repair_spent` after that. A batch's transaction takes `WorldTx.lock_world()` first, a direct `SET` on the `:World` row, because the near-duplicate check, the restatement read and the slot read take no lock of their own. Every batch took this lock at its first change entry already, so the added wait is small, and deadlocks among batches go away. The item and link locks stay as belts.
+
+**S41. Declines** (spec lines 748, 764, 774, 2529). A `:Decline` adds `code` and `recorded_at` to B.1. A row holds ids and codes only: a refusal's message and details can repeat a caller's phrase, and a forget cannot reach a copy here, so neither is stored. `op_id` is `batch` for a fault of the whole batch, and an op id outside `[A-Za-z0-9_.:$-]{1,80}` is stored as `opaque:<first 16 of its sha256>`. `requests.receipt` of a declined request holds the stored decline: state, batch size, request id, and refusals of `{op_id, op, code, rule}`, with `op` only if it names an operation and `unknown` if not. `nearduplicate_candidate_ids` is JSON of `{item_id, score}`, so a replayed decline hands a repair its data. The log is one transaction under the request row's lock, after the rollback. A stale version alone is the exception: an enqueued row goes back to `queued` with a `retry_at`, and any other row keeps its status while the `:Decline` rows are written, because the next pass re-reads and proposes a new batch (line 2029). A log that fails never masks the decline. A near-duplicate that passes on a named `distinct_from` writes a row in the batch's own transaction with `override_used` true. A refusal that never reached the request is not logged: a caller with no write scope, a caller that is no queue worker, `request_key_reused`, `repair_spent`, `lease_lost`, and `not_found` from an enqueue or from `apply_request`.
 
 ## Open points for later lanes
 
@@ -160,10 +168,12 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | Where a search term's type and language live. `items.search_terms` holds the text of each term. | 2076, 2098 | `ingest-b` |
 | The deferral count: stored, or derived from `verifications`. | 2159, 2174 | `cleanup` |
 | The value lists of `property_names.value_type` and `meanings.direction`. | 1583, 3241 | `ontology` |
-| A request row needs its source id before screening has finished. | 750, 2462, 2505 | `screening` |
+| A request row needs its source id before screening has finished. `enqueue_request` and `write_request_row` take a `write_source` that runs in their transaction, only for a new row; `write_screened_source` plugs in there. | 750, 2462, 2505 | `screening` |
 | The grade rows of controls, and findings raised by agent runs: their run id and their text. | 2198, 2376, 2427 | `evals`, `cleanup` |
 | The newest-id part of the fingerprint for a table with no id, and whether a rebuild keeps `touched_at`. | 812, 922 | `writer-b` |
-| Rows outside the S12 list that change after they are written carry no version: `requests`, `jobs`, `support_changed.taken_at`, `ontology_change_log.undone_by`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, `run_records`, and the finished times of `audit_runs` and `area_audits`. | 3081 | `writer-a` |
+| Rows outside the S12 list that change after they are written carry no version: `jobs`, `support_changed.taken_at`, `ontology_change_log.undone_by`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, `run_records`, and the finished times of `audit_runs` and `area_audits`. Each owner adds the pair when it writes the row. `requests` has it (S40). | 3081 | `runner` (`jobs`, `run_records`), `beliefs` (`support_changed`), `ontology` (`ontology_change_log`), `forget` (`history_values`), `models` (`budgets`), `truth-clock` (`horizon_stats`), `walk` (`walk_rotation`), `evals` (`checks`, `audit_runs`), `cleanup` (`area_audits`) |
+| The runner needs a process that holds the driver for `worlds_with_due_requests`: an API route under a service scope, with a credential per world for each pass. A killed pass reads `saving`, and its row stays `applying` until the lease passes. The watchdog that sees a pass die calls `fail_request(retryable=True)` and sets `lease_seconds` to the watchdog time plus a margin. A worker name is unique per pass, because it is what `lease_lost` compares. | 750, 2029 | `runner` |
+| The 5 second wait of remember, built from `request_state`. A hash of the host's idempotency key as the request id, prefixed with the OAuth client id (S40). `to_api()` has no receipt text, so a host renders through `render_receipt`. A surfaced failure answers remember with the typed error `unavailable`. `verbatim` requires `host_message_id`, and the schema of remember checks that: the queue only stores the two. | 754, 3195, 3294 | `hosts-b` |
 | The value index must gain the status words, `items.status` and `kinds.status_vocabulary` (S31). Until then, a forget of a status word renames the word in the kind. | 2560, 2561 | `forget` |
 | `why` of a contradiction from `grove.cleanup.v1` (the `grove.extract.v1` form) has no value-id column in `contradictions`. | 2087, 2199, 3133 | `beliefs` |
 | Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. | none; a build fact | `deploy-a` |
@@ -798,19 +808,36 @@ Keys: `requests_world_id_id_unique` (world_id, id).
 
 Indexes: `requests_world_id_status_idx` (world_id, status).
 
+A request commits once, in one batch, and `saved` moves in the same transaction as that commit (S40). A filter in MATCH or WHERE reads with no lock, so a transition checks the row after it holds the row's write lock (S1).
+
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
-| id | `id` | `id` | b1 | the caller's idempotency key, unique per world (S9) |
+| id | `id` | `id` | b1 | the caller's idempotency key, unique per world (S9, S40) |
 | world_id | `world_id` | `id` | b1 |  |
-| caller | `caller` | `code` | b1 |  |
-| source id of the request's text | `source_id` | `id` | b1 |  |
+| caller | `caller` | `code` | b1 | the actor code of the first writer |
+| source id of the request's text | `source_id` | `id` | b1 | only a row with one can be claimed (S40) |
 | run id | `run_id` | `id` | b1 |  |
 | status | `status` | `enum:request_status` | b1 |  |
 | attempts | `attempts` | `int` | b1 |  |
 | created at | `created_at` | `instant` | b1 |  |
 | committed at | `committed_at` | `instant` | b1 |  |
-| receipt | `receipt` | `json_ids` | b1 | ids and codes; a title is read fresh when shown |
+| receipt | `receipt` | `json_ids` | b1 | ids and codes; a title is read fresh when shown. A declined row holds its stored decline here (S41) |
 | last error code | `last_error_code` | `code` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+| (none) | `commit_id` | `id` | ruling | S40: the one commit of this request |
+| (none) | `change_set_id` | `id` | ruling | S40: the one change set of this request |
+| (none) | `fingerprint` | `code` | ruling | S40: sha256 of the committed batch |
+| (none) | `declined_fingerprint` | `code` | ruling | S40: sha256 of the batch last declined |
+| (none) | `repairs` | `int` | ruling | S40: 1 once the one repair attempt is spent (line 748) |
+| (none) | `retry_at` | `instant` | ruling | S40: when a queued or failed row is due again |
+| (none) | `lease_until` | `instant` | ruling | S40: when an applying row is due again |
+| (none) | `claimed_by` | `code` | ruling | S40: the worker that holds the lease |
+| (none) | `content_key` | `code` | ruling | S40: what a second enqueue under this key compares |
+| (none) | `verbatim` | `bool` | ruling | S40: B.3 remember, for the later pass |
+| (none) | `host_message_id` | `locator` | ruling | S40: B.3 remember, for the later pass |
+| (none) | `said_at` | `instant` | ruling | S40: B.3 remember, for the later pass |
+| (none) | `about` | `ids` | ruling | S40: B.3 remember, for the later pass |
 
 ### declines
 
@@ -820,6 +847,8 @@ Keys: `declines_world_id_request_id_op_id_unique` (world_id, request_id, op_id).
 
 Indexes: none.
 
+Ids and codes only: a refusal's message and details are never stored, and an op id that could hold text is stored by its hash (S41). `op_id` is `batch` for a fault of the whole batch.
+
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
 | world_id | `world_id` | `id` | ruling | S5: line 3081 wins over the table's own list |
@@ -828,6 +857,8 @@ Indexes: none.
 | rule | `rule` | `code` | b1 |  |
 | near-duplicate candidate ids with scores | `nearduplicate_candidate_ids` | `json_ids` | b1 | list of {item id, score} |
 | override used | `override_used` | `bool` | b1 |  |
+| (none) | `code` | `code` | ruling | S41: the typed error code of the refusal |
+| (none) | `recorded_at` | `instant` | ruling | S41: when the decline was logged |
 
 ### jobs
 
