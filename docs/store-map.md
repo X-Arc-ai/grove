@@ -168,6 +168,14 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. | 354, 991 | `deploy-a` |
 | The daily dump and the restore have not run on this store. | 806 to 808, 3065 | `deploy-a`, `writer-b` |
 | `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
+| `change_status` and `end_item` do not trigger the walk yet, and `reopen_item` does not yet send an R1 ending back as a proposal. | 3160 to 3162 | `walk` |
+| The writer takes the source type of a row from the connector and the statement class only. These wait for code: an automated sender confirming its own action, a decision's named speaker, a forwarded row's original author, and confirming evidence for the start of a period that took place. | 1074, 1112 | `truth-clock` |
+| A late terminal status that goes to history only stores its status entry but no `stopped_being_true` entry, because nothing clears a stop entry when a later live status moves the head. An as-of read at that time shows the status with no end time. | 3160 | `writer-b` |
+| `create_link`'s restatement path and `_end_prior` read `active_key` again under the lock, with no test of their own. A test needs a second interleaving harness. | 762, 772 | `writer-a2` |
+| A `link_not_found` for a link id that a receipt had just returned appeared once under parallel load and did not come back in 18 runs. The concurrency tests must watch for it. | 772 | `writer-a2` |
+| The near-duplicate test rewords one word. Calibration needs a stronger pair. | 772 | `writer-a2` |
+| The writer lint has no allowance yet for the bookkeeping tables of the model-call layer and the job runner, and must name them. | 772 | `models`, `runner` |
+| `record_connector`, `record_source` and `record_episode` take no `Caller`, so the read-only refusal does not reach them. A layer that exposes them to a token checks its scope first. | 772 | `hosts-b` |
 
 ## Added by later lanes
 
