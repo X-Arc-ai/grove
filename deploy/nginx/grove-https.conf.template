@@ -17,18 +17,25 @@ server {
     ssl_session_tickets off;
 
     add_header Strict-Transport-Security "max-age=31536000" always;
-    # Chat exports with voice notes are large.
-    client_max_body_size 256m;
+    # nginx writes a body to disk before the API sees it, so a large body is only for uploads.
+    client_max_body_size 10m;
+
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    # MCP over streamable HTTP may answer with a stream.
+    proxy_buffering off;
+    proxy_read_timeout 300s;
 
     location / {
         proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        # MCP over streamable HTTP may answer with a stream.
-        proxy_buffering off;
-        proxy_read_timeout 300s;
+    }
+
+    # Chat exports with voice notes are large.
+    location /v1/sources/ {
+        client_max_body_size 256m;
+        proxy_pass http://127.0.0.1:8000;
     }
 }

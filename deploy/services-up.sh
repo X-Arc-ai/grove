@@ -24,11 +24,19 @@ for id in $(docker ps --all --quiet --filter "label=com.docker.compose.project=$
     fi
 done
 
-# Each step runs whatever the last one did: this script is the last thing that starts them.
-failed=0
-compose start neo4j || failed=1
-wait_healthy neo4j "${GROVE_SERVICES_TRIES:-300}" || failed=1
-compose start api runner || failed=1
-# The API's health check reads the store, so a healthy API means the database answers.
-wait_healthy api "${GROVE_SERVICES_TRIES:-300}" || failed=1
-[ "$failed" = 0 ] || die "the services are not all healthy"
+tries=${GROVE_SERVICES_TRIES:-300}
+compose start neo4j || log "could not start neo4j yet"
+wait_healthy neo4j "$tries" || log "neo4j is not healthy yet"
+
+# compose refuses to start the writers while the store reports unhealthy, and the store can turn
+# healthy after any try, so each try starts them again. The API's health check reads the store, so
+# a healthy API means the database answers.
+for _ in $(seq "$tries"); do
+    compose start api runner >/dev/null 2>&1 || true
+    if is_healthy api; then
+        log "the store and its writers run"
+        exit 0
+    fi
+    sleep "${GROVE_POLL_SECONDS:-2}"
+done
+die "the services are not all healthy"

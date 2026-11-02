@@ -63,6 +63,14 @@ if args[0] == "compose":
     while rest and rest[0].startswith("--"):
         rest = rest[2:]
     command = rest[0]
+    if command == "start" and "api" in rest and "FAKE_START_REFUSALS" in os.environ:
+        # Real compose refuses while the store reports unhealthy, and starts nothing.
+        counter = Path(os.environ["FAKE_STATE"]) / "start_refusals"
+        refused = int(counter.read_text()) if counter.exists() else 0
+        if refused < int(os.environ["FAKE_START_REFUSALS"]):
+            counter.write_text(str(refused + 1))
+            sys.exit(1)
+        Path(os.environ["FAKE_STATE"], "api_started").write_text("yes")
     # docker compose run keeps stdin open, as the real one does with no --interactive=false.
     if command == "run" and not sys.stdin.isatty():
         sys.stdin.read()
@@ -88,7 +96,13 @@ elif args[0] == "ps" or args[1:2] == ["ls"]:
         print(stale)
 elif args[0] == "inspect":
     unhealthy = "container-" + os.environ.get("FAKE_UNHEALTHY", "none")
-    print("unhealthy" if args[-1] == unhealthy else os.environ.get("FAKE_HEALTH", "healthy"))
+    refused = "FAKE_START_REFUSALS" in os.environ and not Path(
+        os.environ["FAKE_STATE"], "api_started"
+    ).exists()
+    if args[-1] == unhealthy or (refused and args[-1] == "container-api"):
+        print("unhealthy")
+    else:
+        print(os.environ.get("FAKE_HEALTH", "healthy"))
 elif args[0] == "run" and "grove.store.dump_fingerprint" in args:
     live = os.environ.get("FAKE_FP", "a" * 64)
     fingerprint("restore_fingerprints", os.environ.get("FAKE_RESTORE_FP", live))
@@ -160,6 +174,10 @@ _FAKE_LOGGED = r"""
 import os, sys
 with open(os.environ["FAKE_LOG"], "a") as log:
     log.write(os.path.basename(sys.argv[0]) + " " + " ".join(sys.argv[1:]) + "\n")
+failing = os.environ.get("FAKE_FAIL_CALL")
+called = os.path.basename(sys.argv[0]) + " " + " ".join(sys.argv[1:])
+if failing and failing in called:
+    sys.exit(1)
 status = os.environ.get("FAKE_" + os.path.basename(sys.argv[0]).upper() + "_STATUS", "0")
 sys.exit(int(status))
 """
@@ -250,6 +268,7 @@ def box(tmp_path: Path) -> Box:
     shutil.copytree(DEPLOY, root / "src" / "deploy")
     for name in ("etc", "state", "log", "backups", "acme", "systemd", "logrotate", "fake"):
         (root / name).mkdir(parents=True)
+    (root / "etc").chmod(0o700)
     for name in ("sites-available", "sites-enabled"):
         (root / "nginx" / name).mkdir(parents=True)
     live = root / "letsencrypt" / "live" / HOST

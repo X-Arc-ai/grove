@@ -23,6 +23,12 @@ chmod 400 "$GROVE_ETC/google-oauth.json"
 open_files=$(find "$GROVE_ETC" -maxdepth 1 -type f \( -perm -0040 -o -perm -0020 -o -perm -0010 \
     -o -perm -0004 -o -perm -0002 -o -perm -0001 \))
 [ -z "$open_files" ] || die "a file in $GROVE_ETC is readable by group or others"
+# The env files are root's, the user who runs this, and the folder is root's alone.
+foreign_files=$(find "$GROVE_ETC" -maxdepth 1 -type f -name '*.env' ! -user "$(id -u)")
+[ -z "$foreign_files" ] || die "an env file in $GROVE_ETC has another owner"
+open_folder=$(find "$GROVE_ETC" -maxdepth 0 \( -perm -0040 -o -perm -0020 -o -perm -0010 \
+    -o -perm -0004 -o -perm -0002 -o -perm -0001 \))
+[ -z "$open_folder" ] || die "$GROVE_ETC is open to group or others"
 
 "$here/install-host.sh"
 
@@ -37,11 +43,10 @@ compose_run api python -m grove.writer.migrate
 
 # From here compose replaces the containers, so this sha is what the box runs, healthy or not. The
 # build it replaced stays on record for a roll back, also when one sha is deployed twice.
-mkdir -p "$GROVE_STATE"
 if [ -n "$previous" ] && [ "$previous" != "$sha" ]; then
-    printf '%s\n' "$previous" >"$GROVE_STATE/previous.sha"
+    write_state previous.sha "$previous"
 fi
-printf '%s\n' "$sha" >"$GROVE_STATE/deployed.sha"
+write_state deployed.sha "$sha"
 if ! compose up --detach --wait --remove-orphans api runner; then
     record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: runs, services NOT healthy"
     exit 1

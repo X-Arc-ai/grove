@@ -14,6 +14,7 @@ enabled="$GROVE_NGINX_DIR/sites-enabled"
 certificate="$GROVE_LETSENCRYPT_DIR/live/$host/fullchain.pem"
 saved=$(mktemp -d)
 restored=0
+reloaded=0
 checked=0
 
 # Keep the sites as they were, so a site that nginx never accepted never stays on disk.
@@ -31,12 +32,18 @@ restore_sites() {
         if [ -f "$saved/$name" ]; then cp -p "$saved/$name" "$sites/$name"; fi
         if [ -f "$saved/$name.enabled" ]; then ln -sfn "$sites/$name" "$enabled/$name"; fi
     done
+    # No TLS site may name a certificate that does not exist: nginx would refuse to start.
+    if [ ! -f "$certificate" ]; then rm -f "$enabled/grove-https.conf"; fi
 }
 
 # Any failure before the last check, in any step, puts the old sites back.
 finish() {
     local status=$?
-    if [ "$status" != 0 ] && [ "$checked" = 0 ]; then restore_sites; fi
+    if [ "$status" != 0 ] && [ "$checked" = 0 ]; then
+        restore_sites
+        # A reload earlier in this run made the new sites live, so the old ones must go live too.
+        if [ "$reloaded" = 1 ] && nginx -t; then systemctl reload-or-restart nginx || true; fi
+    fi
     rm -rf "${saved:?}"
     exit "$status"
 }
@@ -54,6 +61,7 @@ checked_reload() {
     fi
     # Also starts nginx if it is not running.
     systemctl reload-or-restart nginx
+    reloaded=1
 }
 
 mkdir -p "$sites" "$enabled" "$GROVE_ACME_ROOT"
@@ -71,10 +79,6 @@ if [ ! -f "$certificate" ]; then
     fi
     if ! certbot certonly --webroot --webroot-path "$GROVE_ACME_ROOT" --domain "$host" \
         --non-interactive --agree-tos --keep-until-expiring "${account[@]}"; then
-        restore_sites
-        # No TLS site may name a certificate that does not exist: nginx would refuse to start.
-        rm -f "$enabled/grove-https.conf"
-        if nginx -t; then systemctl reload-or-restart nginx || true; fi
         die "certbot got no certificate for $host; no TLS site is enabled"
     fi
 fi
