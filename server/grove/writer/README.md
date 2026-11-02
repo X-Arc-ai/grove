@@ -34,6 +34,11 @@ from grove.writer import (
 | `record_source(driver, world_id, *, connector_id, external_locator, content=None, content_pointer=None, parser_version, untrusted=False) -> str` | One `:Source` row with screened content (screening runs before this call) or a pointer. Returns its id. |
 | `record_episode(driver, world_id, *, connector_id, source_ids, first_message_key, last_message_key, start_time, end_time, cut_rule, run_id=None) -> str` | One `:Episode` row, keyed on the connector and the first message key. A later cut of the same window keeps the id and extends the range. Returns its id. |
 
+The package also exports `ReceiptLine` (one line of a `Receipt`), `DeclinedReceipt` (the type of
+`BatchDeclined.receipt`), `InvalidRecord` (raised by the three `record_` functions, nothing written)
+and `HTTP_STATUS`. The three `record_` functions are not B.2 operations and take no `Caller`: a
+layer that exposes them to a token checks its scope first.
+
 Read helpers on the read side, for tests and for later lanes: `grove.store.asof.item_as_of(query,
 item_id, world_time)` replays an item's change entries to a world time (the head rule of D1),
 and `grove.writer.receipts.short_id(id)` gives the short form a receipt prints.
@@ -113,6 +118,10 @@ The other B.2 operations belong to later lanes: correct, refute, supersede, merg
 beliefs and contradictions (`beliefs`); proposals and marks (`walk`); questions, holds and
 mentions (`cleanup`, `ingest-b`); ontology operations (`ontology`); forget (`forget`).
 
+Two B.2 clauses of the operations above wait for the `walk` lane, because no walk and no R1 ending
+exist yet: "triggers the walk" on `change_status` and `end_item`, and "R1's endings come back only
+as a proposal" on `reopen_item`.
+
 ## Refusals
 
 `BatchDeclined.refusals` is a list of `Refusal(op_id, op, code, rule, message, details)`. `code`
@@ -152,7 +161,7 @@ time as `world_time` (ISO text).
 |---|---|---|
 | A caller with no write scope is refused by every operation | `scope_denied` | `test_bypass.py` |
 | An operation from a caller kind it does not list is refused | `scope_denied` | `test_bypass.py` |
-| A kind, a meaning or a status must exist after alias resolution | `unknown_kind`, `unknown_meaning`, `unknown_status` | `test_contract_d1.py` |
+| A kind, a meaning or a status must exist after alias resolution, at create and at a status change | `unknown_kind`, `unknown_meaning`, `unknown_status` | `test_contract_d1.py`, `test_contract_d2.py` |
 | A reversed alias swaps the endpoints | (none) | `test_contract_d1.py` |
 | Endpoint kinds must match the meaning | `endpoint_kind_mismatch` | `test_contract_d1.py` |
 | One active link per (from, meaning, to): a restatement adds evidence, not a link | (none) | `test_contract_d1.py` |
@@ -171,13 +180,15 @@ time as `world_time` (ISO text).
 | Became true is a clock or "unknown"; an end may not precede a start; a terminal status at create stores its end time | `missing_became_true`, `end_before_start` | `test_contract_d2.py` |
 | Required fields and required links of the kind hold on create and on every update, against the merged state; an update may not blank the title or a required field | `invalid_arguments` (rules `required_field`, `required_link`) | `test_contract_d2.py` |
 | Only verify moves last confirmed | `invalid_arguments` (rule `verify_only`) | `test_contract_d2.py` |
-| A record's claim never changes | `record_immutable` | `test_contract_d2.py` |
+| A record's claim never changes: an update may touch only its search terms, and a record refuses a status, an end and a reopen | `record_immutable` | `test_contract_d2.py` |
 | A cited verdict must be a recorded judgment; a caller's score, weight, band or load-bearing flag is refused | `unrecorded_verdict`, `caller_score` | `test_contract_d2.py` |
 | A contradicting row on a belief cites two recorded judgments of this belief (subject `belief:<id>`, a judge role, and the cited evidence row when the judgment names one), from two models, that both say it contradicts | `unrecorded_verdict` (rules `judgment_subject`, `judgment_role`, `judgment_evidence`), `second_judge_required`, `judges_disagree`, `judge_not_supports` (rule `judge_not_contradicts`) | `test_contract_d2.py` |
 | A terminal done, also one that goes to history only, needs in its batch an observed confirming row (written or cited again), or a rolled-up row whose premises are active confirming rows of the item's parts (linked by a meaning that rolls up completion), with every part at a terminal role and every done part covered | `terminal_needs_confirmation` | `test_contract_d2.py` |
-| A near-duplicate title needs `distinct_from` with a reason | `near_duplicate` | `test_contract_d2.py` |
+| A near-duplicate title needs `distinct_from` with a reason | `near_duplicate`, `invalid_arguments` (rule `distinct_reason`) | `test_contract_d2.py` |
 | An inferred or rolled-up row names its premises, each an active evidence row of this world | `inferred_evidence` (rules `premises_required`, `premise_not_found`) | `test_contract_d2.py` |
 | `end_link` never ends a link of a primitive meaning | `unknown_meaning` (rule `primitive_meaning`) | `test_contract_d2.py` |
+| `end_item` and `end_link` need a valid end class and a world end time; `reopen_item` needs a reason; `end_evidence` needs a valid end reason | `invalid_arguments` (rules `missing_field`, `enum`) | `test_contract_d2.py` |
+| `attach_evidence` needs a target that exists, and is unique on message key, target and polarity | `not_found` (rule `target_not_found`) | `test_contract_d2.py` |
 | An item, a link or an evidence row ends once | `invalid_arguments` (rule `already_ended`) | `test_contract_d2.py` |
 | Only a terminal status carries `stopped_being_true` | `invalid_arguments` (rule `stopped_needs_terminal`) | `test_contract_d2.py` |
 | Only a link of the generic meaning keeps an original phrase | `invalid_arguments` (rule `original_phrase`) | `test_contract_d2.py` |
