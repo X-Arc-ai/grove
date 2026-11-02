@@ -4,7 +4,8 @@ The contract: the cookie `grove_session` holds a token. `:Session.token_hash` is
 sha256 hex of that token. A session is valid while `revoked_at` is absent and `expires_at` is later
 than the clock's now. `:Session.user_id` leads to the `:World` whose `owner_user_id` it is, the
 oldest by `created_at` when there are several. `World.self_item_id`, which may be absent, names the
-person's own item.
+person's own item. `:Session.method` says how the person signed in, and a session from before that
+column has none.
 """
 
 import hashlib
@@ -22,7 +23,8 @@ _FIND = (
     "MATCH (s:Session {token_hash: $token_hash}) "
     "WHERE s.revoked_at IS NULL AND s.expires_at > $now "
     "MATCH (w:World {owner_user_id: s.user_id}) "
-    "RETURN s.user_id AS user_id, w.id AS world_id, w.self_item_id AS self_item_id "
+    "RETURN s.user_id AS user_id, s.method AS method, w.id AS world_id, "
+    "w.self_item_id AS self_item_id "
     "ORDER BY w.created_at, w.id LIMIT 1"
 )
 
@@ -32,6 +34,7 @@ class ViewSession:
     user_id: str
     world_id: str
     self_item_id: str | None
+    method: str | None = None
 
 
 def token_hash(token: str) -> str:
@@ -51,8 +54,10 @@ def find_session(platform: PlatformQuery, token: str | None, now: datetime) -> V
     except ScopeError:
         return None
     self_item_id = row["self_item_id"]
+    method = row["method"]
     return ViewSession(
         user_id=row["user_id"],
         world_id=world_id,
         self_item_id=self_item_id if isinstance(self_item_id, str) else None,
+        method=method if isinstance(method, str) else None,
     )

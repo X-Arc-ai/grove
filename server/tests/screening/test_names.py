@@ -1,0 +1,273 @@
+"""The rename map and the denylist: whole words, case-insensitive, after NFKC and case folding."""
+
+import unicodedata
+
+import pytest
+
+from grove.config import ConfigError
+from grove.screening import Denylist, Message, RenameMap
+from grove.screening.names import Normalised
+from tests.screening._plants import DENYLIST, RENAME, screen_one, screener
+
+
+def renamed(mapping: dict[str, str], text: str) -> str:
+    """Apply RenameMap.find alone, so these tests see the matcher and no other step."""
+    out = text
+    for start, end, label in reversed(
+        RenameMap.from_mapping(mapping).find(Normalised(text, fold_case=True))
+    ):
+        out = out[:start] + label + out[end:]
+    return out
+
+
+RENAME_CASES = [
+    pytest.param(RENAME, "Orla Vance joined", "Co-founder joined", id="multi-word-form"),
+    pytest.param(
+        RENAME, "ORLA said orla agreed", "Co-founder said Co-founder agreed", id="any-case"
+    ),
+    pytest.param(RENAME, "Orla's deck", "Co-founder's deck", id="possessive"),
+    pytest.param(RENAME, "Orla’s deck", "Co-founder’s deck", id="curly-possessive"),
+    pytest.param(
+        RENAME,
+        '(Orla), Orla. Orla! "Orla" Orla-led @orla #orla',
+        '(Co-founder), Co-founder. Co-founder! "Co-founder" Co-founder-led @Co-founder #Co-founder',
+        id="punctuation-around",
+    ),
+    pytest.param(
+        RENAME,
+        "Orlaville and orla_corp and Orla2",
+        "Orlaville and orla_corp and Orla2",
+        id="whole-word-only",
+    ),
+    pytest.param(RENAME, "Orla  Vance", "Co-founder", id="double-space"),
+    pytest.param(RENAME, "Orla Vance", "Co-founder", id="non-breaking-space"),
+    pytest.param(RENAME, "Orla\tVance", "Co-founder", id="tab"),
+    pytest.param(RENAME, "Orla\nVance", "Co-founder", id="line-break"),
+    pytest.param(RENAME, "Orla    Vance", "Co-founder", id="mixed-space-run"),
+    pytest.param(RENAME, "Ｏｒｌａ Ｖａｎｃｅ said", "Co-founder said", id="full-width"),
+    pytest.param(RENAME, "Or​la wrote", "Co-founder wrote", id="zero-width-space-inside"),
+    pytest.param(RENAME, "O. Vance and O.Vance", "Co-founder and O.Vance", id="form-with-dot"),
+    pytest.param(
+        {"Renée": "Partner"}, "Renée and RENÉE", "Partner and Partner", id="combining-accent"
+    ),
+    pytest.param({"Straße": "Street"}, "STRASSE 4", "Street 4", id="case-fold-expands"),
+    pytest.param(
+        {"Orla": "A", "Orla Vance": "B"}, "Orla Vance and Orla", "B and A", id="longest-first"
+    ),
+    pytest.param(
+        {"Orla": "Vance", "Vance": "Orla"}, "Orla met Vance", "Vance met Orla", id="one-pass-swap"
+    ),
+    pytest.param({"Orla": "Orla Vance"}, "Orla", "Orla Vance", id="label-never-matched-again"),
+    pytest.param(RENAME, "", "", id="empty"),
+    pytest.param(RENAME, "Dorla and Orla met", "Dorla and Co-founder met", id="left-word-edge"),
+    pytest.param(
+        {"O'Neill": "Advisor"}, "O\u2019Neill said", "Advisor said", id="curly-apostrophe"
+    ),
+    pytest.param(
+        {"O\u2019Neill": "Advisor"}, "O'Neill said", "Advisor said", id="curly-in-the-form"
+    ),
+    pytest.param(
+        {"Ciaran O'Neill": "Advisor", "Ciaran": "Advisor"},
+        "Ciaran O\u2019Neill joins Monday",
+        "Advisor joins Monday",
+        id="curly-keeps-the-longest-form",
+    ),
+    pytest.param(
+        {"Anne-Marie": "Partner"}, "Anne\u2011Marie said", "Partner said", id="non-breaking-hyphen"
+    ),
+    pytest.param(RENAME, "Orla\u2122 deck", "Co-founder\u2122 deck", id="trade-mark-sign"),
+    pytest.param(RENAME, "_Orla Vance_ will call", "_Co-founder_ will call", id="italics"),
+    pytest.param(RENAME, "*_Orla_*", "*_Co-founder_*", id="bold-italics"),
+    pytest.param(RENAME, "__Orla__ said", "__Co-founder__ said", id="double-underscore"),
+    pytest.param(RENAME, "Orla and _Orla_", "Co-founder and _Co-founder_", id="both-views"),
+    pytest.param(RENAME, "_\uff2f\uff52\uff4c\uff41_", "_Co-founder_", id="italic-full-width"),
+    pytest.param(RENAME, "hi\\nOrla Vance", "hi\\nCo-founder", id="json-newline"),
+    pytest.param(RENAME, 'said \\"Orla\\"', 'said \\"Co-founder\\"', id="json-quotes"),
+    pytest.param(
+        RENAME, "x_Orla and Orla_x and orla_vance", "x_Orla and Orla_x and orla_vance", id="joined"
+    ),
+]
+
+
+@pytest.mark.parametrize("mapping, text, expected", RENAME_CASES)
+def test_rename_map(mapping, text, expected):
+    assert renamed(mapping, text) == expected
+
+
+def test_an_escape_inside_a_form_merges_with_the_shorter_form_before_it():
+    # As written the text holds "Orla"; as read it holds "Orla Vance". One span, counted once.
+    assert screen_one(screener(rename=RENAME), "Orla\\nVance") == ("Co-founder", {"renamed": 1})
+
+
+def test_the_rest_of_the_text_keeps_its_original_form():
+    # Only the replaced span changes: full-width digits and case elsewhere stay as written.
+    text = "１２ Orla ÉTÉ ﬁx"
+    assert renamed(RENAME, text) == "１２ Co-founder ÉTÉ ﬁx"
+
+
+def test_rename_counts_one_per_replaced_span_and_covers_the_sender():
+    screen = screener(rename=RENAME)
+    screened = screen.screen_source(
+        "chat.txt", [Message("m1", "Orla Vance", "Orla Vance said Orla's plan holds")]
+    )
+    message = screened.messages[0]
+    assert (message.sender, message.text) == (
+        "Co-founder",
+        "Co-founder said Co-founder's plan holds",
+    )
+    assert dict(screened.counts) == {"renamed": 3}
+
+
+def test_counts_of_a_rename_map():
+    names = RenameMap.from_mapping(
+        {"Orla Vance": "Co-founder", "orla vance": "Co-founder", "Tamsin": "Designer"}
+    )
+    assert (names.form_count, names.label_count) == (2, 2)
+
+
+def test_a_conflict_in_a_mapping_is_a_config_error_naming_positions():
+    with pytest.raises(ConfigError) as caught:
+        RenameMap.from_mapping({"Orla": "Co-founder", "ORLA": "Client"})
+    assert "entries 1 and 2" in str(caught.value)
+    assert "Orla" not in str(caught.value) and "Client" not in str(caught.value)
+
+
+DENY_CASES = [
+    pytest.param(None, "Brightwell Logistics sent the brief", True, id="in-text"),
+    pytest.param("Brightwell Logistics", "see you at noon", True, id="in-sender"),
+    pytest.param("Tamsin", "BRIGHTWELL logistics again", True, id="any-case"),
+    pytest.param("Tamsin", "Brightwell   Logistics", True, id="odd-whitespace"),
+    pytest.param("Tamsin", "Ｂｒｉｇｈｔｗｅｌｌ Logistics", True, id="full-width"),
+    pytest.param("Tamsin", "(Halvard Quist's) note", True, id="possessive-in-parens"),
+    pytest.param("Tamsin", "Brightwell Logisticsville", False, id="not-inside-a-longer-word"),
+    pytest.param("Tamsin", "Brightwell alone", False, id="part-of-a-term"),
+    pytest.param("Tamsin", "halvard_quist", False, id="underscore-joins-words"),
+    pytest.param("Tamsin", "Subrightwell Logistics", False, id="not-after-a-longer-word"),
+    pytest.param("Tamsin", "Brightwell Logistics\u2122 renewal", True, id="trade-mark-sign"),
+    pytest.param("Tamsin", "_Brightwell Logistics_ signed", True, id="italics"),
+    pytest.param("Tamsin", "*_Halvard Quist_*", True, id="bold-italics"),
+    pytest.param("Tamsin", "__Halvard Quist__", True, id="double-underscore"),
+    pytest.param("_Halvard Quist_", "see you at noon", True, id="italic-sender"),
+    pytest.param("Tamsin", "client\\nBrightwell Logistics", True, id="json-newline"),
+    pytest.param("Tamsin", "client\\tBrightwell Logistics", True, id="json-tab"),
+    pytest.param("Tamsin", "client\\\\nBrightwell Logistics", True, id="json-nested-twice"),
+    pytest.param("client\\nHalvard Quist", "see you at noon", True, id="json-newline-in-sender"),
+    pytest.param("Tamsin", "x_Halvard Quist", False, id="word-then-underscore"),
+    pytest.param("Tamsin", "Halvard Quist_x", False, id="underscore-then-word"),
+]
+
+
+@pytest.mark.parametrize(
+    "denylist, sender, text",
+    [
+        pytest.param(["O'Hara Foods"], None, "O\u2019Hara Foods sent it", id="curly-in-the-text"),
+        pytest.param(["O'Hara Foods"], "O\u2019Hara Foods", "hello", id="curly-in-the-sender"),
+        pytest.param(["O\u2019Hara Foods"], None, "O'Hara Foods sent it", id="curly-in-the-term"),
+        pytest.param(["Anne-Marie"], None, "Anne\u2011Marie sent it", id="non-breaking-hyphen"),
+    ],
+)
+def test_denylist_reads_look_alike_punctuation(denylist, sender, text):
+    assert screen_one(screener(denylist=denylist), text, sender=sender) == (
+        None,
+        {"denylisted": 1},
+    )
+
+
+def test_a_denylist_term_after_a_word_character_stays():
+    kept = screen_one(screener(denylist=["Quist"]), "Bergquist sent the brief")
+    assert kept == ("Bergquist sent the brief", {})
+
+
+@pytest.mark.parametrize("sender, text, dropped", DENY_CASES)
+def test_denylist(sender, text, dropped):
+    kept, counts = screen_one(screener(denylist=DENYLIST), text, sender=sender)
+    if dropped:
+        assert (kept, counts) == (None, {"denylisted": 1})
+    else:
+        assert (kept, counts) == (text, {})
+
+
+def test_nothing_else_is_counted_for_a_dropped_message():
+    screen = screener(rename=RENAME, denylist=DENYLIST, pay=True)
+    screened = screen.screen_source(
+        "chat.txt",
+        [
+            Message(
+                "m1",
+                "Orla Vance <orla@brightwell-mail.example>",
+                "Brightwell Logistics: card 4111 1111 1111 1111, call +44 7700 900123, "
+                "my salary is 30k MAD, code 482910",
+            ),
+            Message("m2", "Halvard Quist", "a plain line"),
+            Message("m3", "Tamsin", "kept"),
+        ],
+    )
+    assert dict(screened.counts) == {"denylisted": 2}
+    assert [m.text for m in screened.messages] == ["kept"]
+
+
+def test_denylist_counts_and_empty_lists():
+    assert Denylist(["Brightwell", "brightwell", "BRIGHTWELL"]).term_count == 1
+    assert Denylist().term_count == 0
+    assert not Denylist().holds(Normalised("Brightwell", fold_case=True))
+    assert RenameMap().find(Normalised("Orla", fold_case=True)) == []
+
+
+def test_normalised_offsets_map_back_to_the_original():
+    text = "aＯｒｌａ ß Renée ​x"
+    folded = Normalised(text, fold_case=True)
+    assert folded.text == unicodedata.normalize("NFKC", "aorla ss renée x")
+    start = folded.text.index("orla")
+    assert folded.span(start, start + 4) == (1, 5)
+    # "ß" folds to "ss": both copy characters come from the one original character.
+    sharp = folded.text.index("ss")
+    assert folded.span(sharp, sharp + 2) == (6, 7)
+    accent = folded.text.index("renée")
+    assert text[slice(*folded.span(accent, accent + 5))] == "Renée"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "_Orla_",
+        "__Orla__",
+        "*Orla*",
+        "a\\nb",
+        'a\\"b',
+        "x\\u00a0y",
+        "x\\\\\\\\ny",
+        "café _Orla_ \\n1",
+    ],
+)
+@pytest.mark.parametrize("fold_case", [True, False], ids=["folded", "case-kept"])
+def test_the_read_view_has_the_length_of_the_copy(text, fold_case):
+    """Spans of both views map back through one table, so no form may change the length."""
+    copy = Normalised(text, fold_case=fold_case)
+    assert copy.views[0] == copy.text
+    assert len(copy.views) == 2
+    assert len(copy.views[1]) == len(copy.text)
+
+
+def test_the_copy_drops_a_slash_escape_and_keeps_the_map():
+    copy = Normalised("a\\/b \\\\\\/c", fold_case=False)
+    assert copy.text == "a/b /c"
+    assert copy.span(0, 1) == (0, 1)
+    assert copy.span(1, 2) == (2, 3)
+    assert copy.span(0, 3) == (0, 4)
+    assert copy.span(4, 6) == (8, 10)
+    folded = Normalised("É\\/B", fold_case=True)
+    assert folded.text == "é/b"
+    assert folded.span(1, 3) == (2, 4)
+
+
+def test_a_text_with_no_glue_form_has_one_view():
+    assert Normalised("acme_corp and x_Orla, a*b", fold_case=False).views == (
+        "acme_corp and x_Orla, a*b",
+    )
+
+
+def test_normalised_ascii_is_the_identity_and_case_is_kept_for_detectors():
+    assert Normalised("Orla Vance", fold_case=True).text == "orla vance"
+    copy = Normalised("ＡＢc", fold_case=False)
+    assert copy.text == "ABc"
+    assert copy.span(0, 3) == (0, 3)

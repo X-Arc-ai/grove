@@ -1,8 +1,9 @@
 // Live mode against a fake server: live.js (paths, fetch helpers, positions batches), the
 // simulation.js adapter (routes, self alias, live counts, empty imports), native-app.js map
 // positions (saved once, kept after a reload and after new items arrive, retried after a failed
-// save), product.js sign-in (session, Google, email code, Apple, logout), and the built page
-// (no fixture, no hook name, none of the banned words).
+// save), product.js sign-in (session, Google, email code, Apple, logout, the Google error, the limit
+// on codes, the address after a sign-in, the account binding, resume), and the built page (no
+// fixture, no hook name, none of the banned words).
 const fs=require('fs'),vm=require('vm'),assert=require('assert'),path=require('path'),cp=require('child_process');
 const web=path.join(__dirname,'..');
 const read=f=>fs.readFileSync(path.join(web,f),'utf8');
@@ -22,6 +23,8 @@ function makeServer(world){
   const calls=[];
   const reply=(status,body)=>Promise.resolve({ok:status>=200&&status<300,status,text:()=>Promise.resolve(body===undefined?'':JSON.stringify(body))});
   const typed=(status,code,message)=>reply(status,{error:{code,message,details:{},retryable:false}});
+  // What the server answers about a session. A world with no account plays an answer with no account.
+  const signedInBody=()=>Object.assign({signed_in:true,self_item_id:world.selfId||null},world.account?{account:world.account,method:world.method||null,has_items:!!world.hasItems}:{});
   // When world.holdGraph or world.holdPositions is a list, the answer of that call waits in it: the
   // check calls the entry to send that answer, or passes another answer to send in its place.
   const held=(list,answer)=>list?new Promise(done=>list.push(other=>done(other||answer))):answer;
@@ -33,7 +36,7 @@ function makeServer(world){
     const ids=new Set(world.nodes.map(n=>n.id));
     if(u.pathname==='/v1/views/session'&&world.sessionThrows)return Promise.reject(new TypeError('Failed to fetch'));
     if(u.pathname==='/v1/views/session'&&world.sessionStatus)return held(world.holdSession,typed(world.sessionStatus,'unavailable','Try again later'));
-    if(u.pathname==='/v1/views/session')return held(world.holdSession,world.session?reply(200,{signed_in:true,self_item_id:world.selfId||null}):typed(401,'unauthenticated','Sign in to continue'));
+    if(u.pathname==='/v1/views/session')return held(world.holdSession,world.session?reply(200,signedInBody()):typed(401,'unauthenticated','Sign in to continue'));
     if(u.pathname==='/v1/views/graph'){
       if(world.graphStatus)return typed(world.graphStatus,world.graphStatus===401?'unauthenticated':(world.graphCode||'unavailable'),'Sign in to continue');
       const nodes=world.nodes.map(n=>({data:Object.assign({},n,world.positions[n.id]||{},n.id===world.selfId?{self:true}:{})}));
@@ -61,8 +64,9 @@ function makeServer(world){
     }
     if(u.pathname==='/v1/auth/email/start'&&world.emailStartThrows)return Promise.reject(new TypeError('Failed to fetch'));
     if(u.pathname==='/v1/auth/email/verify'&&world.emailVerifyThrows)return Promise.reject(new TypeError('Failed to fetch'));
+    if(u.pathname==='/v1/auth/email/start'&&method==='POST'&&world.emailStartStatus)return typed(world.emailStartStatus,'rate_limited','Too many codes');
     if(u.pathname==='/v1/auth/email/start'&&method==='POST')return world.emailStartFails?typed(400,'invalid_arguments','That address cannot receive a code'):reply(200,{});
-    if(u.pathname==='/v1/auth/email/verify'&&method==='POST'){if(body.code!==world.code)return typed(401,'unauthenticated','The code does not match');world.session=true;return reply(200,{signed_in:true});}
+    if(u.pathname==='/v1/auth/email/verify'&&method==='POST'){if(body.code!==world.code)return typed(401,'unauthenticated','The code does not match');world.session=true;return reply(200,signedInBody());}
     if(u.pathname==='/v1/auth/logout'&&method==='POST'){
       if(world.logoutThrows)return Promise.reject(new TypeError('Failed to fetch'));
       if(world.logoutStatus)return typed(world.logoutStatus,'internal','the server failed');
@@ -107,7 +111,7 @@ function page(server,store,files,hook,size,prepare){
     performance:{now:()=>1000},innerWidth:(size||[1440,900])[0],innerHeight:(size||[1440,900])[1],devicePixelRatio:1,document,navigator:{},
     matchMedia:()=>({matches:false,addEventListener(){},removeEventListener(){}}),getComputedStyle:()=>({getPropertyValue:name=>env.tokens[name]||''}),
     localStorage:{getItem:k=>(k in store?store[k]:null),setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}},
-    location:{href:'http://grove.test/',search:env.search,pathname:'/',assign:u=>assigned.push(u)},
+    location:{href:'http://grove.test/',search:env.search,pathname:env.pathname||'/',assign:u=>assigned.push(u)},
     fetch:server.fetch,ForceGraph:()=>()=>makeGraph(),
     d3:{forceManyBody:chainForce,forceCollide:chainForce,forceX:chainForce,forceY:chainForce},
     CustomEvent:class{constructor(type,init){this.type=type;this.detail=init&&init.detail;}},
@@ -1058,6 +1062,138 @@ function legendRows(elements){
     }
   }
 
+  // 6ab. The sign-in slice on the page: what the server's answers and the address decide.
+  const COPY={google:'Google sign-in did not finish. Try again.',tooMany:'Too many codes for this address. Try again in a few minutes.'};
+  const storedPerson=extra=>({'grove-minimal-codex-v3':JSON.stringify(Object.assign({version:3,schema:4,auth:null,name:'Sam',growth:{focus:'Sam likes long walks',reading:'',avoid:'',confirm:true},files:{notes:[{name:'sam-notes.txt'}]},onboardingComplete:true,onboardingStep:4,tourComplete:true},extra))});
+  // A page at an address: env.search and env.pathname, with a history that records each new address.
+  function signinPage(w,st,where){
+    const sv=makeServer(w),addresses=[];
+    let pg;pg=page(sv,st,ALL_FILES,HOOK,null,(el,env)=>{Object.assign(env,{search:'',pathname:'/signin'},where);if(!(where&&where.noHistory))env.globals.history=where&&where.badHistory?{replaceState(){throw new Error('denied');}}:{replaceState:(s,t,url)=>{addresses.push(url);if(pg)pg.sandbox.location.pathname=url;}};});
+    return {w,sv,st,pg,addresses,p:pg.sandbox.productTest,S:pg.sandbox.GroveSimulation,graphReads:()=>sv.calls.filter(c=>c.path==='/v1/views/graph').length};
+  }
+  const signedOutWorld=()=>Object.assign(liveWorld(),{session:false,graphStatus:401});
+  {
+    // The Google error: shown on the card, and the query leaves the address.
+    const t=signinPage(signedOutWorld(),{},{search:'?signin_error=google'});
+    assert.equal(t.p.ui.authStage,'checking');await settle();
+    assert.equal(t.p.ui.authStage,'signin');assert.equal(t.p.ui.error,COPY.google,'The card shows the Google error');
+    assert.deepStrictEqual(t.addresses,['/signin'],'The query leaves the address, once');
+    assert.equal(t.S.getState().auth,null);assert.deepStrictEqual(t.pg.errors,[]);
+    t.p.handle('auth-back');await settle();assert.equal(t.p.ui.error,'','The error goes with the next step');
+    // A stale local sign-in hears the 401 of the graph read first: the error still reaches the card.
+    const staleWorld=Object.assign(signedOutWorld(),{holdSession:[]}),stale=signinPage(staleWorld,signedInStore(),{search:'?signin_error=google'});await settle();
+    assert.equal(staleWorld.holdSession.length,1,'The session answer is still out');
+    assert.equal(stale.p.ui.authStage,'signin');assert.equal(stale.p.ui.error,COPY.google,'A stale local sign-in keeps the Google error');assert.equal(stale.S.getState().auth,null);
+    staleWorld.holdSession[0]();await settle();assert.equal(stale.p.ui.error,COPY.google,'The session answer keeps it');
+    // A session that answers ok drops it; a page with no history, or one that refuses, still works.
+    const ok=signinPage(liveWorld(),{},{search:'?signin_error=google'});await settle();
+    assert.equal(ok.p.ui.authStage,null);assert.equal(ok.p.ui.error,'','A session in hand shows no error');
+    for(const where of [{search:'?signin_error=google',noHistory:true},{search:'?signin_error=google',badHistory:true}]){
+      const t2=signinPage(signedOutWorld(),{},where);await settle();
+      assert.equal(t2.p.ui.error,COPY.google,'The error shows with no usable history');assert.deepStrictEqual(t2.pg.errors,[]);
+    }
+    // Another value names no known failure: nothing shows, and the address is still clean. No query: nothing moves.
+    const other=signinPage(signedOutWorld(),{},{search:'?signin_error=other'});await settle();
+    assert.equal(other.p.ui.error,'');assert.deepStrictEqual(other.addresses,['/signin']);
+    const plain=signinPage(signedOutWorld(),{});await settle();
+    assert.equal(plain.p.ui.error,'');assert.deepStrictEqual(plain.addresses,[]);
+    // The card links the privacy page once it shows, in live mode.
+    assert(plain.p.html().includes('href="/privacy"'),'The card links the privacy page');
+    const waiting=signinPage(signedOutWorld(),{});assert(!waiting.p.html().includes('href="/privacy"'),'The waiting card has no link yet');await settle();
+  }
+  {
+    // A 429 on the email start says so; any other failure keeps the address text.
+    const t=signinPage(signedOutWorld(),{});await settle();
+    t.w.emailStartStatus=429;await t.p.startEmail('sam.reyes@example.org');
+    assert.equal(t.p.ui.error,COPY.tooMany,'A 429 names the limit');assert.equal(t.p.ui.authStage,'signin');
+    t.w.emailStartStatus=503;await t.p.startEmail('sam.reyes@example.org');
+    assert(t.p.ui.error.includes('could not send a code'),'Another failure keeps its text');
+  }
+  {
+    // After a live sign-in on /signin, the address is / . At / it does not move.
+    const t=signinPage(signedOutWorld(),{});await settle();
+    assert.deepStrictEqual(t.addresses,[],'The card keeps its address until the sign-in');
+    t.w.graphStatus=0;await t.p.startEmail('sam.reyes@example.org');assert.deepStrictEqual(t.addresses,[],'A sent code moves nothing');
+    await t.p.verifyEmail('000000');assert.deepStrictEqual(t.addresses,[],'A wrong code moves nothing');
+    await t.p.verifyEmail('246810');assert.deepStrictEqual(t.addresses,['/'],'The email code ends at /');
+    const back=signinPage(liveWorld(),{});await settle();assert.deepStrictEqual(back.addresses,['/'],'The way back from a session ends at /');
+    const local=signinPage(liveWorld(),signedInStore());await settle();assert.deepStrictEqual(local.addresses,['/'],'A signed-in visit to /signin ends at /');
+    const home=signinPage(liveWorld(),{},{pathname:'/'});await settle();assert.deepStrictEqual(home.addresses,[],'At / the address stays');
+  }
+  {
+    // The way back from a session names the method; with none, it is Google as before.
+    for(const [method,provider] of [['google','google'],['email','email'],[null,'google']]){
+      const w=Object.assign(liveWorld(),{account:'acct-a',method});
+      const t=signinPage(w,{},{pathname:'/'});await settle();
+      assert.equal(t.S.getState().auth.provider,provider,'The way back uses the method '+method);assert.equal(t.S.getState().auth.email,'');
+    }
+  }
+  const noTraceOfSam=(t,label)=>{
+    const S=t.S.getState();
+    assert.equal(S.name,'',label+': the name is gone');assert.equal(S.growth.focus,'',label+': the guidance is gone');assert.deepStrictEqual(JSON.parse(JSON.stringify(S.files)),{},label+': the file list is gone');
+    assert(!t.st['grove-minimal-codex-v3'].includes('Sam')&&!t.st['grove-minimal-codex-v3'].includes('sam-notes'),label+': local storage holds none of it');
+  };
+  {
+    // Another account: the earlier person's local state goes before the sign-in completes.
+    const w=Object.assign(signedOutWorld(),{account:'acct-b',method:'email',graphStatus:0});w.session=false;
+    const t=signinPage(w,storedPerson({account:'acct-a'}));await settle();
+    assert.equal(t.S.getState().account,'acct-a','The stored account waits for a sign-in');assert.equal(t.S.getState().name,'Sam');
+    t.p.ui.nameDraft='Sam';t.p.ui.growthDraft={focus:'Sam likes long walks'};t.p.ui.noteDraft={title:'Sam',body:'Sam'};
+    await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');
+    assert.equal(t.S.getState().account,'acct-b','The new account binds');noTraceOfSam(t,'email, another account');
+    assert.equal(t.S.getState().auth.email,'robin.vale@example.org','The typed address survives the reset');assert.equal(t.S.getState().onboardingComplete,false);
+    assert(t.p.html().includes('Get Started'),'The next person gets the first-run welcome');
+    assert.equal(t.p.ui.nameDraft,'');assert.equal(t.p.ui.growthDraft,null);assert.equal(t.p.ui.noteDraft.body,'');
+    assert.deepStrictEqual(t.pg.errors,[]);
+    // The same in one page: the first person logs out, the next signs in.
+    const onePage=signinPage(Object.assign(liveWorld(),{account:'acct-a',method:'email'}),storedPerson({account:'acct-a',auth:{provider:'email',email:'sam.reyes@example.org'}}),{pathname:'/'});await settle();
+    assert.equal(onePage.S.getState().name,'Sam','The same account keeps its local state');assert.equal(onePage.p.ui.authStage,null);
+    onePage.p.handle('logout');await settle();assert.equal(onePage.p.ui.authStage,'signin');assert.equal(onePage.S.getState().account,'acct-a','A logout keeps the stored account');assert.equal(onePage.S.getState().name,'Sam');
+    onePage.w.account='acct-b';await onePage.p.startEmail('robin.vale@example.org');await onePage.p.verifyEmail('246810');
+    noTraceOfSam(onePage,'one page, the next person');assert.equal(onePage.S.getState().account,'acct-b');
+    // The way back on load (a session of another person, with a local sign-in of the first): reset too.
+    const load=signinPage(Object.assign(liveWorld(),{account:'acct-b',method:'google'}),storedPerson({account:'acct-a',auth:{provider:'email',email:'sam.reyes@example.org'}}),{pathname:'/'});await settle();
+    noTraceOfSam(load,'on load');assert.equal(load.S.getState().auth.provider,'google','The new session signs in');assert.equal(load.S.getState().auth.email,'','The first address is gone');assert.equal(load.S.getState().account,'acct-b');
+    // The same account after a logout: nothing resets.
+    const again=signinPage(Object.assign(signedOutWorld(),{account:'acct-a',graphStatus:0}),storedPerson({account:'acct-a'}));await settle();
+    again.w.session=false;await again.p.startEmail('sam.reyes@example.org');await again.p.verifyEmail('246810');
+    assert.equal(again.S.getState().name,'Sam','The same account keeps its name');assert.equal(again.S.getState().growth.focus,'Sam likes long walks');
+    // No stored account (an older page): binds with no reset.
+    const older=signinPage(Object.assign(liveWorld(),{account:'acct-a'}),storedPerson({auth:{provider:'email',email:'sam.reyes@example.org'}}),{pathname:'/'});await settle();
+    assert.equal(older.S.getState().account,'acct-a','An absent stored account binds');assert.equal(older.S.getState().name,'Sam','An absent stored account resets nothing');
+    assert.equal(JSON.parse(older.st['grove-minimal-codex-v3']).account,'acct-a','The account is in local storage');
+    // An answer with no account changes nothing.
+    const none=signinPage(liveWorld(),storedPerson({account:'acct-a',auth:{provider:'email',email:'sam.reyes@example.org'}}),{pathname:'/'});await settle();
+    assert.equal(none.S.getState().account,'acct-a');assert.equal(none.S.getState().name,'Sam');
+  }
+  {
+    // Resume: a world with items on a browser with nothing in progress opens the map.
+    const w=Object.assign(liveWorld(),{account:'acct-a',method:'google',hasItems:true});
+    const t=signinPage(w,{},{pathname:'/'});await settle();
+    let s=t.S.getState();assert(s.onboardingComplete&&s.tourComplete,'A world with items skips the first run');assert.equal(s.auth.provider,'google');
+    assert(!t.p.html().includes('Get Started'),'No welcome');assert.equal(t.p.ui.authStage,null);assert.equal(t.p.ui.tour,0,'No tour');
+    assert(t.pg.sandbox.GroveView.nodes().length>0,'The map shows the items');
+    assert.deepStrictEqual(t.pg.errors,[]);
+    // No items: the first-run welcome.
+    const first=signinPage(Object.assign(liveWorld(),{account:'acct-a',hasItems:false}),{},{pathname:'/'});await settle();
+    assert.equal(first.S.getState().onboardingComplete,false);assert(first.p.html().includes('Get Started'),'An empty world gets the welcome');
+    // Onboarding in progress here stays in progress, with items or not.
+    const going=signinPage(Object.assign(liveWorld(),{account:'acct-a',hasItems:true}),storedPerson({account:'acct-a',onboardingComplete:false,onboardingStep:2,tourComplete:false}),{pathname:'/'});await settle();
+    assert.equal(going.S.getState().onboardingComplete,false,'An onboarding in progress is kept');assert.equal(going.S.getState().onboardingStep,2);
+    // The email code resumes too, and a reload of the graph opens it.
+    const mail=signinPage(Object.assign(signedOutWorld(),{account:'acct-a',method:'email',hasItems:true,graphStatus:0}),{});await settle();
+    const before=mail.graphReads();await mail.p.startEmail('sam.reyes@example.org');await mail.p.verifyEmail('246810');await settle();
+    assert(mail.S.getState().onboardingComplete,'The email code resumes');assert.equal(mail.S.getState().auth.email,'sam.reyes@example.org');assert(mail.graphReads()>before,'The map reads the graph');
+    assert(!mail.p.html().includes('Get Started'));assert.equal(mail.p.ui.authStage,null);
+    // A local sign-in still on the welcome, whose world has since gained items, moves on.
+    const later=signinPage(Object.assign(liveWorld(),{account:'acct-a',hasItems:true}),storedPerson({account:'acct-a',auth:{provider:'google',email:''},name:'',onboardingComplete:false,onboardingStep:0,tourComplete:false}),{pathname:'/'});await settle();
+    assert(later.S.getState().onboardingComplete,'A person on the welcome moves on');assert(!later.p.html().includes('Get Started'));
+    // Another account with items: the reset first, then the map; none of the first person's state.
+    const next=signinPage(Object.assign(liveWorld(),{account:'acct-b',hasItems:true}),storedPerson({account:'acct-a',auth:{provider:'email',email:'sam.reyes@example.org'}}),{pathname:'/'});await settle();
+    noTraceOfSam(next,'another account with items');assert(next.S.getState().onboardingComplete,'The next person resumes their own world');assert(next.pg.sandbox.GroveView.nodes().length>0,'Their map shows');
+    assert.deepStrictEqual(next.pg.errors,[]);
+  }
+
   // 7. The production page: live scripts first, and no fixture anywhere in the built file.
   const index=read('index.html');
   assert(!/src="[^"]*fixture|fixture\.js/.test(index),'index.html loads no fixture');assert(index.includes('<title>Grove</title>'));
@@ -1076,5 +1212,5 @@ function legendRows(elements){
   const encoded=[...new Set([...dist.matchAll(/url\((data:font\/woff2;base64,[^)]*%(?:41|61)[^)]*)\)/g)].map(m=>m[1]))];
   assert.equal(encoded.length,fontFiles.length,'Every vendored font is embedded, encoded');
   for(const uri of encoded){const bytes=Buffer.from(await (await fetch(uri)).arrayBuffer());assert(fontBytes.some(b=>b.equals(bytes)),'An encoded font decodes to its vendored bytes');}
-  console.log('PASS: one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, search results, the selection pill and hidden kinds that end with the session, a retry after a failed save that keeps the drawn places, a rejected node read after the end that draws nothing, a late 401 that keeps the code step, a next session whose poll works, logout only when the server confirms it (network down too), offline text at each sign-in step, the look of starter and unknown kinds from the style tokens of the page, new leaves at their seed offset, no new home in a drawn hub disc or the identity disc, even after a hub grows, no local questions from store titles, no example identity in live mode, and a session check that fails with anything but a 401 and keeps the local state with the offline text, a session end that leaves no tour, address, code, confirmation, guide, host step, error or moved camera and nothing in the memory of the map, a legend click that only hides and shows, fixture mode that keeps the relayout and URL settings of the sim, a live first visit that no URL setting changes, and a built page with no fixture');
+  console.log('PASS: the Google error on the card, the limit on codes, the address after a sign-in, the account binding and resume; one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, search results, the selection pill and hidden kinds that end with the session, a retry after a failed save that keeps the drawn places, a rejected node read after the end that draws nothing, a late 401 that keeps the code step, a next session whose poll works, logout only when the server confirms it (network down too), offline text at each sign-in step, the look of starter and unknown kinds from the style tokens of the page, new leaves at their seed offset, no new home in a drawn hub disc or the identity disc, even after a hub grows, no local questions from store titles, no example identity in live mode, and a session check that fails with anything but a 401 and keeps the local state with the offline text, a session end that leaves no tour, address, code, confirmation, guide, host step, error or moved camera and nothing in the memory of the map, a legend click that only hides and shows, fixture mode that keeps the relayout and URL settings of the sim, a live first visit that no URL setting changes, and a built page with no fixture');
 })().catch(e=>{console.error(e);process.exitCode=1;});

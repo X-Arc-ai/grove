@@ -45,7 +45,9 @@ from grove.writer import (
 | `apply_batch(driver, world_id, caller, batch, *, request_id=None, run_id=None) -> Receipt` | Checks and commits one batch, and with it its request (see "Requests"). With no `request_id` it mints one, so every change entry and every decline has a key. Raises `BatchDeclined` (nothing of the batch written; the decline is logged), `WriteFailed` (nothing written, retry may help), `WriteOutcomeUnknown` (the connection dropped during the commit, so the batch may be saved) or `ReceiptUnavailable` (the batch committed but its receipt could not be read). After the last two a replay with the same `request_id` and the same batch is safe: the request row says whether it committed, and the replay writes nothing if it did. They carry `commit_id`, `change_set_id` and `request_id`, and `retryable` is false. `WriteFailed` carries `request_id` too. Returns a `Receipt` only after the commit, read back in a fresh read transaction. |
 | `render_receipt(driver, world_id, receipt) -> str` | The receipt in the fixed grammar of D2. Titles, meaning names and values are read fresh, so a stored receipt holds only ids and codes. |
 | `record_connector(driver, world_id, type, *, settings=None, staleness_limit=None) -> str` | One `:Connector` row. Returns its id. |
-| `record_source(driver, world_id, *, connector_id, external_locator, content=None, content_pointer=None, parser_version, untrusted=False) -> str` | One `:Source` row with screened content (screening runs before this call) or a pointer. Returns its id. |
+| `write_screened_source(tx, screened, *, source_id, connector_id, parser_version) -> dict` | One `:Source` and its `:ScreeningReceipt` in the caller's transaction, from a `ScreenedSource`. Text from a connector reaches `sources` only here or in `add_screened_source`. |
+| `add_screened_source(writer, screened, *, connector_id, parser_version, source_id=None) -> dict` | The same in a transaction of its own. With no `source_id` it mints one. |
+| `record_source(driver, world_id, *, connector_id, external_locator, content=None, content_pointer=None, parser_version, untrusted=False) -> str` | One `:Source` row with the text as given, or a pointer. Returns its id. For the writer's own tests: a test fails when code outside this package reaches for it. |
 | `record_episode(driver, world_id, *, connector_id, source_ids, first_message_key, last_message_key, start_time, end_time, cut_rule, run_id=None) -> str` | One `:Episode` row, keyed on the connector and the first message key. A later cut of the same window keeps the id and extends the range. Returns its id. |
 
 The package also exports `ReceiptLine` (one line of a `Receipt`), `DeclinedReceipt` (the type of
@@ -65,7 +67,7 @@ from grove.store.current import standings, current_items, standing, has_ended, l
 from grove.store.evidence_counts import distinct_episodes
 ```
 
-D3's `current()` is one module, and every read and every guard asks it (S42). Each function that
+D3's `current()` is one module, and every read and every guard asks it (S43). Each function that
 takes a `source` takes a `WorldQuery` or a `WorldTx`; in a `WorldTx` it reads that transaction's
 own writes, so a guard inside a batch sees what the batch wrote.
 
@@ -91,7 +93,7 @@ ride on every state.
 from grove.writer.resolver import resolve_word, resolve_link_phrase, lexical_candidates
 ```
 
-D8's reuse first (S43). The writer's own lookups on `Registry` are its strict form; extraction and
+D8's reuse first (S44). The writer's own lookups on `Registry` are its strict form; extraction and
 the clean-up agent use the soft forms below. `Registry.load(source)` takes a `WorldTx` or a
 `WorldQuery`.
 
@@ -171,6 +173,10 @@ what an earlier one did.
 | `end_link` | U C K P W | **op_id**, **link** (not of a primitive meaning), **end_class**, **stopped_being_true**, **reason**, evidence_refs | `x link 2f07ab11: ... (<end class>)` |
 | `attach_evidence` | U C K P W | **op_id**, **target** (item, link or belief id), **ev_id** or **evidence_id**, **polarity**, judgment_ids | `= item 77d2aa01 evidence e88f0a1b (supports, said)` |
 | `end_evidence` | C K P | **op_id**, **evidence**, **end_reason** (`correction`, `forget`, `merge`) | `- evidence e88f0a1b (correction)` |
+
+`accounts.py` is not a B.2 operation: it holds sign-in's writes (S20, S40), users, sessions, email
+codes and the person's own item. Only `server/grove/api/auth.py` calls it. `docs/signin.md` has the
+flows.
 
 The other B.2 operations belong to later lanes: correct, refute, supersede, merge,
 `retire_record` and undo (`writer-b`); verify and the confirmation at create (`truth-clock`);

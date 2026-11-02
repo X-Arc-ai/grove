@@ -111,11 +111,13 @@ def test_the_views_package_never_imports_the_writer():
         assert not any(name.startswith("grove.writer") for name in imports_of(path)), path.name
 
 
-def test_the_api_reaches_the_writer_only_for_positions():
+def test_the_api_reaches_the_writer_only_for_positions_and_sign_in():
+    allowed = {
+        "views.py": {"grove.writer.positions"},
+        "auth.py": {"grove.writer.accounts", "grove.writer.errors"},
+    }
     files = sorted((SERVER / "grove" / "api").glob("*.py"))
     assert files
     for path in files:
         writer = {name for name in imports_of(path) if name.startswith("grove.writer")}
-        assert writer <= {"grove.writer.positions"}, path.name
-        if writer:
-            assert path.name == "views.py"
+        assert writer <= allowed.get(path.name, set()), path.name

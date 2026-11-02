@@ -1,4 +1,4 @@
-"""D3 current(): the one function in code that says what is current (S42).
+"""D3 current(): the one function in code that says what is current (S43).
 
 Spec, D3 "Reads return successors": "One function in code, `current()`, defined here, says what
 is current: already started, not ended in any end class, not at a terminal status role of its
