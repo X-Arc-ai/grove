@@ -7,6 +7,7 @@ that keeps each request it got. Rows are read back with WorldQuery. No socket le
 import asyncio
 import hashlib
 import json
+import math
 from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -18,7 +19,7 @@ from fastapi.testclient import TestClient
 from grove import clock
 from grove.clock import TestClock
 from grove.models.config import ModelSettings, load_catalog, load_model_settings
-from grove.models.errors import EgressRefused, NotConfigured
+from grove.models.errors import EgressRefused, ModelRefused, NotConfigured
 from grove.models.gateway import Gateway, create_app, serve, upstream_body
 from grove.models.gateway_auth import mint, verify
 from grove.models.http import MAX_WAIT, MODAL_ATTEMPTS
@@ -653,9 +654,8 @@ def test_meta_takes_only_auto_tool_choice(asked, tools, tool_choice):
         (MESSAGES[1:], {}, None),
         ([{"role": "system", "content": [{"type": "text", "text": SYSTEM}]}], {}, None),
         ([{"role": "system", "content": ""}], {}, None),
-        ([], {}, None),
     ],
-    ids=["derived", "caller-key", "no-system", "list-content", "empty-system", "no-messages"],
+    ids=["derived", "caller-key", "no-system", "list-content", "empty-system"],
 )
 def test_meta_cache_key_per_shared_prefix(messages, asked, key):
     out = upstream_body(
@@ -666,6 +666,13 @@ def test_meta_cache_key_per_shared_prefix(messages, asked, key):
     )
 
     assert out.get("prompt_cache_key") == key
+
+
+@pytest.mark.parametrize("messages", [[], None, "hello"], ids=["empty", "absent", "text"])
+def test_a_body_with_no_message_list_is_refused(messages):
+    body = {"model": SPARK} | ({} if messages is None else {"messages": messages})
+    with pytest.raises(ModelRefused, match="messages must be a list"):
+        upstream_body(body, spec=SPARK_SPEC, effort="low", job="cleanup_pass")
 
 
 def test_glimmer_body_keeps_its_own_fields_and_drops_the_cache_key():
@@ -772,9 +779,10 @@ def test_stream_always_asks_for_the_usage_chunk(world, make_rig, asked, sent):
 
 def test_usage_in_a_trailing_chunk_is_metered(driver, world, make_rig):
     # OpenAI-style servers send "usage": null on each chunk and the usage after the finish.
+    text = chunk([{"index": 0, "delta": {"content": "Row nine."}, "finish_reason": None}], None)
     finish = chunk([{"index": 0, "delta": {}, "finish_reason": "stop"}], None)
     trailer = chunk([], STREAM_USAGE)
-    rig = make_rig(streamed(chunk(ROLE_CHOICES, None), finish, trailer, DONE))
+    rig = make_rig(streamed(chunk(ROLE_CHOICES, None), text, finish, trailer, DONE))
 
     response = rig.post(token(world), {"model": SPARK, "messages": MESSAGES, "stream": True})
 
@@ -799,10 +807,37 @@ def test_stream_that_ends_without_a_finish_is_a_provider_error(driver, world, ma
 
     assert response.status_code == 200
     assert response.content == ROLE + CALL_OPEN
-    assert_rows(read_rows(driver, world), [(expected_row(outcome="provider_error"), 0.0)])
+    # No usage chunk came, so the row carries the estimate: four characters a token of the
+    # messages and tools sent, and of the text streamed (none here).
+    estimate = math.ceil((len(json.dumps(MESSAGES)) + len(json.dumps([]))) / 4)
+    assert_rows(
+        read_rows(driver, world),
+        [(expected_row(outcome="provider_error", input_tokens=estimate), estimate * 1.25e-6)],
+    )
+
+
+class Gated(httpx.AsyncByteStream):
+    """A provider body that holds its finish chunk until the test opens the gate."""
+
+    def __init__(self, first: bytes, rest: tuple[bytes, ...]) -> None:
+        self.first = first
+        self.rest = rest
+        self.gate = asyncio.Event()
+        self.closed = False
+
+    async def __aiter__(self):
+        yield self.first
+        await self.gate.wait()
+        for piece in self.rest:
+            yield piece
+
+    async def aclose(self) -> None:
+        self.closed = True
 
 
 def test_client_that_stops_reading_is_metered_as_client_closed(driver, world, frozen_clock):
+    # The client leaves before the finish chunk, which carries Meta's usage. The pump reads on
+    # and records the real tokens, so the spend counts against the ceiling and the run cap.
     gateway = Gateway(
         driver,
         settings=settings(),
@@ -810,7 +845,7 @@ def test_client_that_stops_reading_is_metered_as_client_closed(driver, world, fr
         transport=httpx.MockTransport(Upstream()),
         sleep=Waits(),
     )
-    body = Chunks(ROLE, FINISH, DONE)
+    body = Gated(ROLE, (FINISH, DONE))
     response = httpx.Response(200, stream=body)
     claims = verify(SECRET, CATALOG, token(world))
 
@@ -818,12 +853,27 @@ def test_client_that_stops_reading_is_metered_as_client_closed(driver, world, fr
         relay = gateway._relay(response, claims, SPARK_SPEC, "low", clock.monotonic())
         first = await relay.__anext__()
         await relay.aclose()
+        body.gate.set()
         await gateway.aclose()
         return first
 
     assert asyncio.run(drive()) == ROLE
     assert body.closed and response.is_closed
-    assert_rows(read_rows(driver, world), [(expected_row(outcome="client_closed"), 0.0)])
+    assert_rows(
+        read_rows(driver, world),
+        [
+            (
+                expected_row(
+                    outcome="client_closed",
+                    input_tokens=5000,
+                    cached_tokens=4096,
+                    output_tokens=80,
+                    reasoning_tokens=30,
+                ),
+                STREAM_COST,
+            )
+        ],
+    )
 
 
 def test_stream_cut_by_the_provider_keeps_its_usage(driver, world, frozen_clock):

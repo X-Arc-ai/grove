@@ -108,7 +108,7 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S19. The value index and sources** (spec lines 2525, 2560). The value index leaves out `sources`, as line 2560 does. A forget reaches a source span by its locator. So a value the person names inside source text has no index path; see the open points.
 
-**S20. Writes outside the agents** (spec lines 2501, 3120, 3121). `model_calls` and `judgments` are written only by the model-call layer, sessions and OAuth rows by sign-in, job claims and budgets by the runner. Each such write must be a function in `server/grove/writer/`, and only its owner calls it. `models`, `signin`, `hosts-a` and `runner` build them. The writer rule stands: only `server/grove/writer/` opens write transactions, and the writer lint enforces it.
+**S20. Writes outside the agents** (spec lines 2501, 3120, 3121). `model_calls` and `judgments` are written only by the model-call layer, sessions and OAuth rows by sign-in, job claims by the runner, and budgets by the model-call layer (S37 replaced "budgets by the runner"). Each such write must be a function in `server/grove/writer/`, and only its owner calls it. `models`, `signin`, `hosts-a` and `runner` build them. The writer rule stands: only `server/grove/writer/` opens write transactions, and the writer lint enforces it.
 
 **S21. Restore groups** (spec lines 806 to 808). Projection: items, links, evidence, kinds, meanings, property_names, aliases, capabilities, beliefs. Snapshot: the 32 others. Ledger: forget_ledger. Platform rows restore as they were, and tokens are stored hashed. A snapshot is the whole-store offline dump, and the rebuild replaces the projection rows after the load. The catalogue records the group per table.
 
