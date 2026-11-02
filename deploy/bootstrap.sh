@@ -26,8 +26,12 @@ install -d -m 755 "$GROVE_STATE"
 install -d -m 750 "$GROVE_LOG_DIR"
 
 # The runner's user on the host owns its HOME. It has no sudo and is not in the docker group.
+# uid and gid 10002, as in the runner image, so the HOME it mounts is its own on both sides.
+if ! getent group grove-runner >/dev/null; then
+    groupadd --system --gid 10002 grove-runner
+fi
 if ! getent passwd grove-runner >/dev/null; then
-    useradd --system --uid 10002 --user-group --home-dir "$runner_home" --no-create-home \
+    useradd --system --uid 10002 --gid 10002 --home-dir "$runner_home" --no-create-home \
         --shell /usr/sbin/nologin grove-runner
 fi
 install -d -o 10002 -g 10002 -m 700 "$runner_home"

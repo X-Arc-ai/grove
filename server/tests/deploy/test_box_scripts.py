@@ -182,7 +182,8 @@ def test_bootstrap_makes_the_runner_user_and_generated_files_and_keeps_existing_
         GROVE_RUNNER_HOME=str(box.root / "runner-home"),
     )
     assert done.returncode == 0, done.stderr
-    assert any(call.startswith("useradd --system --uid 10002") for call in box.calls())
+    assert "groupadd --system --gid 10002 grove-runner" in box.calls()
+    assert any(call.startswith("useradd --system --uid 10002 --gid 10002") for call in box.calls())
     auth = (box.etc / "neo4j.env").read_text()
     assert (
         auth.startswith("NEO4J_AUTH=neo4j/") and len(auth.strip()) > len("NEO4J_AUTH=neo4j/") + 40
