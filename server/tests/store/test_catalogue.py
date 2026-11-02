@@ -8,6 +8,7 @@ import pytest
 from grove.store.catalogue import (
     B1_TABLES,
     FULLTEXT_INDEXES,
+    LATER_TABLES,
     PLATFORM_LABELS,
     RELATIONSHIP_TYPES,
     TABLES,
@@ -137,7 +138,8 @@ def test_the_42_names_in_b1_order():
 def test_table_lookup_and_platform_rows_follow_b1():
     assert table("items").label == "Item"
     assert [t.name for t in TABLES[:42]] == B1_NAMES
-    assert {t.name for t in TABLES[42:]} == {
+    platform = TABLES[42 : len(TABLES) - len(LATER_TABLES)]
+    assert {t.name for t in platform} == {
         "worlds",
         "users",
         "sessions",
@@ -147,7 +149,22 @@ def test_table_lookup_and_platform_rows_follow_b1():
         "upload_tokens",
         "migrations",
     }
-    assert all(t.scope == "platform" and t.group == "platform" for t in TABLES[42:])
+    assert all(t.scope == "platform" and t.group == "platform" for t in platform)
+
+
+def test_tables_of_later_lanes_come_last():
+    assert TABLES[len(TABLES) - len(LATER_TABLES) :] == LATER_TABLES
+    positions = table("map_positions")
+    assert positions in LATER_TABLES
+    assert (positions.label, positions.scope, positions.group) == (
+        "MapPosition",
+        "world",
+        "snapshot",
+    )
+    assert positions.owner == "views-a"
+    assert [c.props for c in positions.uniques] == [("id",), ("world_id", "item_id")]
+    assert {c.origin for c in positions.columns} == {"convention"}
+    assert "MapPosition" in WORLD_LABELS
 
 
 def test_labels_follow_the_scopes():
@@ -173,7 +190,7 @@ def test_restore_groups_match_lines_806_to_808():
         "beliefs",
     }
     assert {t.name for t in TABLES if t.group == "ledger"} == {"forget_ledger"}
-    assert len([t for t in TABLES if t.group == "snapshot"]) == 32
+    assert len([t for t in TABLES[:42] if t.group == "snapshot"]) == 32
 
 
 @pytest.mark.parametrize("t", TABLES, ids=lambda t: t.name)
