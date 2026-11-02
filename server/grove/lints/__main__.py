@@ -3,13 +3,14 @@
 import argparse
 import sys
 
-from grove.lints import clock_rule, no_names, writer_rule
+from grove.lints import clock_rule, no_names, runner_rule, writer_rule
 from grove.lints._scan import LintError, repo_root
 
 LINTS = {
     "no-names": no_names.check,
     "clock": clock_rule.check,
     "writer": writer_rule.check,
+    "runner": runner_rule.check,
 }
 
 
