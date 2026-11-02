@@ -16,6 +16,7 @@ from grove.store.errors import STORE_UNAVAILABLE
 UNAUTHENTICATED = "unauthenticated"
 INVALID_ARGUMENTS = "invalid_arguments"
 NOT_FOUND = "not_found"
+RATE_LIMITED = "rate_limited"
 UNAVAILABLE = "unavailable"
 INTERNAL = "internal"
 
@@ -37,6 +38,9 @@ class ApiError(Exception):
         self.details = details or {}
         self.retryable = retryable
 
+    def body(self) -> dict[str, Any]:
+        return error_body(self.code, self.message, self.details, self.retryable)
+
 
 def error_body(
     code: str, message: str, details: dict[str, Any] | None = None, retryable: bool = False
@@ -51,8 +55,8 @@ def error_body(
     }
 
 
-def unauthenticated() -> ApiError:
-    return ApiError(401, UNAUTHENTICATED, "sign in to see your Grove")
+def unauthenticated(message: str = "sign in to see your Grove") -> ApiError:
+    return ApiError(401, UNAUTHENTICATED, message)
 
 
 def invalid_arguments(message: str, field: str) -> ApiError:
@@ -63,9 +67,27 @@ def not_found(message: str) -> ApiError:
     return ApiError(404, NOT_FOUND, message)
 
 
+def rate_limited(retry_after_seconds: int) -> ApiError:
+    return ApiError(
+        429,
+        RATE_LIMITED,
+        "too many codes: try again later",
+        details={"retry_after_seconds": retry_after_seconds},
+        retryable=True,
+    )
+
+
+def unavailable(message: str) -> ApiError:
+    return ApiError(503, UNAVAILABLE, message, retryable=True)
+
+
+def store_unavailable() -> ApiError:
+    return unavailable("the store cannot be reached")
+
+
 def _response(error: ApiError) -> JSONResponse:
     return JSONResponse(
-        error_body(error.code, error.message, error.details, error.retryable),
+        error.body(),
         status_code=error.status,
         headers={"Cache-Control": "no-store"},
     )
@@ -96,7 +118,7 @@ async def _http_error(request: Request, error: Exception) -> JSONResponse:
 
 async def _unexpected(request: Request, error: Exception) -> JSONResponse:
     if isinstance(error, STORE_UNAVAILABLE):
-        return _response(ApiError(503, UNAVAILABLE, "the store cannot be reached", retryable=True))
+        return _response(store_unavailable())
     return _response(ApiError(500, INTERNAL, "the server failed"))
 
 

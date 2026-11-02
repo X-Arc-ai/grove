@@ -9,7 +9,9 @@
     email: 'We could not send a code to that address. Check it and try again.',
     code: 'That code doesn’t match. Check it and try again.',
     offline: 'Grove could not be reached. Try again in a moment.',
-    logout: 'Grove could not sign you out. Try again.'
+    logout: 'Grove could not sign you out. Try again.',
+    google: 'Google sign-in did not finish. Try again.',
+    tooMany: 'Too many codes for this address. Try again in a few minutes.'
   };
   var icons = window.GroveIcons || {};
   var ui = { step: api.getState().onboardingStep || 0, panel: null, guide: null, guideStep:0, tour: 0, tourNode: null, error: '', host: null, hostStage: 0 };
@@ -18,7 +20,7 @@
   var chrome = document.createElement('div'); chrome.id='gp-chrome'; root.appendChild(chrome);
   var tourRoot = document.createElement('div'); tourRoot.id='gp-tour-root'; root.appendChild(tourRoot);
   ui.editName=false;ui.nameDraft='';ui.guideStage=0;ui.uploadFile=null;ui.settingsTab='account';ui.authStage=api.getState().auth?null:'signin';ui.requestId=null;ui.requestTab='open';ui.requestDrafts={};ui.guideDevice='iphone';ui.email='';ui.code='';ui.query='';ui.connecting={};ui.keyApp=null;ui.sourceTab='chats';ui.filePicker=false;ui.noteEditor=false;ui.confirm=null;ui.notice='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};
-  var lastShape='', lastTourShape='', moving=false, tourAfter=0, arrivalTimer=null, uiEpoch=0, authEpoch=0;
+  var lastShape='', lastTourShape='', moving=false, tourAfter=0, arrivalTimer=null, uiEpoch=0, authEpoch=0, signinError='';
   var progress=document.createElement('div');progress.id='gp-onboarding-progress';progress.setAttribute('aria-live','polite');root.appendChild(progress);
   // Live mode, signed in here while the session check failed: the offline text, over the map and the loading cover.
   var sessionNote=document.createElement('p');sessionNote.id='gp-session-note';sessionNote.setAttribute('role','alert');sessionNote.hidden=true;document.body.appendChild(sessionNote);
@@ -64,12 +66,26 @@
   function signIn(){
     var code=ui.authStage==='code';
     var body=ui.authStage==='checking'?'<div class="gp-auth-loading" role="status" aria-label="Checking your sign-in"><span></span><span></span><span></span></div>':code?'<div class="gp-auth-intro"><h2>Check your inbox</h2><p>Enter the code sent to '+esc(ui.email)+'</p></div><form data-code-form><label for="gp-code">Verification code</label><input id="gp-code" class="gp-code-input" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" autocomplete="one-time-code" aria-label="Six digit code" placeholder="000000" value="'+esc(ui.code)+'" required><button class="gp-primary gp-wide">Continue</button></form><button class="gp-text" data-action="auth-back">Use another email</button>':'<div class="gp-signin-options"><button data-signin="google">'+icon('google')+'Continue with Google</button><button data-signin="apple"'+(ui.appleNote?' aria-disabled="true"':'')+'>'+icon('apple')+(ui.appleNote?'Not available yet':'Continue with Apple')+'</button></div><div class="gp-auth-divider"><span>or</span></div><form data-email-form><label for="gp-email">Email address</label><input id="gp-email" name="email" type="email" autocomplete="email" placeholder="you@example.com" value="'+esc(ui.email)+'" required><button class="gp-primary gp-wide">Continue with email</button></form>';
-    return '<div class="gp-backdrop gp-entry-backdrop"><section class="gp-entry" role="dialog" aria-modal="true" aria-labelledby="gp-title"><div class="gp-entry-art" aria-hidden="true">'+(window.GroveEntryVisual||'')+'</div><div class="gp-auth"><header class="gp-auth-brand"><h1 id="gp-title" tabindex="-1">'+wordmark()+'</h1><p>Give your AI a world to understand</p></header><div class="gp-auth-form">'+body+'</div></div></section></div>';
+    return '<div class="gp-backdrop gp-entry-backdrop"><section class="gp-entry" role="dialog" aria-modal="true" aria-labelledby="gp-title"><div class="gp-entry-art" aria-hidden="true">'+(window.GroveEntryVisual||'')+'</div><div class="gp-auth"><header class="gp-auth-brand"><h1 id="gp-title" tabindex="-1">'+wordmark()+'</h1><p>Give your AI a world to understand</p></header><div class="gp-auth-form">'+body+'</div>'+(live&&ui.authStage!=='checking'?'<p style="margin:16px 0 0;text-align:center"><a class="gp-text" href="'+live.PAGES.privacy+'">Privacy</a></p>':'')+'</div></section></div>';
   }
   // The example address is fixture mode only. Live mode knows the typed address for the email
   // code and none for Google (the server holds it), so the account shows no made-up address.
   function signInEmail(provider){return live?(provider==='email'?ui.email:''):(ui.email||'anas@example.com');}
-  function finishSignIn(provider){authEpoch++;ui.error='';api.signIn(provider,signInEmail(provider));ui.authStage=null;ui.panel=null;if(api.getState().onboardingComplete){render(true);if(live&&window.reloadGrove)window.reloadGrove();}else setStep(api.getState().onboardingStep||0);}
+  function setAddress(url){try{if(window.history&&window.history.replaceState)window.history.replaceState(null,'',url);}catch(_){/* a sandbox or a file page keeps its address */}}
+  // Live mode: what a signed-in answer of the server (verify, session) settles here. Another account
+  // than the stored one resets the local state first. A world that holds items, on a browser with no
+  // onboarding in progress, opens on the map. Says whether it did. Runs twice with no second effect.
+  function arrive(body){
+    if(api.bindAccount(body.account)){
+      ui.step=0;ui.guideStage=0;ui.editName=false;ui.nameDraft='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};ui.requestDrafts={};ui.uploadFile=null;ui.connecting={};ui.query='';ui.notice='';
+      if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
+    }
+    if(window.location.pathname===live.PAGES.signin)setAddress(live.PAGES.home);
+    var s=api.getState();
+    if(!body.has_items||s.onboardingComplete||s.onboardingStep)return false;
+    api.resumeOnboarding();return true;
+  }
+  function finishSignIn(provider,body){authEpoch++;ui.error='';signinError='';if(live)arrive(body||{});api.signIn(provider,signInEmail(provider));ui.authStage=null;ui.panel=null;if(api.getState().onboardingComplete){render(true);if(live&&window.reloadGrove)window.reloadGrove();}else setStep(api.getState().onboardingStep||0);}
   // Sign-in calls. Live mode: Google signs in on its own pages; email posts the address, then
   // the code; a failure shows in the sign-in error slot. Fixture mode (the checks) has no server:
   // any six-digit code is accepted. Apple has no sign-in yet (decision 24).
@@ -81,15 +97,25 @@
   function startEmail(email){
     ui.error='';ui.email=email;ui.code='';
     if(!live){ui.authStage='code';render(true);return Promise.resolve();}
-    return live.emailStart(email).then(function(res){if(res.ok){ui.authStage='code';}else{ui.error=SIGNIN_COPY.email;}render(true);},function(){ui.error=SIGNIN_COPY.offline;render(true);});
+    return live.emailStart(email).then(function(res){if(res.ok){ui.authStage='code';}else{ui.error=res.status===429?SIGNIN_COPY.tooMany:SIGNIN_COPY.email;}render(true);},function(){ui.error=SIGNIN_COPY.offline;render(true);});
   }
   function verifyEmail(code){
     code=String(code||'').trim();
     if(!live){if(/^[0-9]{6}$/.test(code))finishSignIn('email');else{ui.error=SIGNIN_COPY.code;render(true);}return Promise.resolve();}
-    return live.emailVerify(ui.email,code).then(function(res){if(res.ok)finishSignIn('email');else{ui.error=SIGNIN_COPY.code;render(true);}},function(){ui.error=SIGNIN_COPY.offline;render(true);});
+    return live.emailVerify(ui.email,code).then(function(res){if(res.ok)finishSignIn('email',res.body);else{ui.error=SIGNIN_COPY.code;render(true);}},function(){ui.error=SIGNIN_COPY.offline;render(true);});
   }
+  // Live mode, on load, the way back from a Google sign-in that did not finish: the query leaves the
+  // address, and the error waits for the card (a session check that succeeds drops it).
+  function readSigninError(){
+    var query=new URLSearchParams(window.location.search||'');
+    if(!query.has('signin_error'))return;
+    if(query.get('signin_error')==='google')signinError=SIGNIN_COPY.google;
+    setAddress(window.location.pathname||live.PAGES.home);
+  }
+  function showSigninError(){if(signinError){ui.error=signinError;signinError='';}}
   // Live mode, on load: the server session decides between the sign-in screen and the views.
-  // A session with no local sign-in is the way back from Google. Only a 401 ends the local sign-in.
+  // A session with no local sign-in is the way back from Google, or a session another page began;
+  // its answer names the method. Only a 401 ends the local sign-in.
   // Any other failure says nothing about the session: the local state stays and the offline text
   // shows. With no local sign-in the card shows it, and no graph of an unknown session stays behind.
   function sessionUnknown(){
@@ -100,10 +126,15 @@
   }
   function checkSession(){
     return live.session().then(function(res){
-      if(res.ok&&res.body&&res.body.signed_in){if(!api.getState().auth)finishSignIn('google');else if(ui.authStage==='checking'){ui.authStage=null;render(true);}return;}
+      if(res.ok&&res.body&&res.body.signed_in){
+        var resumed=arrive(res.body),waiting=ui.authStage==='checking';
+        if(!api.getState().auth){finishSignIn(res.body.method||'google',res.body);return;}
+        signinError='';if(waiting)ui.authStage=null;if(waiting||resumed)render(true);if(resumed&&window.reloadGrove)window.reloadGrove();
+        return;
+      }
       if(res.status!==401){sessionUnknown();return;}
       if(api.getState().auth)api.signOut();
-      endTour();ui.panel=null;ui.guide=null;ui.authStage='signin';render(true);
+      endTour();ui.panel=null;ui.guide=null;ui.authStage='signin';showSigninError();render(true);
     },sessionUnknown);
   }
   // Live mode, the session is over (a confirmed logout, or a 401 from a live call): the local
@@ -114,7 +145,7 @@
     api.signOut();
     if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
     if(onCard)return;
-    endTour();ui.panel=null;ui.guide=null;ui.confirm=null;ui.host=null;ui.authStage='signin';ui.error='';ui.email='';ui.code='';ui.logoutError='';ui.offline=false;
+    endTour();ui.panel=null;ui.guide=null;ui.confirm=null;ui.host=null;ui.authStage='signin';ui.error='';ui.email='';ui.code='';ui.logoutError='';ui.offline=false;showSigninError();
     render(true);
   }
   // Logout signs out here only when the server confirms it, or when the session is already gone.
@@ -498,6 +529,6 @@
   document.addEventListener('pointerdown',function(e){if(ui.panel==='requests'&&!e.target.closest('.gp-review-popover,#requests-button')){ui.panel=null;render();}});
   // Keep the clear opening aligned with the actual node or control.
   setInterval(positionTour,100);
-  if(live){if(!api.getState().auth)ui.authStage='checking';checkSession();}
+  if(live){readSigninError();if(!api.getState().auth)ui.authStage='checking';checkSession();}
   render(true);maybeTour();
 })();

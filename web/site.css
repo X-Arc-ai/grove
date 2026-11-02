@@ -1,0 +1,180 @@
+/* The public pages (homepage, privacy): the sim's tokens, marks and type, for a page a person
+ * reads and a script is not needed for. The views keep their own sheets, which assume a full-screen
+ * map. Colours follow the person's system, or the theme they chose in the views. */
+/* The pages carry only the Latin faces of the sim's two fonts: a public page stays small. */
+@font-face{font-family:"Inter";font-style:normal;font-weight:400 600;font-display:swap;src:url(vendor/fonts/inter-UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2) format("woff2")}
+@font-face{font-family:"JetBrains Mono";font-style:normal;font-weight:400 700;font-display:swap;src:url(vendor/fonts/jetbrainsmono-tDbv2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKwBNntkaToggR7BYRbKPxDcwgknk-4.woff2) format("woff2")}
+:root{
+  color-scheme:light;
+  --bg:#f7f6f1;--surface:#fff;--border:#e2e0d6;--text:#1a1a1a;--text-secondary:#6b6b6b;
+  --cream:#fff;--edge:rgba(60,55,40,.2);--edge-bright:rgba(60,55,40,.45);--success:#357b50;
+  --ring-company:#0288d1;--ring-project:#8e24aa;--ring-person:#d4a017;--ring-client:#00897b;
+  --ring-task:#afb42b;--ring-decision:#f57c00;--ring-event:#607d8b;--ring-observation:#607d8b;--ring-pattern:#5c6bc0;
+  --dot:#d4a52a;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",monospace;
+  --sans:"Inter",-apple-system,"Helvetica Neue",system-ui,sans-serif;
+}
+:root[data-theme=dark]{
+  color-scheme:dark;
+  --bg:#0a0a0b;--surface:#111113;--border:#222225;--text:#f0f0f0;--text-secondary:#9a9a9a;
+  --cream:#f0eede;--edge:rgba(240,238,222,.16);--edge-bright:rgba(240,238,222,.5);--success:#83be98;
+  --ring-company:#4fc3f7;--ring-project:#ba68c8;--ring-person:#fff176;--ring-client:#26a69a;
+  --ring-task:#dce775;--ring-decision:#ffb74d;--ring-event:#90a4ae;--ring-observation:#90a4ae;--ring-pattern:#7986cb;
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme=light]){
+    color-scheme:dark;
+    --bg:#0a0a0b;--surface:#111113;--border:#222225;--text:#f0f0f0;--text-secondary:#9a9a9a;
+    --cream:#f0eede;--edge:rgba(240,238,222,.16);--edge-bright:rgba(240,238,222,.5);--success:#83be98;
+    --ring-company:#4fc3f7;--ring-project:#ba68c8;--ring-person:#fff176;--ring-client:#26a69a;
+    --ring-task:#dce775;--ring-decision:#ffb74d;--ring-event:#90a4ae;--ring-observation:#90a4ae;--ring-pattern:#7986cb;
+  }
+}
+
+*{box-sizing:border-box;margin:0;padding:0}
+html{background:var(--bg);-webkit-text-size-adjust:100%}
+body{min-height:100vh;display:flex;flex-direction:column;background:var(--bg);color:var(--text);font:400 15px/1.7 var(--sans);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overflow-wrap:break-word}
+a{color:inherit;text-underline-offset:3px;text-decoration-thickness:1px}
+a[href^="mailto:"]{white-space:nowrap}
+a:focus-visible{outline:2px solid var(--ring-person);outline-offset:3px;border-radius:2px}
+code{font:500 .86em/1.4 var(--mono)}
+.wrap{width:100%;max-width:1140px;margin:0 auto;padding:0 40px}
+
+/* The wordmark, as on the sign-in card. */
+.wm{display:inline-flex;align-items:center;gap:.14em;font-family:var(--mono);font-weight:500;letter-spacing:-.065em;line-height:1.25;color:var(--text);text-decoration:none}
+.wm-dot{width:.29em;height:.29em;min-width:.29em;margin-top:.12em;margin-left:.1em;border-radius:50%;background:var(--dot)}
+
+/* Top bar and buttons, as in the views. */
+.site-top{position:relative;z-index:1}
+.site-top .wrap{display:flex;align-items:center;justify-content:space-between;gap:16px;height:64px}
+.site-top .wm{font-size:24px}
+.site-nav{display:flex;align-items:center;gap:20px;font:400 12px/1.5 var(--mono);color:var(--text-secondary)}
+.site-nav a:not(.button){text-decoration:none}
+.site-nav a:not(.button):hover{color:var(--text)}
+.button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:10px 20px;border:1px solid var(--text);border-radius:5px;background:var(--text);color:var(--surface);font:500 12px/1.4 var(--mono);text-decoration:none;white-space:nowrap}
+.button:hover{opacity:.85}
+.site-nav .button{min-height:34px;padding:6px 14px;font-size:11.5px}
+.text-link{font:400 12px/1.5 var(--mono);color:var(--text-secondary)}
+.text-link:hover{color:var(--text)}
+
+/* Homepage hero: the words on the left, a piece of the map behind them on the right. */
+.hero{position:relative;overflow:hidden;border-bottom:1px solid var(--border)}
+.hero-map{position:absolute;top:12px;bottom:12px;right:max(0px,calc((100vw - 1140px)/2 - 40px));width:min(50%,700px);height:calc(100% - 24px)}
+.map-edges{fill:none;stroke:var(--edge);stroke-width:1}
+.map-leaf{fill:var(--cream);stroke-width:1.1}
+.map-hub{fill:var(--cream);stroke-width:2.6}
+.map-label{fill:#1a1a1a;font:700 9.5px var(--mono);letter-spacing:.02em;text-anchor:middle}
+.hero-copy{position:relative;max-width:480px;padding:88px 0 112px}
+.hero-copy h1{font-size:72px;line-height:1.1}
+.hero-line{margin-top:14px;font:400 15px/1.6 var(--mono);color:var(--text-secondary);letter-spacing:-.01em}
+.hero-what{margin-top:32px;font-size:18px;line-height:1.6;text-wrap:pretty}
+.hero-actions{display:flex;align-items:center;flex-wrap:wrap;gap:24px;margin-top:36px}
+
+/* Sections: a mono title on the left, a text column on the right. */
+.section{display:grid;grid-template-columns:240px minmax(0,1fr);gap:40px;padding:56px 0;border-top:1px solid var(--border)}
+.section:first-child{border-top:0}
+.section>h2{font:500 16px/1.5 var(--mono);letter-spacing:-.025em;text-wrap:balance}
+.section-body{max-width:720px}
+.section-body p+p,.section-body p+ul,.section-body ul+p{margin-top:14px}
+.section-body>p{text-wrap:pretty}
+.note{font-size:13.5px;color:var(--text-secondary)}
+
+/* Three short points on what Grove is. */
+.points{display:grid;gap:24px;list-style:none}
+.points strong{display:block;font:500 13px/1.6 var(--mono);letter-spacing:-.015em}
+.points span{color:var(--text-secondary)}
+
+/* What you can bring: a white card like the legend of the views, each row with its ring. */
+.legend{list-style:none;padding:6px 24px;background:var(--surface);border:1px solid var(--border);border-radius:8px}
+.legend li{display:grid;grid-template-columns:12px 170px minmax(0,1fr);column-gap:14px;align-items:baseline;padding:14px 0}
+.legend li+li{border-top:1px solid var(--border)}
+.legend i{align-self:start;width:12px;height:12px;margin-top:4px;border:1.6px solid var(--ring);border-radius:50%;background:var(--cream)}
+.legend strong{font:500 13px/1.6 var(--mono);letter-spacing:-.015em}
+.legend span{font-size:13.5px;line-height:1.55;color:var(--text-secondary)}
+.legend+.note{margin-top:16px}
+
+/* Footer. */
+.site-foot{margin-top:auto;border-top:1px solid var(--border);font:400 12px/1.7 var(--mono);color:var(--text-secondary)}
+.site-foot .wrap{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 32px;padding-top:24px;padding-bottom:24px}
+.site-foot nav{display:flex;flex-wrap:wrap;gap:8px 24px}
+.site-foot a:hover{color:var(--text)}
+
+/* Privacy page: a contents list on the left, the text on the right. */
+.page-head{padding:56px 0 8px}
+.page-head h1{font:500 40px/1.2 var(--mono);letter-spacing:-.05em}
+.kicker{margin-bottom:12px;font:400 11px/1.5 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary)}
+.page-lead{max-width:640px;margin-top:16px;font-size:17px;line-height:1.6;text-wrap:pretty}
+.page{display:grid;grid-template-columns:200px minmax(0,1fr);gap:40px;padding:40px 0 64px}
+.toc{position:sticky;top:24px;align-self:start;list-style:none;font:400 11.5px/1.5 var(--mono);color:var(--text-secondary)}
+.toc li{padding:5px 0}
+.toc a{text-decoration:none}
+.toc a:hover{color:var(--text)}
+.article{min-width:0}
+.article section{padding:32px 0;border-top:1px solid var(--border);scroll-margin-top:16px}
+.article section:first-child{padding-top:0;border-top:0}
+.article h2{margin-bottom:12px;font:500 20px/1.4 var(--mono);letter-spacing:-.03em;text-wrap:balance}
+.article section>p{max-width:680px;text-wrap:pretty}
+.article section>p+p,.article section>p+ul{margin-top:12px}
+.article section>ul{max-width:680px;padding-left:18px}
+.article section>ul li+li{margin-top:6px}
+.article section>.card+p,.article section>ul+p{margin-top:16px}
+
+/* Tables: white cards with hairlines. On a phone each row stacks, with its column named. */
+.card{margin-top:16px;background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+table{width:100%;border-collapse:collapse;font-size:13.5px;line-height:1.55}
+th{padding:12px 16px;border-bottom:1px solid var(--border);font:400 10.5px/1.5 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary);text-align:left}
+td{padding:14px 16px;border-top:1px solid var(--border);vertical-align:top}
+tbody tr:first-child td{border-top:0}
+.flow-table th:nth-child(4),.flow-table td:nth-child(4){width:92px}
+td[data-status]{font:500 12px/1.8 var(--mono);white-space:nowrap}
+td[data-status]::after{content:'';display:inline-block;width:7px;height:7px;margin-left:7px;border-radius:50%;vertical-align:1px;border:1.4px solid var(--text-secondary)}
+td[data-status=runs]{color:var(--success)}
+td[data-status=runs]::after{background:var(--success);border-color:var(--success)}
+td[data-status=planned]{color:var(--text-secondary)}
+.pairs td:first-child{width:190px;white-space:nowrap}
+
+@media (max-width:980px){
+  .page{grid-template-columns:minmax(0,1fr);padding-top:24px}
+  .toc{display:none}
+  .section{grid-template-columns:minmax(0,1fr);gap:16px;padding:44px 0}
+  .hero-copy{max-width:420px}
+  .hero-map{width:48%}
+}
+/* Below this width the words and the map would touch: the map goes under the words. */
+@media (max-width:860px){
+  .hero{display:flex;flex-direction:column}
+  .hero-copy{max-width:560px;padding-bottom:40px}
+  .hero-map{position:static;order:2;width:100%;height:320px;padding:8px 0}
+  .map-label{font-size:14px}
+}
+@media (max-width:720px){
+  .wrap{padding:0 16px}
+  .site-top .wrap{height:56px}
+  .site-top .wm{font-size:22px}
+  .site-nav{gap:14px}
+  .hero-copy{padding:36px 0 32px}
+  .hero-copy h1{font-size:58px}
+  .hero-line{font-size:13.5px}
+  .hero-what{margin-top:22px;font-size:17px}
+  .hero-actions{margin-top:26px}
+  .legend{padding:6px 16px}
+  .legend li{grid-template-columns:12px minmax(0,1fr);padding:12px 0}
+  .legend span{grid-column:2}
+  .page-head{padding-top:32px}
+  .page-head h1{font-size:32px}
+  .page-lead{font-size:16px}
+  .article h2{font-size:18px}
+  /* The table stacks: a row is a block, and each cell names its column. */
+  .flow-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+  .flow-table,.flow-table tbody,.flow-table tr,.flow-table td{display:block;width:auto!important}
+  .flow-table tr{padding:8px 16px 12px}
+  .flow-table tr+tr{border-top:1px solid var(--border)}
+  .flow-table td{padding:6px 0;border:0}
+  .flow-table td::before{content:attr(data-label);display:block;font:400 10px/1.7 var(--mono);letter-spacing:.1em;text-transform:uppercase;color:var(--text-secondary)}
+  .flow-table td:first-child{font-weight:500}
+  .pairs td{display:block;width:auto;padding:0 16px 14px;border:0;white-space:normal}
+  .pairs td:first-child{width:auto;padding:14px 16px 2px;white-space:normal}
+  .pairs tr+tr td:first-child{border-top:1px solid var(--border)}
+  .pairs th{display:none}
+}
+@media print{.toc,.site-nav{display:none}.card{break-inside:auto}}
