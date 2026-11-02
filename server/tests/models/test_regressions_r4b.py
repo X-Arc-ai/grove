@@ -122,7 +122,7 @@ class Provider:
         return self._next(request)
 
 
-def layer_for(driver, provider: Provider) -> ModelLayer:
+def layer_for(driver, provider) -> ModelLayer:
     return ModelLayer(
         driver,
         settings=settings(),
@@ -406,7 +406,12 @@ def test_a_lower_effort_retry_steps_down_one_effort(driver, world, test_clock):
         "choices": [{"message": {"role": "assistant", "content": "Yes."}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 2},
     }
-    provider = Provider(httpx.Response(200, json=empty), httpx.Response(200, json=good))
+    answers = [httpx.Response(200, json=empty), httpx.Response(200, json=good)]
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        # The clock moves between the calls: two rows at one instant have no fixed order.
+        test_clock.advance(seconds=1)
+        return answers.pop(0)
 
     with layer_for(driver, provider) as layer:
         result = layer.chat(world, job="consolidation", messages=MESSAGES)
