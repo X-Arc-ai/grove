@@ -231,6 +231,33 @@ def test_a_bad_time_is_a_typed_400(world, client_for, value, field):
         assert value not in error["message"] or not value
 
 
+# The offset takes each of these past the years a datetime can hold in UTC.
+PAST_THE_YEARS = ["0001-01-01T00:00:00+23:59", "9999-12-31T23:59:59-23:59"]
+
+
+@pytest.mark.parametrize("value", PAST_THE_YEARS)
+@pytest.mark.parametrize("field", ["as_of", "known_as_of"])
+@pytest.mark.parametrize("path", ["/v1/views/graph", "/v1/views/node/some-id"])
+def test_a_time_past_the_years_is_the_typed_400_of_a_bad_time(
+    world, client_for, path, field, value
+):
+    response = client_for(world).get(path, params={field: value})
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["code"] == "invalid_arguments"
+    assert error["details"] == {"field": field}
+    assert error["message"] == f"{field} must be an ISO 8601 date and time with a timezone"
+    assert error["retryable"] is False
+
+
+@pytest.mark.parametrize("value", ["0001-01-01T00:00:00Z", "9999-12-31T23:59:59Z"])
+@pytest.mark.parametrize("field", ["as_of", "known_as_of"])
+def test_the_first_and_last_year_in_utc_are_good_times(world, client_for, field, value):
+    response = client_for(world).get("/v1/views/graph", params={field: value})
+    assert response.status_code == 200
+    assert response.json()[field].startswith(value[:4])
+
+
 def test_a_link_to_a_hidden_item_is_hidden(driver, world, client_for):
     meaning = plant_node(driver, world, "Meaning", **MEANING)["id"]
     seen = plant_node(driver, world, "Item", title="Seen", recorded=T0)

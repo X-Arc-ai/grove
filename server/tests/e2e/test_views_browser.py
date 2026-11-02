@@ -58,6 +58,13 @@ NEAR_PX = 250.0
 FADE_IN_MS = 1500
 HUB_KINDS = ["organisation", "plan"]
 NEW_ITEMS = 12
+# The forces run at full heat once the calm start of a page is over, which is when a legend click
+# would show if anything but the hold kept the map. A little over the page's own 12 seconds.
+CALM_START_MS = 12_500
+# How long a check watches every frame after a legend click.
+WATCH_MS = 1_500
+LEGEND_KINDS = ["organisation", "plan", "person", "task"]
+OFFLINE_TEXT = "Grove could not be reached. Try again in a moment."
 WAIT_MS = 30_000
 POLL_SECONDS = 0.25
 POLLS = 120
@@ -92,6 +99,29 @@ HUB_DISCS_JS = """(kinds) => window.GroveView.nodes()
   }))"""
 NODE_COUNT_JS = """(count) => !!window.GroveView && window.GroveView.nodes().length === count"""
 NODE_IDS_JS = """() => window.GroveView.nodes().map((n) => n.id)"""
+# The view ids of the nodes and the ends of the links the map draws now.
+DRAWN_JS = """() => {
+  const end = (v) => (typeof v === 'object' ? v.id : v);
+  const data = window.GroveView.graph().graphData();
+  return {
+    nodes: data.nodes.map((n) => n.id).sort(),
+    types: data.nodes.map((n) => n.type),
+    links: data.links.map((l) => end(l.source) + '>' + end(l.target) + '>' + l.verb).sort(),
+  };
+}"""
+# The worst distance from a home over every frame of `ms`, per axis, as the hold keeps it.
+WORST_OVER_FRAMES_JS = """(ms) => new Promise((resolve) => {
+  const last = performance.now() + ms;
+  let worst = 0;
+  (function frame() {
+    for (const n of window.GroveView.graph().graphData().nodes) {
+      const home = n.fx != null && n.fy != null ? [n.fx, n.fy] : n.__home;
+      worst = Math.max(worst, Math.abs(n.x - home[0]), Math.abs(n.y - home[1]));
+    }
+    if (performance.now() < last) requestAnimationFrame(frame);
+    else resolve(worst);
+  })();
+})"""
 # The view ids each of `ids` links to, from the links on the map.
 LINKED_JS = """(ids) => {
   const end = (v) => (typeof v === 'object' ? v.id : v);
@@ -302,6 +332,35 @@ def _assert_same_homes(before, after, ids):
     assert not moved, f"{len(moved)} placed items moved, for example {moved[:3]}"
 
 
+def _assert_held_over_frames(page, label):
+    worst = page.evaluate(WORST_OVER_FRAMES_JS, WATCH_MS)
+    assert worst <= SETTLED_PX, f"{label}: a node stood {worst:.1f} px from its home"
+
+
+def _click_the_legend_off_and_on(page, homes, held, seeded):
+    """Each kind hides and shows: every home and pin stays stored, and the drawn map holds."""
+    whole = page.evaluate(DRAWN_JS)
+    assert whole["links"], "the map draws no link"
+    for kind in LEGEND_KINDS:
+        row = page.locator(f'.legend-row[data-type="{kind}"]')
+        row.click()
+        hidden = page.evaluate(DRAWN_JS)
+        assert kind not in hidden["types"], f"{kind} did not hide"
+        assert len(hidden["links"]) < len(whole["links"]), f"the links of {kind} did not hide"
+        _assert_homes_are_stored(_homes(page), held, seeded)
+        _assert_held_over_frames(page, f"{kind} hidden")
+
+        page.locator(f'.legend-row[data-type="{kind}"]').click()
+        shown = page.evaluate(DRAWN_JS)
+        assert shown["nodes"] == whole["nodes"], f"the items of {kind} did not come back"
+        assert shown["links"] == whole["links"], f"the links of {kind} did not come back"
+        now = _homes(page)
+        _assert_same_homes(homes, now, set(homes))
+        _assert_homes_are_stored(now, held, seeded)
+        _assert_held_over_frames(page, f"{kind} shown again")
+    assert page.evaluate("() => window.__brainHoldOff") is False, "the hold let go"
+
+
 def test_the_sign_in_card_offers_google_and_no_code_hint(browser, base_url, shots):
     errors: list[str] = []
     context = _context(browser, base_url)
@@ -372,6 +431,10 @@ def test_the_welcome_and_a_map_that_keeps_every_place(browser, base_url, shots, 
         _assert_same_homes(homes, _homes(page), ids)
         _wait_settled(page)
 
+        # A legend click only hides and shows, in the page the new items then arrive in.
+        _click_the_legend_off_and_on(page, homes, held, seeded)
+        _wait_settled(page)
+
         # New items arrive: every placed item stays, each new one gets a free spot.
         added = demo.add_items(driver, seeded.world_id, NEW_ITEMS)
         page.evaluate("() => window.reloadGrove()")
@@ -397,6 +460,11 @@ def test_the_welcome_and_a_map_that_keeps_every_place(browser, base_url, shots, 
         _wait_settled(page)
         _shot(page, shots, "graph-new", FADE_IN_MS)
 
+        # The same at full heat, on the grown map: no click moves an old or a new item.
+        page.wait_for_timeout(CALM_START_MS)
+        _click_the_legend_off_and_on(page, after, held, seeded)
+        _wait_settled(page)
+
         page.reload()
         _wait_for_nodes(page, grown)
         _assert_same_homes(after, _homes(page), grown)
@@ -410,3 +478,126 @@ def test_the_welcome_and_a_map_that_keeps_every_place(browser, base_url, shots, 
         assert errors == []
     finally:
         context.close()
+
+
+def _first_visit_save(browser, base_url, token, search):
+    """What a first visit to this URL posts, kept from the store so the next visit is first too."""
+    sent = []
+
+    def keep(route):
+        body = route.request.post_data_json
+        sent.extend(body["positions"])
+        answer = {"placed": len(body["positions"]), "kept": 0, "unknown": 0}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(answer))
+
+    errors: list[str] = []
+    context = _context(browser, base_url, token=token, state=_local_state())
+    try:
+        page = _open(context, errors)
+        page.route("**/v1/views/positions", keep)
+        page.goto("/" + search)
+        for _ in range(POLLS):
+            if sent:
+                break
+            page.wait_for_timeout(POLL_SECONDS * 1000)
+        assert sent, f"{search or 'a plain visit'} saved nothing"
+        assert errors == []
+    finally:
+        context.close()
+    return sorted(sent, key=lambda entry: entry["id"])
+
+
+def test_no_url_setting_changes_what_a_first_visit_saves(browser, base_url, seeded):
+    plain = _first_visit_save(browser, base_url, seeded.token, "")
+    assert len(plain) == len(seeded.items)
+    for search in ("?classic=1", "?dense=0", "?orbit=0"):
+        seen = _first_visit_save(browser, base_url, seeded.token, search)
+        assert seen == plain, f"{search} changes what a first visit writes for good"
+
+
+def _answer(status):
+    body = json.dumps(
+        {"error": {"code": "unavailable", "message": "x", "details": {}, "retryable": True}}
+    )
+    return lambda route: route.fulfill(status=status, content_type="application/json", body=body)
+
+
+def test_a_failed_session_check_keeps_the_sign_in_and_shows_the_offline_text(
+    browser, base_url, shots, seeded
+):
+    errors: list[str] = []
+    ids = _view_ids(seeded)
+    key = _local_state()[0]
+    note = "#gp-session-note"
+
+    # Signed in here, and the session check answers 503: the map shows, with the text over it.
+    context = _context(browser, base_url, token=seeded.token, state=_local_state())
+    try:
+        page = _open(context, errors)
+        page.route("**/v1/views/session", _answer(503))
+        page.goto("/")
+        _wait_for_nodes(page, ids)
+        page.locator(note).wait_for(state="visible", timeout=WAIT_MS)
+        assert page.locator(note).inner_text() == OFFLINE_TEXT
+        assert page.locator(".gp-entry").count() == 0, "a sign-in card over a kept sign-in"
+        stored = page.evaluate(f"() => JSON.parse(localStorage.getItem({json.dumps(key)}))")
+        assert stored["auth"]["email"] == "maya.chen@example.com", "the local sign-in ended"
+        _shot(page, shots, "session-503-signed-in")
+    finally:
+        context.close()
+
+    # The map cannot draw either: its own cover shows, and the text stands over that cover.
+    context = _context(browser, base_url, token=seeded.token, state=_local_state())
+    try:
+        page = _open(context, errors)
+        page.route("**/v1/views/session", _answer(503))
+        page.route("**/v1/views/graph*", _answer(503))
+        page.goto("/")
+        page.locator(note).wait_for(state="visible", timeout=WAIT_MS)
+        page.get_by_text("Unable to open this brain").wait_for(timeout=WAIT_MS)
+        on_top = page.evaluate(
+            """(selector) => {
+              const box = document.querySelector(selector).getBoundingClientRect();
+              const at = document.elementFromPoint(box.left + box.width / 2, box.top + 2);
+              return at === document.querySelector(selector);
+            }""",
+            note,
+        )
+        assert on_top, "the loading cover hides the offline text"
+    finally:
+        context.close()
+
+    # Signed out here, with a cookie that still works: the card says what failed, and the graph of
+    # that cookie stays out of the page.
+    context = _context(browser, base_url, token=seeded.token)
+    try:
+        page = _open(context, errors)
+        page.route("**/v1/views/session", _answer(503))
+        page.goto("/")
+        alert = page.locator('.gp-auth-form [role="alert"]')
+        alert.wait_for(timeout=WAIT_MS)
+        assert alert.inner_text() == OFFLINE_TEXT
+        assert page.get_by_role("button", name="Continue with Google").is_visible()
+        assert page.locator("#loading").is_hidden(), "the loading cover hides the card"
+        assert page.locator(note).is_hidden()
+        page.wait_for_load_state("networkidle")
+        assert page.evaluate("() => window.GroveView.nodes().length") == 0
+        _shot(page, shots, "session-503-signed-out", 400)
+    finally:
+        context.close()
+
+    # Signed out here, with all of Grove down: still the card, and not the map's failure text.
+    context = _context(browser, base_url, token=seeded.token)
+    try:
+        page = _open(context, errors)
+        page.route("**/v1/views/session", _answer(503))
+        page.route("**/v1/views/graph*", _answer(503))
+        page.goto("/")
+        alert = page.locator('.gp-auth-form [role="alert"]')
+        alert.wait_for(timeout=WAIT_MS)
+        assert alert.inner_text() == OFFLINE_TEXT
+        page.wait_for_load_state("networkidle")
+        assert page.locator("#loading").is_hidden(), "the map's failure text covers the card"
+    finally:
+        context.close()
+    assert errors == []

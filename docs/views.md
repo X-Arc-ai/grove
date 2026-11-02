@@ -64,7 +64,7 @@ Every error is typed (B.3) and can never look like an empty result:
 
 | Status | Code | When |
 |---|---|---|
-| 400 | `invalid_arguments` | A bad `as_of` or `known_as_of`, or a bad positions body. `details.field` names the field. |
+| 400 | `invalid_arguments` | A bad `as_of` or `known_as_of`, or a bad positions body. `details.field` names the field, and the message never repeats the value. |
 | 401 | `unauthenticated` | No cookie, an unknown, expired or revoked session, or a session whose user owns no `:World`. |
 | 404 | `not_found` | An unknown route, or a node id that is no item of this world (or no item in the time window). |
 | 500 | `internal` | A failure of the server. |
@@ -74,7 +74,7 @@ Every answer under `/v1/views/` carries `Cache-Control: no-store`.
 
 ## Time parameters
 
-`GET /v1/views/graph` and `GET /v1/views/node/{id}` take two optional parameters. Each is an ISO 8601 date and time with a timezone, such as `2026-10-01T09:00:00Z` or `2026-10-01T14:30:00+05:30` (encode the `+` in a URL). A date alone, a time with no timezone or empty text is a 400.
+`GET /v1/views/graph` and `GET /v1/views/node/{id}` take two optional parameters. Each is an ISO 8601 date and time with a timezone, such as `2026-10-01T09:00:00Z` or `2026-10-01T14:30:00+05:30` (encode the `+` in a URL). A date alone, a time with no timezone, empty text, or a time whose offset takes it past the years 1 to 9999 in UTC (`0001-01-01T00:00:00+23:59`, `9999-12-31T23:59:59-23:59`) is a 400.
 
 - `known_as_of=T` keeps the rows recorded at or before T (`recorded <= T`). A row with no `recorded` is left out.
 - `as_of=T` keeps the rows whose world interval holds T: `became_true_earliest` is absent or at or before T, and the stopped bound (`stopped_being_true_latest`, else `stopped_being_true_earliest`) is absent or after T.
@@ -127,6 +127,8 @@ The graph shows a link only when both of its ends are in the node list, and only
 ### `GET /v1/views/session`
 
 `{"signed_in": true, "self_item_id": "<id>" | null}`. `self_item_id` is the person's own item when it names an item of this world.
+
+The page asks this once at load, and only a 401 ends its local sign-in. After any other failure, a person signed in on this device keeps the sign-in and the map, and the offline text shows over the page. A person who is not sees the sign-in card with that text, and no graph of an unknown session stays behind the card.
 
 ### `GET /v1/views/graph[?as_of=T&known_as_of=T]`
 
@@ -183,10 +185,17 @@ A 404 for an unknown id, an id of another world, or an item outside the time win
 
 Body, with `Content-Type: application/json`: `{"positions": [{"id": "<item id>", "x": 0.0, "y": 0.0}]}`.
 
-- 1 to 5000 entries. Each entry has exactly `id`, `x` and `y`. `id` is a string of 1 to 128 characters. `x` and `y` are finite numbers, at most 1e7 either way. The body is at most 2 MiB, and `NaN` and `Infinity` are refused.
+- 1 to 5000 entries. Each entry has exactly `id`, `x` and `y`. `id` is a string of 1 to 128 characters, with no lone surrogate (JSON can write `"\ud800"`, and UTF-8 cannot hold it). `x` and `y` are finite numbers, at most 1e7 either way, so an integer of 400 digits is refused like any other number past the bound. The body is at most 2 MiB, and `NaN` and `Infinity` are refused. Each of these is a 400 `invalid_arguments` that names the field.
 - Answer: `{"placed": n, "kept": m, "unknown": k}`, which add up to the number of entries.
 - Insert-only. An item that already has a position keeps it, and counts as kept; so does a repeat inside one call. An id that is not an item of this world counts as unknown and writes nothing. A refused body writes nothing at all.
 - Two calls that race on one item end with one position: the `(world_id, item_id)` key of `map_positions` backs it.
 - The JSON content type is required, so a cross-site form cannot post here without a preflight.
 
 The positions live in the table `map_positions` (`:MapPosition`); `docs/store-map.md` has its row.
+
+## What the production page does with the map
+
+Every place on the map is a stored place, so nothing on the page moves one:
+
+- A click on a legend row only hides or shows that kind. It lays nothing out again: no hub moves, a hidden hub keeps its pin, and the camera stays. A shown kind's items come back at their places, with their links.
+- The map's URL settings `?classic=1`, `?dense=0` and `?orbit=0` have no effect on the production page. They stay in fixture mode, the simulation engine that only the checks run. `?hood=1` and `?hood=0` stay on both: they turn the workers view on or off and write nothing to the store.

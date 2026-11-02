@@ -20,6 +20,8 @@
   ui.editName=false;ui.nameDraft='';ui.guideStage=0;ui.uploadFile=null;ui.settingsTab='account';ui.authStage=api.getState().auth?null:'signin';ui.requestId=null;ui.requestTab='open';ui.requestDrafts={};ui.guideDevice='iphone';ui.email='';ui.code='';ui.query='';ui.connecting={};ui.keyApp=null;ui.sourceTab='chats';ui.filePicker=false;ui.noteEditor=false;ui.confirm=null;ui.notice='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};
   var lastShape='', lastTourShape='', moving=false, tourAfter=0, arrivalTimer=null, uiEpoch=0, authEpoch=0;
   var progress=document.createElement('div');progress.id='gp-onboarding-progress';progress.setAttribute('aria-live','polite');root.appendChild(progress);
+  // Live mode, signed in here while the session check failed: the offline text, over the map and the loading cover.
+  var sessionNote=document.createElement('p');sessionNote.id='gp-session-note';sessionNote.setAttribute('role','alert');sessionNote.hidden=true;document.body.appendChild(sessionNote);
   var reduceMotion=window.matchMedia('(prefers-reduced-motion: reduce)');
   var PROVIDERS = {
     chatgpt: {label:'ChatGPT',color:'var(--text)',source:'conversations',accept:'.zip,.json',file:'chatgpt-export.zip',steps:[['Open Settings','In ChatGPT, open your profile menu, then Settings.'],['Export your data','Choose Data Controls → Export data → Confirm export.'],['Bring the export here','Download the ZIP from the email, then choose it below.']]},
@@ -87,13 +89,22 @@
     return live.emailVerify(ui.email,code).then(function(res){if(res.ok)finishSignIn('email');else{ui.error=SIGNIN_COPY.code;render(true);}},function(){ui.error=SIGNIN_COPY.offline;render(true);});
   }
   // Live mode, on load: the server session decides between the sign-in screen and the views.
-  // A session with no local sign-in is the way back from Google.
+  // A session with no local sign-in is the way back from Google. Only a 401 ends the local sign-in.
+  // Any other failure says nothing about the session: the local state stays and the offline text
+  // shows. With no local sign-in the card shows it, and no graph of an unknown session stays behind.
+  function sessionUnknown(){
+    if(api.getState().auth)ui.offline=true;
+    else if(ui.authStage==='checking'){endSession();ui.authStage='signin';ui.error=SIGNIN_COPY.offline;}
+    else return;
+    render(true);
+  }
   function checkSession(){
     return live.session().then(function(res){
       if(res.ok&&res.body&&res.body.signed_in){if(!api.getState().auth)finishSignIn('google');else if(ui.authStage==='checking'){ui.authStage=null;render(true);}return;}
+      if(res.status!==401){sessionUnknown();return;}
       if(api.getState().auth)api.signOut();
       endTour();ui.panel=null;ui.guide=null;ui.authStage='signin';render(true);
-    },function(){if(ui.authStage==='checking'){ui.authStage='signin';ui.error=SIGNIN_COPY.offline;render(true);}});
+    },sessionUnknown);
   }
   // Live mode, the session is over (a confirmed logout, or a 401 from a live call): the local
   // sign-in ends, the graph leaves memory and the screen, panels close and the sign-in card shows.
@@ -103,7 +114,7 @@
     api.signOut();
     if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
     if(onCard)return;
-    endTour();ui.panel=null;ui.guide=null;ui.confirm=null;ui.host=null;ui.authStage='signin';ui.error='';ui.email='';ui.code='';ui.logoutError='';
+    endTour();ui.panel=null;ui.guide=null;ui.confirm=null;ui.host=null;ui.authStage='signin';ui.error='';ui.email='';ui.code='';ui.logoutError='';ui.offline=false;
     render(true);
   }
   // Logout signs out here only when the server confirms it, or when the session is already gone.
@@ -311,6 +322,7 @@
     var bottom=onboard?'':'<button class="gp-accounts-trigger" data-action="connections" aria-label="Take Grove to your AI"><span class="gp-host-cta">Take Grove to your AI '+arrow()+'</span><span class="gp-provider-stack">'+HOST_ORDER.map(function(id){return '<span class="'+(s.connectedHosts.includes(id)?'is-connected':'')+'">'+icon(id)+'<small>'+PROVIDERS[id].label+'</small></span>';}).join('')+'</span></button>'+(s.currentNodeCount?'<button class="gp-types-toggle" data-action="types">Node types</button>':'');
     if(chrome.innerHTML!==bottom){chrome.innerHTML=bottom;bindChrome();}
     var rq=document.getElementById('requests-button'),pending=(s.requests||[]).filter(function(r){return r.status==='open';}).length;rq.hidden=onboard;rq.classList.toggle('has-pending',pending>0);rq.setAttribute('aria-label','Grove needs your input'+(pending?', '+pending+(pending===1?' question':' questions'):''));rq.setAttribute('aria-expanded',String(ui.panel==='requests'));
+    sessionNote.textContent=ui.offline?SIGNIN_COPY.offline:'';sessionNote.hidden=!ui.offline;
     updateLive();renderTour();
   }
   function updateLive(){

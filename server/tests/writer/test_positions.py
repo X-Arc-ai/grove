@@ -124,12 +124,16 @@ def test_a_list_that_is_not_1_to_5000_entries_is_refused(driver, world, bad):
         ({"id": "a", "x": 1, "y": math.inf}, "positions[1].y"),
         ({"id": "a", "x": -math.inf, "y": 1}, "positions[1].x"),
         ({"id": "a", "x": 1e7 + 1, "y": 1}, "positions[1].x"),
+        ({"id": "a", "x": 10**400, "y": 1}, "positions[1].x"),
+        ({"id": "a", "x": 1, "y": -(10**400)}, "positions[1].y"),
         ({"id": "a", "x": 1, "y": True}, "positions[1].y"),
         ({"id": "a", "x": "1", "y": 1}, "positions[1].x"),
         ({"id": 1, "x": 1, "y": 1}, "positions[1].id"),
         ({"id": None, "x": 1, "y": 1}, "positions[1].id"),
         ({"id": "", "x": 1, "y": 1}, "positions[1].id"),
         ({"id": "a" * 129, "x": 1, "y": 1}, "positions[1].id"),
+        ({"id": "\ud800", "x": 1, "y": 1}, "positions[1].id"),
+        ({"id": "a\udfffb", "x": 1, "y": 1}, "positions[1].id"),
         ({"id": "a", "x": 1}, "positions[1]"),
         ({"id": "a", "x": 1, "y": 1, "world_id": "w"}, "positions[1]"),
         (("a", 1, 1), "positions[1]"),
@@ -147,6 +151,10 @@ def test_check_positions_keeps_order_and_bounds():
     assert check_positions([{"id": "b", "x": 1e7, "y": -1e7}, {"id": "a", "x": 0, "y": 0.5}]) == [
         ("b", 1e7, -1e7),
         ("a", 0.0, 0.5),
+    ]
+    # An integer at the bound is a coordinate, and a character past the surrogates is an id.
+    assert check_positions([{"id": "\U0001f333", "x": 10**7, "y": -(10**7)}]) == [
+        ("\U0001f333", 1e7, -1e7)
     ]
     assert len(check_positions([{"id": "a", "x": 0, "y": 0}] * MAX_POSITIONS)) == MAX_POSITIONS
 
