@@ -1316,3 +1316,222 @@ def test_an_original_phrase_on_the_generic_meaning_is_stored(driver, seeded, cha
     link = created_id(apply(driver, w, [op], [ev]), ">", "link")
     rows = read(driver, w, "MATCH ()-[l:LINK {id: $id}]->() RETURN l", id=link)
     assert rows[0]["l"]["original_phrase"] is not None
+
+
+# B.2, one row at a time: the validations a batch sends with a field missing or wrong -------
+
+
+END_FIELD_CASES = [
+    pytest.param("end_class", None, "missing_field", id="no_end_class"),
+    pytest.param("end_class", "because", "enum", id="bad_end_class"),
+    pytest.param("stopped_being_true", None, "missing_field", id="no_end_time"),
+]
+RECORD_EDITS = [
+    pytest.param({"summary": "The Tamsin hall was chosen"}, id="summary"),
+    pytest.param({"body": "The Tamsin hall was chosen in the end"}, id="body"),
+    pytest.param({"became_true": clock_at(at_minute(7))}, id="became_true"),
+    pytest.param({"properties": {"venue": "Tamsin hall"}}, id="properties"),
+    pytest.param({"recheck_by": RECHECK}, id="recheck_by"),
+    pytest.param(
+        {"title": "The Tamsin hall was chosen", "search_terms": ["hall"]},
+        id="title_with_search_terms",
+    ),
+]
+
+
+def _with_field(op: dict[str, Any], name: str, value: Any) -> dict[str, Any]:
+    """The operation with one field replaced, or removed when the value is None."""
+    changed = {key: val for key, val in op.items() if key != name}
+    return changed if value is None else {**changed, name: value}
+
+
+def _part_of_link(driver, world_id: str, src) -> str:
+    a = make_item(driver, world_id, src, 1, kind="place", title="Alfama")
+    b = make_item(driver, world_id, src, 2, kind="place", title="Lisbon")
+    ev = observation(src, "l1", 3)
+    made = create_link(a, "part of", b, "l1", became_true=clock_at(at_minute(3)))
+    return created_id(apply(driver, world_id, [made], [ev]), ">", "link")
+
+
+def _link_row(driver, world_id: str, link_id: str) -> dict[str, Any]:
+    rows = read(driver, world_id, "MATCH ()-[l:LINK {id: $id}]->() RETURN l", id=link_id)
+    assert len(rows) == 1
+    return rows[0]["l"]
+
+
+def test_a_kind_alias_resolves_to_its_canonical_kind(driver, seeded, chat):
+    w = seeded["world_id"]
+    plant_node(
+        driver,
+        w,
+        "Alias",
+        target_type="kind",
+        target_id=seeded["kinds"]["task"],
+        phrase="chore",
+        normalised_phrase="chore",
+        status="canonical",
+        reversed=False,
+    )
+    ev = observation(chat, "e1", 1)
+    op = create_item("chore", "Paint the mast", "e1", status="open", recheck_by=RECHECK)
+    item = created_id(apply(driver, w, [op], [ev]))
+    assert item_row(driver, w, item)["kind"] == seeded["kinds"]["task"]
+
+
+@pytest.mark.parametrize("entry", [{}, {"reason": "   "}], ids=["absent", "blank"])
+def test_distinct_from_without_a_reason_is_refused(driver, seeded, chat, entry):
+    w = seeded["world_id"]
+    first = make_task(driver, w, chat, 1, title=FIRST_TITLE)
+    ev = observation(chat, "e1", 5)
+    op = create_item(
+        "task",
+        REWORDED_TITLE,
+        "e1",
+        status="open",
+        recheck_by=RECHECK,
+        distinct_from=[{"item": first, **entry}],
+    )
+    refusal = one(refused(driver, w, [op], [ev]), "invalid_arguments")
+    assert refusal.rule == "distinct_reason"
+    assert refusal.op_id == op["op_id"]
+
+
+@pytest.mark.parametrize("fields", RECORD_EDITS)
+def test_every_field_of_a_record_claim_is_refused(driver, seeded, chat, fields):
+    w = seeded["world_id"]
+    record = make_item(driver, w, chat, 1, kind="decision", title="The Okonkwo hall was chosen")
+    before = item_row(driver, w, record)
+    ev = observation(chat, "e1", 5)
+    op = update_item(record, before["version"], fields, "e1")
+    refusal = one(refused(driver, w, [op], [ev]), "record_immutable")
+    assert refusal.op_id == op["op_id"]
+    assert item_row(driver, w, record) == before
+
+
+def test_change_status_outside_the_vocabulary_is_refused_with_the_valid_list(driver, seeded, chat):
+    w = seeded["world_id"]
+    task = make_task(driver, w, chat, 1)
+    ev = observation(chat, "e1", 5)
+    op = change_status(task, "almost finished", "e1")
+    refusal = one(refused(driver, w, [op], [ev]), "unknown_status")
+    assert refusal.op_id == op["op_id"]
+    assert "in progress" in details_text(refusal)
+    assert item_row(driver, w, task)["status"] == "open"
+
+
+@pytest.mark.parametrize(("name", "value", "rule"), END_FIELD_CASES)
+def test_end_item_without_a_valid_end_class_or_end_time_is_refused(
+    driver, seeded, chat, name, value, rule
+):
+    w = seeded["world_id"]
+    task = make_task(driver, w, chat, 1)
+    ev = observation(chat, "e1", 20, statement_class="report_happened")
+    op = _with_field(_end_item_op(task, 20, "e1"), name, value)
+    refusal = one(refused(driver, w, [op], [ev]), "invalid_arguments")
+    assert refusal.rule == rule
+    assert refusal.op_id == op["op_id"]
+    assert refusal.details["field"] == name
+    assert item_row(driver, w, task).get("end_class") is None
+
+
+@pytest.mark.parametrize(("name", "value", "rule"), END_FIELD_CASES)
+def test_end_link_without_a_valid_end_class_or_end_time_is_refused(
+    driver, seeded, chat, name, value, rule
+):
+    w = seeded["world_id"]
+    link = _part_of_link(driver, w, chat)
+    whole = {
+        "op": "end_link",
+        "op_id": new_op_id(),
+        "link": link,
+        "end_class": "ended_in_the_world",
+        "stopped_being_true": clock_at(at_minute(20)),
+        "reason": "the message says it ended",
+    }
+    op = _with_field(whole, name, value)
+    refusal = one(refused(driver, w, [op], []), "invalid_arguments")
+    assert refusal.rule == rule
+    assert refusal.op_id == op["op_id"]
+    assert refusal.details["field"] == name
+    assert _link_row(driver, w, link)["active_key"] is not None
+
+
+def test_reopen_without_a_reason_is_refused(driver, seeded, chat):
+    w = seeded["world_id"]
+    task = make_task(driver, w, chat, 1)
+    ev = observation(chat, "e1", 20, statement_class="report_happened")
+    apply(driver, w, [_end_item_op(task, 20, "e1")], [ev])
+    op = {"op": "reopen_item", "op_id": new_op_id(), "item": task, "recheck_by": RECHECK}
+    refusal = one(refused(driver, w, [op], []), "invalid_arguments")
+    assert refusal.rule == "missing_field"
+    assert refusal.details["field"] == "reason"
+    assert item_row(driver, w, task)["end_class"] == "ended_in_the_world"
+
+
+@pytest.mark.parametrize(
+    ("value", "rule"),
+    [(None, "missing_field"), ("because", "enum")],
+    ids=["no_end_reason", "bad_end_reason"],
+)
+def test_end_evidence_without_a_valid_reason_is_refused(driver, seeded, chat, value, rule):
+    w = seeded["world_id"]
+    item = make_item(driver, w, chat, 4)
+    [row] = evidence_rows(driver, w, item)
+    whole = {
+        "op": "end_evidence",
+        "op_id": new_op_id(),
+        "evidence": row["id"],
+        "end_reason": "correction",
+    }
+    op = _with_field(whole, "end_reason", value)
+    refusal = one(refused(driver, w, [op], []), "invalid_arguments")
+    assert refusal.rule == rule
+    assert refusal.details["field"] == "end_reason"
+    [after] = evidence_rows(driver, w, item)
+    assert after["active"] is True
+
+
+def test_attach_evidence_to_an_absent_target_is_refused(driver, seeded, chat):
+    w = seeded["world_id"]
+    ev = observation(chat, "e1", 5)
+    op = _attach(new_id(w), "e1")
+    refusal = one(refused(driver, w, [op], [ev]), "not_found")
+    assert refusal.rule == "target_not_found"
+    assert refusal.op_id == op["op_id"]
+
+
+def test_attach_evidence_is_unique_on_message_target_and_polarity(driver, seeded, chat):
+    w = seeded["world_id"]
+    item = make_item(driver, w, chat, 1)
+    assert len(evidence_rows(driver, w, item)) == 1
+
+    apply(driver, w, [_attach(item, "e1")], [observation(chat, "e1", 5)])
+    assert len(evidence_rows(driver, w, item)) == 2
+
+    same_message = observation(chat, "e2", 5)
+    apply(driver, w, [_attach(item, "e2")], [same_message])
+    assert len(evidence_rows(driver, w, item)) == 2
+
+    other_polarity = observation(chat, "e3", 5)
+    apply(driver, w, [_attach(item, "e3", polarity="contradicts")], [other_polarity])
+    rows = evidence_rows(driver, w, item)
+    assert len(rows) == 3
+    assert sorted(row["polarity"] for row in rows) == ["contradicts", "supports", "supports"]
+
+
+@pytest.mark.parametrize("op_name", ["change_status", "end_item", "reopen_item"])
+def test_a_record_refuses_a_status_an_end_and_a_reopen(driver, seeded, chat, op_name):
+    w = seeded["world_id"]
+    record = make_item(driver, w, chat, 1, kind="decision", title="The Okonkwo hall was chosen")
+    before = item_row(driver, w, record)
+    evidence = [observation(chat, "e1", 20, statement_class="report_happened")]
+    if op_name == "change_status":
+        op = change_status(record, "done", "e1")
+    elif op_name == "end_item":
+        op = _end_item_op(record, 20, "e1")
+    else:
+        op = {"op": "reopen_item", "op_id": new_op_id(), "item": record, "reason": "a new message"}
+        evidence = []
+    refusal = one(refused(driver, w, [op], evidence), "record_immutable")
+    assert refusal.op_id == op["op_id"]
+    assert item_row(driver, w, record) == before
