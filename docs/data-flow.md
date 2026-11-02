@@ -13,6 +13,10 @@ configuration. A lane is one work stream of this build.
 | Items, links, history, sources | Grove's store on the box | Stated from configuration by the `forget` lane | Planned |
 | Evidence packets to the AI host | The host's systems | Stated from configuration by the `forget` lane | Planned |
 
+Every model call goes through the model-call layer (`docs/models.md`), which records it in
+`model_calls`. The agents reach a model only through the internal gateway on the server, and the
+layer sends nothing to a host outside its egress allowlist.
+
 ## Open
 
 The handling of a screening candidate that code cannot settle is not fixed yet. The `forget` lane

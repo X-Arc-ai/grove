@@ -4,6 +4,9 @@ from neo4j import Driver, GraphDatabase
 
 from grove.config import Settings, load_settings
 
+# Code outside the store names the driver type through this module, never through neo4j.
+__all__ = ["DATABASE", "Driver", "open_driver"]
+
 # Community has exactly one user database.
 DATABASE = "neo4j"
 
