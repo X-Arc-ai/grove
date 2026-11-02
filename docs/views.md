@@ -15,7 +15,7 @@ uv run uvicorn --factory grove.api.app:create_app --host 127.0.0.1 --port 8765
 
 `create_app` opens the store driver at startup from `NEO4J_AUTH` and `GROVE_NEO4J_URI` (default `bolt://127.0.0.1:57687`) and closes it at shutdown. A caller that hands in a driver, as the tests do, owns it.
 
-`GROVE_WEB_DIST` names a folder whose `index.html` `GET /` returns, for example `GROVE_WEB_DIST=../web/dist` in a local run. In production the API image builds the page and sets it, and nginx passes every path to this process.
+`GROVE_WEB_DIST` names the folder of the built pages, for example `GROVE_WEB_DIST=../web/dist` in a local run. `GET /` returns its `home.html` with no session cookie and its `index.html` with one; `docs/signin.md` has the page routes. In production the API image builds the pages and sets it, and nginx passes every path to this process.
 
 ### A synthetic world to look at
 
@@ -43,13 +43,14 @@ Keep `python -m pytest`: the `pytest` script in `.venv/bin` does not see the Pla
 
 ## The session contract
 
-Signin owns the session rows and the cookie. The views only read them.
+Signin owns the session rows and the cookie (`docs/signin.md`). The views only read them.
 
 - The cookie is `grove_session`. Its value is a random token.
 - `:Session.token_hash` is the lowercase sha256 hex of that token. The token itself is never stored.
 - A session is valid while `revoked_at` is absent and `expires_at` is later than the clock provider's now.
 - `:Session.user_id` leads to the `:World` whose `owner_user_id` is that user. When there are several, the oldest by `created_at` wins.
-- `:World.self_item_id`, which may be absent, names the person's own item. Signin writes it; see the open points of `docs/store-map.md`.
+- `:Session.method` is `google` or `email`. A session from before that column has none.
+- `:World.self_item_id`, which may be absent, names the person's own item. Signin writes it in the transaction that makes the item (S40 in `docs/store-map.md`).
 - Signin must create the user's `:World` row before it sets the cookie. A valid session whose user owns no `:World` reads as signed out: it gets the same 401 as no session.
 
 No valid session means a 401 for every endpoint, before any parameter is read.
@@ -126,7 +127,11 @@ The graph shows a link only when both of its ends are in the node list, and only
 
 ### `GET /v1/views/session`
 
-`{"signed_in": true, "self_item_id": "<id>" | null}`. `self_item_id` is the person's own item when it names an item of this world.
+```json
+{"signed_in": true, "self_item_id": "<id>" | null, "has_items": false, "account": "<user id>", "method": "google" | "email" | null}
+```
+
+`self_item_id` is the person's own item when it names an item of this world. `has_items` is true when the world holds an item other than the own item. `account` is the user id, and `method` is the session's method. `POST /v1/auth/email/verify` answers the same object.
 
 The page asks this once at load, and only a 401 ends its local sign-in. After any other failure, a person signed in on this device keeps the sign-in and the map, and the offline text shows over the page. A person who is not sees the sign-in card with that text, and no graph of an unknown session stays behind the card.
 

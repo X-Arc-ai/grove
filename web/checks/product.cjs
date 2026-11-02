@@ -11,6 +11,7 @@ let source=fs.readFileSync(path.join(root,'product.js'),'utf8');
 source=source.replace('  render(true);maybeTour();','  window.productTest={ui,handle,finishSignIn,chooseSignIn,startEmail,verifyEmail,render,html:()=>modalRoot.innerHTML,profile,sourcesPanel,guide,requestsPanel,sourceRow,health,stepContent,transferFilm,sourceTrail,growthSparkline,tourTarget,renderTour,nextTour,endTour,tourRoot,chrome,positionTour,openConfirmation};render(true);');
 vm.runInContext(source,c);const p=c.productTest,api=c.GroveSimulation;
 assert(p.html().includes('Continue with Google'));
+assert(!p.html().includes('/privacy'),'Fixture mode has no server page to link');
 p.finishSignIn('google');assert(p.html().includes('Get Started'));assert(!api.getState().onboardingComplete);
 p.handle('start');assert(p.html().includes('Give Grove the context behind how you think'));assert(!p.html().includes('Previous step'));
 // Requested exports remain pending through skipped onboarding and reopening Settings.

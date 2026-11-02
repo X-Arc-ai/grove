@@ -12,6 +12,7 @@ from typing import Any
 
 from grove.store.query import WorldQuery
 from grove.views.registry import Registry, read_registry
+from grove.views.session import ViewSession
 from grove.views.times import instant, iso_z
 
 STATUS_FIELD = "status"
@@ -62,6 +63,7 @@ def _projection(variable: str, fields: tuple[str, ...]) -> str:
 _ITEMS = "MATCH (i:Item) RETURN " + _projection("i", _ITEM_FIELDS)
 _ITEM = "MATCH (i:Item {id: $id}) RETURN i"
 _ITEM_ID = "MATCH (i:Item {id: $id}) RETURN i.id AS id"
+_ANOTHER_ITEM = "MATCH (i:Item) WHERE i.id <> $own RETURN i.id AS id LIMIT 1"
 _LINK_MATCH = "MATCH (a:Item)-[l:LINK]->(b:Item) "
 _LINKS_RETURN = "RETURN " + _projection("l", _LINK_FIELDS)
 # Without as_of only active links show, so the ended ones stay in the store.
@@ -324,5 +326,14 @@ def own_item(world: WorldQuery, self_item_id: str | None) -> str | None:
     return self_item_id if world.read(_ITEM_ID, id=self_item_id) else None
 
 
-def session_payload(world: WorldQuery, self_item_id: str | None) -> dict[str, Any]:
-    return {"signed_in": True, "self_item_id": own_item(world, self_item_id)}
+def session_payload(world: WorldQuery, session: ViewSession) -> dict[str, Any]:
+    """has_items says the world holds more than the own item: the page opens the map, not the
+    welcome, for a person who comes back on a browser that has no local state."""
+    own = own_item(world, session.self_item_id)
+    return {
+        "signed_in": True,
+        "self_item_id": own,
+        "has_items": bool(world.read(_ANOTHER_ITEM, own=own or "")),
+        "account": session.user_id,
+        "method": session.method,
+    }
