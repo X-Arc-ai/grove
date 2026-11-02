@@ -3,11 +3,15 @@ Description=Start the Grove store and its writers at boot, when a backup left th
 Requires=docker.service
 After=docker.service network-online.target
 Wants=network-online.target
+# Keep trying: nothing else starts these services until the next backup or deploy.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStart=/opt/grove/src/deploy/services-up.sh
-TimeoutStartSec=15min
+TimeoutStartSec=30min
+Restart=on-failure
+RestartSec=60
 
 [Install]
 WantedBy=multi-user.target

@@ -44,7 +44,7 @@ transport in their place.
 | `/opt/grove/src` | The checkout. It pulls from GitHub with the box's deploy key `/root/.ssh/grove_deploy`, which GitHub holds as read-only. | root |
 | `/etc/grove/*.env` | The secret files below. | 600, root |
 | `/etc/grove/google-oauth.json` | Google's Web client file, mounted read-only into the API at `/run/grove/google-oauth.json` (`GROVE_GOOGLE_OAUTH_FILE`). | 400, uid 10001 |
-| `/var/lib/grove/deployed.sha` | The sha the box serves. | root |
+| `/var/lib/grove/deployed.sha`, `previous.sha` | The sha the box runs, and the one it replaced. | root |
 | `/var/log/grove/deploy.log`, `backup.log` | A start line for each deploy that reaches its build and a result line for each that reaches its smoke, both with the previous sha; one line per dump, per restore check and per removed dump. | 640, root |
 | `/var/backups/grove/` | `grove-<UTC stamp>.dump`, its `.fingerprint.json` and its `.dump.sha256`. | 700, files 600 |
 | `/var/lib/grove-runner` | The runner's HOME. The host user `grove-runner` owns it; it has no sudo and is not in the docker group. | 700 |
@@ -92,7 +92,7 @@ On the box, `deploy/deploy.sh <sha>`:
 
 1. takes the box lock `/run/grove/deploy.lock`;
 2. fetches `develop` from GitHub and refuses a sha that is not on it, and a checkout with local
-   changes;
+   changes or ignored files;
 3. checks out the sha and hands over to that commit's own `deploy/apply.sh`, which
 4. refuses to go on if a secret file is missing or readable by group or others;
 5. installs the host files of that commit (`deploy/install-host.sh`): the nginx sites, the
@@ -101,10 +101,12 @@ On the box, `deploy/deploy.sh <sha>`:
 6. builds the `api` and `runner` images (the only build on the box), starts `neo4j`, runs the
    migrations from the image's copy of `server/`, starts `api` and `runner`, and records the sha;
 7. runs `deploy/smoke.sh` against the public host, writes the result to `deploy.log`, and removes
-   the images of every build except this one and the one it replaced.
+   the images of every build except this one and the one it last replaced.
 
-If `apply.sh` fails before the new build serves, `deploy.sh` moves the checkout back to the sha
-the box serves.
+If `apply.sh` fails before compose replaces the containers, `deploy.sh` moves the checkout back to
+the sha the box still runs. From that point on, `deployed.sha` and the checkout name the new build,
+also when it does not turn healthy; `deploy.log` says so, and a deploy of the previous sha rolls it
+back.
 
 `--ref <branch>` with `GROVE_ALLOW_BRANCH_DEPLOY=1` deploys a sha of another branch, to try a
 change on the box before its merge; without the variable only `develop` deploys. To roll back,
@@ -139,9 +141,10 @@ The API is down for the length of the dump: 34 seconds on the first run, with a 
 only its schema. If a step fails, or systemd stops the script, it starts Neo4j, the API and the
 runner again before it exits. The unit's `ExecStopPost` runs `deploy/services-up.sh` after every
 run, so a script that was killed outright also leaves the services running, and
-`grove-services.service` runs it at every boot, for a host that went down in the dump window.
-`services-up.sh` first removes a one-off container that a killed run left, so nothing else holds
-the store, and waits until the API's health check reads the store. The backup needs the
+`grove-services.service` runs it at every boot, for a host that went down in the dump window, and
+tries again each minute until it succeeds. `services-up.sh` first removes a one-off container that
+a killed run left, so nothing else holds the store, tries every start whatever the last one did,
+and waits until the API's health check reads the store. The backup needs the
 fingerprint before the dump: if that read fails, no dump is made, and the unit fails.
 
 `deploy/restore-check.sh <dump>` refuses a dump with no checksum file or a wrong checksum, loads it
@@ -166,8 +169,9 @@ ledger, compare).
 
 ## First setup of a box
 
-1. Install Docker with the compose plugin from Docker's apt repository. Check the repository key
-   first: its fingerprint is `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`.
+1. Install nginx and certbot with apt, and Docker with the compose plugin from Docker's apt
+   repository. Check that repository's key first: its fingerprint is
+   `9DC8 5822 9FC7 DD38 854A E2D8 8D81 803C 0EBF CD88`.
 2. Make the deploy key on the box (`ssh-keygen -t ed25519 -f /root/.ssh/grove_deploy`), and add its
    public half to the repository as a read-only deploy key (`gh repo deploy-key add`, with no
    `--allow-write`). Write GitHub's host keys from `gh api meta` (`.ssh_keys`) to

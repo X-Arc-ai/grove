@@ -174,7 +174,7 @@ def test_install_host_renders_both_sites_for_the_configured_host(box):
     timer = box.root / "systemd" / "grove-backup.timer"
     assert timer.is_file()
     assert "systemctl enable --now grove-backup.timer" in box.calls()
-    assert box.index("nginx -t") < box.index("systemctl reload nginx")
+    assert box.index("nginx -t") < box.index("systemctl reload-or-restart nginx")
 
 
 def test_install_host_asks_for_a_certificate_only_when_there_is_none(box):
@@ -184,7 +184,7 @@ def test_install_host_asks_for_a_certificate_only_when_there_is_none(box):
     certbot = box.index("certbot certonly --webroot")
     assert f"--domain {HOST}" in box.calls()[certbot]
     # The challenge needs the port-80 site live first, and no TLS site that names a missing cert.
-    assert box.index("systemctl reload nginx") < certbot
+    assert box.index("systemctl reload-or-restart nginx") < certbot
 
 
 def test_bootstrap_makes_the_runner_user_and_generated_files_and_keeps_existing_ones(box):
@@ -596,12 +596,12 @@ def test_the_services_script_removes_left_one_off_containers_before_the_store_st
 
 def test_the_services_script_fails_when_the_api_never_reads_the_store(box):
     box.deployed()
-    done = box.run("services-up.sh", FAKE_HEALTH="unhealthy", GROVE_POLL_SECONDS="0")
+    done = box.run("services-up.sh", FAKE_HEALTH="unhealthy", GROVE_SERVICES_TRIES="2")
     assert done.returncode != 0
-    assert "is not healthy" in done.stderr
+    assert "not all healthy" in done.stderr
 
 
-def test_a_certbot_failure_brings_the_old_sites_back_and_says_so(box):
+def test_a_certbot_failure_brings_the_old_sites_back_with_no_tls_site_on(box):
     (box.root / "letsencrypt" / "live" / HOST / "fullchain.pem").unlink()
     https = box.nginx / "sites-available" / "grove-https.conf"
     https.write_text("the old site\n")
@@ -609,8 +609,10 @@ def test_a_certbot_failure_brings_the_old_sites_back_and_says_so(box):
     done = box.run("deploy.sh", SHA, FAKE_CERTBOT_STATUS="1")
     assert done.returncode != 0
     assert "certbot got no certificate" in done.stderr
-    assert (box.nginx / "sites-enabled" / "grove-https.conf").resolve() == https
+    # The file comes back, but no enabled site may name a certificate that does not exist.
     assert https.read_text() == "the old site\n"
+    assert not (box.nginx / "sites-enabled" / "grove-https.conf").is_symlink()
+    assert not (box.nginx / "sites-available" / "grove-http.conf").exists()
 
 
 def test_the_certbot_reload_hook_is_installed(box):
@@ -688,3 +690,108 @@ def test_with_a_real_flock_a_held_lock_stops_a_deploy(box):
     assert done.returncode != 0
     assert "holds" in done.stderr
     assert not [call for call in box.calls() if call.startswith("git ")]
+
+
+# ---- review round three -----------------------------------------------------------------------
+
+
+def test_a_failure_in_the_service_start_keeps_the_checkout_at_the_build_that_now_runs(box):
+    box.deployed(OTHER_SHA)
+    done = box.run("deploy.sh", SHA, FAKE_DOCKER_FAIL="up --detach --wait --remove-orphans")
+    assert done.returncode != 0
+    # compose has replaced the containers, so the records name the new build, not the old one.
+    assert (box.state / "deployed.sha").read_text().strip() == SHA
+    assert (box.root / "fake" / "HEAD").read_text() == SHA
+    assert "back at" not in done.stdout + done.stderr
+    line = f"deploy {SHA} ref=develop previous={OTHER_SHA}: runs, services NOT healthy"
+    assert line in box.log_text("deploy.log")
+
+
+def test_a_redeploy_of_one_sha_keeps_the_images_of_the_build_before_it(box):
+    box.deployed(OTHER_SHA)
+    assert box.run("deploy.sh", SHA).returncode == 0
+    old = "1" * 40
+    images = [f"grove-api:{tag}" for tag in (SHA, OTHER_SHA, old)]
+    done = box.run("deploy.sh", SHA, FAKE_IMAGES=" ".join(images))
+    assert done.returncode == 0, done.stderr
+    removed = [call.split()[-1] for call in box.calls() if call.startswith("docker image rm")]
+    assert removed == [f"grove-api:{old}"]
+    assert (box.state / "previous.sha").read_text().strip() == OTHER_SHA
+
+
+def test_the_checkout_check_also_sees_ignored_files(box):
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    assert "git status --porcelain --ignored" in box.calls()
+
+
+def test_a_first_deploy_prints_no_error_about_a_missing_state_file(box):
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    assert "No such file" not in done.stderr
+
+
+def test_a_failed_step_after_the_sites_are_written_brings_the_old_sites_back(box):
+    https = box.nginx / "sites-available" / "grove-https.conf"
+    https.write_text("the old site\n")
+    (box.nginx / "sites-enabled" / "grove-https.conf").symlink_to(https)
+    done = box.run("deploy.sh", SHA, FAKE_SYSTEMCTL_STATUS="1")
+    assert done.returncode != 0
+    assert https.read_text() == "the old site\n"
+    assert not (box.nginx / "sites-available" / "grove-http.conf").exists()
+    assert not [call for call in box.calls() if call.startswith("docker compose")]
+
+
+def test_certbot_registers_with_the_given_address_or_with_none(box):
+    (box.root / "letsencrypt" / "live" / HOST / "fullchain.pem").unlink()
+    assert box.run("deploy.sh", SHA).returncode == 0
+    assert "--register-unsafely-without-email" in box.calls()[box.index("certbot certonly")]
+
+    box.env["FAKE_LOG"] = str(box.root / "calls-2.log")
+    (box.nginx / "sites-enabled" / "grove-https.conf").unlink()
+    done = box.run("deploy.sh", SHA, GROVE_ACME_EMAIL="ops@grove.test")
+    assert done.returncode == 0, done.stderr
+    call = box.calls()[box.index("certbot certonly")]
+    assert "--email ops@grove.test" in call
+    assert "--register-unsafely-without-email" not in call
+
+
+def test_the_services_script_starts_the_writers_even_when_the_store_is_slow(box):
+    box.deployed()
+    done = box.run("services-up.sh", FAKE_UNHEALTHY="neo4j", GROVE_SERVICES_TRIES="2")
+    assert done.returncode != 0
+    assert "not all healthy" in done.stderr
+    start = box.index("start neo4j")
+    box.index("start api runner", start)
+
+
+def test_the_services_script_fails_when_only_the_api_is_unhealthy(box):
+    box.deployed()
+    done = box.run("services-up.sh", FAKE_UNHEALTHY="api", GROVE_SERVICES_TRIES="2")
+    assert done.returncode != 0
+    assert "not all healthy" in done.stderr
+
+
+def test_a_one_off_container_that_cannot_be_removed_does_not_stop_the_start(box):
+    box.deployed()
+    done = box.run(
+        "services-up.sh", FAKE_STALE="stuck", FAKE_DOCKER_FAIL="rm --force --volumes stuck"
+    )
+    assert done.returncode == 0, done.stderr
+    assert "could not remove one-off container stuck" in done.stdout + done.stderr
+    box.index("start api runner", box.index("start neo4j"))
+
+
+def test_bootstrap_says_which_tool_is_missing(box):
+    (box.root / "bin" / "nginx").unlink()
+    path = f"{box.root / 'bin'}{os.pathsep}/usr/bin{os.pathsep}/bin"
+    done = box.run("bootstrap.sh", "--base-url", BASE, PATH=path)
+    assert done.returncode != 0
+    assert "nginx is not installed" in done.stderr
+
+
+def test_the_boot_unit_keeps_trying(box):
+    unit = (box.src / "deploy" / "systemd" / "grove-services.service").read_text()
+    assert "Restart=on-failure" in unit
+    assert "RestartSec=60" in unit
+    assert "StartLimitIntervalSec=0" in unit

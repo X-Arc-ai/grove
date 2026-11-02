@@ -27,16 +27,25 @@ open_files=$(find "$GROVE_ETC" -maxdepth 1 -type f \( -perm -0040 -o -perm -0020
 "$here/install-host.sh"
 
 export GROVE_BUILD_SHA=$sha
-previous=$(tr -d '[:space:]' <"$GROVE_STATE/deployed.sha" 2>/dev/null || true)
+previous=$(served_sha)
 record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: start"
 
 compose build api runner
 compose up --detach --wait neo4j
 # The migrations run from the image's copy of the checkout's server/ folder (store-map open point).
 compose_run api python -m grove.writer.migrate
-compose up --detach --wait --remove-orphans api runner
+
+# From here compose replaces the containers, so this sha is what the box runs, healthy or not. The
+# build it replaced stays on record for a roll back, also when one sha is deployed twice.
 mkdir -p "$GROVE_STATE"
+if [ -n "$previous" ] && [ "$previous" != "$sha" ]; then
+    printf '%s\n' "$previous" >"$GROVE_STATE/previous.sha"
+fi
 printf '%s\n' "$sha" >"$GROVE_STATE/deployed.sha"
+if ! compose up --detach --wait --remove-orphans api runner; then
+    record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: runs, services NOT healthy"
+    exit 1
+fi
 
 if "$here/smoke.sh" "$(public_base_url)" "$sha" </dev/null; then
     record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: served, smoke ok"
@@ -46,7 +55,11 @@ else
 fi
 
 # Keep the images of this build and of the one it replaced, for a fast roll back; drop the rest.
-keep=" $sha ${previous:-} "
+rollback=""
+if [ -s "$GROVE_STATE/previous.sha" ]; then
+    rollback=$(tr -d '[:space:]' <"$GROVE_STATE/previous.sha")
+fi
+keep=" $sha $rollback "
 docker image ls --format '{{.Repository}}:{{.Tag}}' | while read -r image; do
     case $image in
         grove-api:* | grove-runner:*)

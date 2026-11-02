@@ -45,7 +45,9 @@ take_lock "${GROVE_DEPLOY_WAIT_SECONDS:-600}"
 git -C "$GROVE_SRC" fetch --quiet --prune origin "+refs/heads/$ref:refs/remotes/origin/$ref"
 git -C "$GROVE_SRC" merge-base --is-ancestor "$sha" "origin/$ref" ||
     die "$sha is not on origin/$ref"
-[ -z "$(git -C "$GROVE_SRC" status --porcelain)" ] || die "the checkout in $GROVE_SRC has local changes"
+# --ignored too: a gitignored file in server/ would reach the image with no commit that holds it.
+[ -z "$(git -C "$GROVE_SRC" status --porcelain --ignored)" ] ||
+    die "the checkout in $GROVE_SRC has local changes or ignored files"
 git -C "$GROVE_SRC" checkout --quiet --detach "$sha"
 
 # bash keeps reading this file from the inode it opened, so the checkout cannot change the lines
@@ -53,7 +55,7 @@ git -C "$GROVE_SRC" checkout --quiet --detach "$sha"
 status=0
 "$GROVE_SRC/deploy/apply.sh" "$sha" "$ref" || status=$?
 if [ "$status" != 0 ]; then
-    served=$(tr -d '[:space:]' <"$GROVE_STATE/deployed.sha" 2>/dev/null || true)
+    served=$(served_sha)
     if [ -n "$served" ] && [ "$served" != "$sha" ]; then
         git -C "$GROVE_SRC" checkout --quiet --detach "$served"
         log "the deploy of $sha failed before it served; the checkout is back at $served"
