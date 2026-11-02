@@ -64,12 +64,15 @@ class EgressPolicy:
     def check(self, runtime: str, url: str) -> None:
         """Raise EgressRefused unless `url` is https to a listed host on the default port."""
         allowed = self.hosts(runtime)
-        parts = urlsplit(url)
+        try:
+            parts = urlsplit(url)
+            host = _host(parts.hostname or "")
+        except ValueError:
+            raise EgressRefused("a malformed URL", details={"runtime": runtime}) from None
         try:
             port = parts.port
         except ValueError:
             port = -1
-        host = _host(parts.hostname or "")
         if parts.scheme != "https":
             raise EgressRefused("only https leaves the box", details={"runtime": runtime})
         if parts.username is not None or parts.password is not None:

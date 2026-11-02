@@ -308,7 +308,7 @@ def test_only_known_fields_and_message_keys_reach_the_provider():
     }
     out = upstream_body(body, spec=CATALOG.model("muse-glimmer-30b"), effort="low", job="triage")
 
-    assert set(out) == {"model", "messages", "temperature", "max_tokens", "chat_template_kwargs"}
+    assert set(out) == {"model", "messages", "max_tokens", "chat_template_kwargs"}
     assert out["messages"] == [
         {"role": "user", "content": [{"type": "text", "text": "Look."}, image]}
     ]

@@ -24,6 +24,7 @@ from grove.writer.model_calls import (
     REACHED,
     BudgetState,
     ModelCall,
+    attach_receipt,
     record_model_call,
 )
 
@@ -39,7 +40,8 @@ _DAY_CALLS = (
     "c.effort AS effort, c.route AS route, c.outcome AS outcome, c.run_id AS run_id, "
     "c.input_tokens AS input_tokens, c.cached_tokens AS cached_tokens, "
     "c.output_tokens AS output_tokens, c.reasoning_tokens AS reasoning_tokens, c.cost AS cost, "
-    "c.audio_seconds AS audio_seconds, c.latency_ms AS latency_ms, c.at AS at, c.day AS day "
+    "c.audio_seconds AS audio_seconds, c.latency_ms AS latency_ms, c.at AS at, c.day AS day, "
+    "c.usage_estimated AS usage_estimated "
     "ORDER BY c.at, c.id"
 )
 
@@ -111,6 +113,11 @@ class Meter:
         return record_model_call(
             self._driver, world_id, call, default_ceiling=self._settings.daily_budget
         )
+
+    def attach_receipt(self, world_id: str, model_call_id: str, receipt: str) -> None:
+        """The receipt a call led to (D15). A gateway row has no id for its caller: it joins its
+        receipts through its run id and the run's record."""
+        attach_receipt(self._driver, world_id, model_call_id, receipt)
 
     def calls(self, world_id: str, day: date) -> list[dict]:
         """The day's model_calls rows, oldest first: the evidence and operator read."""

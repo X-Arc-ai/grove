@@ -1000,6 +1000,7 @@ MODEL_CALLS = Table(
             "reasoning_tokens", "int", "S37, line 2694: the reasoning share of the output tokens"
         ),
         _ruling("latency_ms", "int", "S37, line 2694: from the request to the answer"),
+        _ruling("usage_estimated", "bool", "S37: true when the tokens are an estimate"),
     ),
     uniques=_keys("model_calls", ("id",)),
     indexes=_ranges("model_calls", ("world_id", "day")),

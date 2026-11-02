@@ -29,6 +29,8 @@
     "triage_fallback": {"family": "spark", "effort": "minimal", "at_ceiling": "continue"},
     "extraction": {"family": "spark", "effort": "minimal", "at_ceiling": "continue"},
     "transcription": {"family": "voice", "effort": null, "at_ceiling": "continue"},
+    "backfill_triage": {"family": "spark", "effort": "minimal", "at_ceiling": "defer"},
+    "backfill_extraction": {"family": "spark", "effort": "minimal", "at_ceiling": "defer"},
     "verification": {"family": "spark", "effort": "low", "at_ceiling": "defer"},
     "second_opinion": {"family": "glimmer", "effort": "medium", "at_ceiling": "defer"},
     "consolidation": {"family": "spark", "effort": "high", "at_ceiling": "defer"},

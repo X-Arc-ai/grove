@@ -515,15 +515,15 @@ def test_the_layer_respond_refuses_what_a_provider_would_fetch(driver, world, te
 
 def test_the_layer_respond_takes_a_data_image():
     # The shape the screenshot job will send.
-    from grove.models.shape import check_responses_input
+    from grove.models.shape import clean_responses_input
 
     good = {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo="}
-    check_responses_input(
+    clean_responses_input(
         [{"role": "user", "content": [{"type": "input_text", "text": "x"}, good]}]
     )
     for bad in (5, [], [5], [{"role": "user"}], [{"role": "user", "content": 5}]):
         with pytest.raises(ModelRefused):
-            check_responses_input(bad)
+            clean_responses_input(bad)
 
 
 @pytest.mark.parametrize(

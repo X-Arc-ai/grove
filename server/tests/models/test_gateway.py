@@ -677,11 +677,14 @@ def test_a_body_with_no_message_list_is_refused(messages):
 
 
 def test_glimmer_body_keeps_its_own_fields_and_drops_the_cache_key():
+    # D15: Glimmer runs on its own sampling, so an agent's temperature, top_p and stop are dropped.
     out = upstream_body(
         {
             "model": GLIMMER,
             "messages": MESSAGES,
-            "stop": ["\n"],
+            "stop": ["<|eom|>"],
+            "temperature": 0,
+            "top_p": 0.1,
             "logprobs": True,
             "tools": [READ_TOOL],
             "tool_choice": "required",
@@ -696,7 +699,6 @@ def test_glimmer_body_keeps_its_own_fields_and_drops_the_cache_key():
     assert out == {
         "model": GLIMMER,
         "messages": MESSAGES,
-        "stop": ["\n"],
         "logprobs": True,
         "tools": [READ_TOOL],
         "tool_choice": "required",

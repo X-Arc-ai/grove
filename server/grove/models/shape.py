@@ -37,6 +37,7 @@ class Usage:
     cached_tokens: int = 0
     output_tokens: int = 0
     reasoning_tokens: int = 0
+    estimated: bool = False
 
 
 def _object(value: object) -> dict:
@@ -58,6 +59,7 @@ def estimate_usage(input_chars: int, output_chars: int = 0) -> Usage:
     return Usage(
         input_tokens=math.ceil(input_chars / _CHARS_PER_TOKEN),
         output_tokens=math.ceil(output_chars / _CHARS_PER_TOKEN),
+        estimated=True,
     )
 
 
@@ -231,27 +233,32 @@ def check_response_format(form: object) -> None:
     refuse_remote_refs(form)
 
 
-def check_responses_input(value: object) -> None:
+def clean_responses_input(value: object) -> str | list[dict]:
     """The Responses API's input: text, or messages of text and images as data URLs."""
     if isinstance(value, str):
-        return
+        return value
     if not isinstance(value, list) or not value:
         raise ModelRefused("input must be text or a list of messages")
-    for message in value:
-        if not isinstance(message, dict) or message.get("role") not in _ROLES:
-            raise ModelRefused("an input message must be an object with a known role")
-        content = message.get("content")
-        if isinstance(content, str):
-            continue
-        for part in _list(content):
-            kind = part.get("type") if isinstance(part, dict) else None
-            if kind == "input_text" and isinstance(part.get("text"), str):
-                continue
-            if kind == "input_image" and _data_image(part.get("image_url")):
-                continue
-            raise ModelRefused(
-                "only text parts and raster images as data URLs are taken: "
-                "a provider never fetches a URL"
-            )
-        if not isinstance(content, list):
-            raise ModelRefused("input content must be text or a list of parts")
+    return [_responses_message(message) for message in value]
+
+
+def _responses_message(message: object) -> dict:
+    if not isinstance(message, dict) or message.get("role") not in _ROLES:
+        raise ModelRefused("an input message must be an object with a known role")
+    content = message.get("content")
+    if isinstance(content, list):
+        content = [_responses_part(part) for part in content]
+    elif not isinstance(content, str):
+        raise ModelRefused("input content must be text or a list of parts")
+    return {"role": message["role"], "content": content}
+
+
+def _responses_part(part: object) -> dict:
+    kind = part.get("type") if isinstance(part, dict) else None
+    if kind == "input_text" and isinstance(part.get("text"), str):
+        return {"type": kind, "text": part["text"]}
+    if kind == "input_image" and _data_image(part.get("image_url")):
+        return {"type": kind, "image_url": part["image_url"]}
+    raise ModelRefused(
+        "only text parts and raster images as data URLs are taken: a provider never fetches a URL"
+    )
