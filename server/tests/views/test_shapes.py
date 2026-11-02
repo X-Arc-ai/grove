@@ -249,12 +249,22 @@ def test_session_shape_and_the_own_item(driver, make_world, client_for):
     world, other = make_world(), make_world()
     small = plant_small_world(driver, world)
     client = client_for(world)
-    assert client.get("/v1/views/session").json() == {"signed_in": True, "self_item_id": None}
+    session = client.get("/v1/views/session").json()
+    assert session == {
+        "signed_in": True,
+        "self_item_id": None,
+        "has_items": True,
+        "account": session["account"],
+        "method": None,
+    }
 
     set_self_item(driver, world, small.maya["id"])
     assert client.get("/v1/views/session").json() == {
         "signed_in": True,
         "self_item_id": small.maya["id"],
+        "has_items": True,
+        "account": session["account"],
+        "method": None,
     }
     graph = client.get("/v1/views/graph").json()
     assert graph["self_item_id"] == small.maya["id"]

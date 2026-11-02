@@ -30,7 +30,10 @@ any client.
 
 | Path | Answer |
 |---|---|
-| `GET /` | The built page of the views: the API image runs `web/build.py` and sets `GROVE_WEB_DIST`. `docs/views.md` has the view endpoints. |
+| `GET /` | The homepage with no `grove_session` cookie, the built page of the views with one. The API image runs `web/build.py` and sets `GROVE_WEB_DIST`. `docs/views.md` has the view endpoints. |
+| `GET /signin` | The built page of the views, which shows the sign-in card. |
+| `GET /privacy` | The privacy page. `web/build.py` makes its table from `docs/data-flow.md`, the one file of `docs/` that reaches the image. |
+| `/v1/auth/*` | Sign-in and logout. `docs/signin.md` has the routes. nginx limits `/v1/auth/email/` per address to 10 requests a minute with a burst of 10, and answers 429 above that. |
 | `GET /healthz` | `{"status": "ok", "store": "ok", "build": "<sha>"}`, or 503 with `"store": "unreachable"`. No sign-in. D13's health views are `/v1/health/person` and `/v1/health/operator`, built later. |
 | `GET /.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp` | The protected-resource metadata (RFC 9728): `resource` is `<base>/mcp`, the authorization server is `<base>`, and the scopes of A.3. |
 | `/mcp` | 401 with `WWW-Authenticate: Bearer resource_metadata="<base>/.well-known/oauth-protected-resource"`. |
@@ -120,7 +123,7 @@ The smoke checks also run from any machine:
 deploy/smoke.sh https://app.grove.x-arc.ai <sha>
 ```
 
-They check that `/healthz` answers ok for that build, that `/` answers with the page, that both metadata paths name
+They check that `/healthz` answers ok for that build, that `/`, `/signin` and `/privacy` each answer with a page, that both metadata paths name
 `<base>/mcp` (also for `meta-webindexer/1.1`), and that an unauthenticated `/mcp` call gets 401 with
 the metadata URL.
 

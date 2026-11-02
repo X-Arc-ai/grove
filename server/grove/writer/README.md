@@ -113,6 +113,10 @@ what an earlier one did.
 | `attach_evidence` | U C K P W | **op_id**, **target** (item, link or belief id), **ev_id** or **evidence_id**, **polarity**, judgment_ids | `= item 77d2aa01 evidence e88f0a1b (supports, said)` |
 | `end_evidence` | C K P | **op_id**, **evidence**, **end_reason** (`correction`, `forget`, `merge`) | `- evidence e88f0a1b (correction)` |
 
+`accounts.py` is not a B.2 operation: it holds sign-in's writes (S20, S40), users, sessions, email
+codes and the person's own item. Only `server/grove/api/auth.py` calls it. `docs/signin.md` has the
+flows.
+
 The other B.2 operations belong to later lanes: correct, refute, supersede, merge,
 `retire_record` and undo (`writer-b`); verify and the confirmation at create (`truth-clock`);
 beliefs and contradictions (`beliefs`); proposals and marks (`walk`); questions, holds and

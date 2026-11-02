@@ -148,6 +148,8 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S39. Metering and the budget** (spec lines 2659, 2694, 3120, 3122). The `models` lane writes `model_calls` and `budgets` together: `record_model_call` in `server/grove/writer/model_calls.py` creates the `:ModelCall` and adds its cost to the day's `:Budget` in one transaction, so `spent` is always the sum of the day's recorded costs. This replaces "budgets by the runner" in S20. The operator sets a ceiling with `set_budget_ceiling`; an absent `ceiling` means no ceiling. A budget row that does not exist yet takes the ceiling of `GROVE_DAILY_BUDGET_USD`. `state` turns `reached` in the transaction where `spent` reaches `ceiling`. At `reached`, the jobs that `server/grove/models/jobs.json` marks `defer` are refused with `budget_reached` before any request leaves, and the jobs marked `continue` (triage, extraction and transcription, run in code) still run, as D15 says (line 2659). Every gateway call stops at the ceiling, whatever job its token names: the build plan says an agent call stops there, and the plan outranks D15. A pass that waits leaves its requests queued for the reset. Calls that pass the gate at the same moment can end the day above the ceiling by the cost of the calls in flight. `model_calls` gains five properties: `usage_estimated`, `route` (`meta`, `modal`), `outcome` (`ok`, `invalid_output`, `rate_limited`, `provider_error`, `client_closed`), `reasoning_tokens` (the reasoning share of `output_tokens`, line 2694) and `latency_ms`. A failed call is recorded with its outcome, so the share of calls that wrote nothing counts every call. Its tokens are zero when the provider did no work (a refusal, a 429, a 503, a connection that never opened), and an estimate of the input when it may have run the call; `usage_estimated` marks an estimate. The price table is `server/grove/models/prices.json` (S24).
 
+**S40. Sign-in's rows** (D8, and S20). `server/grove/writer/accounts.py` holds every write of sign-in (S20). `users.email_hash` is the sha256 hex of `grove-email-v1:` and the address, trimmed and in lower case, so a Google sign-in and an email code with one address reach one user; the address itself is in no row, log or error. A first sign-in makes a world whose id is a UUID version 5 of the user id, so two racers make one world; this is the one world id that is no UUIDv7. `sessions.method` says `google` or `email`. The own item is one `person` item, made once: one transaction takes the world's lock with a direct SET on the `:World` row, reads `worlds.self_item_id` again under that lock, runs `apply_ops`, and sets `worlds.self_item_id`, so the item and the column commit together or not at all. Its evidence cites a source that holds the pointer `signin:<method>` and no text, so there is nothing to screen and the locator is `whole`. The steps before that transaction may run twice, after a crash or in a race. They leave one connector and one episode, and at most a spare source row, which says nothing. `email_codes.code_hash` is the sha256 of the row id, the email hash and the code, joined by colons.
+
 ## Open points for later lanes
 
 | Point | Spec lines | Owner lane |
@@ -172,7 +174,7 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | An upload route adds its own nginx location, with its body limit and `proxy_request_buffering off`. Every other path takes at most 10 MB (`deploy/nginx/grove-https.conf.template`). | none; a build fact | `ingest-a` |
 | The runner still reaches the host's sshd and nginx through the gateway of its internal network. A host firewall rule for its bridge goes with the egress allowlist. | none; a build fact | `runner`, `models` |
 | `/etc/grove/runner.env` holds no token yet, and `deploy/runner-placeholder.sh` runs in place of the loop. The backup stops the runner; the loop must leave a killed pass's requests queued. | none; a build fact | `runner` |
-| The API reads Google's client file at `GROVE_GOOGLE_OAUTH_FILE`; the secret files of `docs/deploy.md` are on the box, except `modal.env`, which is still owed. | none; a build fact | `signin`, `models` |
+| The secret files of `docs/deploy.md` are on the box, except `modal.env`, which is still owed. Closed for Google's client file by `signin`: the API reads it at `GROVE_GOOGLE_OAUTH_FILE` at first use, and no file or a bad file sends the person to the card with the Google error (`docs/signin.md`). | none; a build fact | `models` |
 | `/mcp` and the metadata in `server/grove/api/wellknown.py` are placeholders. uvicorn runs without `--proxy-headers`, so a redirect it makes names `http`. | none; a build fact | `hosts-a` |
 | The verdicts of a judge call: A.1 has the model-call layer record them in `judgments`, and no writer exists yet. | 996, 3121 | `truth-clock` |
 | The job table has no row for load-bearing verification: `verification` waits at the ceiling, and D15 defers only the low-stakes claims. | 2659 | `truth-clock` |
@@ -182,12 +184,15 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | Voice Transcribe takes WAV only here, with no contact names and no language bias: the forms probed for those two fields were refused. | 2673 | `ingest-a` |
 | `brain fetch` must send through `AllowlistTransport`, which checks each redirect hop, and not call `EgressPolicy.check` and then use another client. | 2559 | `cleanup` |
 | Glimmer's idle time bills on Modal and not in `model_calls`: a call every five minutes keeps a GPU up, about 95 USD a day at the H100 price, and triage continues at the ceiling. A spend limit on the Modal workspace is the backstop, or a shorter idle window. | 2659 | `models` (the Modal step), `deploy-b` |
-| `docs/data-flow.md` has no rows for the mail provider, Google sign-in, Calendar and backups. They must be added before the privacy page. | 2540 to 2552 | `forget` |
-| The person's own item. The views read an optional `World.self_item_id` and mark that item as the person's own (`self_item_id` in the session and graph answers). Nothing writes it yet: signin must add the column to the `worlds` row and write it when onboarding makes the person's item. | none; a build fact | `signin` |
+| `docs/data-flow.md` had no rows for the mail provider, Google sign-in, Calendar and backups. Closed by `signin`: the rows are there, and `web/build.py` generates the table of the privacy page from them. `forget` still replaces the page with a statement from the deployed configuration. | 2540 to 2552 | `forget` |
+| The person's own item. The views read an optional `World.self_item_id` and mark that item as the person's own (`self_item_id` in the session and graph answers). Closed by `signin` (S40): the `worlds` row has the column, and the first sign-in writes it in the transaction that makes the item. | none; a build fact | `signin` |
 | `known_as_of` and `as_of` on the view endpoints filter the current head of each row, not its history: a row changed after the given time shows its newest values. A read of the history must replace that filter. | none; a build fact | `writer-b`, `views-c` |
-| The session contract the views read: the cookie `grove_session`; `:Session.token_hash` is the lowercase sha256 hex of the cookie value; a session is valid while `revoked_at` is absent and `expires_at` is later than the clock's now; `:Session.user_id` leads to the oldest `:World` with that `owner_user_id`. `docs/views.md` states it in full. | none; a build fact | `signin` |
+| The privacy page (`web/privacy.html`, section "How to forget") says the forget control is not built yet and tells a person to write to `contact@x-arc.ai` to have a world deleted, and that a dump made before the deletion stays until its 30 days end. When the control ships, `forget` must rewrite that section to say how to use it, change "Last updated" (a constant in that file), and generate `docs/data-flow.md` from the deployed configuration, with each row's Runs or Planned as it stands then, including the Resend terms that the page says are not named yet. | none; a build fact | `forget` |
+| `docs/data-flow.md` marks a path Runs or Planned, and `web/build.py` builds the privacy page's table from it. A lane whose path starts to run with a person's data changes its row to Runs in the same PR: uploads (`ingest-a`), the calendar (`ingest-a`), model calls (`ingest-b`), evidence packets (`hosts-b`). | none; a build fact | `ingest-a`, `ingest-b`, `hosts-b` |
+| The privacy page has no statement on Google's API Services User Data Policy or its Limited Use requirements. The calendar consent asks a sensitive scope, so `ingest-a` raises this before that consent goes to Google's review. | none; a build fact | `ingest-a` |
+| The session contract the views read: the cookie `grove_session`; `:Session.token_hash` is the lowercase sha256 hex of the cookie value; a session is valid while `revoked_at` is absent and `expires_at` is later than the clock's now; `:Session.user_id` leads to the oldest `:World` with that `owner_user_id`. `docs/views.md` states it in full. Closed by `signin`: `server/grove/writer/accounts.py` and `server/grove/api/auth.py` write these rows and this cookie, and `docs/signin.md` states them. | none; a build fact | `signin` |
 | A `map_positions` row keeps `item_id` and its coordinates after its item is forgotten. The forget of an item must remove its map position too. | none; a build fact | `forget` |
-| The views' account, sources, questions and workers still use the simulation's local browser state. It survives the end of a session: the typed name and its initial, the guidance text, file names and connected hosts. A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b`, `signin` |
+| The views' account, sources, questions and workers still use the simulation's local browser state. A sign-in that brings another account resets that state in the tab that signs in (`signin`). A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b` |
 | The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`. Closed by `deploy-a`: the API image runs `web/build.py` and sets that variable, and the deploy smoke asks for the page. | none; a build fact | `deploy-a` |
 | `change_status` and `end_item` do not trigger the walk yet, and `reopen_item` does not yet send an R1 ending back as a proposal. | 3160 to 3162 | `walk` |
 | The writer takes the source type of a row from the connector and the statement class only. These wait for code: an automated sender confirming its own action, a decision's named speaker, a forwarded row's original author, and confirming evidence for the start of a period that took place. | 1074, 1112 | `truth-clock` |
@@ -1379,6 +1384,7 @@ The signin lane owns any further column.
 | (none) | `created_at` | `instant` | convention |  |
 | (none) | `next_sequence` | `int` | convention | S10: starts at 0; advanced by one direct SET |
 | (none) | `seed_version` | `code` | convention |  |
+| (none) | `self_item_id` | `id` | convention | S40: the person's own item, set in the transaction that creates it; absent before |
 
 ### users
 
@@ -1393,7 +1399,7 @@ The signin lane owns any further column.
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
 | (none) | `id` | `id` | convention |  |
-| (none) | `email_hash` | `code` | convention | secrets and contact details stay out of the row |
+| (none) | `email_hash` | `code` | convention | S40: sha256 of the salted address; secrets and contact details stay out of the row |
 | (none) | `created_at` | `instant` | convention |  |
 
 ### sessions
@@ -1411,6 +1417,7 @@ The signin lane owns any further column.
 | (none) | `id` | `id` | convention |  |
 | (none) | `user_id` | `id` | convention |  |
 | (none) | `token_hash` | `code` | convention |  |
+| (none) | `method` | `code` | convention | S40: google or email; a planted test session has none |
 | (none) | `created_at` | `instant` | convention |  |
 | (none) | `expires_at` | `instant` | convention |  |
 | (none) | `revoked_at` | `instant` | convention |  |

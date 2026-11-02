@@ -366,7 +366,7 @@ def test_the_sign_in_card_offers_google_and_no_code_hint(browser, base_url, shot
     context = _context(browser, base_url)
     try:
         page = _open(context, errors)
-        page.goto("/")
+        page.goto("/signin")
         google = page.get_by_role("button", name="Continue with Google")
         google.wait_for(timeout=WAIT_MS)
         apple = page.locator('[data-signin="apple"]')
@@ -403,10 +403,16 @@ def test_the_welcome_and_a_map_that_keeps_every_place(browser, base_url, shots, 
     ids = _view_ids(seeded)
     real_ids = set(seeded.items.values())
 
-    # b) Signed in, with clean local storage: the welcome.
+    # b) Signed in, with clean local storage, and a world the page takes as new: the welcome. The
+    # seeded world holds items, and a world with items opens on the map (test_signin_browser.py).
+    def as_new(route):
+        answer = route.fetch()
+        route.fulfill(response=answer, json={**answer.json(), "has_items": False})
+
     context = _context(browser, base_url, token=seeded.token)
     try:
         page = _open(context, errors)
+        page.route("**/v1/views/session", as_new)
         page.goto("/")
         page.get_by_role("button", name="Get Started").wait_for(timeout=WAIT_MS)
         page.wait_for_timeout(800)

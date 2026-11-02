@@ -152,6 +152,20 @@ def set_self_item(driver: Driver, world_id: str, item_id: str | None) -> None:
         session.run(_SET_SELF_ITEM, world_id=world_id, item_id=item_id).consume()
 
 
+def purge_test_account(driver: Driver, email_hash: str) -> None:
+    """The user of an address, its sessions and its codes. Purge its world with purge_test_world."""
+    with driver.session(database=DATABASE) as session:
+        session.run(
+            "CYPHER 25 OPTIONAL MATCH (u:User {email_hash: $email_hash}) "
+            "OPTIONAL MATCH (s:Session {user_id: u.id}) DETACH DELETE s, u",
+            email_hash=email_hash,
+        ).consume()
+        session.run(
+            "CYPHER 25 MATCH (c:EmailCode {email_hash: $email_hash}) DETACH DELETE c",
+            email_hash=email_hash,
+        ).consume()
+
+
 def seed_test_world(driver: Driver, world_id: str, *, owner_user_id: str) -> dict[str, Any]:
     """create_world for a t_ world: the :World row and the starter set, as a real world has."""
     refuse_real_world(world_id)
