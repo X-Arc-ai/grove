@@ -41,6 +41,11 @@ TEXTS = [
     "creds=" * 50_000,
     "pay " + "111 " * 25_000,
     "a" + "\\u0301\\u0323" * 100_000,
+    "phone:" + " " * N,
+    "my number is" + " " * N,
+    "call me" + " " * N,
+    "password for the wifi is" + " " * N,
+    "password for " * (N // 13),
 ]
 """
 # The forms the read view writes as space: a long run must cost no more than a short one.
