@@ -22,6 +22,7 @@ from grove.config import ConfigError, read_private_file
 
 _WORD = re.compile(r"\w")
 _ASCII_RUN = re.compile(r"[\x00-\x7f]+")
+_LINE_END = re.compile(r"\r\n?|\n")
 
 
 def _is_mark(ch: str) -> bool:
@@ -96,14 +97,23 @@ def _read_escape(match: re.Match[str]) -> str:
     return _ESCAPE_READS_AS.get(form[-1], " ") + " " * (len(form) - 1)
 
 
-def _views(text: str) -> tuple[str, ...]:
+def file_name_view(view: str) -> str:
+    """Upload tools and people write a space in a file name as "_". The length stays."""
+    return view.replace("_", " ")
+
+
+def _views(text: str, file_name: bool) -> tuple[str, ...]:
     """The copy as written and, when they differ, as read with the glue forms written as space.
 
     Both are searched and their spans merge. Reading alone would cut a secret that holds such a
     form ("sk-a_-b...", "p\\nw0rd") in two and store a part of it, so the view can only add spans.
+    A file name adds one more, with "_" written as a space (SC20).
     """
     read = _MARKUP.sub(lambda m: " " * len(m.group()), _ESCAPE.sub(_read_escape, text))
-    return (text,) if read == text else (text, read)
+    views = (text,) if read == text else (text, read)
+    if file_name and "_" in read:
+        views += (file_name_view(read),)
+    return views
 
 
 class Normalised:
@@ -116,14 +126,14 @@ class Normalised:
 
     __slots__ = ("text", "views", "_starts", "_ends")
 
-    def __init__(self, original: str, *, fold_case: bool) -> None:
+    def __init__(self, original: str, *, fold_case: bool, file_name: bool = False) -> None:
         self._starts: list[int] | None
         self._ends: list[int] | None
         if original.isascii():
             # ASCII has no format characters and NFKC leaves it alone: offsets are the identity.
             self.text = original.lower() if fold_case else original
             self._starts = self._ends = None
-            self._finish()
+            self._finish(file_name)
             return
         pieces: list[str] = []
         starts: list[int] = []
@@ -155,9 +165,9 @@ class Normalised:
         add_clusters(position, len(original))
         self.text = "".join(pieces)
         self._starts, self._ends = starts, ends
-        self._finish()
+        self._finish(file_name)
 
-    def _finish(self) -> None:
+    def _finish(self, file_name: bool) -> None:
         """Drops the slash escapes from the copy, with the map kept, and builds the views."""
         gaps = [edge for match in _SLASH_ESCAPE.finditer(self.text) for edge in match.span()]
         if gaps:
@@ -168,7 +178,7 @@ class Normalised:
             self.text = "".join(self.text[left:right] for left, right in kept)
             self._starts = [index for left, right in kept for index in starts[left:right]]
             self._ends = [index for left, right in kept for index in ends[left:right]]
-        self.views = _views(self.text)
+        self.views = _views(self.text, file_name)
 
     def span(self, start: int, end: int) -> tuple[int, int]:
         """The original span of copy[start:end]; end > start."""
@@ -322,8 +332,9 @@ def parse_rename_map(text: str, source: str) -> RenameMap:
 
 def parse_denylist(text: str, source: str) -> Denylist:
     terms = []
-    # Split on newlines only, so the line numbers in errors are the ones an editor shows.
-    for number, line in enumerate(text.split("\n"), start=1):
+    # Line ends only, so the line numbers in errors are the ones an editor shows. A file with bare
+    # CR line ends would otherwise load as one term that never matches, and its messages pass.
+    for number, line in enumerate(_LINE_END.split(text), start=1):
         # A trailing comment left in the term would make it never match, and its message pass.
         term = line.partition("#")[0].strip()
         if not term:

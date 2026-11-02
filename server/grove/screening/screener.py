@@ -2,16 +2,19 @@
 
 Order per message (fixed):
 1. Denylist on the raw sender and text: a hit drops the message.
-2. One-time codes, then reset and magic links: a hit drops the message.
+2. One-time codes, then reset and magic links: a strong signal drops the message, and a weak
+   candidate in a message that stays is masked as [code] or [link].
 3. Rename map on the sender and text.
 4. Credentials, 5. payment cards, 6. third-party contact identifiers, 7. pay amounts (opt-in).
-Steps 3 to 7 return spans on the same text. Overlapping spans merge, and the earlier step wins
-the class, so a rename can never be undone by a later mask and no part of a value survives.
+The weak candidates and steps 3 to 7 return spans on the same text. Overlapping spans merge, and
+the earlier step wins the class, so a rename can never be undone by a later mask and no part of a
+value survives.
 Every step reads the text as written and as read (names.Normalised.views), so chat markup or an
 escape glued to a value hides nothing.
 
 The locator goes through steps 1, 3, 4, 5 and 6 as one string. A denylisted term there keeps
-the whole source out. The message key goes through steps 3 to 6, so all four fields are screened.
+the whole source out. It is a file name, so "_" also reads as a space for the names and phones
+(SC20). The message key goes through steps 3 to 6, so all four fields are screened.
 
 No step calls a model. Nothing here logs, and no repr or error holds a value.
 """
@@ -27,6 +30,7 @@ from grove.config import DENYLIST_VAR, RENAME_MAP_VAR, load_screening_settings
 from grove.screening import detectors
 from grove.screening.classes import (
     CLASSES,
+    CONTACT_PHONE,
     CONTACT_WORDS,
     DENYLISTED,
     KEPT_OUT,
@@ -38,10 +42,18 @@ from grove.screening.classes import (
     RESET_LINK,
 )
 from grove.screening.detectors import Hit, OwnIdentifiers
-from grove.screening.names import Denylist, Normalised, RenameMap, load_denylist, load_rename_map
+from grove.screening.names import (
+    Denylist,
+    Normalised,
+    RenameMap,
+    file_name_view,
+    load_denylist,
+    load_rename_map,
+)
 
 # The step number of each span decides who wins an overlap: the lower step.
 STEP_DENYLIST = 1
+STEP_WEAK_CODE_OR_LINK = 2
 STEP_RENAME = 3
 STEP_CREDENTIAL = 4
 STEP_CARD = 5
@@ -50,7 +62,8 @@ STEP_PAY = 7
 
 LOCATOR_STEPS = frozenset({STEP_DENYLIST, STEP_RENAME, STEP_CREDENTIAL, STEP_CARD, STEP_CONTACT})
 KEY_STEPS = frozenset({STEP_RENAME, STEP_CREDENTIAL, STEP_CARD, STEP_CONTACT})
-TEXT_STEPS = frozenset({STEP_RENAME, STEP_CREDENTIAL, STEP_CARD, STEP_CONTACT, STEP_PAY})
+SENDER_STEPS = frozenset({STEP_RENAME, STEP_CREDENTIAL, STEP_CARD, STEP_CONTACT, STEP_PAY})
+TEXT_STEPS = SENDER_STEPS | {STEP_WEAK_CODE_OR_LINK}
 
 
 def _length(value: str | None) -> int | None:
@@ -273,7 +286,7 @@ class Screener:
             raise TypeError("screen_source takes Message objects")
         run = _Run()
 
-        place = _Text(locator)
+        place = _Text(locator, file_name=True)
         dropped_whole = bool(self._config.denylist.find(place.folded))
         screened_locator = self._screen(run, place, LOCATOR_STEPS)
 
@@ -307,8 +320,8 @@ class Screener:
             run.counts[dropped] += 1
             return None
         # Sender, then text, then key: contact numbers follow first appearance in that order.
-        screened_sender = None if sender is None else self._screen(run, sender, TEXT_STEPS)
-        screened_text = self._screen(run, text, TEXT_STEPS)
+        screened_sender = None if sender is None else self._screen(run, sender, SENDER_STEPS)
+        screened_text = self._screen(run, text, TEXT_STEPS, _said_by(sender))
         screened_key = self._screen(run, _Text(message.key), KEY_STEPS)
         return ScreenedMessage(
             key=screened_key, sender=screened_sender, text=screened_text, at=message.at
@@ -318,15 +331,16 @@ class Screener:
     def _drop_class(sender: "_Text | None", text: "_Text") -> str | None:
         """Step 2, on the detector copy of the text: a one-time code first, then a link."""
         views = text.copy.views
-        # The sender rules need no form as written, so the read view alone serves them.
-        said_by = None if sender is None else sender.copy.views[-1]
+        said_by = _said_by(sender)
         if any(detectors.one_time_codes(view, said_by) for view in views):
             return ONE_TIME_CODE
         if any(detectors.reset_links(view) for view in views):
             return RESET_LINK
         return None
 
-    def _spans(self, text: "_Text", steps: frozenset[int]) -> list[_Span]:
+    def _spans(
+        self, text: "_Text", steps: frozenset[int], said_by: str | None = None
+    ) -> list[_Span]:
         spans: list[_Span] = []
         if STEP_DENYLIST in steps:
             for start, end in self._config.denylist.find(text.folded):
@@ -338,6 +352,11 @@ class Screener:
         copy = text.copy
         found: list[tuple[int, Hit]] = []
         for view in copy.views:
+            if STEP_WEAK_CODE_OR_LINK in steps:
+                found += [
+                    (STEP_WEAK_CODE_OR_LINK, hit) for hit in detectors.weak_codes(view, said_by)
+                ]
+                found += [(STEP_WEAK_CODE_OR_LINK, hit) for hit in detectors.weak_links(view)]
             if STEP_CREDENTIAL in steps:
                 found += [(STEP_CREDENTIAL, hit) for hit in detectors.credentials(view)]
             if STEP_CARD in steps:
@@ -346,13 +365,24 @@ class Screener:
                 found += [(STEP_CONTACT, hit) for hit in detectors.contacts(view, self._own)]
             if STEP_PAY in steps and self._pay:
                 found += [(STEP_PAY, hit) for hit in detectors.pay_amounts(view)]
+        # Phones only: an own address or handle holds "_", and the view would cut it. The rename
+        # map and the denylist read this view through the folded copy.
+        if text.file_name and "_" in copy.text:
+            spaced = file_name_view(copy.views[-1])
+            found += [
+                (STEP_CONTACT, hit)
+                for hit in detectors.contacts(spaced, self._own)
+                if hit.cls == CONTACT_PHONE
+            ]
         for step, hit in found:
             start, end = copy.span(hit.start, hit.end)
             spans.append(_Span(start, end, step, hit.cls, MASKS.get(hit.cls, ""), hit.key))
         return spans
 
-    def _screen(self, run: _Run, text: "_Text", steps: frozenset[int]) -> str:
-        merged = merge_spans(self._spans(text, steps))
+    def _screen(
+        self, run: _Run, text: "_Text", steps: frozenset[int], said_by: str | None = None
+    ) -> str:
+        merged = merge_spans(self._spans(text, steps, said_by))
         # Numbers follow first appearance, so they are given left to right before the splice.
         replacements = []
         for span in merged:
@@ -377,10 +407,11 @@ class Screener:
 class _Text:
     """One string and its two comparison copies, each built once and only when asked for."""
 
-    __slots__ = ("raw", "_folded", "_copy")
+    __slots__ = ("raw", "file_name", "_folded", "_copy")
 
-    def __init__(self, raw: str) -> None:
+    def __init__(self, raw: str, *, file_name: bool = False) -> None:
         self.raw = raw
+        self.file_name = file_name
         self._folded: Normalised | None = None
         self._copy: Normalised | None = None
 
@@ -388,7 +419,7 @@ class _Text:
     def folded(self) -> Normalised:
         """The copy names match on: NFKC and case folded."""
         if self._folded is None:
-            self._folded = Normalised(self.raw, fold_case=True)
+            self._folded = Normalised(self.raw, fold_case=True, file_name=self.file_name)
         return self._folded
 
     @property
@@ -401,3 +432,8 @@ class _Text:
 
     def __repr__(self) -> str:
         return f"_Text(length={len(self.raw)})"
+
+
+def _said_by(sender: _Text | None) -> str | None:
+    """The sender rules need no form as written, so the read view alone serves them."""
+    return None if sender is None else sender.copy.views[-1]

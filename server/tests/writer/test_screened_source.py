@@ -64,6 +64,10 @@ CARD = "4111 1111 1111 1111"
 CODE = "482913"
 SERVICE_CODE = "517-204"
 TOKEN = "Q7xK2mP9vR4tL8wN3jB6"
+LOGIN_CODE = "730518"
+PASSED_CODE = "640297"
+TRACKED_TOKEN = "Wm3vB8kT2qZ6nP4sY9xCWm3vB8kT2qZ6nP4sY9xC"
+TRACKED_URL = f"https://u4411.ct.mailrelay.example/ls/click?upn={TRACKED_TOKEN}"
 RESET_URL = f"https://accounts.fernhollow-mail.example/reset-password?token={TOKEN}"
 EMAIL = "tamsin.reyes@fernhollow-mail.example"
 PHONE = "+44 7700 900123"
@@ -95,15 +99,18 @@ EXPORT = (
     ("m19", THIRD, "The code is 1200 lines, the review will take a day."),
     ("m20", PERSON, "Great work everyone."),
     ("m21", THIRD, f"Your WhatsApp code: {SERVICE_CODE}"),
+    ("m22", THIRD, f"Use {LOGIN_CODE} to log in to Larkspire. It expires in 5 minutes."),
+    ("m23", THIRD, f"the code they sent me is {PASSED_CODE}"),
+    ("m24", THIRD, f"Sign in to Quillmere: {TRACKED_URL}"),
 )
 LOCATOR = f"WhatsApp Chat with {CO_FOUNDER} and {THIRD}.txt"
-KEPT_KEYS = [key for key, _, _ in EXPORT if key not in {"m09", "m10", "m12", "m13", "m21"}]
+KEPT_KEYS = [key for key, _, _ in EXPORT if key not in {"m09", "m10", "m12", "m13", "m21", "m22"}]
 
 EXPECTED_COUNTS = {
     "credential": 1,  # m05
     "payment_card": 1,  # m08
-    "one_time_code": 2,  # m12 and m21, dropped
-    "reset_link": 1,  # m13, dropped
+    "one_time_code": 4,  # m12, m21 and m22 dropped, m23 masked
+    "reset_link": 2,  # m13 dropped, m24 masked
     "contact_email": 2,  # m07 and m17: one person, so both are [email 1]
     "contact_phone": 1,  # m07
     "contact_handle": 1,  # m15
@@ -118,8 +125,8 @@ EXPECTED_COUNTS = {
 PLANTS: dict[str, tuple[str, ...]] = {
     "api key": (API_KEY, API_KEY_BODY),
     "card": (CARD, CARD.replace(" ", ""), CARD.replace(" ", "-")),
-    "one-time code": (CODE, SERVICE_CODE),
-    "reset link": (RESET_URL, TOKEN, "reset-password"),
+    "one-time code": (CODE, SERVICE_CODE, LOGIN_CODE, PASSED_CODE),
+    "reset link": (RESET_URL, TOKEN, "reset-password", TRACKED_URL, TRACKED_TOKEN),
     "email": (EMAIL, "tamsin.reyes@", "fernhollow"),
     "phone": (PHONE, "447700900123", "7700 900123", "7700900123", "900123"),
     "handle": (HANDLE, "tamsin_r"),
@@ -305,7 +312,7 @@ def test_a_chat_export_with_every_d14_plant_keeps_every_value_out(
     run_log = "\n".join(record.getMessage() for record in caplog.records)
 
     # Exactly one source and one receipt; nothing else reached the world.
-    assert result == {"source_id": source_id, "counts": EXPECTED_COUNTS, "kept_messages": 16}
+    assert result == {"source_id": source_id, "counts": EXPECTED_COUNTS, "kept_messages": 18}
     assert Counter(tuple(row["labels"]) for row in rows) == {
         ("ScreeningReceipt",): 1,
         ("Source",): 1,
@@ -326,7 +333,7 @@ def test_a_chat_export_with_every_d14_plant_keeps_every_value_out(
     assert receipt["source_id"] == source_id
     assert receipt["counts_per_class"] == json.dumps(EXPECTED_COUNTS, sort_keys=True)
 
-    # The kept messages are stored in input order; the five dropped ones are absent and counted.
+    # The kept messages are stored in input order; the six dropped ones are absent and counted.
     assert [message["key"] for message in stored] == KEPT_KEYS
     assert source["external_locator"] == f"WhatsApp Chat with Co-founder and {THIRD}.txt"
     by_key = {message["key"]: message for message in stored}
@@ -338,6 +345,9 @@ def test_a_chat_export_with_every_d14_plant_keeps_every_value_out(
     assert by_key["m14"]["text"] == (
         "Co-founder, my salary is [amount] a month until the seed round closes."
     )
+    # A weak candidate loses only its value: the words stay and the class is counted.
+    assert by_key["m23"]["text"] == "the code they sent me is [code]"
+    assert by_key["m24"]["text"] == "Sign in to Quillmere: [link]"
     # The person's own address is kept and not counted.
     assert by_key["m06"]["text"].endswith(f"My email is {OWN_EMAIL} if you need me.")
 

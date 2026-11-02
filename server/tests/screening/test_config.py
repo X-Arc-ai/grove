@@ -251,6 +251,15 @@ def test_denylist_comments_blank_lines_and_duplicates():
     assert terms.term_count == 2
 
 
+@pytest.mark.parametrize("line_end", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+def test_every_line_end_splits_the_denylist_and_the_line_numbers_hold(line_end):
+    terms = parse_denylist(line_end.join(["Brightwell", "Halvard", ""]), DENYLIST_VAR)
+    assert terms.term_count == 2
+    assert terms.holds(Normalised("Brightwell sent it", fold_case=True))
+    with pytest.raises(ConfigError, match=r"line 3 holds no letter or digit"):
+        parse_denylist(line_end.join(["Brightwell", "# a comment", "!!!", ""]), DENYLIST_VAR)
+
+
 def test_a_byte_order_mark_does_not_glue_to_the_first_term(clean_env, folder):
     path = private_file(folder, "denylist.txt", b"\xef\xbb\xbfBrightwell Logistics\n")
     config = load(clean_env, denylist=path)
