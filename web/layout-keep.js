@@ -6,7 +6,8 @@
  *           the hub the node's seed sits around (native-app passes seedLayout's group hub)
  *   edges   [{source, target}]
  *   seed    {id: {x, y}}  the sim's own layout of the current graph (native-app seedLayout)
- *   radius  function (node) -> the room a node takes, as the collide force sees it (or a number)
+ *   radius  function (node) -> the room a node takes, as the collide force sees it and at least
+ *           the largest disc it can draw, since a placed node never moves (or a number)
  * It returns {positions: {id: {x, y}}, placed: [ids it placed]}.
  *
  * - Every stored position is kept exactly.

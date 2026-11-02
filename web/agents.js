@@ -71,7 +71,8 @@
   var writes = [];               // every write CCU and CCCo make in the loop: {p, k, n, at, end, src, turn}
   var marks = {};                // node index -> the writes on it
   var zones = [];                // sections that show as CCCl's zone at some point of the loop
-  // The playback bar is gone, and with it every way to pause or speed up the loop.
+  // The playback bar is gone, and with it every way to pause, seek or speed up the loop: no key, no
+  // URL setting and no page handle changes these. ?hood=0|1 only forces the view off or on.
   var simT = 0, playing = true, speed = 1;
   var lastTick = 0, installedAt = 0, ready = false;
   var Graph = null, fgById = {}, fgNodesRef = null, nbrsOf = {};
@@ -103,13 +104,25 @@
   new Promise(function(resolve){
     function check(){var s=window.GroveSimulation.getState();if(s.onboardingComplete&&window.GroveView&&window.GroveView.nodes().length){resolve(sampleAgentData());}else setTimeout(check,400);}
     check();
-  }).then(loadData).catch(function (err) { console.error('agents: no data', err); });
+  }).then(function(d){if(!D)loadData(d);}).catch(function (err) { console.error('agents: no data', err); });
   function refreshAgentData(){
-    if(!window.GroveSimulation.getState().onboardingComplete||!window.GroveView||!window.GroveView.nodes().length||!D)return;
-    var next=sampleAgentData();if(next.ids.join('|')===D.ids.join('|'))return;
+    if(!window.GroveSimulation.getState().onboardingComplete||!window.GroveView||!window.GroveView.nodes().length)return;
+    var next=sampleAgentData();
+    if(!D){loadData(next);return;}   // the first graph of a session starts the loop from its start
+    if(next.ids.join('|')===D.ids.join('|'))return;
     var phase=total?simT/total:0;loadData(next);simT=phase*total;
   }
   window.addEventListener('grove:graph-rendered',refreshAgentData);
+  // The session ended (native-app clearGraph): nothing of it stays here. No item id, no title and
+  // no count of that session is kept for the next person, on the panel or in memory.
+  window.addEventListener('grove:graph-cleared',function(){
+    D=null;idIndex={};secOf=null;since0=[];cleanedIn=[];nextBeyond={};zones=[];zoneKey='';
+    turns=[];total=1;cleanTurns=[];roundEnd=[];writes=[];marks={};
+    simT=0;ready=false;following=null;followPoint=null;personas={};noteHTML='';
+    fgById={};fgNodesRef=null;nbrsOf={};
+    F.turn=null;F.cycle=0;F.focusId=null;F.hoverId=null;F.hopRef=null;
+    scoreVals={};chromeState='';paintScore();paintFollowing();renderNote();
+  });
   var completedBefore=window.GroveSimulation.getState().onboardingComplete;
   window.addEventListener('grove:change',function(){var complete=window.GroveSimulation.getState().onboardingComplete;if(complete&&!completedBefore)refreshAgentData();completedBefore=complete;});
   function loadData(d) {
@@ -128,8 +141,6 @@
     });
     inSections = Math.max(1, inSections);
     buildSchedule();
-    var t0 = parseFloat(params.get('t'));
-    if (t0 >= 0 && t0 <= 1) simT = t0 * total;
     setTheme();
     if(barEl)barEl.remove();segEls=[];buildBar();
     if(!scoreEl)buildScore();
@@ -1207,7 +1218,8 @@
   }
   function paintScore() {
     if (!scoreEl) return;
-    var v = scoreNow(), working = F.turn ? F.turn.p : null;
+    var v = D ? scoreNow() : { Uadded: 0, Uupdated: 0, Ulinks: 0, Olinks: 0, Lsections: 0, Lclean: '0.0%' };
+    var working = F.turn ? F.turn.p : null;
     Object.keys(v).forEach(function (k) {
       var el = scoreEl.querySelector('[data-k="' + k + '"]');
       if (!el) return;
@@ -1366,12 +1378,10 @@
     return {updated:v.Uupdated,connections:v.Ulinks+v.Olinks,tended:v.Lsections,fresh:parseFloat(v.Lclean)||0,areas:D?D.sections.list.length:0,working:F.turn&&F.turn.p,enabled:on,running:!!(D&&ready&&playing&&window.GroveSimulation.getState().onboardingComplete)};
   }};
 
-  // Debug handle, like the page's own __brainViz (for verification scripting only).
+  // Debug handle, like the page's own __brainViz (for verification scripting only). It only reads.
   window.__hood = {
     agents: function () { return personas; },
     at: function () { return { t: simT, total: total, turn: F.turn && F.turn.p, cycle: F.cycle, ready: ready, focus: F.focusId }; },
-    seek: function (f) { simT = f * total; },
-    play: function (v) { playing = v; },
     turns: function () { return turns.map(function (t) { return { p: t.p, t0: t.t0, w0: t.w0, w1: t.w1, t1: t.t1, section: t.section, writes: t.writes.map(function (w) { return { k: w.k, at: w.at, n: w.n }; }) }; }); },
     score: function () { return scoreVals; },
     following: function(){return following;},

@@ -1,9 +1,11 @@
 """The views in a real browser: the sign-in card, the welcome, and a map that keeps every place.
 
-Runs only when asked (`-m browser`) and only where Playwright is installed, never in CI:
+Runs only when asked (`-m browser`), never in CI. `python -m pytest` matters: the pytest script in
+.venv/bin does not see the Playwright that `uv run --with` adds. A run that selects these tests with
+no Playwright fails and names this command, so it can never look green and test nothing:
 
     cd server && GROVE_E2E_SHOTS=<folder> uv run --with playwright==1.58.0 \
-        pytest -m browser tests/e2e -q -p no:cacheprovider
+        python -m pytest -m browser tests/e2e -q -p no:cacheprovider
 
 It builds web/dist, seeds a t_ world from web/checks/fixture.synthetic.json with the demo seeder,
 serves the real app (the views API and the built page) on a free local port, and drives Chromium
@@ -23,16 +25,20 @@ import time
 from pathlib import Path
 
 import pytest
+import uvicorn
 
-sync_api = pytest.importorskip("playwright.sync_api")
+from grove.api.app import WEB_DIST_ENV, create_app
+from grove.views.session import SESSION_COOKIE
+from grove.writer import demo
 
-import uvicorn  # noqa: E402
-
-from grove.api.app import WEB_DIST_ENV, create_app  # noqa: E402
-from grove.views.session import SESSION_COOKIE  # noqa: E402
-from grove.writer import demo  # noqa: E402
+try:
+    from playwright import sync_api
+except ImportError:
+    sync_api = None  # a default run deselects every test here, so it never needs Playwright
 
 pytestmark = pytest.mark.browser
+
+RIGHT_COMMAND = "uv run --with playwright==1.58.0 python -m pytest -m browser tests/e2e"
 
 REPO = Path(__file__).resolve().parents[3]
 WEB = REPO / "web"
@@ -50,6 +56,7 @@ APART_PX = 4.0
 NEAR_PX = 250.0
 # A node fades and grows in over its first second on the map.
 FADE_IN_MS = 1500
+HUB_KINDS = ["organisation", "plan"]
 NEW_ITEMS = 12
 WAIT_MS = 30_000
 POLL_SECONDS = 0.25
@@ -74,6 +81,15 @@ WORST_JS = """() => window.GroveView.nodes().map((n) => {
   return [n.id, home ? Math.max(Math.abs(n.x - home[0]), Math.abs(n.y - home[1])) : null];
 }).sort((a, b) => (b[1] == null ? Infinity : b[1]) - (a[1] == null ? Infinity : a[1]))
   .slice(0, 5)"""
+# Each hub of the map as drawn: where it is pinned, and the radius drawNode gives its disc.
+HUB_DISCS_JS = """(kinds) => window.GroveView.nodes()
+  .filter((n) => kinds.includes(n.type))
+  .map((n) => ({
+    id: n.id,
+    x: n.fx != null ? n.fx : n.x,
+    y: n.fy != null ? n.fy : n.y,
+    r: n._demoted ? 18 : n._hubR,
+  }))"""
 NODE_COUNT_JS = """(count) => !!window.GroveView && window.GroveView.nodes().length === count"""
 NODE_IDS_JS = """() => window.GroveView.nodes().map((n) => n.id)"""
 # The view ids each of `ids` links to, from the links on the map.
@@ -95,6 +111,16 @@ SERVER_PLACED_JS = """async () => {
   }
   return {status: response.status, placed: placed};
 }"""
+
+
+@pytest.fixture(scope="session", autouse=True)
+def playwright_is_here():
+    """Runs before any other fixture of a selected test, so the store is not touched either."""
+    if sync_api is None:
+        pytest.fail(
+            f"the browser tests selected with no Playwright installed. Run: {RIGHT_COMMAND}",
+            pytrace=False,
+        )
 
 
 def _free_port() -> int:
@@ -251,6 +277,26 @@ def _assert_homes_are_stored(homes, held, seeded):
     assert not differ, f"homes that are not the stored position: {differ[:5]}"
 
 
+def _assert_no_home_in_a_hub_disc(page, homes, ids):
+    """A home in a hub's drawn disc would stay there for good: placed items never move."""
+    discs = page.evaluate(HUB_DISCS_JS, HUB_KINDS)
+    assert discs, "the map has no hub"
+    assert all(disc["r"] for disc in discs), "a hub with no drawn radius"
+    inside = [
+        (
+            new_id,
+            disc["id"],
+            round(math.hypot(homes[new_id][0] - disc["x"], homes[new_id][1] - disc["y"]), 1),
+            disc["r"],
+        )
+        for new_id in ids
+        for disc in discs
+        if new_id != disc["id"]
+        and math.hypot(homes[new_id][0] - disc["x"], homes[new_id][1] - disc["y"]) < disc["r"]
+    ]
+    assert not inside, f"new homes inside a hub's drawn disc: {inside[:5]}"
+
+
 def _assert_same_homes(before, after, ids):
     moved = [(i, before[i], after.get(i)) for i in sorted(ids) if after.get(i) != before[i]]
     assert not moved, f"{len(moved)} placed items moved, for example {moved[:3]}"
@@ -339,6 +385,7 @@ def test_the_welcome_and_a_map_that_keeps_every_place(browser, base_url, shots, 
                 math.hypot(nx - x, ny - y) for other, (x, y) in after.items() if other != new_id
             )
             assert nearest > APART_PX, f"a new item sits on another node ({nearest:.2f} px)"
+        _assert_no_home_in_a_hub_disc(page, after, added)
         linked = page.evaluate(LINKED_JS, added)
         for new_id in added:
             nx, ny = after[new_id]

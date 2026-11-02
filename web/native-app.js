@@ -24,7 +24,8 @@
   // File previews and private browsing can refuse storage. The product still opens.
   var storage = {
     getItem: function (key) { try { return localStorage.getItem(key); } catch (_) { return null; } },
-    setItem: function (key, value) { try { localStorage.setItem(key, value); } catch (_) {} }
+    setItem: function (key, value) { try { localStorage.setItem(key, value); } catch (_) {} },
+    removeItem: function (key) { try { localStorage.removeItem(key); } catch (_) {} }
   };
 
   // ---------------- constants ----------------
@@ -430,6 +431,7 @@
   // a failed save is retried on the next load. livePlaced keeps this session's placements, so
   // a reload before a save lands shows the same map.
   var livePlaced = {}, liveSaving = {};
+  var SELF_R_FAR = 90;   // drawNode's identity disc on the map at the zooms that frame a large world
   function prepareLiveLayout(payload) {
     var el = (payload && payload.elements) || { nodes: [], edges: [] };
     var serverStored = {};
@@ -451,7 +453,15 @@
       items.push({ id: n.id, type: n.type, _primaryHubId: c._seedHubId || null, _hubR: c._hubR || null, _demoted: !!c._demoted });
     });
     var edges = el.edges.map(function (w) { return { source: w.data.source, target: w.data.target }; });
-    var room = function (n) { return nodeRadius(n) * (DENSE ? 1.45 : 1.6) + (DENSE ? 6 : 8); };   // the collide force's radius
+    // The room a node takes here is the collide force's radius, and never less than the largest
+    // disc the node can draw. A placed item never moves, while a hub's disc grows with its mass
+    // (and from 18 to its full size when an ended hub comes back), and the identity node's disc
+    // keeps its size on screen, so it is largest on the map when the camera is far out.
+    var room = function (n) {
+      var r = nodeRadius(n) * (DENSE ? 1.45 : 1.6) + (DENSE ? 6 : 8);
+      if (n.id === 'grove-self') return Math.max(r, SELF_R_FAR);
+      return isHub(n) ? Math.max(r, HUB_R_MAX) : r;
+    };
     var kept = window.GroveLayoutKeep.placeNew(Object.assign({}, livePlaced, serverStored), items, edges, seed, room);
     layoutCache = {};
     var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
@@ -521,7 +531,9 @@
   };
 
   // Live mode, the session has ended: no item of it stays in memory or on screen (the map, the
-  // legend, the counts, the node panel), and no placement of it is kept for the next person.
+  // legend, the counts, the node panel, the search, the selection pill), no kind name of it stays
+  // in local storage, and no placement of it is kept for the next person. The workers panel
+  // hears 'grove:graph-cleared' and drops its own copy.
   function clearGraph() {
     viewEpoch++;
     rawNodes = []; rawEdges = []; byId = {};
@@ -529,8 +541,13 @@
     focusedNode = null; hoverNode = null; hoverLink = null; hopDist = {};
     livePlaced = {}; liveSaving = {}; layoutCache = null; stableFrame = null; _evoSig = null;
     schemaByType = {}; schemaAsked = false;
+    hiddenTypes = {}; storage.removeItem('grove-minimal-codex-hidden-types');
     manualCamera = false;
     clearSelection({ silent: true });
+    document.getElementById('selection-pill').innerHTML = '';
+    document.getElementById('search-overlay').setAttribute('hidden', '');
+    document.getElementById('search-input').value = '';
+    document.getElementById('search-results').innerHTML = '';
     if (Graph) Graph.graphData({ nodes: [], links: [] });
     detailEl.classList.remove('open');
     detailEl.setAttribute('aria-hidden', 'true');
@@ -538,6 +555,7 @@
     renderLegend();
     renderStats();
     scheduleRedraw();
+    window.dispatchEvent(new CustomEvent('grove:graph-cleared'));
   }
   canvasEl.addEventListener('pointerdown', function () { manualCamera=true; });
 

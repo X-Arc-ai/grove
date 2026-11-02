@@ -31,6 +31,7 @@ function makeServer(world){
     const body=init.body===undefined?undefined:JSON.parse(init.body);
     calls.push({path:u.pathname,search:u.search,method,init,body});
     const ids=new Set(world.nodes.map(n=>n.id));
+    if(u.pathname==='/v1/views/session'&&world.sessionThrows)return Promise.reject(new TypeError('Failed to fetch'));
     if(u.pathname==='/v1/views/session')return world.session?reply(200,{signed_in:true,self_item_id:world.selfId||null}):typed(401,'unauthenticated','Sign in to continue');
     if(u.pathname==='/v1/views/graph'){
       if(world.graphStatus)return typed(world.graphStatus,'unauthenticated','Sign in to continue');
@@ -41,7 +42,7 @@ function makeServer(world){
       if(world.nodeStatus)return typed(world.nodeStatus,'unauthenticated','Sign in to continue');
       if(world.nodeMissing)return typed(404,'not_found','No such item');
       const n=world.nodes.find(x=>x.id===decodeURIComponent(u.pathname.slice('/v1/views/node/'.length)));
-      return n?reply(200,{node:Object.assign({},n,{title:n.label,content:n.summary,status_field_value:n.status}),required_props:[],optional_props:[],required_prop_names:[],status_field:'status'}):typed(404,'not_found','No such item');
+      return held(world.holdNode,n?reply(200,{node:Object.assign({},n,{title:n.label,content:n.summary,status_field_value:n.status}),required_props:[],optional_props:[],required_prop_names:[],status_field:'status'}):typed(404,'not_found','No such item'));
     }
     if(u.pathname==='/v1/views/schema'){if(world.schemaThrows)return Promise.reject(new TypeError('Failed to fetch'));if(world.schemaStatus)return typed(world.schemaStatus,world.schemaStatus===401?'unauthenticated':'unavailable','Sign in to continue');return held(world.holdSchema,reply(200,world.schema||{}));}
     if(u.pathname==='/v1/views/health')return reply(200,{status:'healthy',summary:'Your Grove is ready',checks:{graph:'ready',sources:'ready'},nodes:world.nodes.length,edges:world.edges.length,by_type:{},overall:{state:'healthy'}});
@@ -57,6 +58,8 @@ function makeServer(world){
       }
       return held(world.holdPositions,reply(200,{placed,kept,unknown}));
     }
+    if(u.pathname==='/v1/auth/email/start'&&world.emailStartThrows)return Promise.reject(new TypeError('Failed to fetch'));
+    if(u.pathname==='/v1/auth/email/verify'&&world.emailVerifyThrows)return Promise.reject(new TypeError('Failed to fetch'));
     if(u.pathname==='/v1/auth/email/start'&&method==='POST')return world.emailStartFails?typed(400,'invalid_arguments','That address cannot receive a code'):reply(200,{});
     if(u.pathname==='/v1/auth/email/verify'&&method==='POST'){if(body.code!==world.code)return typed(401,'unauthenticated','The code does not match');world.session=true;return reply(200,{signed_in:true});}
     if(u.pathname==='/v1/auth/logout'&&method==='POST'){
@@ -72,7 +75,7 @@ function makeServer(world){
 // ---------- a browser-shaped sandbox ----------
 function makeElement(tag){
   const classes=new Set(),attrs={};
-  const el={tagName:String(tag||'div').toUpperCase(),innerHTML:'',textContent:'',hidden:false,style:{setProperty(){},removeProperty(){}},dataset:{},children:[],offsetWidth:100,offsetHeight:100,scrollTop:0,
+  const el={tagName:String(tag||'div').toUpperCase(),getContext:()=>null,innerHTML:'',textContent:'',hidden:false,style:{setProperty(){},removeProperty(){}},dataset:{},children:[],offsetWidth:100,offsetHeight:100,scrollTop:0,
     classList:{add:(...k)=>k.forEach(x=>classes.add(x)),remove:(...k)=>k.forEach(x=>classes.delete(x)),toggle(k,on){if(on===undefined)on=!classes.has(k);if(on)classes.add(k);else classes.delete(k);return on;},contains:k=>classes.has(k)},
     setAttribute(k,v){attrs[k]=String(v);},getAttribute:k=>(k in attrs?attrs[k]:null),hasAttribute:k=>k in attrs,removeAttribute(k){delete attrs[k];},
     addEventListener(){},removeEventListener(){},querySelector:()=>null,querySelectorAll:()=>[],appendChild(c){el.children.push(c);return c;},append(){},remove(){},contains:()=>false,closest:()=>null,focus(){},click(){},
@@ -81,21 +84,25 @@ function makeElement(tag){
 }
 function chainForce(){const f=function(){};['strength','distanceMax','radius','iterations','distance','x','y','id','links'].forEach(k=>{f[k]=function(){return f;};});return f;}
 function makeGraph(){
-  let data={nodes:[],links:[]},zoom=1;const forces={link:chainForce()};
-  const g={graphData(d){if(!arguments.length)return data;data=d;return proxy;},d3Force(name,f){if(arguments.length<2)return forces[name];forces[name]=f;return proxy;},
+  let data={nodes:[],links:[]},zoom=1;const forces={link:chainForce()},kept={};
+  const keep=name=>function(fn){if(!arguments.length)return kept[name];kept[name]=fn;return proxy;};
+  const g={nodeCanvasObject:keep('nodeCanvasObject'),onNodeHover:keep('onNodeHover'),graphData(d){if(!arguments.length)return data;data=d;return proxy;},d3Force(name,f){if(arguments.length<2)return forces[name];forces[name]=f;return proxy;},
     zoom(v){if(!arguments.length)return zoom;zoom=v;return proxy;},centerAt(){return arguments.length?proxy:{x:0,y:0};},graph2ScreenCoords:(x,y)=>({x,y}),screen2GraphCoords:(x,y)=>({x,y})};
   const proxy=new Proxy(g,{get:(t,k)=>(k in t?t[k]:k==='then'||typeof k!=='string'?undefined:function(){return proxy;})});
   return proxy;
 }
 function page(server,store,files,hook,size,prepare){
-  const elements={},winListeners={},errors=[],warnings=[],assigned=[],intervals=[];
-  if(prepare)prepare(elements);
+  const elements={},winListeners={},errors=[],warnings=[],assigned=[],intervals=[],env={tokens:{}};
+  // As index.html starts them: the search and the selection pill are closed, and the box is empty.
+  for(const id of ['search-overlay','selection-pill']){elements[id]=makeElement('div');elements[id].setAttribute('hidden','');}
+  elements['search-input']=Object.assign(makeElement('input'),{value:''});
+  if(prepare)prepare(elements,env);
   const document={hidden:false,body:makeElement('body'),documentElement:makeElement('html'),createElement:makeElement,getElementById:id=>elements[id]||(elements[id]=makeElement('div')),querySelector:()=>null,querySelectorAll:()=>[],addEventListener(){},removeEventListener(){}};
-  const sandbox={URL,URLSearchParams,Math,JSON,Date,Promise,
+  const sandbox={URL,URLSearchParams,Math,JSON,Date,Promise,MutationObserver:class{observe(){}},
     console:{log(){},info(){},warn:(...a)=>warnings.push(a),error:(...a)=>errors.push(a)},
     setTimeout:()=>0,clearTimeout(){},setInterval:(fn,ms)=>intervals.push({fn,ms}),clearInterval(){},requestAnimationFrame:()=>0,cancelAnimationFrame(){},
     performance:{now:()=>1000},innerWidth:(size||[1440,900])[0],innerHeight:(size||[1440,900])[1],devicePixelRatio:1,document,navigator:{},
-    matchMedia:()=>({matches:false,addEventListener(){},removeEventListener(){}}),getComputedStyle:()=>({getPropertyValue:()=>''}),
+    matchMedia:()=>({matches:false,addEventListener(){},removeEventListener(){}}),getComputedStyle:()=>({getPropertyValue:name=>env.tokens[name]||''}),
     localStorage:{getItem:k=>(k in store?store[k]:null),setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}},
     location:{href:'http://grove.test/',search:'',pathname:'/',assign:u=>assigned.push(u)},
     fetch:server.fetch,ForceGraph:()=>()=>makeGraph(),
@@ -110,6 +117,14 @@ function page(server,store,files,hook,size,prepare){
 const GRAPH_FILES=['live.js','layout-keep.js','simulation.js','native-app.js'];
 const positionsCalls=server=>server.calls.filter(c=>c.path==='/v1/views/positions');
 const fgPositions=pg=>Object.fromEntries(pg.sandbox.GroveView.nodes().map(n=>[n.id,{x:n.x,y:n.y}]));
+// What drawNode really draws for a node: the first disc's radius, its ring colour and ring weight.
+function drawnLook(pg,node){
+  const look={};
+  const ctx=new Proxy({},{get(t,k){if(k==='arc')return (x,y,r)=>{if(look.radius===undefined)look.radius=r;};if(k==='measureText')return ()=>({width:10});return k in t?t[k]:()=>{};},set(t,k,v){if(k==='strokeStyle'&&look.ring===undefined)look.ring=v;if(k==='lineWidth'&&look.width===undefined)look.width=v;t[k]=v;return true;}});
+  pg.sandbox.GroveView.graph().nodeCanvasObject()(node,ctx,1);
+  return look;
+}
+const vmStyle=()=>{const box={};vm.createContext(box);box.window=box;vm.runInContext(read('live.js'),box);return JSON.parse(JSON.stringify(box.GroveLive.KIND_STYLE));};
 const decodeHtml=s=>s.replace(/&#x([0-9a-f]+);/gi,(_,h)=>String.fromCodePoint(parseInt(h,16))).replace(/&#(\d+);/g,(_,d)=>String.fromCodePoint(+d))
   .replace(/&quot;/g,'"').replace(/&#39;/g,"'").replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&');
 // A legend list whose rows behave as the browser's do: each row reads its data-type back decoded,
@@ -238,7 +253,7 @@ function legendRows(elements){
 
   // 6. Sign-in in live mode (product.js): session check, Google, Apple, email code, logout.
   const AUTH_FILES=['live.js','simulation.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'];
-  const HOOK='  window.productTest={ui,handle,chooseSignIn,startEmail,verifyEmail,render,html:()=>modalRoot.innerHTML};render(true);';
+  const HOOK='  window.productTest={ui,handle,chooseSignIn,startEmail,verifyEmail,render,modalRoot,html:()=>modalRoot.innerHTML};render(true);';
   {
     const w=liveWorld();w.session=false;const sv=makeServer(w),st={},pg=page(sv,st,AUTH_FILES,HOOK),p=pg.sandbox.productTest,A=pg.sandbox.GroveSimulation;
     assert.equal(p.ui.authStage,'checking');assert(p.html().includes('gp-auth-loading'),'The sign-in card waits for the session');
@@ -321,12 +336,13 @@ function legendRows(elements){
   //     call can be the one: a graph reload, the 3-minute poll, a node detail, a position save.
   const ALL_FILES=['live.js','layout-keep.js','simulation.js','native-app.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'];
   const signedInStore=()=>({'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,auth:{provider:'email',email:'sam.reyes@example.org'},name:'Sam',onboardingComplete:true,onboardingStep:4,tourComplete:true})});
-  async function sessionPage(w,store){
-    const sv=makeServer(w),st=store||signedInStore(),pg=page(sv,st,ALL_FILES,HOOK);let heard=0;
+  async function sessionPage(w,store,prepare){
+    const sv=makeServer(w),st=store||signedInStore(),pg=page(sv,st,ALL_FILES,HOOK,null,prepare);let heard=0;
     pg.sandbox.addEventListener('grove:unauthenticated',()=>heard++);await settle();
     return {w,sv,st,pg,p:pg.sandbox.productTest,S:pg.sandbox.GroveSimulation,V:pg.sandbox.GroveView,heard:()=>heard};
   }
-  const shownText=t=>Object.values(t.pg.elements).map(e=>e.innerHTML+'|'+e.textContent).join('|')+t.p.html();
+  const shownText=t=>Object.values(t.pg.elements).map(e=>e.innerHTML+'|'+e.textContent+'|'+(e.value||'')).join('|')+t.p.html();
+  const HIDDEN_KEY='grove-minimal-codex-hidden-types';
   function assertSignedIn(t,label){
     assert(t.S.getState().auth,label+': signed in');assert.equal(t.p.ui.authStage,null,label+': no sign-in card');
     assert(t.V.nodes().length>0&&t.V.graph().graphData().nodes.length>0,label+': the graph shows');
@@ -342,6 +358,10 @@ function legendRows(elements){
     assert(/^<span>0 nodes<\/span>/.test(t.pg.elements.stats.innerHTML),label+': the counts are zero');
     assert.equal(t.pg.elements['detail-body'].innerHTML,'',label+': the node panel is empty');assert(!t.pg.elements.detail.classList.contains('open'),label+': the node panel is closed');
     assert.equal(t.S.getState().currentNodeCount,0,label+': the last payload is gone');
+    const E=t.pg.elements;
+    assert(E['search-overlay'].hasAttribute('hidden'),label+': the search is closed');assert.equal((E['search-results']||{innerHTML:''}).innerHTML,'',label+': the search shows no result');assert.equal(E['search-input'].value,'',label+': the search box is empty');
+    assert(E['selection-pill'].hasAttribute('hidden'),label+': the selection pill is closed');assert.equal(E['selection-pill'].innerHTML,'',label+': the selection pill says nothing');
+    assert(!(HIDDEN_KEY in t.st),label+': the hidden kinds leave local storage');
     const text=shownText(t);assert(!t.w.nodes.some(n=>n.label&&n.label.length>=6&&text.includes(n.label)),label+': no title stays on screen');
   }
   const goneNow=w=>{w.session=false;w.graphStatus=401;};
@@ -529,6 +549,220 @@ function legendRows(elements){
     assertSignedIn(t,'kinds, after the failed read');
   }
 
+  // 6j. Search results are open when the session ends: no title stays behind the sign-in card, and
+  //     none shows over the next person's map after the next sign-in.
+  const wireSearch=elements=>{const button=elements['search-btn']=makeElement('button');button.addEventListener=(k,fn)=>{if(k==='click')button.click=fn;};};
+  const search=(t,query)=>{const input=t.pg.elements['search-input'];input.value=query;input.oninput({target:input});};
+  const signInAgain=async(t,label)=>{await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');await settle();assertSignedIn(t,label);};
+  {
+    const w=liveWorld(),t=await sessionPage(w,null,wireSearch),E=t.pg.elements,firstWorld={nodes:w.nodes.slice()};assertSignedIn(t,'search, before');
+    E['search-btn'].click();search(t,'a');
+    assert(!E['search-overlay'].hasAttribute('hidden'),'The search is open');assert.equal(E['search-input'].value,'a');
+    const shown=firstWorld.nodes.map(n=>n.label).filter(l=>E['search-results'].innerHTML.includes(l));assert(shown.length>=5,'The search shows titles');
+    goneNow(w);await t.pg.sandbox.reloadGrove();await settle();
+    assertCleared(t,'search open at the 401');
+    assert(!shown.some(l=>shownText(t).includes(l)),'No result title stays behind the sign-in card');
+    Object.assign(w,secondWorld(),{session:false,graphStatus:0});
+    await signInAgain(t,'search, the next person');
+    assert(E['search-overlay'].hasAttribute('hidden'),'The search stays closed for the next person');assert.equal(E['search-results'].innerHTML,'','The next person sees no result');
+    assert.equal(titleKept(t,firstWorld),undefined,'No title of the first person shows over the next map');
+    E['search-btn'].click();search(t,'second world');assert(E['search-results'].innerHTML.includes(SECOND_TITLE),'The search works for the next person');
+    assert.deepStrictEqual(t.pg.errors,[],'search: no error');
+  }
+  // 6k. The selection pill is open when the session ends: it closes, and its words go.
+  {
+    const w=liveWorld(),t=await sessionPage(w,null,el=>{el['selection-pill'].querySelector=()=>makeElement('button');});
+    t.V.showChanges('nodes');await settle();
+    const pill=t.pg.elements['selection-pill'];assert(!pill.hasAttribute('hidden')&&pill.innerHTML.includes('added to your Grove'),'The selection pill is open');
+    goneNow(w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'selection pill open at the 401');
+  }
+  // 6l. Kind names are store text: the hidden kinds leave the page and local storage with the
+  //     session, so the next person sees every kind. A page opening signed out drops an older list.
+  {
+    const w=liveWorld(),st=signedInStore(),t=await sessionPage(w,st,legendRows),list=t.pg.elements['legend-list'],mapped=()=>t.V.graph().graphData().nodes;
+    list.rows().find(r=>r.getAttribute('data-type')==='recipe').click();
+    assert.deepStrictEqual(JSON.parse(st[HIDDEN_KEY]),{recipe:1},'The hidden kind is saved');assert(!mapped().some(n=>n.type==='recipe'),'The kind is hidden');
+    assert(/legend-row-disabled" data-type="recipe"/.test(list.innerHTML),'The legend shows it hidden');
+    goneNow(w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'hidden kinds');
+    w.graphStatus=0;await signInAgain(t,'hidden kinds, the next session');
+    assert(mapped().some(n=>n.type==='recipe'),'The next session shows the kind the last one hid');
+    assert(!/legend-row-disabled/.test(list.innerHTML),'The legend hides no kind for the next session');assert(!(HIDDEN_KEY in st),'The next session starts with no hidden kinds');
+    const out=liveWorld();Object.assign(out,{session:false,graphStatus:401});const older={[HIDDEN_KEY]:'{"recipe":1}'};
+    await sessionPage(out,older);assert(!(HIDDEN_KEY in older),'A signed-out page drops an older list of hidden kinds');
+  }
+  // 6m. A failed save, then new items, then the retry: the retry saves where the items are drawn,
+  //     not a fresh layout of the bigger graph, and a later page load moves nothing.
+  {
+    const w=liveWorld();w.failPositions=true;
+    const sv=makeServer(w),st=signedInStore(),pg=page(sv,st,GRAPH_FILES);await settle();
+    const drawn=fgPositions(pg);assert.equal(positionsCalls(sv).length,1,'The first save goes out');
+    const newcomers=[];for(let i=0;i<40;i++){const id='late-'+i;newcomers.push(id);w.nodes.push(Object.assign({},w.nodes[1],{id,label:'Late arrival '+i,type:'task',summary:''}));w.edges.push({id:'late-e'+i,source:id,target:'c001',verb:'part of',label:'part of'});}
+    w.failPositions=false;await pg.sandbox.reloadGrove();await settle();
+    const retry=positionsCalls(sv);assert.equal(retry.length,2,'The next load saves again');
+    const saved=Object.fromEntries(retry[1].body.positions.map(q=>[q.id,q]));
+    assert.equal(Object.keys(saved).length,w.nodes.length,'The retry saves every item');
+    for(const [id,at] of Object.entries(drawn)){const q=saved[id==='grove-self'?'p001':id];assert(q&&q.x===at.x&&q.y===at.y,'The retry saves the drawn place of '+id);}
+    const seen=fgPositions(pg),later=page(sv,st,GRAPH_FILES);await settle();
+    assert.deepStrictEqual(fgPositions(later),seen,'A later page load moves nothing');
+    assert.equal(positionsCalls(sv).length,2,'A later page load saves nothing');
+    assert.deepStrictEqual(later.errors,[],'failed save: no error');
+  }
+  // 6n. A node read rejects after the session ended: its fallback panel stays out.
+  {
+    const t=await sessionPage(liveWorld());t.w.holdNode=[];t.V.openNode('t001');await settle();
+    const out=t.w.holdNode;t.w.holdNode=null;assert.equal(out.length,1,'The node read is out');
+    goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'a node read is out');
+    out[0](Promise.reject(new TypeError('Failed to fetch')));await settle();
+    assertCleared(t,'a node read rejected late');assert.deepStrictEqual(t.pg.errors,[],'late rejected read: no error');
+  }
+  // 6o. A late 401 after a logout: the person at the code step keeps the step and the typed email.
+  {
+    const t=await sessionPage(liveWorld()),w=t.w;w.holdGraph=[];t.pg.sandbox.reloadGrove();await settle();
+    const late=w.holdGraph;w.holdGraph=null;assert.equal(late.length,1,'A graph read is out');
+    t.p.handle('logout');await settle();assertCleared(t,'logout with a read out');assert.equal(t.heard(),0);
+    await t.p.startEmail('robin.vale@example.org');assert.equal(t.p.ui.authStage,'code','The code step shows');
+    late[0](t.sv.typed(401,'unauthenticated','Sign in to continue'));await settle();
+    assert.equal(t.heard(),1,'The late 401 is heard');assert.equal(t.p.ui.authStage,'code','The late 401 keeps the code step');assert.equal(t.p.ui.email,'robin.vale@example.org','The late 401 keeps the typed email');
+    assert(t.p.html().includes('Check your inbox')&&t.p.html().includes('robin.vale@example.org'),'The card still asks for the code');
+  }
+  // 6p. A session that ends with a node open or under the pointer: the poll of the next session
+  //     still reads, because "never mid-interaction" is about the person at the screen now.
+  for(const held of ['a node detail','a hovered node']){
+    const t=await sessionPage(liveWorld()),w=t.w,poll=t.pg.intervals.find(i=>i.ms===180000);assertSignedIn(t,held+', before');
+    if(held==='a hovered node')t.V.graph().onNodeHover()(t.V.nodes().find(n=>n.id==='t001'));
+    await endWithNodeDetail(t);assertCleared(t,held+', the session ended');
+    w.nodeStatus=0;
+    await signInAgain(t,held+', the next session');
+    assert(!t.pg.elements.detail.classList.contains('open'),held+': no panel is open for the next person');
+    w.nodes.push(Object.assign({},w.nodes[1],{id:'poll-new',label:'Found by the poll',type:'task',summary:''}));
+    const reads=graphReads(t.sv);poll.fn();await settle();
+    assert(graphReads(t.sv)>reads,held+': the poll of the next session reads the graph');
+    assert(t.V.nodes().some(n=>n.id==='poll-new'),held+': the poll brings the new item to the map');
+  }
+  // 6q. The network is fully down: a logout stays signed in, with the error on screen.
+  {
+    const t=await sessionPage(liveWorld()),w=t.w;
+    t.p.ui.panel='profile';t.p.ui.settingsTab='account';t.p.render(true);
+    Object.assign(w,{logoutThrows:true,sessionThrows:true});t.p.handle('logout');await settle();
+    assertSignedIn(t,'logout, network down');assert.equal(t.p.ui.panel,'profile','The account panel stays');
+    assert(t.p.html().includes('Grove could not sign you out. Try again.'),'The error shows');
+    assert.deepStrictEqual(t.sv.calls.slice(-2).map(c=>c.method+' '+c.path),['POST /v1/auth/logout','GET /v1/views/session'],'Both calls were tried');
+    assert.equal(t.heard(),0,'No call ended the session');
+  }
+  // 6r. Offline at each sign-in step: the card shows the offline text and stays on its step.
+  {
+    const OFFLINE='Grove could not be reached. Try again in a moment.';
+    const w=liveWorld();Object.assign(w,{session:false,sessionThrows:true});
+    const pg=page(makeServer(w),{},AUTH_FILES,HOOK),p=pg.sandbox.productTest,A=pg.sandbox.GroveSimulation;
+    // render() appends the error line to the card's form, as it does in the browser.
+    const form=makeElement('div');p.modalRoot.querySelector=sel=>(sel==='.gp-auth-form'?form:null);
+    const alertNow=()=>{const kids=form.children.filter(c=>c.getAttribute('role')==='alert').map(c=>c.textContent);form.children.length=0;return kids;};
+    assert.equal(p.ui.authStage,'checking','The card waits for the session');
+    await settle();assert.equal(p.ui.authStage,'signin','An offline session check leaves the waiting step');assert(p.html().includes('Continue with Google'),'The sign-in options show');assert.deepStrictEqual(alertNow(),[OFFLINE],'An offline session check shows the offline text');
+    Object.assign(w,{sessionThrows:false,emailStartThrows:true});
+    await p.startEmail('robin.vale@example.org');assert.equal(p.ui.authStage,'signin','An offline email start stays on its step');assert.deepStrictEqual(alertNow(),[OFFLINE],'An offline email start shows the offline text');
+    w.emailStartThrows=false;await p.startEmail('robin.vale@example.org');assert.equal(p.ui.authStage,'code');assert.deepStrictEqual(alertNow(),[],'The offline text goes when the call works');
+    w.emailVerifyThrows=true;await p.verifyEmail('246810');assert.equal(p.ui.authStage,'code','An offline email verify stays on its step');assert.deepStrictEqual(alertNow(),[OFFLINE],'An offline email verify shows the offline text');assert.equal(A.getState().auth,null,'An offline verify signs nobody in');
+  }
+  // 6s. The look of the kinds, read from the page's own tokens in both themes: each starter kind
+  //     takes the ring of the sim style it aliases, in the legend and on the map; an unknown kind
+  //     takes the task style, in ring and in size, under its own name.
+  {
+    const css=read('style.css'),themes=[0,1].map(i=>{const t={};for(const m of css.matchAll(/(--ring-[a-z_]+):\s*(#[0-9a-fA-F]{3,6})/g)){const seen=[...css.matchAll(new RegExp(m[1]+':\\s*(#[0-9a-fA-F]{3,6})','g'))];t[m[1]]=seen[i][1];}for(const m of css.matchAll(/(--ring-[a-z_]+):\s*var\((--ring-[a-z_]+)\)/g))t[m[1]]=t[m[2]];return t;});
+    for(const tokens of themes){
+      const w=liveWorld(),STYLE=vmStyle();
+      for(const kind of Object.keys(STYLE))w.nodes.push(Object.assign({},w.nodes[1],{id:'kind-'+kind,label:'A '+kind,type:kind,status:'',summary:''}));
+      const pg=page(makeServer(w),{},GRAPH_FILES,null,null,(el,env)=>{env.tokens=tokens;});await settle();
+      const legend=pg.elements['legend-list'].innerHTML,swatch=kind=>(legend.match(new RegExp('data-type="'+kind+'"[^>]*><span class="legend-swatch" style="border-color:(#[0-9a-fA-F]+)"'))||[])[1];
+      assert(tokens['--ring-task']&&tokens['--ring-company']!==tokens['--ring-task'],'The tokens are read');
+      const look=id=>{const n=pg.sandbox.GroveView.nodes().find(x=>x.id===id);return drawnLook(pg,Object.assign({},n,{__born:0}));};
+      for(const [kind,style] of Object.entries(STYLE)){
+        assert.equal(swatch(kind),tokens['--ring-'+style],kind+' takes the legend colour of '+style);
+        assert.notEqual(swatch(kind),tokens['--ring-task'],kind+' does not fall to the task colour');
+        assert.equal(look('kind-'+kind).ring,tokens['--ring-'+style],kind+' draws the ring of '+style);
+      }
+      assert.equal(swatch('recipe'),tokens['--ring-task'],'An unknown kind takes the legend colour of a task');
+      const task=look('t001'),unknown=look('k001');
+      assert.equal(task.radius,10,'A task draws at the task size');assert.equal(unknown.radius,10,'An unknown kind takes the task size');
+      assert.equal(unknown.ring,tokens['--ring-task'],'An unknown kind takes the ring colour of a task');assert.equal(unknown.width,task.width,'An unknown kind takes the ring weight of a task');
+    }
+  }
+  // 6t. A new leaf keeps its seed offset from its hub, where that spot is free: not only "near" it.
+  {
+    const w=liveWorld(),sv=makeServer(w),st=signedInStore();
+    page(sv,st,GRAPH_FILES);await settle();
+    const hubId='c001',leaves=[];
+    for(let i=0;i<24;i++){const id='leaf-'+i;leaves.push(id);w.nodes.push(Object.assign({},w.nodes[1],{id,label:'New leaf '+i,type:'task',summary:''}));w.edges.push({id:'leaf-e'+i,source:id,target:hubId,verb:'part of',label:'part of'});}
+    const asked=[],pg=page(sv,st,GRAPH_FILES),place=pg.sandbox.GroveLayoutKeep.placeNew;
+    pg.sandbox.GroveLayoutKeep.placeNew=(...a)=>{const out=place(...a);asked.push({items:a[1],seed:a[3],room:a[4],out});return out;};await settle();
+    assert.equal(asked.length,1,'One layout');const {items,seed,room,out}=asked[0],at=out.positions;
+    const discs=items.filter(n=>!out.placed.includes(n.id)).map(n=>({x:at[n.id].x,y:at[n.id].y,r:room(n)}));
+    let exact=0;
+    for(const id of out.placed){
+      const n=items.find(x=>x.id===id);
+      if(leaves.includes(id)){
+        assert.equal(n._primaryHubId,hubId,id+' anchors on its hub');
+        const target={x:at[hubId].x+(seed[id].x-seed[hubId].x),y:at[hubId].y+(seed[id].y-seed[hubId].y)};
+        if(discs.every(d=>Math.hypot(d.x-target.x,d.y-target.y)>=d.r+room(n))){exact++;assert(at[id].x===target.x&&at[id].y===target.y,id+' keeps its seed offset from its hub, as that spot is free');}
+        else assert(Math.hypot(at[id].x-target.x,at[id].y-target.y)<=250,id+' takes a free spot near its seed offset');
+      }
+      discs.push({x:at[id].x,y:at[id].y,r:room(n)});
+    }
+    assert(exact>=4,'Some new leaves find their spot free: '+exact);
+  }
+  // 6u. No new home lies inside a drawn disc: not on arrival, and not later, when a hub has grown
+  //     (or an ended hub, drawn small, comes back) while the placed item stays where it is. No home
+  //     lies inside the identity disc either, at the zooms that frame a large world.
+  {
+    const w=liveWorld(),sv=makeServer(w),st=signedInStore(),first=page(sv,st,GRAPH_FILES);await settle();
+    const base=fgPositions(first),hubs=()=>first.sandbox.GroveView.nodes();
+    const ended=hubs().find(n=>n._demoted);assert(ended,'The world has an ended hub');assert.equal(drawnLook(first,Object.assign({},ended,{__born:0})).radius,18,'An ended hub draws small');
+    // Two placed leaves on either side of it: a new item linked to both aims at its centre.
+    const leafIds=hubs().filter(n=>!/organisation|plan/.test(n.type)&&n.id!=='grove-self').map(n=>n.id);
+    let pair=null,best=Infinity;
+    for(const a of leafIds)for(const b of leafIds){if(a>=b)continue;const d=Math.hypot((base[a].x+base[b].x)/2-ended.x,(base[a].y+base[b].y)/2-ended.y);if(d<best){best=d;pair=[a,b];}}
+    const addLeaf=(id,type,targets)=>{w.nodes.push(Object.assign({},w.nodes[1],{id,label:'New '+id,type,status:'',summary:''}));targets.forEach((target,i)=>w.edges.push({id:id+'-e'+i,source:id,target,verb:'related to',label:'related to'}));};
+    addLeaf('aimed-at-hub','observation',pair);
+    addLeaf('aimed-at-self','observation',['p001']);
+    const arrived=page(sv,st,GRAPH_FILES);await settle();
+    const home=(pg,id)=>{const n=pg.sandbox.GroveView.nodes().find(x=>x.id===id);return {x:n.__home?n.__home[0]:n.x,y:n.__home?n.__home[1]:n.y};};
+    const insideAny=(pg,ids)=>{const out=[];for(const id of ids){const q=home(pg,id);for(const h of pg.sandbox.GroveView.nodes()){if(!/organisation|plan/.test(h.type))continue;const r=drawnLook(pg,Object.assign({},h,{__born:0})).radius,d=Math.hypot(q.x-(h.fx!=null?h.fx:h.x),q.y-(h.fy!=null?h.fy:h.y));if(d<r)out.push(id+' in '+h.id+' ('+d.toFixed(1)+' < '+r+')');}}return out;};
+    assert.deepStrictEqual(insideAny(arrived,['aimed-at-hub','aimed-at-self']),[],'No new home lies in a drawn hub disc on arrival');
+    const self=home(arrived,'grove-self'),q=home(arrived,'aimed-at-self');
+    assert(Math.hypot(q.x-self.x,q.y-self.y)>=90,'A new home stays out of the identity disc at the zooms of a large world');
+    // The ended hub comes back and becomes the largest of all.
+    const row=w.nodes.find(n=>n.id===ended.id);row.status='';row.invalid_at=null;
+    for(let i=0;i<300;i++)addLeaf('mass-'+i,'observation',[ended.id]);
+    const grownBig=page(sv,st,GRAPH_FILES);await settle();
+    const back=grownBig.sandbox.GroveView.nodes().find(n=>n.id===ended.id);
+    assert.equal(drawnLook(grownBig,Object.assign({},back,{__born:0})).radius,62,'The hub that came back draws at the largest size');
+    assert.deepStrictEqual({x:back.fx,y:back.fy},{x:base[ended.id].x,y:base[ended.id].y},'It keeps its stored place');
+    assert.deepStrictEqual(insideAny(grownBig,['aimed-at-hub','aimed-at-self']),[],'A placed item stays out of the disc after the hub grew');
+    assert.deepStrictEqual(insideAny(grownBig,w.nodes.filter(n=>n.id.startsWith('mass-')).map(n=>n.id)),[],'No new home of that arrival lies in a drawn hub disc');
+  }
+
+  // 6v. The workers panel on the real page: it counts from the graph, the end of a session empties
+  //     it (native-app tells agents.js), and the next session's first graph starts its own loop.
+  {
+    const st=signedInStore();st['grove-minimal-codex-agents']='1';
+    const w=liveWorld(),sv=makeServer(w),pg=page(sv,st,[...ALL_FILES,'agents.js'],HOOK);
+    // The panel agents.js builds finds its own parts in its markup, which this page double does not parse.
+    const made=pg.sandbox.document.createElement;pg.sandbox.document.createElement=tag=>{const el=made(tag);el.querySelector=()=>makeElement('span');return el;};
+    await settle();
+    const t={w,sv,st,pg,p:pg.sandbox.productTest,S:pg.sandbox.GroveSimulation,V:pg.sandbox.GroveView};
+    const care=()=>pg.sandbox.GroveCare.summary();
+    assert.equal(care().enabled,true,'The workers view is on');
+    await pg.sandbox.reloadGrove();await settle();
+    assert(care().areas>0,'The workers loop reads the graph');
+    goneNow(w);await pg.sandbox.reloadGrove();await settle();
+    assertCleared(t,'workers on');
+    assert.equal(care().areas,0,'The workers loop drops the ended session');
+    assert.deepStrictEqual([...pg.sandbox.__hood.turns()],[],'No turn of the ended session stays');
+    w.graphStatus=0;await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');await settle();
+    assert(care().areas>0,'The next session starts its own workers loop');
+    assert.deepStrictEqual(pg.errors,[],'workers on: no error');
+  }
+
   // 7. The production page: live scripts first, and no fixture anywhere in the built file.
   const index=read('index.html');
   assert(!/src="[^"]*fixture|fixture\.js/.test(index),'index.html loads no fixture');assert(index.includes('<title>Grove</title>'));
@@ -547,5 +781,5 @@ function legendRows(elements){
   const encoded=[...new Set([...dist.matchAll(/url\((data:font\/woff2;base64,[^)]*%(?:41|61)[^)]*)\)/g)].map(m=>m[1]))];
   assert.equal(encoded.length,fontFiles.length,'Every vendored font is embedded, encoded');
   for(const uri of encoded){const bytes=Buffer.from(await (await fetch(uri)).arrayBuffer());assert(fontBytes.some(b=>b.equals(bytes)),'An encoded font decodes to its vendored bytes');}
-  console.log('PASS: one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, logout only when the server confirms it, no local questions from store titles, no example identity in live mode, and a built page with no fixture');
+  console.log('PASS: one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, search results, the selection pill and hidden kinds that end with the session, a retry after a failed save that keeps the drawn places, a rejected node read after the end that draws nothing, a late 401 that keeps the code step, a next session whose poll works, logout only when the server confirms it (network down too), offline text at each sign-in step, the look of starter and unknown kinds from the style tokens of the page, new leaves at their seed offset, no new home in a drawn hub disc or the identity disc, even after a hub grows, no local questions from store titles, no example identity in live mode, and a built page with no fixture');
 })().catch(e=>{console.error(e);process.exitCode=1;});

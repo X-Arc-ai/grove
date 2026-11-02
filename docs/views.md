@@ -34,8 +34,10 @@ uv run python -m grove.writer.demo purge --world <id>
 `server/tests/e2e/test_views_browser.py` drives Chromium against the real app and a seeded world: the sign-in card, the welcome, and a map that keeps every placed item after a reload and after new items arrive. It is marked `browser`, the default run leaves it out, and CI has no Playwright, so it never runs there:
 
 ```sh
-GROVE_E2E_SHOTS=<folder> uv run --with playwright==1.58.0 pytest -m browser tests/e2e -q -p no:cacheprovider
+GROVE_E2E_SHOTS=<folder> uv run --with playwright==1.58.0 python -m pytest -m browser tests/e2e -q -p no:cacheprovider
 ```
+
+Keep `python -m pytest`: the `pytest` script in `.venv/bin` does not see the Playwright that `uv run --with` adds. A run that selects these tests with no Playwright fails and names this command, so it never looks green with nothing tested.
 
 `docs/screens/views-a/` holds its screenshots beside the simulation's, both on synthetic data.
 
