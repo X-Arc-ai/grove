@@ -841,20 +841,49 @@ REQUESTS = Table(
     group="snapshot",
     owner="D2",
     columns=(
-        _col("id", "id", note="the caller's idempotency key, unique per world (S9)"),
+        _col("id", "id", note="the caller's idempotency key, unique per world (S9, S40)"),
         _WORLD,
-        _col("caller", "code"),
-        _col("source id of the request's text", "id", "source_id"),
+        _col("caller", "code", note="the actor code of the first writer"),
+        _col(
+            "source id of the request's text",
+            "id",
+            "source_id",
+            note="only a row with one can be claimed (S40)",
+        ),
         _col("run id", "id"),
         _col("status", "enum:request_status"),
         _col("attempts", "int"),
         _col("created at", "instant"),
         _col("committed at", "instant"),
-        _col("receipt", "json_ids", note="ids and codes; a title is read fresh when shown"),
+        _col(
+            "receipt",
+            "json_ids",
+            note="ids and codes; a title is read fresh when shown. "
+            "A declined row holds its stored decline here (S41)",
+        ),
         _col("last error code", "code"),
+        *_version_touched(),
+        _ruling("commit_id", "id", "S40: the one commit of this request"),
+        _ruling("change_set_id", "id", "S40: the one change set of this request"),
+        _ruling("fingerprint", "code", "S40: sha256 of the committed batch"),
+        _ruling("declined_fingerprint", "code", "S40: sha256 of the batch last declined"),
+        _ruling("repairs", "int", "S40: 1 once the one repair attempt is spent (line 748)"),
+        _ruling("retry_at", "instant", "S40: when a queued or failed row is due again"),
+        _ruling("lease_until", "instant", "S40: when an applying row is due again"),
+        _ruling("claimed_by", "code", "S40: the worker that holds the lease"),
+        _ruling("content_key", "code", "S40: what a second enqueue under this key compares"),
+        _ruling("verbatim", "bool", "S40: B.3 remember, for the later pass"),
+        _ruling("host_message_id", "locator", "S40: B.3 remember, for the later pass"),
+        _ruling("said_at", "instant", "S40: B.3 remember, for the later pass"),
+        _ruling("about", "ids", "S40: B.3 remember, for the later pass"),
     ),
     uniques=_keys("requests", ("world_id", "id")),
     indexes=_ranges("requests", ("world_id", "status")),
+    notes=(
+        "A request commits once, in one batch, and `saved` moves in the same transaction as that "
+        "commit (S40). A filter in MATCH or WHERE reads with no lock, so a transition checks the "
+        "row after it holds the row's write lock (S1)."
+    ),
 )
 
 DECLINES = Table(
@@ -876,8 +905,15 @@ DECLINES = Table(
             note="list of {item id, score}",
         ),
         _col("override used", "bool"),
+        _ruling("code", "code", "S41: the typed error code of the refusal"),
+        _ruling("recorded_at", "instant", "S41: when the decline was logged"),
     ),
     uniques=_keys("declines", ("world_id", "request_id", "op_id")),
+    notes=(
+        "Ids and codes only: a refusal's message and details are never stored, and an op id that "
+        "could hold text is stored by its hash (S41). `op_id` is `batch` for a fault of the whole "
+        "batch."
+    ),
 )
 
 JOBS = Table(

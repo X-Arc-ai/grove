@@ -18,6 +18,13 @@ _NEXT_SEQUENCE = (
     CYPHER_PREFIX + "MATCH (w:World {id: $world_id}) "
     "SET w.next_sequence = w.next_sequence + 1 RETURN w.next_sequence AS sequence"
 )
+# The same row and the same lock, with no change: taken first, before anything is read, so a read
+# that takes no lock of its own (the near-duplicate check, the restatement read, the slot read)
+# sees every batch that committed before this one. A rollback leaves no gap.
+_LOCK_WORLD = (
+    CYPHER_PREFIX + "MATCH (w:World {id: $world_id}) "
+    "SET w.next_sequence = w.next_sequence RETURN w.id AS id"
+)
 
 
 class UnknownWorld(RuntimeError):
@@ -28,6 +35,10 @@ class WorldTx:
     def __init__(self, tx: ManagedTransaction, world_id: str) -> None:
         self._tx = tx
         self._world_id = world_id
+
+    @property
+    def world_id(self) -> str:
+        return self._world_id
 
     def run(self, cypher: str, /, **params: Any) -> list[dict]:
         refuse_world_param(params)
@@ -40,6 +51,11 @@ class WorldTx:
         if record is None:
             raise UnknownWorld(self._world_id)
         return record["sequence"]
+
+    def lock_world(self) -> None:
+        """Holds the world's lock until the transaction ends: one batch at a time per world."""
+        if self._tx.run(_LOCK_WORLD, {WORLD_PARAM: self._world_id}).single() is None:
+            raise UnknownWorld(self._world_id)
 
     def unscoped(self) -> ManagedTransaction:
         """The transaction with no scope, for writer code that must commit a platform row with the

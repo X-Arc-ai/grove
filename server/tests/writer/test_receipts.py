@@ -15,6 +15,7 @@ from grove.ids import new_id
 from grove.writer import BatchDeclined, receipts, render_receipt
 from tests.writer.helpers import (
     apply,
+    assert_only_decline_log,
     at_minute,
     clock_at,
     count_rows,
@@ -268,13 +269,14 @@ def test_a_declined_receipt_names_each_failing_operation_and_says_nothing_was_wr
     with pytest.raises(BatchDeclined) as declined:
         apply(driver, world_id, ops, [observation(chat, "e2", 2)])
 
-    assert count_rows(driver, world_id) == before
+    assert_only_decline_log(driver, world_id, before, declined.value.refusals)
     assert [(r.op_id, r.code) for r in declined.value.refusals] == [
         (ops[0]["op_id"], "endpoint_kind_mismatch"),
         (ops[2]["op_id"], "unknown_kind"),
     ]
     lines = rendered(driver, world_id, declined.value.receipt)
-    assert lines[0] == "declined (batch of 3, nothing written)"
+    minted = short_id(declined.value.receipt.request_id)
+    assert lines[0] == f"declined (batch of 3, nothing written), request {minted}"
     assert len(lines) == 3
     s = short_id
     assert (
