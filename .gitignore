@@ -30,3 +30,6 @@ playwright-report/
 
 # Local agent worktrees
 .claude/
+
+# Web build output (web/build.py regenerates it)
+web/app-screens.js

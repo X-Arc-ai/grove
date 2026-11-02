@@ -1,0 +1,14 @@
+{
+  "catalog": "https://pipedream.com/apps-index.json",
+  "checked": "2026-10-29",
+  "count": 3222,
+  "logos": {
+    "sheets": "https://pipedream.com/s.v0/app_168hvn/logo/96",
+    "github": "https://pipedream.com/s.v0/app_OrZhaO/logo/96",
+    "airtable": "https://pipedream.com/s.v0/app_XBxhAl/logo/96",
+    "dropbox": "https://pipedream.com/s.v0/app_XGehk1/logo/96",
+    "trello": "https://pipedream.com/s.v0/app_168hnX/logo/96",
+    "asana": "https://pipedream.com/s.v0/app_OVWhPX/logo/96"
+  },
+  "apple": "Embedded Apple silhouette in provider-icons.js; official asset URL was unavailable"
+}
