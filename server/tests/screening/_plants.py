@@ -35,6 +35,40 @@ PEM_BLOCK = joined(
     "-----END OPENSSH ",
     "PRIVATE KEY-----",
 )
+PGP_BLOCK = joined(
+    "-----BEGIN PGP ",
+    "PRIVATE KEY BLOCK-----\n\n",
+    "lQOYBGVkY2UBCADKq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw2eRt6yUi9oPa3sDf7\n",
+    "=AbCd\n",
+    "-----END PGP ",
+    "PRIVATE KEY BLOCK-----",
+)
+GITHUB_OAUTH_TOKEN = joined("gh", "o_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8")
+GITHUB_SERVER_TOKEN = joined("gh", "s_", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8")
+# The other providers a chat or a dev session shows, each in its real shape.
+PROVIDER_KEYS = {
+    "sendgrid": joined(
+        "SG", ".", "Kq8vN2xP7mZ4tR9wLm3sXa", ".", "Hj5bVc8nQw2eRt6yUi9oPa3sDf7gHk1lZx4cVb0nMq8"
+    ),
+    "google-oauth-token": joined(
+        "ya", "29.", "a0AfB_byC8Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw2eRt6yUi9oPa3sDf7gHk1lZx4cVb0nMq8"
+    ),
+    "google-oauth-secret": joined("GOCS", "PX-", "Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc"),
+    "digitalocean": joined("dop", "_v1_", "3f9a8c7d6e5b4a3f2e1d0c9b8a7f6e5d" * 2),
+    "atlassian": joined(
+        "ATA",
+        "TT",
+        "3xFfGF0Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw2eRt6yUi9oPa3sDf7gHk1lZx4cVb0nMq8=A1B2C3D4",
+    ),
+    "groq": joined("gs", "k_", "Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw2eRt6yUi9oPa3sDf"),
+    "replicate": joined("r8", "_", "Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw2eRt6"),
+    "stripe-webhook": joined("wh", "sec_", "Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw"),
+    "perplexity": joined("pp", "lx-", "Kq8vN2xP7mZ4tR9wLm3sXaHj5bVc8nQw2eRt6yUi9oPa"),
+}
+SLACK_WEBHOOK_PATH = joined("T01ABCD2EFG/", "B02HIJK3LMN/", "aBcDeFgHiJkLmNoPqRsTuVwX")
+DISCORD_WEBHOOK_PATH = joined(
+    "1234567890123456789/", "aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789-_abcdefghijklmnopqr"
+)
 ENTROPY_TOKEN = "aB3dE5fG7hJ9kL1mN3pQ5rS7tU9wX"
 DB_SECRET = "hunter2pass"
 

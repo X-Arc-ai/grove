@@ -5,6 +5,7 @@ import dataclasses
 import json
 import logging
 import pickle
+import tempfile
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
@@ -421,6 +422,8 @@ def test_every_d14_plant_is_kept_out_of_the_content():
 def test_screening_writes_no_log_and_no_file(caplog, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("TMPDIR", str(tmp_path))
+    # tempfile caches its folder at first use, so the variable alone would not move it.
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     caplog.set_level(logging.DEBUG)
     screener(rename=RENAME, denylist=DENYLIST, pay=True).screen_source(
         "chat.txt", [Message("m1", "Orla Vance", f"{OPENAI_KEY} {THIRD_EMAIL} {CARD_VISA}")]

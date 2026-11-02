@@ -59,6 +59,23 @@ RENAME_CASES = [
     ),
     pytest.param({"Orla": "Orla Vance"}, "Orla", "Orla Vance", id="label-never-matched-again"),
     pytest.param(RENAME, "", "", id="empty"),
+    pytest.param(RENAME, "Dorla and Orla met", "Dorla and Co-founder met", id="left-word-edge"),
+    pytest.param(
+        {"O'Neill": "Advisor"}, "O\u2019Neill said", "Advisor said", id="curly-apostrophe"
+    ),
+    pytest.param(
+        {"O\u2019Neill": "Advisor"}, "O'Neill said", "Advisor said", id="curly-in-the-form"
+    ),
+    pytest.param(
+        {"Ciaran O'Neill": "Advisor", "Ciaran": "Advisor"},
+        "Ciaran O\u2019Neill joins Monday",
+        "Advisor joins Monday",
+        id="curly-keeps-the-longest-form",
+    ),
+    pytest.param(
+        {"Anne-Marie": "Partner"}, "Anne\u2011Marie said", "Partner said", id="non-breaking-hyphen"
+    ),
+    pytest.param(RENAME, "Orla\u2122 deck", "Co-founder\u2122 deck", id="trade-mark-sign"),
 ]
 
 
@@ -110,7 +127,30 @@ DENY_CASES = [
     pytest.param("Tamsin", "Brightwell Logisticsville", False, id="not-inside-a-longer-word"),
     pytest.param("Tamsin", "Brightwell alone", False, id="part-of-a-term"),
     pytest.param("Tamsin", "halvard_quist", False, id="underscore-joins-words"),
+    pytest.param("Tamsin", "Subrightwell Logistics", False, id="not-after-a-longer-word"),
+    pytest.param("Tamsin", "Brightwell Logistics\u2122 renewal", True, id="trade-mark-sign"),
 ]
+
+
+@pytest.mark.parametrize(
+    "denylist, sender, text",
+    [
+        pytest.param(["O'Hara Foods"], None, "O\u2019Hara Foods sent it", id="curly-in-the-text"),
+        pytest.param(["O'Hara Foods"], "O\u2019Hara Foods", "hello", id="curly-in-the-sender"),
+        pytest.param(["O\u2019Hara Foods"], None, "O'Hara Foods sent it", id="curly-in-the-term"),
+        pytest.param(["Anne-Marie"], None, "Anne\u2011Marie sent it", id="non-breaking-hyphen"),
+    ],
+)
+def test_denylist_reads_look_alike_punctuation(denylist, sender, text):
+    assert screen_one(screener(denylist=denylist), text, sender=sender) == (
+        None,
+        {"denylisted": 1},
+    )
+
+
+def test_a_denylist_term_after_a_word_character_stays():
+    kept = screen_one(screener(denylist=["Quist"]), "Bergquist sent the brief")
+    assert kept == ("Bergquist sent the brief", {})
 
 
 @pytest.mark.parametrize("sender, text, dropped", DENY_CASES)

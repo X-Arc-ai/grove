@@ -152,6 +152,9 @@ RENAME_FAULTS = [
     ),
     pytest.param('{"--": "Co-founder"}', "entry 1 holds no letter or digit", id="key-without-word"),
     pytest.param('{"Orla": "   "}', "the label of entry 1 is empty", id="blank-label"),
+    pytest.param(
+        '{"Orla": "--"}', "the label of entry 1 holds no letter or digit", id="label-dashes"
+    ),
     pytest.param('{"Orla": 3}', "entry 1 must map a string to a string", id="number-label"),
     pytest.param(
         '{"Orla": {"Vance": "x"}}', "entry 1 must map a string to a string", id="object-label"
