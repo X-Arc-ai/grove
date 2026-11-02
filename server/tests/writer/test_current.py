@@ -299,6 +299,36 @@ def evidence(source_type: str | None, derivation: str | None = "observed") -> di
             "planned",
             "not_confirmed",
         ),
+        # A record with a scheduled start needs a known start, as a period does: a confirmed
+        # booking does not prove the flight (spec 1078).
+        (
+            {**UNKNOWN, **evidence("confirmed")},
+            "record",
+            {"scheduled": {"start": FLIGHT}},
+            "planned",
+            "start_unknown",
+        ),
+        (
+            {**UNKNOWN, **evidence("confirmed")},
+            "record",
+            {"planned_origin": True, "scheduled": {"start": FLIGHT}},
+            "planned",
+            "start_unknown",
+        ),
+        (
+            {**PAST, **evidence("confirmed")},
+            "record",
+            {"scheduled": {"start": FLIGHT}},
+            "current",
+            "started",
+        ),
+        (
+            {**FUTURE, **evidence("confirmed")},
+            "record",
+            {"scheduled": {"start": FLIGHT}},
+            "not_started",
+            "future_start",
+        ),
         # Outside the scheduled class an unknown start counts as started.
         ({**UNKNOWN, **evidence("said")}, "record", {}, "current", "started"),
         (
@@ -355,6 +385,8 @@ def test_the_rule_order(row, lifecycle, extra, state, reason):
         ({**UNKNOWN, **evidence("reported_done")}, "bounded_period", False),
         ({**PAST, **evidence("confirmed", "inferred")}, "bounded_period", False),
         ({**UNKNOWN, **evidence("reported_done")}, "record", True),
+        ({**UNKNOWN, **evidence("confirmed")}, "record", False),
+        ({**UNKNOWN, **evidence("confirmed")}, "record", True),
     ],
 )
 def test_no_date_moves_a_scheduled_state(row, lifecycle, planned_origin):
@@ -542,6 +574,58 @@ def test_a_confirmed_row_on_a_trip_with_an_unknown_start_stays_planned(driver, s
         assert found.scheduled == {"start": FLIGHT}
 
 
+def test_a_booked_flight_reads_planned_until_a_confirmation_brings_its_start(
+    driver, seeded, frozen
+):
+    # Spec 832 ("one whose scheduled start is still ahead ... stays out of current()") and the
+    # problem statement of spec 1187: "A booked flight became 'confirmed travel' because its date
+    # passed." The booking page confirms the booking, not the flight (spec 1078).
+    w = seeded["world_id"]
+    kinds = kind_ids(driver, w)
+    plant_scheduled(driver, w, kinds["event"], "takes place on")
+    pages = make_source(driver, w, "web_pages", PAGE_LINES)
+    calendar = make_source(driver, w, "calendar", CALENDAR_LINES)
+    from_calendar = create_item(
+        "event", "Flight to Velmora", "c1", properties={"takes place on": FLIGHT}
+    )
+    from_page = create_item(
+        "event", "Ilse Okonkwo on the Velmora flight", "b1", properties={"takes place on": FLIGHT}
+    )
+    receipt = apply(
+        driver,
+        w,
+        [from_calendar, from_page],
+        [entry(calendar, "c1", 1), page(pages, "b1", 1, MAY)],
+    )
+    flight, booked = created_id(receipt, nth=0), created_id(receipt, nth=1)
+    apply(driver, w, [attach(flight, "b2")], [page(pages, "b2", 1, MAY)])
+    for item_id in (flight, booked):
+        row = item_row(driver, w, item_id)
+        assert (row["derived_source_type"], row["derivation"]) == ("confirmed", "observed")
+        assert row["became_true_precision"] == "unknown"
+
+    for at in (JUNE, JULY_1, JULY_13, AUGUST):
+        found = read_at(frozen, at, driver, w, [flight, booked])
+        for item_id in (flight, booked):
+            assert (found[item_id].state, found[item_id].reason) == ("planned", "start_unknown")
+            assert found[item_id].scheduled == {"start": FLIGHT}
+        assert current_items(WorldQuery(driver, w), [flight, booked]) == []
+
+    # A record's claim never changes, so the boarding pass records the flight with its known
+    # start: that record is current.
+    frozen.set(JULY_13)
+    boarded = create_item(
+        "event",
+        "Ilse Okonkwo boarded the Velmora flight",
+        "p2",
+        became_true=day(JULY_12),
+        properties={"takes place on": FLIGHT},
+    )
+    boarded_id = created_id(apply(driver, w, [boarded], [page(pages, "p2", 2, JULY_13)]))
+    found = read_at(frozen, JULY_13, driver, w, [boarded_id])[boarded_id]
+    assert (found.state, found.scheduled) == ("current", {"start": FLIGHT})
+
+
 def test_a_moved_date_moves_what_a_read_says_and_never_the_state(driver, seeded, chat, frozen):
     w = seeded["world_id"]
     kinds = kind_ids(driver, w)
@@ -668,6 +752,19 @@ def test_an_active_successor_overtakes_and_rides_on_every_state(driver, seeded, 
     assert (found[river].state, found[river].successors) == ("current", ())
     assert (found[new].state, found[new].successors) == ("current", ())
     assert current_items(query, [old, new, hall, annex, river]) == [new, annex, river]
+    # An overtaken item read alone still finds its successor: the read follows the link from the
+    # old item, not back from the new one.
+    alone = standings(query, [old])[old]
+    assert (alone.state, alone.successors) == (
+        "overtaken",
+        (Successor(new, corrected, MEANING_CORRECTED_BY),),
+    )
+    alone = standings(query, [hall])[hall]
+    assert (alone.state, alone.successors) == (
+        "ended",
+        (Successor(annex, superseded, MEANING_SUPERSEDED_BY),),
+    )
+    assert standings(query, [new])[new].successors == ()
 
 
 def test_standings_inside_a_transaction_read_its_own_writes(driver, seeded, chat, frozen):

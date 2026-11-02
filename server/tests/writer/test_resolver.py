@@ -454,6 +454,64 @@ def test_owner_owned_by_and_owner_name_are_one_property(driver, seeded):
     assert found.target["id"] == seeded["meanings"]["owned by"]
 
 
+@pytest.mark.parametrize("spelling", ["owner name", "OWNER", "Owner_Name"])
+def test_two_spellings_of_one_property_in_a_create_are_refused(driver, seeded, chat, spelling):
+    # The last key would win and the other value would be lost with no refusal.
+    world_id = seeded["world_id"]
+    organisation = seeded["kinds"]["organisation"]
+    owner = plant_property(driver, world_id, organisation, "owner")
+    plant_alias(driver, world_id, "property_name", owner["id"], "owner name")
+    op = create_item(
+        "organisation", "Ilse Ropes", "e1", properties={"owner": "Ilse", spelling: "Tamsin"}
+    )
+
+    refusal = refusal_of(driver, world_id, [op], [observation(chat, "e1", 2)])
+
+    assert (refusal.code, refusal.rule) == ("invalid_arguments", "property_named_twice")
+    assert refusal.details == {"property": "owner", "keys": ["owner", spelling]}
+
+
+def test_two_spellings_of_one_property_in_an_update_are_refused(driver, seeded, chat):
+    world_id = seeded["world_id"]
+    organisation = seeded["kinds"]["organisation"]
+    owner = plant_property(driver, world_id, organisation, "owner")
+    plant_alias(driver, world_id, "property_name", owner["id"], "owner name")
+    made = create_item("organisation", "Ilse Ropes", "e1", properties={"owner": "Rowan"})
+    ropes = created_id(apply(driver, world_id, [made], [observation(chat, "e1", 2)]))
+    for fields in (
+        {"owner": "Ilse", "Owner_Name": "Tamsin"},
+        {"owner": None, "owner name": "Tamsin"},
+    ):
+        op = {
+            "op": "update_item",
+            "op_id": new_op_id(),
+            "item": ropes,
+            "version": item_row(driver, world_id, ropes)["version"],
+            "fields": {"properties": fields},
+            "evidence_refs": supports("e3"),
+            "reason": "the message states it",
+        }
+
+        refusal = refusal_of(driver, world_id, [op], [observation(chat, "e3", 3)])
+
+        assert (refusal.code, refusal.rule) == ("invalid_arguments", "property_named_twice")
+        assert json.loads(item_row(driver, world_id, ropes)["properties"]) == {"owner": "Rowan"}
+
+
+def test_two_spellings_with_one_value_are_one_property(driver, seeded, chat):
+    world_id = seeded["world_id"]
+    organisation = seeded["kinds"]["organisation"]
+    owner = plant_property(driver, world_id, organisation, "owner")
+    plant_alias(driver, world_id, "property_name", owner["id"], "owner name")
+    op = create_item(
+        "organisation", "Ilse Ropes", "e1", properties={"owner": "Ilse", "owner name": "Ilse"}
+    )
+
+    ropes = created_id(apply(driver, world_id, [op], [observation(chat, "e1", 2)]))
+
+    assert json.loads(item_row(driver, world_id, ropes)["properties"]) == {"owner": "Ilse"}
+
+
 def test_each_kind_stores_the_property_under_its_own_name(driver, seeded, chat):
     world_id = seeded["world_id"]
     for kind, name in (("organisation", "proprietor"), ("place", "landlord")):
@@ -490,6 +548,19 @@ def test_a_resolved_link_phrase_keeps_no_phrase(driver, seeded):
     assert word.outcome == RESOLVED
     assert word.meaning["id"] == seeded["meanings"]["depends on"]
     assert (word.original_phrase, word.candidates) == (None, ())
+
+
+def test_a_reversed_link_phrase_says_so(driver, seeded):
+    # Extraction writes the link with this word, so a lost flag would store the ends the wrong
+    # way round.
+    word = resolve_link_phrase(registry_of(driver, seeded["world_id"]), "owns")
+
+    assert word.outcome == RESOLVED
+    assert word.meaning["id"] == seeded["meanings"]["owned by"]
+    assert word.reversed is True
+    assert (word.original_phrase, word.candidates) == (None, ())
+    forward = resolve_link_phrase(registry_of(driver, seeded["world_id"]), "relies on")
+    assert forward.reversed is False
 
 
 def test_an_unmapped_link_phrase_rides_on_the_generic_meaning(driver, seeded):

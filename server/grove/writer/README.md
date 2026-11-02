@@ -82,8 +82,8 @@ own writes, so a guard inside a batch sees what the batch wrote.
 
 The rules of `standing`, in order: (1) `ended`; (2) `overtaken` by an active "corrected by" or
 "superseded by" successor; (3) a bounded period, or a record that a plan scheduled, reads by its
-evidence and never by a date: confirmed and not inferred goes on (a period also needs a known
-start), reported done and not inferred reads `reported`, anything else reads `planned`; (4)
+evidence and never by a date: confirmed and not inferred goes on (a period, or a record with a
+scheduled start, also needs a known start), reported done and not inferred reads `reported`, anything else reads `planned`; (4)
 `not_started` for a known start after `at`; (5) `current`. The successors and the scheduled values
 ride on every state.
 
@@ -391,6 +391,7 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | A phrase with two usable targets is never picked | `unknown_kind`, `unknown_meaning`, `invalid_arguments` (rule `ambiguous_phrase`) | `test_resolver.py` |
 | A phrase that normalises to nothing is refused | `invalid_arguments` (rule `empty_phrase`) | `test_resolver.py` |
 | A property name resolves per kind: an alias of another kind's property is no match | `invalid_arguments` (rule `unknown_property`) | `test_resolver.py` |
+| Two spellings of one property in one create or update with different values are refused, so no value is lost | `invalid_arguments` (rule `property_named_twice`) | `test_resolver.py` |
 | An unmapped or ambiguous link phrase rides on the generic meaning with its phrase kept, never on a meaning that carries consequences | (none) | `test_resolver.py` |
 | The candidate band is every item of the kind at 0.3 or more, best first; an ended item is flagged and kept; a distinct pair is left out | (none) | `test_resolver.py`, `test_neardup_labelled.py` |
-| Labelled pairs: reworded titles at 0.86 and 1.0 are refused, pairs at 0.72 come back as candidates, and revision N after N-1 passes only with `distinct_from` and is logged with `override_used` | `near_duplicate` | `test_neardup_labelled.py` |
+| Labelled pairs: reworded titles at 0.8, 0.86 and 1.0 are refused, pairs at 0.72 and 0.3 come back as candidates, and revision N after N-1 passes only with `distinct_from` and is logged with `override_used`; `distinct_from` clears only the item it names; a title that differs only by an invisible format character meets the gate | `near_duplicate` | `test_neardup_labelled.py` |

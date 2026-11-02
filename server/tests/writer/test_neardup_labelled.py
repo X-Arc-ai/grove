@@ -39,6 +39,8 @@ WORK = {
 SAME_AT_THE_GATE = [
     ("reworded", "task", "Fix the Ilse invoice mismatch", "Ilse invoice mismatch fix", 0.862),
     ("name reordered", "person", "Rowan Okonkwo", "Okonkwo, Rowan", 1.0),
+    # Exactly at the gate: a pair at 0.8 is refused, so the gate is "0.8 or more" (Appendix C).
+    ("gate edge", "task", "Paint the grey hull", "Paint the grey hull today", 0.8),
 ]
 SAME_IN_THE_BAND = [
     (
@@ -54,7 +56,11 @@ SUCCESSIVE = [
     ("revision", "observation", "Release notes revision 7", "Release notes revision 8", 0.84),
     ("weekly report", "observation", "Weekly report 2026-W43", "Weekly report 2026-W44", 0.833),
 ]
-DIFFERENT = [("another task", "task", "Book the venue", "Pay the venue deposit", 0.37)]
+DIFFERENT = [
+    ("another task", "task", "Book the venue", "Pay the venue deposit", 0.37),
+    # Exactly at the band's floor: a pair at 0.3 is a candidate (Appendix C).
+    ("band edge", "task", "Book the venue", "Venue hall", 0.3),
+]
 # A successive pair sits at the gate on purpose: only a named distinct_from lets it through.
 LEVELS = [
     *((*pair, "gate") for pair in SAME_AT_THE_GATE),
@@ -96,6 +102,10 @@ def level(score: float) -> str:
 
 
 # --- the labels against the two levels ------------------------------------------------------
+
+
+def test_the_two_levels_are_the_values_of_appendix_c():
+    assert (DEFAULT_THRESHOLD, CANDIDATE_THRESHOLD) == (0.8, 0.3)
 
 
 @pytest.mark.parametrize((*PAIR, "expected"), LEVELS, ids=ids(LEVELS))
@@ -211,3 +221,71 @@ def test_a_different_pair_in_the_band_is_a_candidate_and_no_refusal(
     assert found == [Candidate(first_id, score, False)]
     assert send(driver, world_id, request_id, sent).state == "saved"
     assert decline_log(driver, world_id, request_id=request_id) == []
+
+
+# --- distinct_from overrides only the item it names ------------------------------------------
+
+
+def test_distinct_from_overrides_only_the_item_it_names(driver, seeded, chat):
+    world_id = seeded["world_id"]
+    first_id = existing(driver, world_id, chat, "person", "Rowan Okonkwo")
+    named_first = [{"item": first_id, "reason": "a namesake, not the same person"}]
+    request_id, _, sent = proposal(chat, "person", "Okonkwo, Rowan", 2, distinct_from=named_first)
+    second_id = created_id(send(driver, world_id, request_id, sent))
+    request_id, op, sent = proposal(chat, "person", "Rowan Okonkwo", 3, distinct_from=named_first)
+
+    with pytest.raises(BatchDeclined) as declined:
+        send(driver, world_id, request_id, sent)
+
+    (refusal,) = declined.value.refusals
+    assert (refusal.code, refusal.rule) == ("near_duplicate", "near_duplicate")
+    assert refusal.details["candidates"] == [{"item_id": second_id, "score": 1.0}]
+    (logged,) = decline_log(driver, world_id, request_id=request_id)
+    assert (logged["op_id"], logged["override_used"]) == (op["op_id"], False)
+
+
+def test_distinct_from_on_an_unrelated_item_clears_nothing(driver, seeded, chat):
+    world_id = seeded["world_id"]
+    first_id = existing(driver, world_id, chat, "person", "Rowan Okonkwo")
+    request_id, _, sent = proposal(chat, "person", "Ilse Tamsin", 2)
+    unrelated = created_id(send(driver, world_id, request_id, sent))
+    named = [{"item": unrelated, "reason": "not her"}]
+    request_id, _, sent = proposal(chat, "person", "Okonkwo, Rowan", 3, distinct_from=named)
+
+    with pytest.raises(BatchDeclined) as declined:
+        send(driver, world_id, request_id, sent)
+
+    (refusal,) = declined.value.refusals
+    assert (refusal.code, refusal.rule) == ("near_duplicate", "near_duplicate")
+    assert refusal.details["candidates"] == [{"item_id": first_id, "score": 1.0}]
+    written = read(
+        driver, world_id, "MATCH (i:Item {title: $t}) RETURN i.id AS id", t="Okonkwo, Rowan"
+    )
+    assert written == []
+
+
+# --- a title that reads the same is the same title --------------------------------------------
+
+INVISIBLE = [
+    ("direction mark", "\u200eRowan Okonkwo"),
+    ("byte order mark", "\ufeffRowan Okonkwo"),
+    ("soft hyphen", "Ro\u00adwan Okon\u00adkwo"),
+    ("zero-width space in each word", "Ro\u200bwan Okon\u200bkwo"),
+    ("zero-width space between letters", "\u200b".join("Rowan Okonkwo")),
+]
+
+
+@pytest.mark.parametrize(("label", "title"), INVISIBLE, ids=[label for label, _ in INVISIBLE])
+def test_a_title_with_an_invisible_character_meets_the_gate(driver, seeded, chat, label, title):
+    world_id = seeded["world_id"]
+    first_id = existing(driver, world_id, chat, "person", "Rowan Okonkwo")
+    request_id, _, sent = proposal(chat, "person", title, 2)
+
+    with pytest.raises(BatchDeclined) as declined:
+        send(driver, world_id, request_id, sent)
+
+    (refusal,) = declined.value.refusals
+    assert (refusal.code, refusal.rule) == ("near_duplicate", "near_duplicate")
+    assert refusal.details["candidates"] == [{"item_id": first_id, "score": 1.0}]
+    found = band(driver, world_id, seeded["kinds"]["person"], title)
+    assert found == [Candidate(first_id, 1.0, False)]
