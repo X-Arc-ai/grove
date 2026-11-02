@@ -1535,3 +1535,61 @@ def test_a_record_refuses_a_status_an_end_and_a_reopen(driver, seeded, chat, op_
     refusal = one(refused(driver, w, [op], evidence), "record_immutable")
     assert refusal.op_id == op["op_id"]
     assert item_row(driver, w, record) == before
+
+
+# Guards a neuter found without a test ------------------------------------------------------
+
+
+def test_a_title_close_to_an_items_alias_is_a_near_duplicate(driver, seeded, chat):
+    w = seeded["world_id"]
+    first = make_task(driver, w, chat, 1, title="Harbour hall reservation")
+    plant_node(
+        driver,
+        w,
+        "Alias",
+        target_type="item",
+        target_id=first,
+        phrase=FIRST_TITLE,
+        normalised_phrase=FIRST_TITLE.lower(),
+        status="canonical",
+        reversed=False,
+    )
+    ev = observation(chat, "e1", 5)
+    op = create_item("task", REWORDED_TITLE, "e1", status="open", recheck_by=RECHECK)
+    refusal = one(refused(driver, w, [op], [ev]), "near_duplicate")
+    assert first in details_text(refusal)
+
+
+def test_a_forgotten_source_is_not_citable(driver, seeded, chat):
+    w = seeded["world_id"]
+    with driver.session(database=DATABASE) as session:
+        session.run(
+            "MATCH (s:Source {id: $id, world_id: $w}) SET s.forget_state = 'forgotten'",
+            id=chat["source_id"],
+            w=w,
+        ).consume()
+    ev = observation(chat, "e1", 5)
+    op = create_item("person", "Rowan Okonkwo", "e1")
+    refusal = one(refused(driver, w, [op], [ev]), "unresolvable_locator")
+    assert refusal.rule == "source_forgotten"
+
+
+def test_one_message_cited_twice_in_one_operation_writes_one_row(driver, seeded, chat):
+    w = seeded["world_id"]
+    first = observation(chat, "e1", 5)
+    second = observation(chat, "e2", 5)
+    assert first["message_key"] == second["message_key"]
+    op = create_item("person", "Rowan Okonkwo", "e1", evidence_refs=supports("e1", "e2"))
+    item = created_id(apply(driver, w, [op], [first, second]))
+    [row] = evidence_rows(driver, w, item)
+    assert item_row(driver, w, item)["provenance_evidence_id"] == row["id"]
+
+
+def test_a_scripted_connector_stands_in_for_the_type_it_imitates(driver, seeded):
+    w = seeded["world_id"]
+    src = make_source(driver, w, "scripted", GIT_LINES, settings={"imitates": "git"})
+    op = create_item("event", "Venue list committed", "g1")
+    item = created_id(apply(driver, w, [op], [git_observation(src, "g1")]))
+    [row] = evidence_rows(driver, w, item)
+    assert row["source_type"] == "confirmed"
+    assert item_row(driver, w, item)["derived_source_type"] == "confirmed"
