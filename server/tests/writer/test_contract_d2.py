@@ -1593,3 +1593,21 @@ def test_a_scripted_connector_stands_in_for_the_type_it_imitates(driver, seeded)
     [row] = evidence_rows(driver, w, item)
     assert row["source_type"] == "confirmed"
     assert item_row(driver, w, item)["derived_source_type"] == "confirmed"
+
+
+# A value the writer cannot store is refused, never dropped ---------------------------------
+
+
+@pytest.mark.parametrize("status", ["done", "cancelled"])
+def test_an_end_time_on_a_change_that_goes_to_history_only_is_refused(driver, seeded, chat, status):
+    w = seeded["world_id"]
+    task = task_in_progress_since_minute_30(driver, w, chat)
+    said = observation(chat, "e1", 15, statement_class="report_happened")
+    commit = git_observation(make_source(driver, w, "git", GIT_LINES), "g1")
+    op = change_status(task, status, "e1", "g1", stopped_being_true=clock_at(at_minute(16)))
+    refusal = one(refused(driver, w, [op], [said, commit]), "invalid_arguments")
+    assert refusal.rule == "stopped_on_history_only"
+    assert refusal.op_id == op["op_id"]
+    assert refusal.details["field"] == "stopped_being_true"
+    assert item_row(driver, w, task)["status"] == "in progress"
+    assert item_as_of(WorldQuery(driver, w), task, at_minute(17))["status"] != status

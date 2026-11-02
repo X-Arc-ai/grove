@@ -865,6 +865,15 @@ def _change_status(run: _Run, index: int, op: dict[str, Any]) -> None:
         )
     since = item.get("status_since")
     history_only = since is not None and world_time is not None and world_time < since
+    if history_only and op.get("stopped_being_true") is not None:
+        # The as-of replay has no place for a late end time yet (an open point in the store map).
+        # A value the writer cannot store is refused, never dropped behind a saved receipt (D2).
+        raise Refused(
+            "invalid_arguments",
+            "stopped_on_history_only",
+            "a change that goes to history only cannot store stopped_being_true: send it without",
+            {"field": "stopped_being_true"},
+        )
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
 
