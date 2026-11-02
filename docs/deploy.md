@@ -45,7 +45,7 @@ transport in their place.
 | `/etc/grove/*.env` | The secret files below. | 600, root |
 | `/etc/grove/google-oauth.json` | Google's Web client file, mounted read-only into the API at `/run/grove/google-oauth.json` (`GROVE_GOOGLE_OAUTH_FILE`). | 400, uid 10001 |
 | `/var/lib/grove/deployed.sha`, `previous.sha` | The sha the box runs, and the last different sha it replaced. | root |
-| `/var/log/grove/deploy.log`, `backup.log` | A start line for each deploy that reaches its build, and a result line (`served, smoke ok`, `served, smoke FAILED` or `runs, services NOT healthy`) for each that reaches its service start. One line per dump, per restore check, per removed dump and per failed backup. | 640, root |
+| `/var/log/grove/deploy.log`, `backup.log` | A start line for each deploy that reaches its build, and a result line (`served, smoke ok`, `served, smoke FAILED` or `runs, services NOT healthy`) for each that reaches its service start. One line per dump, per removed dump, per failed backup, and per restore check that reaches a match, a mismatch or a named failure. | 640, root |
 | `/var/backups/grove/` | `grove-<UTC stamp>.dump`, its `.fingerprint.json` and its `.dump.sha256`. | 700, files 600 |
 | `/var/lib/grove-runner` | The runner's HOME. The host user `grove-runner` owns it; it has no sudo and is not in the docker group. | 700 |
 

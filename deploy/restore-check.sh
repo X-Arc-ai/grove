@@ -13,7 +13,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 dump=$1
 sidecar="${dump%.dump}.fingerprint.json"
 
-# Every failed check leaves a line in the backup log, not only on stderr.
+# A failed check of the dump leaves a line with its reason in the backup log, not only on stderr.
 fail() {
     record backup.log "restore check $(basename "$dump"): FAILED, $1"
     die "$1"
