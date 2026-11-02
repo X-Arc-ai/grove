@@ -31,12 +31,14 @@ wait_healthy neo4j "$tries" || log "neo4j is not healthy yet"
 # compose refuses to start the writers while the store reports unhealthy, and the store can turn
 # healthy after any try, so each try starts them again. The API's health check reads the store, so
 # a healthy API means the database answers.
+output=""
 for _ in $(seq "$tries"); do
-    compose start api runner >/dev/null 2>&1 || true
-    if is_healthy api; then
+    output=$(compose start api runner 2>&1) || true
+    # The runner has no health check, so it counts when it runs.
+    if is_healthy api && [ -n "$(compose ps --status running --quiet runner 2>/dev/null || true)" ]; then
         log "the store and its writers run"
         exit 0
     fi
     sleep "${GROVE_POLL_SECONDS:-2}"
 done
-die "the services are not all healthy"
+die "the services are not all healthy; compose said: $output"

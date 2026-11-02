@@ -15,6 +15,7 @@ from grove.api.app import create_app
 from grove.api.config import ApiSettings, parse_base_url, parse_build_sha
 from grove.config import ConfigError
 from grove.store.connection import open_driver
+from grove.store.probe import READ_ACCESS, DriverError, Neo4jError, store_reachable
 
 SERVER = Path(__file__).resolve().parents[2]
 SMOKE = SERVER.parent / "deploy" / "smoke.sh"
@@ -193,3 +194,70 @@ def test_the_deploy_smoke_fails_against_the_real_app_serving_another_build(serve
     )
     assert done.returncode == 1
     assert "did not answer ok for build" in done.stderr
+
+
+class _Session:
+    def __init__(self, error, record):
+        self._error, self._record = error, record
+
+    def __enter__(self):
+        if self._error is not None:
+            raise self._error
+        return self
+
+    def __exit__(self, *details):
+        return False
+
+    def run(self, _query):
+        return self
+
+    def single(self):
+        return self._record
+
+
+class _Driver:
+    def __init__(self, error=None, record=None):
+        self._error, self._record = error, record
+        self.options = {}
+        self.closed = False
+
+    def session(self, **options):
+        self.options = options
+        return _Session(self._error, self._record)
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.mark.parametrize("error", [OSError("down"), Neo4jError(), DriverError()])
+def test_the_probe_says_no_on_each_way_a_store_can_fail(error):
+    assert store_reachable(_Driver(error=error)) is False
+
+
+def test_the_probe_reads_in_read_mode_and_trusts_only_its_own_answer():
+    driver = _Driver(record={"ok": 1})
+    assert store_reachable(driver) is True
+    assert driver.options["default_access_mode"] == READ_ACCESS
+    assert store_reachable(_Driver(record={"ok": 2})) is False
+    assert store_reachable(_Driver(record=None)) is False
+
+
+def test_the_app_opens_its_driver_with_short_timeouts(monkeypatch):
+    seen = {}
+
+    def fake_open(**options):
+        seen.update(options)
+        return _Driver(record={"ok": 1})
+
+    monkeypatch.setattr("grove.api.app.open_driver", fake_open)
+    with TestClient(create_app(ApiSettings(public_base_url="https://grove.example"))):
+        pass
+    assert seen == {"connection_timeout": 5.0, "connection_acquisition_timeout": 10.0}
+
+
+def test_the_app_closes_its_driver_at_shutdown():
+    driver = _Driver(record={"ok": 1})
+    settings = ApiSettings(public_base_url="https://grove.example")
+    with TestClient(create_app(settings, driver_factory=lambda: driver)):
+        assert driver.closed is False
+    assert driver.closed is True

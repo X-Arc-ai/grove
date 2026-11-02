@@ -12,7 +12,7 @@ runs the compose project `grove` from `deploy/compose.yml`.
 | Service | What it is | Network | Runs as |
 |---|---|---|---|
 | `neo4j` | Neo4j Community, the pin of `docker-compose.dev.yml`. Heap 1 GB, page cache 512 MB, Cypher 25 by default. Data in the volume `grove-neo4j-data`. | `store` (internal) | the image's user |
-| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body, and 256 MB under `/v1/sources/` for uploads. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
+| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body. The lane that builds an upload route adds its own nginx location, with its limit and `proxy_request_buffering off`. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
 | `runner` | OpenCode 1.18.32, checked against its release checksum, with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`. A placeholder process runs until the `runner` lane lands its loop. | `runner` (internal) | uid 10002 `grove-runner` |
 
 An internal network has no route out. So the store reaches nothing but the API, and the runner
@@ -75,7 +75,8 @@ the shell that runs it.
 
 A deploy names one full sha that is on `origin/develop`. One deploy runs at a time: the operator's
 machine holds a lock, and the box holds a second one, `/run/grove/deploy.lock` in a folder only root
-can enter, that the backup and the restore check also take. From the operator's machine:
+can enter, that the backup, the restore check and `services-up.sh` also take. A deploy waits up to
+30 minutes for it. From the operator's machine:
 
 ```
 deploy/with-deploy-lock.sh ssh -n root@app.grove.x-arc.ai /opt/grove/src/deploy/deploy.sh <full sha>
@@ -146,7 +147,12 @@ run, so a script that was killed outright also leaves the services running.
 tries again each minute until it succeeds, for a host that went down in the dump window or a store
 that took long to come back. `services-up.sh` first removes a one-off container that a killed run
 left, so nothing else holds the store. compose refuses to start the API while the store reports
-unhealthy, so the script keeps starting it until the API's health check reads the store. The backup needs the
+unhealthy, so the script keeps starting both writers until the API's health check reads the store
+and the runner runs.
+
+Run a one-off container by hand only under the box lock
+(`flock /run/grove/deploy.lock docker compose --project-name grove ... run ...`): `services-up.sh`
+removes every one-off container it finds without the lock held by another run. The backup needs the
 fingerprint before the dump: if that read fails, no dump is made, and the unit fails.
 
 `deploy/restore-check.sh <dump>` refuses a dump with no checksum file or a wrong checksum, loads it

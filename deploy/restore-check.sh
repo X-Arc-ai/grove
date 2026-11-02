@@ -12,13 +12,20 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 [ $# -eq 1 ] || die "usage: restore-check.sh <dump file>"
 dump=$1
 sidecar="${dump%.dump}.fingerprint.json"
-[ -s "$dump" ] || die "no dump at $dump"
-[ -s "$sidecar" ] || die "no recorded fingerprint at $sidecar"
-[ -s "$dump.sha256" ] || die "no checksum at $dump.sha256"
+
+# Every failed check leaves a line in the backup log, not only on stderr.
+fail() {
+    record backup.log "restore check $(basename "$dump"): FAILED, $1"
+    die "$1"
+}
+
+[ -s "$dump" ] || fail "no dump at $dump"
+[ -s "$sidecar" ] || fail "no recorded fingerprint at $sidecar"
+[ -s "$dump.sha256" ] || fail "no checksum at $dump.sha256"
 (cd "$(dirname "$dump")" && sha256sum --check --quiet "$(basename "$dump").sha256") ||
-    die "$dump does not match its checksum"
+    fail "$dump does not match its checksum"
 expected=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["fingerprint"])' "$sidecar")
-[[ $expected =~ ^[0-9a-f]{64}$ ]] || die "the recorded fingerprint is not a sha256"
+[[ $expected =~ ^[0-9a-f]{64}$ ]] || fail "the recorded fingerprint is not a sha256"
 
 # The backup holds the box lock already; a check run by hand takes it, so two never meet.
 [ "${GROVE_LOCK_HELD:-}" = 1 ] || take_lock "${GROVE_BACKUP_WAIT_SECONDS:-1800}"
@@ -70,7 +77,7 @@ for _ in $(seq "${GROVE_RESTORE_TRIES:-90}"); do
     fi
     sleep "${GROVE_POLL_SECONDS:-2}"
 done
-[ "$ready" = 1 ] || die "the scratch store did not start"
+[ "$ready" = 1 ] || fail "the scratch store did not start"
 
 set +e
 result=$(docker run --rm --network "$tag" --env "GROVE_NEO4J_URI=bolt://$tag:7687" \
@@ -84,5 +91,5 @@ case $status in
         record backup.log "restore check $(basename "$dump"): MISMATCH, the loaded store has another fingerprint: $result"
         exit 3
         ;;
-    *) die "restore check $(basename "$dump"): the fingerprint read failed (exit $status)" ;;
+    *) fail "the fingerprint read failed (exit $status)" ;;
 esac

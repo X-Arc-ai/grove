@@ -40,7 +40,8 @@ if [ "$ref" != develop ] && [ "${GROVE_ALLOW_BRANCH_DEPLOY:-}" != 1 ]; then
     die "only develop deploys; set GROVE_ALLOW_BRANCH_DEPLOY=1 to try $ref on the box"
 fi
 
-take_lock "${GROVE_DEPLOY_WAIT_SECONDS:-600}"
+# Longer than services-up.sh can hold the lock, so a fix or a roll back gets through.
+take_lock "${GROVE_DEPLOY_WAIT_SECONDS:-1800}"
 
 git -C "$GROVE_SRC" fetch --quiet --prune origin "+refs/heads/$ref:refs/remotes/origin/$ref"
 git -C "$GROVE_SRC" merge-base --is-ancestor "$sha" "origin/$ref" ||
@@ -60,9 +61,11 @@ if [ "$status" != 0 ]; then
         git -C "$GROVE_SRC" checkout --quiet --detach "$served"
         # apply.sh may have installed the failed commit's sites and units; the served commit's go
         # back, so no unit names a script this checkout does not hold.
-        "$GROVE_SRC/deploy/install-host.sh" </dev/null ||
-            log "could not reinstall the host files of $served"
-        log "the deploy of $sha failed before it served; the checkout and host files are back at $served"
+        if "$GROVE_SRC/deploy/install-host.sh" </dev/null; then
+            log "the deploy of $sha failed before it served; the checkout and host files are back at $served"
+        else
+            log "the deploy of $sha failed before it served; the checkout is back at $served, but its host files did not install: run deploy/install-host.sh"
+        fi
     fi
 fi
 exit "$status"

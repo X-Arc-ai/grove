@@ -89,6 +89,9 @@ finish() {
     exit "$status"
 }
 trap finish EXIT
+# bash runs these only after the command below ends, so the lock stays while it runs, also when a
+# closed terminal sends HUP. With no trap, a HUP would end this shell and free the lock at once.
 trap 'exit 130' INT TERM
+trap 'exit 129' HUP
 
 "$@"

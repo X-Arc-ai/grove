@@ -69,6 +69,7 @@ if args[0] == "compose":
         refused = int(counter.read_text()) if counter.exists() else 0
         if refused < int(os.environ["FAKE_START_REFUSALS"]):
             counter.write_text(str(refused + 1))
+            print(os.environ.get("FAKE_START_MESSAGE", "refused"), file=sys.stderr)
             sys.exit(1)
         Path(os.environ["FAKE_STATE"], "api_started").write_text("yes")
     # docker compose run keeps stdin open, as the real one does with no --interactive=false.
@@ -78,7 +79,8 @@ if args[0] == "compose":
         print(os.environ["FAKE_NEO4J_IMAGE"])
         print("grove-api:" + os.environ.get("GROVE_BUILD_SHA", "unset"))
     elif command == "ps":
-        print("container-" + rest[-1])
+        if rest[-1] != os.environ.get("FAKE_NOT_RUNNING"):
+            print("container-" + rest[-1])
     elif command == "run" and "grove.store.dump_fingerprint" in rest:
         fingerprint("live_fingerprints", os.environ.get("FAKE_FP", "a" * 64))
     elif command == "run" and "neo4j-admin" in rest and "dump" in rest:
