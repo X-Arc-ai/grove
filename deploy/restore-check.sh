@@ -26,7 +26,8 @@ checker="grove-api:$(deployed_sha)"
 tag="grove-restorecheck-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 
 cleanup() {
-    docker rm --force "$tag" >/dev/null 2>&1 || true
+    # --volumes: the image declares /logs, so the scratch server also made an anonymous volume.
+    docker rm --force --volumes "$tag" >/dev/null 2>&1 || true
     docker volume rm "$tag" >/dev/null 2>&1 || true
     docker network rm "$tag" >/dev/null 2>&1 || true
 }

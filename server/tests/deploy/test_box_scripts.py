@@ -228,7 +228,7 @@ def test_a_backup_stops_the_writers_fingerprints_dumps_and_starts_them_again(box
         "neo4j-admin database load neo4j --from-stdin",
         "--env NEO4J_AUTH=none",
         f"python -m grove.store.dump_fingerprint --expect {FP}",
-        "docker rm --force grove-restorecheck-",
+        "docker rm --force --volumes grove-restorecheck-",
         "docker volume rm grove-restorecheck-",
         "docker network rm grove-restorecheck-",
     ]
@@ -316,7 +316,7 @@ def test_a_restore_check_with_another_fingerprint_fails_and_cleans_up(box):
     done = box.run("restore-check.sh", dump, FAKE_RESTORE_FP="c" * 64)
     assert done.returncode == 3
     assert "MISMATCH" in box.log_text("backup.log")
-    for step in ("docker rm --force", "docker volume rm", "docker network rm"):
+    for step in ("docker rm --force --volumes", "docker volume rm", "docker network rm"):
         box.index(step)
 
 
