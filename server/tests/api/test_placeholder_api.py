@@ -7,6 +7,7 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -150,7 +151,8 @@ def served(driver, tmp_path):
     base = f"http://127.0.0.1:{port}"
     pages = tmp_path / "dist"
     pages.mkdir()
-    (pages / "index.html").write_text("<!doctype html><title>Grove</title>")
+    for name in ("home.html", "index.html", "privacy.html"):
+        (pages / name).write_text(f"<!doctype html><title>{name}</title>")
     env = {
         **os.environ,
         "GROVE_PUBLIC_BASE_URL": base,
@@ -187,10 +189,18 @@ def test_the_deploy_smoke_passes_against_the_real_app(served):
     assert done.stdout.splitlines() == [
         f"ok healthz build={SHA}",
         "ok / page",
+        "ok /signin page",
+        "ok /privacy page",
         "ok /.well-known/oauth-protected-resource",
         "ok /.well-known/oauth-protected-resource/mcp",
         "ok /mcp 401",
     ]
+
+
+def test_the_real_app_answers_the_home_page_at_root_with_no_cookie(served):
+    response = httpx.get(f"{served}/", timeout=10)
+    assert response.status_code == 200
+    assert "<title>home.html</title>" in response.text
 
 
 def test_the_deploy_smoke_fails_against_the_real_app_serving_another_build(served):

@@ -139,6 +139,8 @@ HISTORY_VALUES = 12 + 11 + SEEDED_ROWS + 1
 
 # Columns the spec leaves empty when a row is born. Every other column must hold a value.
 EMPTY_AT_BIRTH = {
+    # Signin writes the own item after the seed (S40), so a new world row holds no value.
+    "worlds": {"self_item_id"},
     "kinds": {"worked_example", "nearest_neighbours_at_mint", "first_used", "last_used"},
     "meanings": {
         "worked_example",
@@ -362,7 +364,8 @@ def test_every_meaning_column_holds_a_value_unless_the_spec_leaves_it_empty(driv
 def test_the_world_row_holds_every_column(driver, seeded):
     world, _ = seeded
     row = world_row(driver, world)
-    assert set(row) == {prop for column in table("worlds").columns for prop in column.props}
+    columns = {prop for column in table("worlds").columns for prop in column.props}
+    assert set(row) == columns - EMPTY_AT_BIRTH["worlds"]
     assert row["id"] == world
     assert row["owner_user_id"] == OWNER
     assert row["seed_version"] == load_starter_set()["seed_version"]
