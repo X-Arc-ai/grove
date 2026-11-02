@@ -31,6 +31,8 @@
 .gp-text:hover { color:var(--text) }
 .gp-icon { width:26px; height:26px; padding:0; border:0; font:300 20px/1 var(--gp-font); color:var(--text-secondary) }
 .gp-footnote { margin-top:24px; color:var(--text-secondary); font:400 9px/1.7 var(--gp-font) }
+/* Outside #grove-product, whose stacking level the loading cover passes. */
+#gp-session-note { position:fixed; top:64px; left:50%; transform:translateX(-50%); z-index:101; margin:0; padding:4px 10px; border-radius:6px; background:var(--bg); color:var(--gp-danger); font:400 10px/1.7 var(--gp-font); text-align:center }
 .gp-welcome { width:440px; padding:48px 32px 32px; text-align:center }
 .gp-welcome-mark { width:52px; height:52px; border:1px solid var(--ring-person); border-radius:50%; display:grid; place-items:center; margin:0 auto 32px }
 .gp-welcome-mark span { display:block; width:10px; height:10px; border-radius:50%; background:#d4a52a }

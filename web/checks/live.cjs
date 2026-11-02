@@ -32,9 +32,10 @@ function makeServer(world){
     calls.push({path:u.pathname,search:u.search,method,init,body});
     const ids=new Set(world.nodes.map(n=>n.id));
     if(u.pathname==='/v1/views/session'&&world.sessionThrows)return Promise.reject(new TypeError('Failed to fetch'));
-    if(u.pathname==='/v1/views/session')return world.session?reply(200,{signed_in:true,self_item_id:world.selfId||null}):typed(401,'unauthenticated','Sign in to continue');
+    if(u.pathname==='/v1/views/session'&&world.sessionStatus)return held(world.holdSession,typed(world.sessionStatus,'unavailable','Try again later'));
+    if(u.pathname==='/v1/views/session')return held(world.holdSession,world.session?reply(200,{signed_in:true,self_item_id:world.selfId||null}):typed(401,'unauthenticated','Sign in to continue'));
     if(u.pathname==='/v1/views/graph'){
-      if(world.graphStatus)return typed(world.graphStatus,'unauthenticated','Sign in to continue');
+      if(world.graphStatus)return typed(world.graphStatus,world.graphStatus===401?'unauthenticated':(world.graphCode||'unavailable'),'Sign in to continue');
       const nodes=world.nodes.map(n=>({data:Object.assign({},n,world.positions[n.id]||{},n.id===world.selfId?{self:true}:{})}));
       return held(world.holdGraph,reply(200,{elements:{nodes,edges:world.edges.filter(e=>ids.has(e.source)&&ids.has(e.target)).map(e=>({data:e}))},stats:{total_nodes:nodes.length},time:{min:null,max:null},generated_at:'2026-11-02T00:00:00Z',as_of:null,known_as_of:null,self_item_id:world.selfId||null}));
     }
@@ -69,7 +70,7 @@ function makeServer(world){
     }
     return typed(404,'not_found','No such path');
   }
-  return {fetch,calls,world,typed};
+  return {fetch,calls,world,typed,reply};
 }
 
 // ---------- a browser-shaped sandbox ----------
@@ -84,15 +85,17 @@ function makeElement(tag){
 }
 function chainForce(){const f=function(){};['strength','distanceMax','radius','iterations','distance','x','y','id','links'].forEach(k=>{f[k]=function(){return f;};});return f;}
 function makeGraph(){
-  let data={nodes:[],links:[]},zoom=1;const forces={link:chainForce()},kept={};
+  let data={nodes:[],links:[]},zoom=1;const forces={link:chainForce()},kept={},calls=[];
   const keep=name=>function(fn){if(!arguments.length)return kept[name];kept[name]=fn;return proxy;};
-  const g={nodeCanvasObject:keep('nodeCanvasObject'),onNodeHover:keep('onNodeHover'),graphData(d){if(!arguments.length)return data;data=d;return proxy;},d3Force(name,f){if(arguments.length<2)return forces[name];forces[name]=f;return proxy;},
-    zoom(v){if(!arguments.length)return zoom;zoom=v;return proxy;},centerAt(){return arguments.length?proxy:{x:0,y:0};},graph2ScreenCoords:(x,y)=>({x,y}),screen2GraphCoords:(x,y)=>({x,y})};
-  const proxy=new Proxy(g,{get:(t,k)=>(k in t?t[k]:k==='then'||typeof k!=='string'?undefined:function(){return proxy;})});
+  const g={calls,nodeCanvasObject:keep('nodeCanvasObject'),onNodeHover:keep('onNodeHover'),onLinkHover:keep('onLinkHover'),graphData(d){if(!arguments.length)return data;data=d;calls.push('graphData');return proxy;},d3Force(name,f){if(arguments.length<2)return forces[name];forces[name]=f;return proxy;},
+    zoom(v){if(!arguments.length)return zoom;zoom=v;calls.push('zoom');return proxy;},centerAt(x,y){if(!arguments.length)return {x:0,y:0};calls.push('centerAt');g.center={x,y};return proxy;},graph2ScreenCoords:(x,y)=>({x,y}),screen2GraphCoords:(x,y)=>({x,y})};
+  const proxy=new Proxy(g,{get:(t,k)=>(k in t?t[k]:k==='then'||typeof k!=='string'?undefined:function(){calls.push(k);return proxy;})});
   return proxy;
 }
+// The check's own handle on what the map keeps in its closure, which the page gives no way to read.
+const MAP_STATE="  window.__mapState=function(){return {rawNodes,rawEdges,byId,fgNodes,fgLinks,fgNodeById,neighborsOf,focusedNode,hoverNode,hoverLink,hopDist,livePlaced,liveSaving,layoutCache,stableFrame,_evoSig,schemaByType,schemaAsked,hiddenTypes,manualCamera};};\n";
 function page(server,store,files,hook,size,prepare){
-  const elements={},winListeners={},errors=[],warnings=[],assigned=[],intervals=[],env={tokens:{}};
+  const elements={},winListeners={},errors=[],warnings=[],assigned=[],intervals=[],timeouts=[],env={tokens:{},search:'',globals:{}};
   // As index.html starts them: the search and the selection pill are closed, and the box is empty.
   for(const id of ['search-overlay','selection-pill']){elements[id]=makeElement('div');elements[id].setAttribute('hidden','');}
   elements['search-input']=Object.assign(makeElement('input'),{value:''});
@@ -100,19 +103,20 @@ function page(server,store,files,hook,size,prepare){
   const document={hidden:false,body:makeElement('body'),documentElement:makeElement('html'),createElement:makeElement,getElementById:id=>elements[id]||(elements[id]=makeElement('div')),querySelector:()=>null,querySelectorAll:()=>[],addEventListener(){},removeEventListener(){}};
   const sandbox={URL,URLSearchParams,Math,JSON,Date,Promise,MutationObserver:class{observe(){}},
     console:{log(){},info(){},warn:(...a)=>warnings.push(a),error:(...a)=>errors.push(a)},
-    setTimeout:()=>0,clearTimeout(){},setInterval:(fn,ms)=>intervals.push({fn,ms}),clearInterval(){},requestAnimationFrame:()=>0,cancelAnimationFrame(){},
+    setTimeout:(fn,ms)=>{timeouts.push({fn,ms});return 0;},clearTimeout(){},setInterval:(fn,ms)=>intervals.push({fn,ms}),clearInterval(){},requestAnimationFrame:()=>0,cancelAnimationFrame(){},
     performance:{now:()=>1000},innerWidth:(size||[1440,900])[0],innerHeight:(size||[1440,900])[1],devicePixelRatio:1,document,navigator:{},
     matchMedia:()=>({matches:false,addEventListener(){},removeEventListener(){}}),getComputedStyle:()=>({getPropertyValue:name=>env.tokens[name]||''}),
     localStorage:{getItem:k=>(k in store?store[k]:null),setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}},
-    location:{href:'http://grove.test/',search:'',pathname:'/',assign:u=>assigned.push(u)},
+    location:{href:'http://grove.test/',search:env.search,pathname:'/',assign:u=>assigned.push(u)},
     fetch:server.fetch,ForceGraph:()=>()=>makeGraph(),
     d3:{forceManyBody:chainForce,forceCollide:chainForce,forceX:chainForce,forceY:chainForce},
     CustomEvent:class{constructor(type,init){this.type=type;this.detail=init&&init.detail;}},
     addEventListener:(k,fn)=>{(winListeners[k]||(winListeners[k]=[])).push(fn);},
     dispatchEvent:e=>{(winListeners[e.type]||[]).forEach(fn=>fn(e));return true;}};
+  Object.assign(sandbox,env.globals);
   sandbox.window=sandbox;vm.createContext(sandbox);
-  for(const f of files){let source=read(f);if(f==='product.js'&&hook)source=source.replace('  render(true);maybeTour();',hook);vm.runInContext(source,sandbox,{filename:f});}
-  return {sandbox,elements,errors,warnings,assigned,intervals};
+  for(const f of files){let source=read(f);if(f==='product.js'&&hook)source=source.replace('  render(true);maybeTour();',hook);if(f==='native-app.js')source=source.replace('  window.reloadGrove = function',MAP_STATE+'  window.reloadGrove = function');vm.runInContext(source,sandbox,{filename:f});}
+  return {sandbox,elements,errors,warnings,assigned,intervals,timeouts};
 }
 const GRAPH_FILES=['live.js','layout-keep.js','simulation.js','native-app.js'];
 const positionsCalls=server=>server.calls.filter(c=>c.path==='/v1/views/positions');
@@ -253,7 +257,7 @@ function legendRows(elements){
 
   // 6. Sign-in in live mode (product.js): session check, Google, Apple, email code, logout.
   const AUTH_FILES=['live.js','simulation.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'];
-  const HOOK='  window.productTest={ui,handle,chooseSignIn,startEmail,verifyEmail,render,modalRoot,html:()=>modalRoot.innerHTML};render(true);';
+  const HOOK='  window.productTest={ui,handle,chooseSignIn,startEmail,verifyEmail,render,modalRoot,tourRoot,sessionNote,html:()=>modalRoot.innerHTML};render(true);';
   {
     const w=liveWorld();w.session=false;const sv=makeServer(w),st={},pg=page(sv,st,AUTH_FILES,HOOK),p=pg.sandbox.productTest,A=pg.sandbox.GroveSimulation;
     assert.equal(p.ui.authStage,'checking');assert(p.html().includes('gp-auth-loading'),'The sign-in card waits for the session');
@@ -349,20 +353,33 @@ function legendRows(elements){
     assert(t.pg.elements['legend-list'].innerHTML.includes('legend-row'),label+': the legend shows');
     assert(/[1-9]\d* nodes/.test(t.pg.elements.stats.innerHTML),label+': the counts show');
   }
-  function assertCleared(t,label){
+  // Nothing of the session stays: not in the map's memory, not on screen, not in local storage.
+  const MAP_EMPTY={rawNodes:[],rawEdges:[],byId:{},fgNodes:[],fgLinks:[],fgNodeById:{},neighborsOf:{},focusedNode:null,hoverNode:null,hoverLink:null,hopDist:{},livePlaced:{},liveSaving:{},layoutCache:null,stableFrame:null,_evoSig:null,schemaByType:{},schemaAsked:false,hiddenTypes:{},manualCamera:false};
+  function assertEmptied(t,label){
     assert.equal(t.S.getState().auth,null,label+': signed out here');
-    assert.equal(t.p.ui.authStage,'signin',label+': the sign-in card shows');assert(t.p.html().includes('Continue with Google'),label+': sign-in card markup');
-    assert.equal(t.p.ui.panel,null,label+': panels are closed');
-    assert.equal(t.V.nodes().length,0,label+': no node in memory');assert.equal(t.V.graph().graphData().nodes.length,0,label+': no node on the map');
+    assert.equal(JSON.parse(t.st['grove-minimal-codex-v3']).auth,null,label+': the local sign-in leaves local storage');
+    assert.equal(t.V.nodes().length,0,label+': no node in memory');assert.equal(t.V.graph()?t.V.graph().graphData().nodes.length:0,0,label+': no node on the map');
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(t.pg.sandbox.__mapState())),MAP_EMPTY,label+': the map keeps nothing in memory');
     assert.equal(t.pg.elements['legend-list'].innerHTML,'',label+': the legend is empty');
-    assert(/^<span>0 nodes<\/span>/.test(t.pg.elements.stats.innerHTML),label+': the counts are zero');
-    assert.equal(t.pg.elements['detail-body'].innerHTML,'',label+': the node panel is empty');assert(!t.pg.elements.detail.classList.contains('open'),label+': the node panel is closed');
-    assert.equal(t.S.getState().currentNodeCount,0,label+': the last payload is gone');
+    assert.equal(t.pg.elements.stats.innerHTML,'<span>0 nodes</span> <span class="gp-stat-divider">·</span> <span>0 connections</span>',label+': the counts are zero');
+    assert.equal(t.pg.elements['detail-body'].innerHTML,'',label+': the node panel is empty');assert(!t.pg.elements.detail.classList.contains('open'),label+': the node panel is closed');assert.equal(t.pg.elements.detail.getAttribute('aria-hidden'),'true',label+': the node panel is out of reach');
+    assert.equal(t.S.getState().currentNodeCount,0,label+': the last payload is gone');assert.equal(t.S.getState().currentEdgeCount,0,label+': the last payload holds no link');
     const E=t.pg.elements;
     assert(E['search-overlay'].hasAttribute('hidden'),label+': the search is closed');assert.equal((E['search-results']||{innerHTML:''}).innerHTML,'',label+': the search shows no result');assert.equal(E['search-input'].value,'',label+': the search box is empty');
     assert(E['selection-pill'].hasAttribute('hidden'),label+': the selection pill is closed');assert.equal(E['selection-pill'].innerHTML,'',label+': the selection pill says nothing');
     assert(!(HIDDEN_KEY in t.st),label+': the hidden kinds leave local storage');
+    assert.equal(t.p.tourRoot.innerHTML,'',label+': the tour root is empty');
+    assert(t.pg.elements.loading.classList.contains('hidden'),label+': the loading cover does not cover the card');
     const text=shownText(t);assert(!t.w.nodes.some(n=>n.label&&n.label.length>=6&&text.includes(n.label)),label+': no title stays on screen');
+  }
+  function assertCleared(t,label){
+    assertEmptied(t,label);
+    assert.equal(t.p.ui.authStage,'signin',label+': the sign-in card shows');assert(t.p.html().includes('Continue with Google'),label+': sign-in card markup');
+    const ui=t.p.ui;
+    assert.deepStrictEqual([ui.panel,ui.guide,ui.confirm,ui.host],[null,null,null,null],label+': no panel, guide, confirmation or host step stays');
+    assert.equal(ui.tour,0,label+': the tour is over');
+    assert.deepStrictEqual([ui.error,ui.email,ui.code],['','',''],label+': no error, address or code stays on the card');
+    assert.equal(t.p.sessionNote.hidden,true,label+': the offline note is gone');assert.equal(t.p.sessionNote.textContent,'',label+': the offline note says nothing');
   }
   const goneNow=w=>{w.session=false;w.graphStatus=401;};
   {
@@ -763,6 +780,277 @@ function legendRows(elements){
     assert.deepStrictEqual(pg.errors,[],'workers on: no error');
   }
 
+  // 6w. The session check fails at load, with anything but a 401. Only a 401 ends the local sign-in.
+  const OFFLINE='Grove could not be reached. Try again in a moment.';
+  const cardAlerts=form=>form.children.filter(c=>c.getAttribute('role')==='alert').map(c=>c.textContent);
+  // A page whose sign-in card can take the error line, as it does in the browser.
+  function offlinePage(w,store){
+    const sv=makeServer(w),st=store||{},pg=page(sv,st,ALL_FILES,HOOK),p=pg.sandbox.productTest,form=makeElement('div');
+    p.modalRoot.querySelector=sel=>(sel==='.gp-auth-form'?form:null);
+    return {w,sv,st,pg,p,form,S:pg.sandbox.GroveSimulation,V:pg.sandbox.GroveView};
+  }
+  {
+    // A good check shows no note. The note is an alert of its own, outside #grove-product, whose
+    // stacking level the loading cover passes.
+    const t=await sessionPage(liveWorld()),note=t.p.sessionNote;assertSignedIn(t,'a good check');
+    assert.equal(note.hidden,true,'A good check shows no note');assert.equal(note.textContent,'','A good check puts no text in the note');
+    assert.equal(note.id,'gp-session-note');assert.equal(note.getAttribute('role'),'alert');
+    assert(t.pg.sandbox.document.body.children.includes(note),'The note sits on the body');
+    assert(/#gp-session-note\s*\{[^}]*z-index:101/.test(read('product.css')),'The note stands over the loading cover');
+  }
+  for(const [label,fail] of [['a 503',{sessionStatus:503}],['a 500',{sessionStatus:500}],['a failed request',{sessionThrows:true}]]){
+    // Signed in here: the local state stays, the map shows, and the note says what failed.
+    const w=liveWorld();Object.assign(w,fail);
+    const t=await sessionPage(w);
+    assertSignedIn(t,label+' at load, signed in here');
+    assert.equal(t.S.getState().auth.email,'sam.reyes@example.org',label+': the local sign-in stays');assert.equal(JSON.parse(t.st['grove-minimal-codex-v3']).auth.email,'sam.reyes@example.org',label+': local storage keeps the sign-in');
+    assert.equal(t.S.getState().name,'Sam',label+': the local name stays');
+    assert.equal(t.p.sessionNote.hidden,false,label+': the note shows');assert.equal(t.p.sessionNote.textContent,OFFLINE,label+': the note holds the offline text');
+    assert.equal(t.heard(),0,label+': nothing ended the session');assert.deepStrictEqual(t.pg.errors,[],label+': no error');
+    // A later 401 is an answer about the session: it ends it, and the note goes with it.
+    goneNow(w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,label+', then a 401');
+  }
+  for(const [label,fail] of [['a 503',{sessionStatus:503}],['a failed request',{sessionThrows:true}]]){
+    // Signed out here, while the graph read of a still valid cookie answers: the card says what
+    // failed, and that graph stays neither behind the card nor in memory.
+    const w=liveWorld();Object.assign(w,fail);
+    const st=signedOutStore();st[HIDDEN_KEY]='{"recipe":1}';
+    const t=offlinePage(w,st);await settle();
+    assertEmptied(t,label+' at load, signed out here');
+    assert.equal(t.p.ui.authStage,'signin',label+': the card leaves the waiting step');assert(t.p.html().includes('Continue with Google'),label+': the sign-in options show');
+    assert.deepStrictEqual(cardAlerts(t.form),[OFFLINE],label+': the card shows the offline text');
+    assert.equal(t.p.sessionNote.hidden,true,label+': the card holds the text, not the note');
+    assert.equal(t.S.getState().name,'Sam',label+': the local state stays');assert.deepStrictEqual(t.pg.errors,[],label+': no error');
+    // The next sign-in on that card draws its own map.
+    Object.assign(w,{sessionStatus:0,sessionThrows:false});await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');await settle();
+    assert.equal(t.S.getState().auth.email,'robin.vale@example.org');assert(t.V.nodes().length>0,label+': the next sign-in draws the map');
+  }
+  {
+    // The graph read is still out when the check fails: its late answer draws nothing, and the
+    // loading cover does not stay over the card.
+    const w=liveWorld();Object.assign(w,{sessionStatus:503,holdGraph:[]});
+    const t=offlinePage(w,signedOutStore());await settle();
+    const late=w.holdGraph;w.holdGraph=null;assert.equal(late.length,1,'The graph read is out');
+    assert.deepStrictEqual(cardAlerts(t.form),[OFFLINE]);
+    late[0]();await settle();
+    assertEmptied(t,'a late graph answer after the failed check');assert.deepStrictEqual(t.pg.errors,[],'late graph: no error');
+  }
+  {
+    // All of Grove is down, signed out here: the card shows, not the failure text of the map.
+    const w=liveWorld();Object.assign(w,{sessionStatus:503,graphStatus:503});
+    const t=offlinePage(w,signedOutStore());await settle();
+    const cover=t.pg.elements.loading;
+    assert(cover.classList.contains('hidden'),'The loading cover steps aside for the card');assert(!/Unable to open/.test(cover.textContent),'No map failure text over the card');
+    assert.deepStrictEqual(cardAlerts(t.form),[OFFLINE],'The card shows the offline text');assert.equal(t.p.ui.authStage,'signin');
+    assert.equal(t.pg.errors.length,1,'The failed graph read is reported');
+    // Signed in here: the map cannot draw, so its own failure text shows, with the note over it.
+    const w2=liveWorld();Object.assign(w2,{sessionStatus:503,graphStatus:503});
+    const t2=await sessionPage(w2);const cover2=t2.pg.elements.loading;
+    assert(!cover2.classList.contains('hidden'),'The cover stays when the map cannot draw');assert(/Unable to open/.test(cover2.textContent),'The map says it failed');
+    assert.equal(t2.p.sessionNote.textContent,OFFLINE,'The note says what failed');assert.equal(t2.S.getState().auth.email,'sam.reyes@example.org');
+  }
+  {
+    // A check still out when a 401 of another call ended the session: the person has moved on to
+    // the code step, and its late failure leaves that step and that address alone.
+    const w=liveWorld();w.holdSession=[];
+    const t=await sessionPage(w);
+    const late=w.holdSession;w.holdSession=null;assert.equal(late.length,1,'The session check is out');
+    goneNow(w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'a check out at the 401');
+    await t.p.startEmail('robin.vale@example.org');assert.equal(t.p.ui.authStage,'code');
+    const calls=t.V.graph().calls.length;
+    late[0](t.sv.typed(503,'unavailable','Try again later'));await settle();
+    assert.equal(t.p.ui.authStage,'code','The late failure keeps the code step');assert.equal(t.p.ui.email,'robin.vale@example.org');assert.equal(t.p.ui.error,'','The late failure says nothing on the card');
+    assert.equal(t.V.graph().calls.length,calls,'The late failure clears nothing');
+  }
+
+  // 6x. The session ends with something of the first person open: each is gone from the page.
+  {
+    // The tour, with a store title in its spotlight.
+    const w=liveWorld();w.holdGraph=[];
+    const st=JSON.parse(signedInStore()['grove-minimal-codex-v3']);st.tourComplete=false;
+    const t=await sessionPage(w,{'grove-minimal-codex-v3':JSON.stringify(st)}),tour=t.p.tourRoot,parts={};
+    const part=sel=>{const el=parts[sel]||(parts[sel]=makeElement('div'));el.querySelector=()=>makeElement('button');return el;};
+    tour.querySelector=sel=>(tour.innerHTML?part(sel):null);
+    const held=w.holdGraph;w.holdGraph=null;held[0]();await settle();
+    assert.equal(t.p.ui.tour,1,'The tour is open');assert(tour.innerHTML.includes('gp-tour-card')&&tour.innerHTML.includes('gp-node-spotlight'),'The tour card and spotlight show');
+    assert.equal(parts['.gp-node-spotlight'].getAttribute('aria-label'),'Open highlighted '+w.nodes[0].label+' node','The spotlight names a store title');
+    goneNow(w);await t.pg.sandbox.reloadGrove();await settle();
+    assertCleared(t,'the tour open at the 401');
+    assert.equal(tour.querySelector('.gp-tour-card'),null,'The tour card is gone');assert.equal(tour.querySelector('.gp-node-spotlight'),null,'The spotlight is gone');
+    assert(!t.w.nodes.some(n=>n.label&&tour.innerHTML.includes(n.label)),'No title stays in the tour root');
+    assert(!t.pg.sandbox.document.body.classList.contains('gp-tour-open'),'The page is out of the tour');
+    assert.equal(t.S.getState().tourComplete,true,'The tour counts as over');
+  }
+  {
+    // Sign in by email in the page, with a code in the form: neither stays for the next person.
+    const w=liveWorld();Object.assign(w,{session:false,graphStatus:401});
+    const t=await sessionPage(w,signedOutStore());w.graphStatus=0;
+    await t.p.startEmail('sam.reyes@example.org');await t.p.verifyEmail('246810');await settle();
+    assertSignedIn(t,'email, signed in');assert.equal(t.p.ui.email,'sam.reyes@example.org');
+    t.p.ui.code='246810';   // the code form's oninput keeps what is typed here
+    w.session=false;w.graphStatus=401;await t.pg.sandbox.reloadGrove();await settle();
+    assertCleared(t,'email, the session ended');
+    assert.equal(t.p.ui.email,'','The address is gone');assert.equal(t.p.ui.code,'','The code is gone');
+    assert(!t.p.html().includes('sam.reyes@example.org'),'The form holds no address');assert(/name="email"[^>]*value=""/.test(t.p.html()),'The email field is empty');
+  }
+  {
+    // A confirmation open: the card shows no confirmation dialog.
+    const t=await sessionPage(liveWorld());
+    t.p.ui.panel='profile';t.p.ui.settingsTab='sources';t.p.ui.confirm={type:'file',id:'file-1'};t.p.render(true);
+    assert(t.p.html().includes('gp-confirm-dialog'),'The confirmation shows');
+    goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();
+    assertCleared(t,'a confirmation open at the 401');
+    assert.equal(t.p.ui.confirm,null,'The confirmation is closed');assert(!/gp-confirm/.test(t.p.html()),'The card shows no confirmation dialog');
+  }
+  {
+    // A host step and an error of the first person: neither reaches the next person.
+    const t=await sessionPage(liveWorld());
+    t.p.ui.host='claude';t.p.ui.error='That source could not be added. Please try again.';t.p.render(true);
+    goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();
+    assertCleared(t,'a host step and an error at the 401');
+    assert.equal(t.p.ui.host,null,'The host step is gone');assert.equal(t.p.ui.error,'','The error is gone');
+  }
+  {
+    // A guide open: the card takes the screen and the guide stays closed for the next person.
+    const t=await sessionPage(liveWorld());
+    t.p.ui.guide='chatgpt';t.p.render(true);
+    goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();
+    assertCleared(t,'a guide open at the 401');assert.equal(t.p.ui.guide,null,'The guide is closed');
+  }
+  {
+    // A link under the pointer: that link stays out of memory.
+    const t=await sessionPage(liveWorld());
+    t.V.graph().onLinkHover()(t.V.graph().graphData().links[0]);
+    assert(t.pg.sandbox.__mapState().hoverLink,'A link is under the pointer');
+    goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'a link under the pointer');
+  }
+  {
+    // The first person moves the camera, a 401, the next person signs in: the next map frames itself.
+    let down=null;
+    const t=await sessionPage(liveWorld(),null,el=>{el.canvas=makeElement('main');el.canvas.addEventListener=(k,fn)=>{if(k==='pointerdown')down=fn;};});
+    assert(down,'The canvas listens for the pointer');down();
+    const moved=t.V.graph().calls.length;await t.pg.sandbox.reloadGrove();await settle();
+    assert(!t.V.graph().calls.slice(moved).includes('centerAt'),'The first person keeps the camera they moved');
+    goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'the camera moved');
+    Object.assign(t.w,secondWorld(),{session:false,graphStatus:0});
+    const before=t.V.graph().calls.length;
+    await signInAgain(t,'the camera, the next person');
+    const G=t.V.graph(),after=G.calls.slice(before);
+    assert(after.includes('centerAt')&&after.includes('zoom'),'The next map frames itself');
+    const xs=t.V.nodes().map(n=>n.x);assert(Math.abs(G.center.x-(Math.min(...xs)+Math.max(...xs))/2)<1,'The frame is centred on the next map');
+  }
+  {
+    // A poll ran before the end: its graph signature leaves with the session.
+    const t=await sessionPage(liveWorld()),poll=t.pg.intervals.find(i=>i.ms===180000);
+    poll.fn();await settle();assert(t.pg.sandbox.__mapState()._evoSig,'A poll keeps the signature of the graph');
+    goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'a poll ran');
+  }
+  {
+    // Any answer that says the session is over ends it: a plain 401, and a typed error of that code.
+    const plain=await sessionPage(liveWorld()),w=plain.w;w.holdGraph=[];plain.pg.sandbox.reloadGrove();await settle();
+    const out=w.holdGraph;w.holdGraph=null;out[0](plain.sv.reply(401));await settle();
+    assertCleared(plain,'a 401 with no typed body');assert.equal(plain.heard(),1);
+    const typed=await sessionPage(liveWorld());Object.assign(typed.w,{session:false,graphStatus:403,graphCode:'unauthenticated'});
+    await typed.pg.sandbox.reloadGrove();await settle();assertCleared(typed,'the typed code on another status');assert.equal(typed.heard(),1);
+    const other=await sessionPage(liveWorld());other.w.graphStatus=503;
+    await other.pg.sandbox.reloadGrove();await settle();assertSignedIn(other,'another failure');assert.equal(other.heard(),0,'Another failure ends nothing');
+    // A failed sign-in does not count as a sign-in: a call sent before it still speaks for this page.
+    const armed=await sessionPage(liveWorld());armed.w.code='111111';armed.w.holdGraph=[];armed.pg.sandbox.reloadGrove();await settle();
+    const before=armed.w.holdGraph;armed.w.holdGraph=null;
+    const answer=await armed.pg.sandbox.GroveLive.emailVerify('sam.reyes@example.org','000000');assert.equal(answer.ok,false);
+    before[0](armed.sv.typed(401,'unauthenticated','Sign in to continue'));await settle();assert.equal(armed.heard(),1,'A refused code starts no session: the 401 still counts');
+    // A refused session check does not arm the event again: a second 401 of that session sends no second event.
+    const once=await sessionPage(liveWorld());goneNow(once.w);await once.pg.sandbox.reloadGrove();await settle();assert.equal(once.heard(),1);
+    await once.pg.sandbox.GroveLive.session();await once.pg.sandbox.reloadGrove();await settle();assert.equal(once.heard(),1,'A refused check arms nothing');
+    // A session check that answers yes arms it again, in the same session.
+    once.w.session=true;await once.pg.sandbox.GroveLive.session();await once.pg.sandbox.reloadGrove();await settle();assert.equal(once.heard(),2,'A good check arms the event again');
+    // The callers read the state signOut hands back.
+    assert.equal(once.S.signOut().auth,null,'signOut answers with the state it leaves');
+  }
+
+  // 6y. A legend click only hides and shows, in live mode: every home and pin stays the stored place
+  //     to the last bit, the links come back, and no relayout, reheat, hold-off or re-fit runs.
+  const legendPage=(w,st,search)=>{const sv=makeServer(w);return {sv,pg:page(sv,st,GRAPH_FILES,null,null,(el,env)=>{legendRows(el);env.search=search||'';})};};
+  const clickKind=(pg,kind)=>pg.elements['legend-list'].rows().find(r=>r.getAttribute('data-type')===kind).click();
+  {
+    const w=liveWorld(),st=signedInStore(),{sv,pg}=legendPage(w,st);await settle();
+    const V=pg.sandbox.GroveView,G=V.graph(),drawn=()=>G.graphData().nodes.map(n=>n.id).sort(),linked=()=>G.graphData().links.map(l=>l.source+'>'+l.target+'>'+l.verb).sort();
+    const pinned=new Set(V.nodes().filter(n=>n.fx!=null).map(n=>n.id));
+    assert(pinned.has('grove-self')&&V.nodes().some(n=>n.type==='organisation'&&pinned.has(n.id)),'Hubs and the identity are pinned');
+    const stored=id=>w.positions[id==='grove-self'?'p001':id];
+    const atStored=label=>V.nodes().forEach(n=>{
+      const at=stored(n.id);assert(at,label+': '+n.id+' is stored');
+      assert(n.__home[0]===at.x&&n.__home[1]===at.y,label+': the home of '+n.id+' is its stored place');
+      assert(n.x===at.x&&n.y===at.y,label+': '+n.id+' is drawn at its stored place');
+      if(pinned.has(n.id))assert(n.fx===at.x&&n.fy===at.y,label+': the pin of '+n.id+' is its stored place');else assert(n.fx==null&&n.fy==null,label+': '+n.id+' takes no pin');
+    });
+    atStored('first visit');
+    const allNodes=drawn(),allLinks=linked(),wholeLinks=G.graphData().links.map(l=>({source:l.source,target:l.target,key:l.source+'>'+l.target+'>'+l.verb})),sizes=V.nodes().map(n=>n._hubR),saves=positionsCalls(sv).length;
+    assert(allLinks.length>100&&new Set(allLinks).size>100,'The map has links to hide');
+    G.calls.length=0;
+    for(const kind of ['organisation','plan','person','task','recipe']){
+      const members=V.nodes().filter(n=>n.type===kind);assert(members.length,kind+' is on the map');
+      clickKind(pg,kind);
+      assert(!G.graphData().nodes.some(n=>n.type===kind),kind+' is hidden');
+      const memberIds=new Set(members.map(n=>n.id));
+      assert.deepStrictEqual(linked(),wholeLinks.filter(l=>!memberIds.has(l.source)&&!memberIds.has(l.target)).map(l=>l.key).sort(),kind+': its links are hidden with it, and only those');
+      const shownIds=new Set(drawn());assert(G.graphData().links.every(l=>shownIds.has(l.source)&&shownIds.has(l.target)),kind+': no link hangs in the air');
+      atStored(kind+' hidden');
+      clickKind(pg,kind);
+      assert.deepStrictEqual(drawn(),allNodes,kind+': its items come back');assert.deepStrictEqual(linked(),allLinks,kind+': its links come back');
+      atStored(kind+' shown again');
+    }
+    assert.deepStrictEqual(G.calls.filter(c=>c!=='graphData'),[],'A legend click reheats nothing and moves no camera');
+    assert.equal(G.calls.length,10,'Each click hands the map its visible nodes and links');
+    assert.deepStrictEqual(pg.timeouts.filter(x=>x.ms===3500),[],'No re-fit is waiting');assert.equal(pg.sandbox.__brainHoldOff,false,'The hold stays on');
+    assert.deepStrictEqual(V.nodes().map(n=>n._hubR),sizes,'No hub changes size');
+    assert.equal(positionsCalls(sv).length,saves,'A legend click saves nothing');
+    // A kind hidden while new items arrive, then shown: every old home stays exact, in that page.
+    clickKind(pg,'observation');
+    const olds=V.nodes().map(n=>n.id);
+    w.nodes.push(Object.assign({},w.nodes[1],{id:'kind-hub',label:'Wrenfield Cooperative',type:'organisation',summary:''}),Object.assign({},w.nodes[1],{id:'kind-task',label:'Plan the cooperative fair',type:'task',summary:''}),Object.assign({},w.nodes[1],{id:'kind-seen',label:'Noticed a longer queue',type:'observation',summary:''}));
+    w.edges.push({id:'kind-e1',source:'kind-task',target:'kind-hub',verb:'part of',label:'part of'},{id:'kind-e2',source:'kind-seen',target:'kind-task',verb:'about',label:'about'});
+    await pg.sandbox.reloadGrove();await settle();
+    pinned.add('kind-hub');atStored('after new items, in that page');
+    assert(olds.every(id=>V.nodes().some(n=>n.id===id)),'Every old item stays');
+    assert(!drawn().includes('kind-seen'),'A new item of a hidden kind stays hidden');assert(drawn().includes('kind-task'),'A new item of a shown kind shows');
+    clickKind(pg,'observation');
+    assert(drawn().includes('kind-seen'),'It comes back with its kind');assert(linked().includes('kind-seen>kind-task>about'),'It comes back with its link');
+    atStored('the hidden kind shown again');
+    // A later page load draws the same map.
+    const later=page(sv,st,GRAPH_FILES);await settle();
+    for(const n of later.sandbox.GroveView.nodes()){const at=stored(n.id);assert(n.__home[0]===at.x&&n.__home[1]===at.y,'A later load keeps '+n.id);}
+    assert.deepStrictEqual(pg.errors,[],'legend: no error');
+  }
+  // 6z. Fixture mode (the sim engine of the checks) keeps the sim: its legend click lays the map out
+  //     again and heats it, and its URL settings change the layout.
+  {
+    const fixtureStore=()=>({'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,auth:{provider:'email',email:'sam.reyes@example.org'},name:'Sam',onboardingComplete:true,onboardingStep:4,tourComplete:true,accountImports:{chatgpt:{id:'chatgpt',source:'conversations',status:'ready',progress:100,kind:'account'}}})});
+    const fixturePage=async search=>{const pg=page(makeServer(liveWorld()),fixtureStore(),GRAPH_FILES,null,null,(el,env)=>{legendRows(el);env.search=search;env.globals.GROVE_FIXTURE=JSON.parse(JSON.stringify(synthetic));});await settle();return pg;};
+    // A map that cannot draw keeps the sim's failure text there, with or without a local sign-in.
+    const broken=page(makeServer(liveWorld()),{'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,auth:null,onboardingComplete:true,onboardingStep:4,tourComplete:true})},GRAPH_FILES,null,null,(el,env)=>{env.globals.GROVE_FIXTURE=Object.assign(JSON.parse(JSON.stringify(synthetic)),{stats:undefined});});await settle();
+    assert(/Unable to open/.test(broken.elements.loading.textContent),'Fixture mode keeps the failure text of the sim');assert(!broken.elements.loading.classList.contains('hidden'));
+    const plain=await fixturePage('');assert.equal(plain.sandbox.GroveSimulation.isLive(),false,'This page runs on the fixture');assert(plain.sandbox.GroveView.nodes().length>10,'The fixture draws');
+    const layout=pg=>JSON.stringify(fgPositions(pg));
+    for(const search of ['?classic=1','?dense=0','?orbit=0'])assert.notEqual(layout(await fixturePage(search)),layout(plain),search+' changes the layout in fixture mode');
+    const hubs=()=>plain.sandbox.GroveView.nodes().filter(n=>n.type==='company').map(n=>[n.id,n.fx,n.fy].join());
+    const before=hubs(),G=plain.sandbox.GroveView.graph();G.calls.length=0;
+    clickKind(plain,'project');
+    assert.notDeepStrictEqual(hubs(),before,'A legend click lays the hubs out again');assert(G.calls.includes('d3ReheatSimulation'),'A legend click heats the map');
+    clickKind(plain,'project');   // the first click after a load keeps the frame; the next one lets go
+    assert.equal(plain.sandbox.__brainHoldOff,true,'The hold lets go');assert(plain.timeouts.some(x=>x.ms===3500),'A re-fit waits');
+  }
+  // 6aa. Live mode has no layout settings in its URL: a first visit with one saves exactly what a
+  //      plain first visit saves, and draws the same sizes. ?hood is a view setting and saves the same.
+  {
+    const firstVisit=async search=>{const sv=makeServer(liveWorld()),pg=page(sv,signedInStore(),[...GRAPH_FILES,'agents.js'],null,null,(el,env)=>{env.search=search;});await settle();return {pg,save:positionsCalls(sv)[0].body.positions,look:pg.sandbox.GroveView.nodes().map(n=>drawnLook(pg,Object.assign({},n,{__born:0})).radius)};};
+    const plain=await firstVisit('');assert(plain.save.length>100,'A first visit saves the map');
+    for(const search of ['?classic=1','?dense=0','?orbit=0','?classic=1&dense=0&orbit=0','?x=1&classic=1','?hood=1','?hood=0']){
+      const seen=await firstVisit(search);
+      assert.deepStrictEqual(seen.save,plain.save,search+' saves what a plain first visit saves');assert.deepStrictEqual(seen.look,plain.look,search+' draws what a plain first visit draws');
+    }
+  }
+
   // 7. The production page: live scripts first, and no fixture anywhere in the built file.
   const index=read('index.html');
   assert(!/src="[^"]*fixture|fixture\.js/.test(index),'index.html loads no fixture');assert(index.includes('<title>Grove</title>'));
@@ -781,5 +1069,5 @@ function legendRows(elements){
   const encoded=[...new Set([...dist.matchAll(/url\((data:font\/woff2;base64,[^)]*%(?:41|61)[^)]*)\)/g)].map(m=>m[1]))];
   assert.equal(encoded.length,fontFiles.length,'Every vendored font is embedded, encoded');
   for(const uri of encoded){const bytes=Buffer.from(await (await fetch(uri)).arrayBuffer());assert(fontBytes.some(b=>b.equals(bytes)),'An encoded font decodes to its vendored bytes');}
-  console.log('PASS: one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, search results, the selection pill and hidden kinds that end with the session, a retry after a failed save that keeps the drawn places, a rejected node read after the end that draws nothing, a late 401 that keeps the code step, a next session whose poll works, logout only when the server confirms it (network down too), offline text at each sign-in step, the look of starter and unknown kinds from the style tokens of the page, new leaves at their seed offset, no new home in a drawn hub disc or the identity disc, even after a hub grows, no local questions from store titles, no example identity in live mode, and a built page with no fixture');
+  console.log('PASS: one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, search results, the selection pill and hidden kinds that end with the session, a retry after a failed save that keeps the drawn places, a rejected node read after the end that draws nothing, a late 401 that keeps the code step, a next session whose poll works, logout only when the server confirms it (network down too), offline text at each sign-in step, the look of starter and unknown kinds from the style tokens of the page, new leaves at their seed offset, no new home in a drawn hub disc or the identity disc, even after a hub grows, no local questions from store titles, no example identity in live mode, and a session check that fails with anything but a 401 and keeps the local state with the offline text, a session end that leaves no tour, address, code, confirmation, guide, host step, error or moved camera and nothing in the memory of the map, a legend click that only hides and shows, fixture mode that keeps the relayout and URL settings of the sim, a live first visit that no URL setting changes, and a built page with no fixture');
 })().catch(e=>{console.error(e);process.exitCode=1;});

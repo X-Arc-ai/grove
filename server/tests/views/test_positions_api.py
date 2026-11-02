@@ -87,6 +87,8 @@ BAD_ENTRIES = [
     ("id is a number", {"id": 7, "x": 0.0, "y": 0.0}),
     ("id is empty", {"id": "", "x": 0.0, "y": 0.0}),
     ("id too long", {"id": "i" * 129, "x": 0.0, "y": 0.0}),
+    ("x has 400 digits", {"id": "x", "x": 10**400, "y": 0.0}),
+    ("y has 400 digits", {"id": "x", "x": 0.0, "y": -(10**400)}),
     ("missing y", {"id": "x", "x": 1.0}),
     ("extra key", {"id": "x", "x": 1.0, "y": 1.0, "z": 1.0}),
     ("entry not an object", ["x", 1.0, 1.0]),
@@ -126,6 +128,31 @@ def test_an_invalid_body_is_a_typed_400_and_writes_nothing(driver, world, client
     assert_refused(driver, world, client_for(world).post(POSITIONS, json=body), name)
 
 
+def test_a_lone_surrogate_in_an_id_is_a_typed_400_and_writes_nothing(
+    driver, world, client_for, items
+):
+    """JSON text can name a lone surrogate. The store's driver cannot send it as UTF-8."""
+    good = {"id": items[0], "x": 1.0, "y": 1.0}
+    bad = '{"id": "a\\ud800b", "x": 1.0, "y": 1.0}'
+    raw = f'{{"positions": [{json.dumps(good)}, {bad}]}}'.encode()
+    response = client_for(world).post(
+        POSITIONS, content=raw, headers={"content-type": "application/json"}
+    )
+    assert_refused(driver, world, response, "lone surrogate")
+    assert response.json()["error"]["details"] == {"field": "positions[1].id"}
+
+
+def test_an_integer_of_400_digits_names_its_field_and_no_value(driver, world, client_for, items):
+    raw = f'{{"positions": [{{"id": "{items[0]}", "x": {"7" * 400}, "y": 1.0}}]}}'.encode()
+    response = client_for(world).post(
+        POSITIONS, content=raw, headers={"content-type": "application/json"}
+    )
+    assert_refused(driver, world, response, "400 digits")
+    error = response.json()["error"]
+    assert error["details"] == {"field": "positions[0].x"}
+    assert "777" not in error["message"]
+
+
 RAW_BODIES = [
     ("not json", b"{positions: nope", "application/json"),
     ("nan", b'{"positions": [{"id": "x", "x": NaN, "y": 1.0}]}', "application/json"),
@@ -133,6 +160,12 @@ RAW_BODIES = [
     ("minus infinity", b'{"positions": [{"id": "x", "x": 1, "y": -Infinity}]}', "application/json"),
     ("huge number", b'{"positions": [{"id": "x", "x": 1e400, "y": 1.0}]}', "application/json"),
     ("not utf-8", b'{"positions": "\xff"}', "application/json"),
+    # Past the digits Python turns into an integer: the JSON parser refuses it.
+    (
+        "too many digits",
+        b'{"positions": [{"id": "x", "x": ' + b"1" * 5000 + b', "y": 1.0}]}',
+        "application/json",
+    ),
     ("form type", b'{"positions": [{"id": "x", "x": 1.0, "y": 1.0}]}', "text/plain"),
     (
         "form encoded",

@@ -34,7 +34,7 @@ function boot(search,fakeScore){
   let source=fs.readFileSync(path.join(__dirname,'../agents.js'),'utf8');
   source=source.replace('  (function buildSwitch() {','  buildScore=function(){scoreEl=window.__fakeScore;}; buildLegend=function(){};\n  (function buildSwitch() {');
   // The check's own handle reads and sets what the page gives no way to reach: the time of the loop, among others.
-  source=source.replace(/\}\)\(\);\s*$/,'window.__agentTest={sample:sampleAgentData,load:loadData,setOn,follow:followAgent,stop:stopFollowing,spot:spotOf,strength:zoneStrength,regions:()=>zones,note:renderNote,bar:()=>barEl,seek(f){simT=f*total;},play(v){playing=v;},nodeR,draw:drawThing,kept:()=>JSON.stringify({ids:D&&D.ids,idIndex,fgById,nbrsOf,personas,noteHTML,turns,writes,marks,simT})};})();');
+  source=source.replace(/\}\)\(\);\s*$/,'window.__agentTest={sample:sampleAgentData,load:loadData,setOn,follow:followAgent,stop:stopFollowing,spot:spotOf,strength:zoneStrength,regions:()=>zones,note:renderNote,bar:()=>barEl,seek(f){simT=f*total;},play(v){playing=v;},nodeR,draw:drawThing,kept:()=>JSON.stringify({ids:D&&D.ids,idIndex,fgById,nbrsOf,personas,noteHTML,turns,writes,marks,simT}),state:()=>({D,idIndex,secOf,since0,cleanedIn,nextBeyond,zones,zoneKey,turns,total,cleanTurns,roundEnd,writes,marks,simT,ready,following,followPoint,personas,noteHTML,fgById,fgNodesRef,nbrsOf,turn:F.turn,cycle:F.cycle,focusId:F.focusId,hoverId:F.hoverId,hopRef:F.hopRef,scoreVals,chromeState})};})();');
   vm.createContext(box);vm.runInContext(fs.readFileSync(path.join(__dirname,'../live.js'),'utf8'),box);vm.runInContext(source,box);return box;
 }
 const sandbox=boot('');
@@ -127,17 +127,33 @@ function drawn(page,type,scale){
 // The session ends: the workers panel keeps no count, the loop no item, and the next session starts
 // its own loop from the start. On the map this comes with an empty graph (native-app clearGraph).
 {
-  const painted={},row=k=>painted[k]||(painted[k]={textContent:'',classList:{add(){},remove(){}},get offsetWidth(){return 0;}});
+  const painted={},row=k=>{if(!painted[k]){const r={textContent:'',ticks:0,classList:{add(){r.ticks++;},remove(){}},get offsetWidth(){return 0;}};painted[k]=r;}return painted[k];};
   const stop={hidden:true};
   const fakeScore={querySelector:sel=>{const m=sel.match(/data-k="(\w+)"/);return m?row(m[1]):sel==='.hood-stop'?stop:null;},querySelectorAll:()=>[]};
   const box=boot('',fakeScore),t4=box.__agentTest;keys.length=0;hop=null;
-  t4.load(t4.sample());t4.setOn(true);
+  // A turn past the last round, as a longer loop of the sim has: its slot goes with the session too.
+  const data4=t4.sample();data4.turns.push({p:'U',round:data4.meta.rounds,real:false,steps:[]});
+  t4.load(data4);t4.setOn(true);
   now+=5000;frame();t4.seek(.9);now+=200;frame();
   assert(box.GroveCare.summary().updated>0,'The panel counts before the session ends');
   assert(painted.Uupdated&&Number(painted.Uupdated.textContent)>0,'The panel shows the count');
-  t4.follow('U');assert.equal(box.__hood.following(),'U');
+  t4.follow('U');assert.equal(box.__hood.following(),'U');assert.equal(stop.hidden,false,'The stop button shows');
+  hop={n3:0,n4:1,n5:2};now+=200;frame();hop=null;   // a node is open, as the node panel leaves it
+  methods.onNodeHover(nodes[6]);
   const nodesNow=graph.graphData;graph.graphData=()=>({nodes:[],links:[]});
+  // Every piece of memory the end of a session empties, each one full before it, or this proves nothing.
+  const EMPTIED={D:null,idIndex:{},secOf:null,since0:[],cleanedIn:[],nextBeyond:{},zones:[],zoneKey:'',turns:[],total:1,cleanTurns:[],roundEnd:[],writes:[],marks:{},simT:0,ready:false,following:null,followPoint:null,personas:{},noteHTML:'',fgById:{},fgNodesRef:null,nbrsOf:{},turn:null,cycle:0,focusId:null,hoverId:null,hopRef:null,scoreVals:{Uadded:'0',Uupdated:'0',Ulinks:'0',Olinks:'0',Lsections:'0',Lclean:'0.0%'},chromeState:''};
+  const plain=value=>{const seen=new WeakSet();return JSON.parse(JSON.stringify(value,(k,v)=>{if(v&&typeof v==='object'){if(seen.has(v))return 'seen';seen.add(v);}return v;}));};
+  const full=plain(t4.state());
+  assert.deepEqual(Object.keys(EMPTIED).filter(k=>JSON.stringify(full[k])===JSON.stringify(EMPTIED[k])),['hoverId'],'Every piece is full before the end, but for the one no line ever sets');
+  const note={removed:false,remove(){this.removed=true;}},lookup=panelBody.querySelector;panelBody.querySelector=()=>note;
+  for(const r of Object.values(painted))r.ticks=0;
   box.dispatchEvent(new box.CustomEvent('grove:graph-cleared'));
+  panelBody.querySelector=lookup;
+  assert.deepEqual(plain(t4.state()),EMPTIED,'Nothing of the ended session stays in the memory of the loop');
+  assert.equal(stop.hidden,true,'The stop button goes with the follow');
+  assert.equal(note.removed,true,'The workers line leaves the node panel');
+  assert.deepEqual(Object.values(painted).map(r=>r.ticks).filter(Boolean),[],'The counts go back to zero with no tick');
   // At once, with no frame to wait for (a hidden tab draws none), and still after the next frame.
   for(const when of ['at once','after a frame']){
     for(const [k,el] of Object.entries(painted))assert(/^0(\.0%)?$/.test(el.textContent),'The panel shows no count of the ended session, '+when+': '+k+'='+el.textContent);

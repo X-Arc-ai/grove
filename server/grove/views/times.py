@@ -16,7 +16,8 @@ class InvalidInstant(ValueError):
 def parse_instant(text: str | None, field: str) -> datetime | None:
     """None when the parameter is absent; an aware UTC datetime; InvalidInstant otherwise.
 
-    A date alone or a time with no offset names no instant, so it is refused, as is empty text.
+    A date alone or a time with no offset names no instant, so it is refused, as is empty text. So
+    is a time whose offset takes it past the first or the last year a datetime can hold in UTC.
     """
     if text is None:
         return None
@@ -28,7 +29,10 @@ def parse_instant(text: str | None, field: str) -> datetime | None:
         raise InvalidInstant(field) from None
     if value.tzinfo is None or value.utcoffset() is None:
         raise InvalidInstant(field)
-    return value.astimezone(UTC)
+    try:
+        return value.astimezone(UTC)
+    except OverflowError:
+        raise InvalidInstant(field) from None
 
 
 def instant(value: object) -> datetime | None:

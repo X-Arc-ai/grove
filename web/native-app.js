@@ -48,9 +48,12 @@
   // Escape hatches: ?classic=1 restores the pre-2026-07-27 look (ring + fog);
   // ?dense=0 / ?orbit=0 disable one lever for tuning. Old ?dense=1&orbit=1
   // URLs keep working (redundant now).
-  var CLASSIC = /[?&]classic=1/.test(window.location.search);
-  var DENSE = !CLASSIC && !/[?&]dense=0/.test(window.location.search);
-  var ORBIT = !CLASSIC && !/[?&]orbit=0/.test(window.location.search);
+  // The production page (live mode, no fixture) has none of the three: a first visit writes its
+  // layout to the store for good, so no URL may change that layout.
+  var URL_SETTINGS = window.GROVE_FIXTURE ? window.location.search : '';
+  var CLASSIC = /[?&]classic=1/.test(URL_SETTINGS);
+  var DENSE = !CLASSIC && !/[?&]dense=0/.test(URL_SETTINGS);
+  var ORBIT = !CLASSIC && !/[?&]orbit=0/.test(URL_SETTINGS);
 
   var HUB_TYPES = { company: 1, project: 1 };
 
@@ -555,6 +558,7 @@
     renderLegend();
     renderStats();
     scheduleRedraw();
+    loadingEl.classList.add('hidden');   // a read still out draws nothing, so nothing else lifts the cover
     window.dispatchEvent(new CustomEvent('grove:graph-cleared'));
   }
   canvasEl.addEventListener('pointerdown', function () { manualCamera=true; });
@@ -597,6 +601,8 @@
     }).catch(function(err){
       // Live mode, signed out: the sign-in card takes the screen, so the loading cover steps aside.
       if (err && err.code === 'unauthenticated') { loadingEl.classList.add('hidden'); return; }
+      // Live mode with no local sign-in: the sign-in card takes the screen, and it says what failed.
+      if (!window.GROVE_FIXTURE && !window.GroveSimulation.getState().auth) { loadingEl.classList.add('hidden'); console.error(err); return; }
       loadingEl.textContent='Unable to open this brain';console.error(err);
     });
   }
@@ -1420,6 +1426,11 @@
       var t = typeof l.target === 'object' ? l.target.id : l.target;
       return visibleSet[s] && visibleSet[t];
     });
+
+    // Live mode: a legend click only hides and shows. Every place on the map is a stored place, so
+    // nothing below runs: no hub moves, no pin is dropped (a hidden hub keeps its own), and the
+    // camera stays. Fixture mode keeps the sim's relayout.
+    if (!window.GROVE_FIXTURE) { Graph.graphData({ nodes: visibleNodes, links: visibleLinks }); return; }
 
     // Dynamic relayout: recompute hub ring from visible hubs only so we don't
     // get empty slots when archived hubs hide. Leaves get fresh primary-hub

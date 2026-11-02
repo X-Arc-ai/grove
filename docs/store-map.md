@@ -169,6 +169,8 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 | `known_as_of` and `as_of` on the view endpoints filter the current head of each row, not its history: a row changed after the given time shows its newest values. A read of the history must replace that filter. | none; a build fact | `writer-b`, `views-c` |
 | The session contract the views read: the cookie `grove_session`; `:Session.token_hash` is the lowercase sha256 hex of the cookie value; a session is valid while `revoked_at` is absent and `expires_at` is later than the clock's now; `:Session.user_id` leads to the oldest `:World` with that `owner_user_id`. `docs/views.md` states it in full. | none; a build fact | `signin` |
 | A `map_positions` row keeps `item_id` and its coordinates after its item is forgotten. The forget of an item must remove its map position too. | none; a build fact | `forget` |
+| The views' account, sources, questions and workers still use the simulation's local browser state. It survives the end of a session: the typed name and its initial, the guidance text, file names and connected hosts. A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b`, `signin` |
+| The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`, so the image must run `web/build.py` and set that variable. | none; a build fact | `deploy-a`, `deploy-b` |
 
 ## Added by later lanes
 

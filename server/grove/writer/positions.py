@@ -9,7 +9,6 @@ transaction wait for the first and then match its row. If the store still refuse
 constraint error, the call runs again, and the row that won counts as kept.
 """
 
-import math
 from collections.abc import Mapping, Sequence
 
 from neo4j import Driver
@@ -48,10 +47,19 @@ class InvalidPositions(ValueError):
 def _coordinate(value: object, field: str) -> float:
     if isinstance(value, bool) or not isinstance(value, int | float):
         raise InvalidPositions(f"{field} must be a number", field)
-    number = float(value)
-    if not math.isfinite(number) or abs(number) > MAX_COORDINATE:
+    # The bound comes first: NaN and infinity fail it, and float() cannot hold a long JSON integer.
+    if not abs(value) <= MAX_COORDINATE:
         raise InvalidPositions(f"{field} must be finite and at most 1e7 either way", field)
-    return number
+    return float(value)
+
+
+def _usable_id(value: object) -> bool:
+    """A string of 1 to 128 characters with no lone surrogate, which JSON allows and UTF-8 not."""
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= MAX_ID_LENGTH
+        and not any("\ud800" <= character <= "\udfff" for character in value)
+    )
 
 
 def check_positions(positions: object) -> list[tuple[str, float, float]]:
@@ -68,9 +76,9 @@ def check_positions(positions: object) -> list[tuple[str, float, float]]:
         if set(entry) != _FIELDS:
             raise InvalidPositions(f"{where} must have exactly id, x and y", where)
         item_id = entry["id"]
-        if not isinstance(item_id, str) or not 1 <= len(item_id) <= MAX_ID_LENGTH:
+        if not _usable_id(item_id):
             raise InvalidPositions(
-                f"{where}.id must be a string of 1 to {MAX_ID_LENGTH} characters", f"{where}.id"
+                f"{where}.id must be valid text of 1 to {MAX_ID_LENGTH} characters", f"{where}.id"
             )
         x = _coordinate(entry["x"], f"{where}.x")
         y = _coordinate(entry["y"], f"{where}.y")
