@@ -1,12 +1,13 @@
 """The API process: `uv run uvicorn --factory grove.api.app:create_app` from server/.
 
 The driver opens at startup from the environment (NEO4J_AUTH, GROVE_NEO4J_URI) unless a caller
-hands one in. GROVE_WEB_DIST names the folder of the built pages (home.html, index.html and
-privacy.html): the API image builds them and sets it, and a local run can set it too.
+hands one in. GROVE_WEB_DIST names the folder of the built pages (home.html, index.html,
+privacy.html and consent.html): the API image builds them and sets it, and a local run can set it
+too. The consent page is read from it at each /authorize, so a page built later needs no restart.
 """
 
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,17 +15,22 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 
-from grove.api import health, wellknown
+from grove.api import health, mcp, oauth, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
-from grove.api.config import ApiSettings, load_api_settings
+from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
 from grove.api.errors import install_error_handlers, not_found
 from grove.api.mail import Mailer
+from grove.api.oauth import OAUTH_PATHS, OAuthDeps
 from grove.api.views import PREFIX, router
+from grove.mcp.tools import DEFAULT_TOOLS, Tool
 from grove.store.connection import Driver, open_driver
 from grove.views.session import SESSION_COOKIE
 
-WEB_DIST_ENV = "GROVE_WEB_DIST"
+__all__ = ["WEB_DIST_ENV", "create_app"]
+
+# Answers the person's data or a secret: no cache may keep a copy.
+NO_STORE_PATHS = (PREFIX, AUTH_PREFIX, *OAUTH_PATHS, "/.well-known/")
 # A store that is down must not hold a probe for the driver's default 30 s.
 DRIVER_OPTIONS = {"connection_timeout": 5.0, "connection_acquisition_timeout": 10.0}
 
@@ -64,9 +70,13 @@ def create_app(
     mailer: Mailer | None = None,
     google_http: httpx.Client | None = None,
     world_id_for: Callable[[str], str] | None = None,
+    mcp_tools: Sequence[Tool] | None = None,
+    oauth_deps: OAuthDeps | None = None,
 ) -> FastAPI:
     """With a driver, the caller owns it: the app never closes it. With no mailer or google_http,
-    sign-in loads the real one at first use. world_id_for gives a test its own t_ worlds."""
+    sign-in loads the real one at first use. world_id_for gives a test its own t_ worlds.
+    mcp_tools is the tool set of /mcp (None means grove.mcp.tools.DEFAULT_TOOLS); oauth_deps hands
+    the OAuth routes a fake resolver and transport for metadata documents, or a smaller window."""
     settings = settings or load_api_settings()
 
     @asynccontextmanager
@@ -83,6 +93,8 @@ def create_app(
     app = FastAPI(title="Grove", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.auth = AuthDeps(mailer=mailer, google_http=google_http, world_id_for=world_id_for)
+    app.state.oauth = oauth_deps or OAuthDeps()
+    app.state.mcp_tools = tuple(DEFAULT_TOOLS if mcp_tools is None else mcp_tools)
     if driver is not None:
         app.state.driver = driver
     install_error_handlers(app)
@@ -91,14 +103,16 @@ def create_app(
     async def no_store(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        """The views and sign-in answer with the person's own data: no cache keeps a copy."""
+        """The views, sign-in and OAuth answer with the person's data or a secret."""
         response = await call_next(request)
-        if request.url.path.startswith((PREFIX, AUTH_PREFIX)):
+        if request.url.path.startswith(NO_STORE_PATHS):
             response.headers["Cache-Control"] = "no-store"
         return response
 
     app.include_router(health.router)
     app.include_router(wellknown.router)
+    app.include_router(oauth.router)
+    app.include_router(mcp.router)
     app.include_router(router)
     app.include_router(auth_router)
     folder = os.environ.get(WEB_DIST_ENV)

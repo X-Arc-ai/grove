@@ -30,11 +30,11 @@ Every answer is `Cache-Control: no-store`. Every POST needs `Content-Type: appli
 |---|---|
 | `POST /v1/auth/email/start` | 200 `{"sent": true}`, the same for a new and a known address. 400 `invalid_arguments` naming `email`: more than 254 characters, not exactly one `@`, whitespace or a control character, no dot in the domain. 429 `rate_limited` with `details.retry_after_seconds`. 503 `unavailable`, retryable: the mail failed, there is no mail config, or the store is down. |
 | `POST /v1/auth/email/verify` | 200 with the session answer of `docs/views.md`, and the session cookie. 400 for a code that is not exactly 6 digits, which uses no try. 401 `unauthenticated`, "the code does not match", the same for a wrong, expired, used or absent code. 503 with no cookie for a store failure. |
-| `GET /v1/auth/google/start?next=<path>` | 303 to Google, with the state cookie. 303 to `/signin?signin_error=google` for no client file or a bad one. A `next` that is not a same-origin path becomes `/`: it must start with one `/`, hold no backslash and no control character, be ASCII, and be at most 512 characters. |
+| `GET /v1/auth/google/start?next=<path>` | 303 to Google, with the state cookie. 303 to `/signin?signin_error=google` for no client file or a bad one. A `next` that is not a same-origin path becomes `/`: it must start with one `/`, hold no backslash and no control character, be ASCII, and be at most 2048 characters (an `/authorize` URL of `docs/hosts.md` comes back whole). |
 | `GET /v1/auth/google/callback` | 303 to `next`, with the session cookie and `Referrer-Policy: no-referrer`. Any failure is 303 to `/signin?signin_error=google` with no session. Both clear the state cookie. |
 | `POST /v1/auth/logout` | 200 `{"signed_in": false}`, and it clears the cookie. It revokes the session that the cookie names, when there is one, and changes nothing else. With the store down it answers 503 and still clears the cookie. |
 | `GET /` | With `GROVE_WEB_DIST` set: `home.html` with no `grove_session` cookie, `index.html` with one (no store read: the page asks the session, and shows the card on a 401). `Cache-Control: no-store`, `Vary: Cookie`. |
-| `GET /signin` | `index.html`, `no-store`. |
+| `GET /signin` | `index.html`, `no-store`. After a sign-in by email code or Google, the page goes back to a `next` query value only when it starts with `/authorize?` (the consent page, `docs/hosts.md`); any other value goes to `/`. |
 | `GET /privacy` | `privacy.html`. |
 
 A missing page file is the typed 404.
