@@ -625,6 +625,8 @@
   }
   setInterval(function () {
     if (document.hidden) return;
+    // Live mode with no local sign-in: the sign-in card has the screen, and no graph goes behind it.
+    if (!window.GROVE_FIXTURE && !window.GroveSimulation.getState().auth) return;
     if (hasSelection() || focusedNode || hoverNode) return;   // never mid-interaction
     var epoch = viewEpoch;
     window.groveApi('/api/graph').then(function (r) { return r.json(); }).then(function (payload) {
