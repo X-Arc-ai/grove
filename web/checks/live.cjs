@@ -821,8 +821,15 @@ function legendRows(elements){
     assert.deepStrictEqual(cardAlerts(t.form),[OFFLINE],label+': the card shows the offline text');
     assert.equal(t.p.sessionNote.hidden,true,label+': the card holds the text, not the note');
     assert.equal(t.S.getState().name,'Sam',label+': the local state stays');assert.deepStrictEqual(t.pg.errors,[],label+': no error');
+    // The service comes back and the 3-minute poll fires: with nobody signed in here it reads
+    // nothing, so no graph goes behind the card and no position is saved.
+    Object.assign(w,{sessionStatus:0,sessionThrows:false});
+    const readsBefore=t.sv.calls.length;
+    t.pg.intervals.find(i=>i.ms===180000).fn();await settle();
+    assert.equal(t.sv.calls.length,readsBefore,label+': the poll asks nothing while nobody is signed in here');
+    assertEmptied(t,label+' at load, after the poll');assert.deepStrictEqual(cardAlerts(t.form),[OFFLINE],label+': the card keeps the offline text');
     // The next sign-in on that card draws its own map.
-    Object.assign(w,{sessionStatus:0,sessionThrows:false});await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');await settle();
+    await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');await settle();
     assert.equal(t.S.getState().auth.email,'robin.vale@example.org');assert(t.V.nodes().length>0,label+': the next sign-in draws the map');
   }
   {
