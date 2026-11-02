@@ -100,6 +100,15 @@ def test_a_bad_file_exits_2_and_names_only_the_flag(files, clean_env, capsys, fa
         assert planted.lower() not in err.lower()
 
 
+def test_a_path_with_an_unknown_user_exits_2_and_names_only_the_variable(clean_env, capsys):
+    clean_env.setenv(RENAME_MAP_VAR, "~pathmarker-q7/rename.json")
+    assert main(["counts"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert RENAME_MAP_VAR in err
+    assert "pathmarker-q7" not in err
+
+
 def test_the_command_line_prints_the_counts_and_writes_nothing(files, tmp_path):
     rename, denylist = files
     work = tmp_path / "work"

@@ -1,4 +1,4 @@
-"""A hostile long text costs linear time in every detector.
+"""A hostile long text costs linear time in every detector and in the whole screener.
 
 The run sits in a subprocess with a timeout, so no test reads a clock. On a text this long a
 quadratic pattern takes minutes, and a linear one a second.
@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 SCRIPT = """
+from grove.screening import Screener, ScreeningConfig
 from grove.screening import detectors as d
 
 N = 200_000
@@ -30,12 +31,29 @@ TEXTS = [
     "a." * (N // 2),
     "aB" * (N // 2),
     "www.a.example/x " * (N // 16),
+    # Each of these was quadratic, and each is long enough to pass the timeout if it comes back.
+    "login=" * 100_000,
+    "creds=" * 100_000,
+    "pay " + "111 " * 25_000,
+    "a" + "\\u0301\\u0323" * 500_000,
+    # The forms the read view writes as space: a long run must cost no more than a short one.
+    "_" * N,
+    "x" + "_" * 1_000_000 + "y",
+    "x_" + " _" * (N // 2),
+    "\\\\" * N,
+    "\\\\" * N + "n",
+    "\\\\" * N + "/",
+    "\\\\/" * (N // 2),
+    "\\\\n" * (N // 2),
+    '\\\\"' * (N // 2),
 ]
+screen = Screener(ScreeningConfig(sensitive_classes=frozenset({"pay_amount"})))
 for text in TEXTS:
     for detector in (
         d.credentials, d.cards, d.one_time_codes, d.reset_links, d.contacts, d.pay_amounts
     ):
         detector(text)
+    screen.screen_text(text)
 print("done")
 """
 

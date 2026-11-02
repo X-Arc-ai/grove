@@ -28,11 +28,16 @@ def _is_mark(ch: str) -> bool:
     return unicodedata.category(ch).startswith("M")
 
 
+# NFKC sorts the marks of a cluster in quadratic time, and no writing holds this many on one
+# character, so a longer run of marks is cut into clusters of this length.
+_MAX_CLUSTER = 32
+
+
 def _clusters(text: str, start: int, stop: int) -> Iterator[tuple[int, int]]:
     """A base character with the marks after it. NFKC composes inside a cluster, not across."""
     begin = start
     for index in range(start + 1, stop):
-        if not _is_mark(text[index]):
+        if not _is_mark(text[index]) or index - begin >= _MAX_CLUSTER:
             yield begin, index
             begin = index
     if stop > start:
@@ -68,14 +73,48 @@ def _normalise(piece: str, fold_case: bool) -> str:
     return "".join(ch for ch in out if unicodedata.category(ch) != "Cf")
 
 
+# Two forms glue a value to a word character, so every word edge misses it. One is an escape in
+# text that holds JSON as a string ("pay\\n4111...", also nested twice), the other is "_" chat
+# markup ("_4111..._", "__Orla__", "_+212..._"): a run that opens after no word character or closes
+# before none, so acme_corp and x_Orla stay one word, and me_@x stays an address. A closing "*",
+# "~" or "`" glues nothing to a word, but it hides the end of a label or a sentence too:
+# "*Password:* x", "**API_KEY**: x", "*the code is 482910.*". After "=" it is no closer:
+# "API_KEY=***" is a redacted value. A run matches only from its start, so a long run costs linear
+# time.
+_ESCAPE = re.compile(r"""(?<!\\)\\++(?:[bfnrt"']|u[0-9A-Fa-f]{4})""")
+_ESCAPE_READS_AS = {"n": "\n", '"': '"', "'": "'"}
+# "\/" is how PHP and some APIs write a slash in JSON. No reading of the same length makes
+# "https:\/\/x" a URL, so the copy drops these backslashes, as it drops format characters.
+_SLASH_ESCAPE = re.compile(r"(?<!\\)\\++(?=/)")
+_MARKUP = re.compile(r"(?<!\w)_++(?=\S)|(?<=[^\s_*~`=])[_*~`]++(?![\w@])")
+
+
+def _read_escape(match: re.Match[str]) -> str:
+    form = match.group()
+    # A line break and a quote stay what they are, because detectors read them. The rest of the
+    # form is spaces, so offsets stay one to one.
+    return _ESCAPE_READS_AS.get(form[-1], " ") + " " * (len(form) - 1)
+
+
+def _views(text: str) -> tuple[str, ...]:
+    """The copy as written and, when they differ, as read with the glue forms written as space.
+
+    Both are searched and their spans merge. Reading alone would cut a secret that holds such a
+    form ("sk-a_-b...", "p\\nw0rd") in two and store a part of it, so the view can only add spans.
+    """
+    read = _MARKUP.sub(lambda m: " " * len(m.group()), _ESCAPE.sub(_read_escape, text))
+    return (text,) if read == text else (text, read)
+
+
 class Normalised:
     """A comparison copy of a text, with the original span of every copy character.
 
     fold_case=True is the copy names match on. fold_case=False keeps case for the detectors,
-    whose key formats are case-sensitive.
+    whose key formats are case-sensitive. `views` holds the strings to search; each has the
+    length of `text`, so `span` serves them all.
     """
 
-    __slots__ = ("text", "_starts", "_ends")
+    __slots__ = ("text", "views", "_starts", "_ends")
 
     def __init__(self, original: str, *, fold_case: bool) -> None:
         self._starts: list[int] | None
@@ -84,6 +123,7 @@ class Normalised:
             # ASCII has no format characters and NFKC leaves it alone: offsets are the identity.
             self.text = original.lower() if fold_case else original
             self._starts = self._ends = None
+            self._finish()
             return
         pieces: list[str] = []
         starts: list[int] = []
@@ -115,6 +155,20 @@ class Normalised:
         add_clusters(position, len(original))
         self.text = "".join(pieces)
         self._starts, self._ends = starts, ends
+        self._finish()
+
+    def _finish(self) -> None:
+        """Drops the slash escapes from the copy, with the map kept, and builds the views."""
+        gaps = [edge for match in _SLASH_ESCAPE.finditer(self.text) for edge in match.span()]
+        if gaps:
+            starts = self._starts or range(len(self.text))
+            ends = self._ends or range(1, len(self.text) + 1)
+            edges = [0, *gaps, len(self.text)]
+            kept = list(zip(edges[::2], edges[1::2], strict=True))
+            self.text = "".join(self.text[left:right] for left, right in kept)
+            self._starts = [index for left, right in kept for index in starts[left:right]]
+            self._ends = [index for left, right in kept for index in ends[left:right]]
+        self.views = _views(self.text)
 
     def span(self, start: int, end: int) -> tuple[int, int]:
         """The original span of copy[start:end]; end > start."""
@@ -189,14 +243,16 @@ class RenameMap:
         return len(set(self._labels.values()))
 
     def find(self, folded: Normalised) -> list[tuple[int, int, str]]:
-        """Original spans and their labels, left to right, never overlapping."""
+        """Original spans and their labels, left to right. Spans of two views can overlap, and
+        the screener merges them."""
         if self._pattern is None:
             return []
-        found = []
-        for match in self._pattern.finditer(folded.text):
-            start, end = folded.span(match.start(), match.end())
-            found.append((start, end, self._labels[" ".join(match.group().split())]))
-        return found
+        found = set()
+        for view in folded.views:
+            for match in self._pattern.finditer(view):
+                start, end = folded.span(match.start(), match.end())
+                found.add((start, end, self._labels[" ".join(match.group().split())]))
+        return sorted(found)
 
     def __repr__(self) -> str:
         return f"RenameMap(forms={self.form_count}, labels={self.label_count})"
@@ -225,12 +281,16 @@ class Denylist:
     def find(self, folded: Normalised) -> list[tuple[int, int]]:
         if self._pattern is None:
             return []
-        return [folded.span(m.start(), m.end()) for m in self._pattern.finditer(folded.text)]
+        return [
+            folded.span(m.start(), m.end())
+            for view in folded.views
+            for m in self._pattern.finditer(view)
+        ]
 
     def holds(self, folded: Normalised | None) -> bool:
         if folded is None or self._pattern is None:
             return False
-        return self._pattern.search(folded.text) is not None
+        return any(self._pattern.search(view) is not None for view in folded.views)
 
     def __repr__(self) -> str:
         return f"Denylist(terms={self.term_count})"

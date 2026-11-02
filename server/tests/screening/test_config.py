@@ -98,6 +98,7 @@ def test_an_unknown_sensitive_class_is_refused_without_its_value():
     [
         ("missing", "does not exist"),
         ("empty-value", "set but empty"),
+        ("unknown-user", "cannot be expanded"),
         ("group-readable", "group or other"),
         ("other-readable", "group or other"),
         ("group-writable", "group or other"),
@@ -115,6 +116,8 @@ def test_a_set_variable_whose_file_is_not_private_and_readable_fails_closed(
         value = str(folder / "absent-Orla.json")
     elif case == "empty-value":
         value = "  "
+    elif case == "unknown-user":
+        value = f"~{FOLDER}/list"
     elif case == "directory":
         path.mkdir(mode=0o700)
         value = str(path)
@@ -135,6 +138,12 @@ def test_a_set_variable_whose_file_is_not_private_and_readable_fails_closed(
         ScreeningConfig.from_environment()
     assert expected in str(caught.value)
     assert_clean(caught.value, variable)
+
+
+def test_a_tilde_in_a_path_reads_the_home_folder(clean_env, folder):
+    clean_env.setenv("HOME", str(folder))
+    private_file(folder, "rename.json", '{"Orla": "Co-founder"}')
+    assert load(clean_env, rename="~/rename.json").rename.form_count == 1
 
 
 RENAME_FAULTS = [
