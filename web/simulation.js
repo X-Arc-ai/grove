@@ -1,6 +1,9 @@
 /* Grove's local progressive simulation engine.
  * The native graph reads the same API shapes as the real visualizer, while
  * onboarding and background imports remain browser-local and fixture-only.
+ * Live mode (no injected fixture; only the checks inject one): the native graph's
+ * /api/* reads go to the server through web/live.js, the self item takes the identity
+ * node's id, counts come from the last graph payload, and imports add nothing (empty plan).
  */
 (function () {
   'use strict';
@@ -23,15 +26,13 @@
   };
   var TICK_MS = Math.max(20, Number(window.__GROVE_SIM_TICK_MS__) || 1000);
   var JOB_STEPS = 18;
-  var fixture = window.GROVE_FIXTURE || window.GroveFixture || window.groveFixture || window.__GROVE_FIXTURE__ || null;
+  var fixture = window.GROVE_FIXTURE || null;
+  // No fixture: live mode. The page never fetches a fixture; the engine runs on an empty one.
+  var LIVE = !fixture;
+  var EMPTY = { elements: { nodes: [], edges: [] }, source_node_ids: {}, stats: { edge_verbs: [] }, schema: {}, history: [], health: { status: 'healthy' } };
   function normalizeFixture(data){data.elements.edges.forEach(function(e,i){if(!e.data.id)e.data.id="fixture-edge-"+i;});return data;}
   if(fixture)normalizeFixture(fixture);
-  var fixturePromise = fixture
-    ? Promise.resolve(fixture)
-    : window.fetch('fixture.json').then(function (r) {
-        if (!r.ok) throw new Error('The Grove fixture could not be loaded');
-        return r.json();
-      }).then(function (data) { fixture = normalizeFixture(data); return fixture; });
+  var fixturePromise = Promise.resolve(fixture || EMPTY);
   var jobs = {};
   var importEpoch = 0;
   var orderedCache = {};
@@ -179,7 +180,20 @@
     return {new_nodes:graph.nodes.filter(function(n){return ids.includes(n.data.id);}).map(function(n){return n.data;}),new_edges:graph.edges.filter(function(e){return edges.includes(e.data.id);}).map(function(e){return e.data;})};
   }
   function selfNode(){return {data:{id:'grove-self',type:'person',label:state.name||'Anas',status:'active',summary:'Your world, connected through the sources you bring to Grove',created_at:'2026-10-28T00:00:00Z'}};}
+  // Live mode: the last graph payload, with the self item renamed to the identity node's id.
+  var live = { selfId: null, nodes: [], edges: [] };
+  function isHubKind(type) { var style = ((window.GroveLive && window.GroveLive.KIND_STYLE) || {})[type] || type; return style === 'company' || style === 'project'; }
+  // The views show the payload; when it names no self item, the sim's identity node joins it, as in the sim.
+  function liveElements() {
+    var nodes = live.nodes.slice(), edges = live.edges.slice();
+    if (!live.selfId && (state.onboardingStep > 0 || state.onboardingComplete)) {
+      nodes = nodes.concat([selfNode()]);
+      nodes.filter(function (n) { return isHubKind(n.data.type); }).slice(0, 16).forEach(function (n) { edges.push({ data: { id: 'self-' + n.data.id, source: 'grove-self', target: n.data.id, verb: 'CONNECTS TO', label: 'CONNECTS TO' } }); });
+    }
+    return { nodes: nodes, edges: edges };
+  }
   function visibleElements(data) {
+    if (LIVE) return liveElements();
     var selected = visibleIdMap(data);
     var nodes = data.elements.nodes.filter(function (n) { return !!selected[n.data.id]; });
     var edges = data.elements.edges.filter(function (e) { return !!selected[e.data.source] && !!selected[e.data.target]; });
@@ -191,6 +205,8 @@
   }
 
   function currentCounts() {
+    // Live mode counts the real items of the last payload (never the sim's identity node).
+    if (LIVE) { var liveTypes = {}; live.nodes.forEach(function (n) { liveTypes[n.data.type] = (liveTypes[n.data.type] || 0) + 1; }); return { nodes: live.nodes.length, edges: live.edges.length, types: liveTypes }; }
     if (!fixture) return { nodes: 0, edges: 0, types: {} };
     var elements = visibleElements(fixture), types = {};
     elements.nodes.forEach(function (n) { types[n.data.type] = (types[n.data.type] || 0) + 1; });
@@ -199,7 +215,7 @@
 
   function getState() {
     var sources = getSources(), counts = currentCounts();
-    var all = fixture && fixture.elements ? fixture.elements : { nodes: [], edges: [] };
+    var all = LIVE ? live : fixture && fixture.elements ? fixture.elements : { nodes: [], edges: [] };
     var imported = sources.filter(function (s) { return s.status === 'ready'; }).length;
     return {
       version: VERSION, auth: clone(state.auth), name: state.name, onboardingComplete: state.onboardingComplete,
@@ -383,8 +399,9 @@
       };
     }).filter(function (point) { return point.nodes || point.edges; });
   }
+  function selfDetail(){var self=selfNode().data;return {node:Object.assign({},self,{title:self.label,content:self.summary,status_field_value:'active'}),required_props:[],optional_props:[],required_prop_names:[],status_field:'status'};}
   function nodeDetail(data, id) {
-    if(id==='grove-self'&&(state.onboardingStep>0||state.onboardingComplete)){var self=selfNode().data;return {node:Object.assign({},self,{title:self.label,content:self.summary,status_field_value:'active'}),required_props:[],optional_props:[],required_prop_names:[],status_field:'status'};}
+    if(id==='grove-self'&&(state.onboardingStep>0||state.onboardingComplete))return selfDetail();
     if (!visibleIdMap(data)[id]) return { error: 'No such visible node' };
     var wrapper = allNodeById(data)[id];
     if (!wrapper) return { error: 'No such node' };
@@ -419,7 +436,50 @@
     return { error: 'No simulated endpoint for ' + path };
   }
 
+  // Live mode: the same reads, answered by the server. Other paths answer a 404-shaped error.
+  function liveAnswer(status, payload) { return { ok: status >= 200 && status < 300 && !payload.error, status: status, json: function () { return Promise.resolve(payload); } }; }
+  function acceptGraph(body) {
+    var el = (body && body.elements) || {}, nodes = el.nodes || [], edges = el.edges || [];
+    var selfId = body && body.self_item_id != null ? String(body.self_item_id) : null;
+    if (selfId && !nodes.some(function (w) { return w && w.data && w.data.id === selfId; })) selfId = null;
+    function alias(id) { return selfId && id === selfId ? 'grove-self' : id; }
+    live = {
+      selfId: selfId,
+      nodes: nodes.map(function (w) { var d = Object.assign({}, w.data); d.id = alias(d.id); return { data: d }; }),
+      edges: edges.map(function (w) { var d = Object.assign({}, w.data); d.source = alias(d.source); d.target = alias(d.target); return { data: d }; }),
+    };
+    return Object.assign({}, body, { elements: clone(liveElements()) });
+  }
+  function aliasDetail(body) {
+    if (!body || !body.node || !live.selfId || body.node.id !== live.selfId) return body;
+    return Object.assign({}, body, { node: Object.assign({}, body.node, { id: 'grove-self' }) });
+  }
+  function liveApi(rawUrl) {
+    var G = window.GroveLive, url = new URL(rawUrl, window.location.href), path = url.pathname, target = null, kind = '';
+    if (!G) return Promise.resolve(liveAnswer(404, { error: 'Grove is not connected' }));
+    if (path === '/api/graph') { target = G.ENDPOINTS.graph + url.search; kind = 'graph'; }
+    else if (path.indexOf('/api/node/') === 0) {
+      var id = decodeURIComponent(path.slice('/api/node/'.length));
+      if (id === 'grove-self') {
+        if (!live.selfId) return Promise.resolve(state.onboardingStep > 0 || state.onboardingComplete ? liveAnswer(200, selfDetail()) : liveAnswer(404, { error: 'No such visible node' }));
+        id = live.selfId;
+      }
+      target = G.ENDPOINTS.node + encodeURIComponent(id) + url.search; kind = 'node';
+    }
+    else if (path === '/api/schema') target = G.ENDPOINTS.schema;
+    else if (path === '/api/health' || path === '/health') target = G.ENDPOINTS.health;
+    else return Promise.resolve(liveAnswer(404, { error: 'No live endpoint for ' + path }));
+    return G.getJSON(target).then(function (res) {
+      var body = res.body || {};
+      if (!res.ok) return liveAnswer(res.status || 500, { error: G.errorText(body), code: (body.error && body.error.code) || null });
+      if (kind === 'graph') body = acceptGraph(body);
+      else if (kind === 'node') body = aliasDetail(body);
+      return liveAnswer(res.status, body);
+    });
+  }
+
   window.groveApi = function (url) {
+    if (LIVE) return liveApi(url);
     return fixturePromise.then(function (data) {
       fixture = data;
       var payload = route(data, url);
@@ -431,6 +491,10 @@
     addMcpClient:addMcpClient, removeMcpClient:removeMcpClient, acknowledgeChanges:acknowledgeChanges, addFile:addFile, removeFile:removeFile, updateSource:updateSource, cancelExport:cancelExport, saveGrowth:saveGrowth, clearGrove:clearGrove, getChanges:getChanges, getState: getState, getSources: getSources, setName: setName, setStep: setStep,
     importSource: importSource, completeOnboarding: completeOnboarding, completeTour: completeTour,
     signIn: signIn, signOut:signOut, answerRequest:answerRequest, disconnectSource: disconnectSource, disconnectHost: disconnectHost, resetOnboarding: resetOnboarding, connectHost: connectHost, requestExport: requestExport, connectGoogle: connectGoogle,
+    // Live mode: true when no fixture is injected; realId maps a view id back to the item id
+    // (the identity node to the self item, null when the identity node is the sim's own).
+    isLive: function () { return LIVE; },
+    realId: function (id) { if (!LIVE || id == null) return null; return id === 'grove-self' ? live.selfId : String(id); },
   };
 
   fixturePromise.then(function(data){
@@ -443,6 +507,6 @@
       if(a.status==='ready')a.loadedCount=ids.length;
       if(id==='notes'&&!a.kind){a.kind='file';a.label=state.sources.notes.name||'Imported notes';state.files.notes={id:'notes',name:a.label};}
       if(a.status==='importing')scheduleAccount(id);
-    });refreshSources();seedRequests();announce();requestReload();
+    });refreshSources();seedRequests();announce();if(!LIVE)requestReload(); // live: native-app's boot load reads the graph
   }).catch(function(error){console.error(error);});
 })();

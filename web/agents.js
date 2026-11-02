@@ -45,6 +45,14 @@
   var HUB = { company: 1, project: 1 };
   var LOW_SIGNAL = { event: 1, observation: 1, status_change: 1, task: 1, decision: 1 };
   var HUB_TEXT = '#1a1a1a';
+  // Grove's starter kinds borrow the sim's styles here too, as in native-app.js (map in web/live.js).
+  var KIND_STYLE = (window.GroveLive && window.GroveLive.KIND_STYLE) || {};
+  Object.keys(KIND_STYLE).forEach(function (kind) {
+    var style = KIND_STYLE[kind];
+    if (SIZES[kind] == null && SIZES[style] != null) SIZES[kind] = SIZES[style];
+    if (TIER[kind] == null && TIER[style] != null) TIER[kind] = TIER[style];
+    if (HUB[style]) HUB[kind] = 1;
+  });
 
   var params = new URLSearchParams(window.location.search);
   var on = false;
@@ -1146,44 +1154,9 @@
     renderNote();
   }
 
-  function buildBar() {
-    barEl = document.createElement('div');
-    barEl.className = 'hood-bar';
-    barEl.setAttribute('aria-label','Simulation playback');
-    barEl.title='Simulation playback — preview controls only';
-    barEl.innerHTML =
-      '<button class="icon-btn hood-play" aria-label="pause"></button>' +
-      '<div class="hood-track"></div>' +
-      '<button class="hood-speed" aria-label="speed"></button>';
-    document.body.appendChild(barEl);
-    playEl = barEl.querySelector('.hood-play');
-    speedEl = barEl.querySelector('.hood-speed');
-    var track = barEl.querySelector('.hood-track');
-    var W = 300, gapTurn = 3, gapRound = 9;
-    var gaps = 0;
-    turns.forEach(function (tn, i) { if (i) gaps += turns[i - 1].round !== tn.round ? gapRound : gapTurn; });
-    var px = (W - gaps) / total, x = 0;
-    segEls = turns.map(function (tn, i) {
-      if (i) x += turns[i - 1].round !== tn.round ? gapRound : gapTurn;
-      var w = Math.max(6, (tn.t1 - tn.t0) * px);
-      var seg = document.createElement('div');
-      seg.className = 'hood-seg';
-      seg.style.left = x + 'px';
-      seg.style.width = w + 'px';
-      seg.title = AGENTS[tn.p].name + (tn.real ? ', its turn at ' + tn.at : ', its next turn');
-      seg.innerHTML = '<span class="hood-seg-bg"></span><span class="hood-seg-fill"></span>';
-      seg.addEventListener('click', function (e) {
-        var f = Math.max(0, Math.min(1, e.offsetX / w));
-        simT = tn.t0 + f * (tn.t1 - tn.t0);
-      });
-      track.appendChild(seg);
-      x += w;
-      return seg;
-    });
-    track.style.width = x + 'px';
-    playEl.addEventListener('click', function () { playing = !playing; });
-    speedEl.addEventListener('click', function () { speed = SPEEDS[(SPEEDS.indexOf(speed) + 1) % SPEEDS.length]; });
-  }
+  // The simulation's bottom playback bar (play, pause, speed, seek) is not part of the product:
+  // nothing is built, barEl stays null, and updateChrome paints only the score.
+  function buildBar() {}
 
   // A small score per agent: what it has done so far in the loop, ticking as it changes.
   var SCORE = [
@@ -1259,20 +1232,22 @@
   var PAUSE = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><rect x="7" y="5.5" width="3.4" height="13" rx="0.8"/><rect x="13.6" y="5.5" width="3.4" height="13" rx="0.8"/></svg>';
   var chromeState = '';
   function updateChrome() {
-    if (!barEl) return;
+    if (!barEl && !scoreEl) return;   // the bar is gone; the score panel still updates
     var key = theme + '|' + playing + '|' + speed + '|' + Math.round(simT / 120);
     if (key === chromeState) return;
     chromeState = key;
-    playEl.innerHTML = playing ? PAUSE : PLAY;
-    playEl.setAttribute('aria-label', playing ? 'pause' : 'play');
-    speedEl.textContent = speed + '×';
-    turns.forEach(function (tn, j) {
-      var f = simT <= tn.t0 ? 0 : simT >= tn.t1 ? 1 : (simT - tn.t0) / (tn.t1 - tn.t0);
-      var seg = segEls[j];
-      seg.firstChild.style.background = col[tn.p];
-      seg.lastChild.style.background = col[tn.p];
-      seg.lastChild.style.width = (f * 100) + '%';
-    });
+    if (barEl) {
+      playEl.innerHTML = playing ? PAUSE : PLAY;
+      playEl.setAttribute('aria-label', playing ? 'pause' : 'play');
+      speedEl.textContent = speed + '×';
+      turns.forEach(function (tn, j) {
+        var f = simT <= tn.t0 ? 0 : simT >= tn.t1 ? 1 : (simT - tn.t0) / (tn.t1 - tn.t0);
+        var seg = segEls[j];
+        seg.firstChild.style.background = col[tn.p];
+        seg.lastChild.style.background = col[tn.p];
+        seg.lastChild.style.width = (f * 100) + '%';
+      });
+    }
     paintScore();
     window.dispatchEvent(new CustomEvent('grove:care'));
     renderNote();

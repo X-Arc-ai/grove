@@ -1,0 +1,107 @@
+/* Grove live mode: the server calls the views make, in one place.
+ * Loaded before simulation.js. When no fixture is injected (only the checks inject one),
+ * simulation.js routes the native graph's /api/* reads here, and product.js signs in
+ * through the auth calls below. Every request carries the session cookie (same origin).
+ */
+(function () {
+  'use strict';
+
+  // Every server path the views call. Nothing else in web/ names a server path.
+  var ENDPOINTS = {
+    session: '/v1/views/session',
+    graph: '/v1/views/graph',
+    node: '/v1/views/node/',
+    schema: '/v1/views/schema',
+    health: '/v1/views/health',
+    positions: '/v1/views/positions',
+    googleStart: '/v1/auth/google/start?next=/',
+    emailStart: '/v1/auth/email/start',
+    emailVerify: '/v1/auth/email/verify',
+    logout: '/v1/auth/logout',
+  };
+
+  // Grove's starter kinds draw with the sim's visual types. The data keeps the real kind
+  // name (legend, search, panel); only size, tier, hub role and ring colour are borrowed.
+  // person, task, event, observation and decision are sim types already; any other kind
+  // draws in the task style under its own name.
+  var KIND_STYLE = {
+    organisation: 'company',
+    plan: 'project',
+    place: 'instance',
+    problem: 'blocker',
+    assumption: 'pattern',
+    trip: 'goal',
+    period: 'roadmap',
+    belief: 'pattern',
+  };
+
+  var MAX_POSITIONS = 5000;   // the server takes 1 to 5000 entries per request
+  var MAX_COORD = 1e7;        // and refuses a coordinate beyond this
+
+  function read(response) {
+    return response.text().then(function (text) {
+      var body = null;
+      try { body = text ? JSON.parse(text) : null; } catch (_) { body = null; }
+      return { ok: !!response.ok, status: response.status, body: body };
+    });
+  }
+
+  // Resolves {ok, status, body} for any HTTP answer; rejects only when the request fails.
+  function request(method, path, body) {
+    var init = { method: method, credentials: 'same-origin', headers: { Accept: 'application/json' } };
+    if (body !== undefined) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+    return window.fetch(path, init).then(read);
+  }
+  function getJSON(path) { return request('GET', path); }
+  function postJSON(path, body) { return request('POST', path, body === undefined ? {} : body); }
+
+  // A typed server error ({"error": {"code", "message", ...}}) as one line of text.
+  function errorText(body, fallback) {
+    var error = body && body.error;
+    if (error && typeof error === 'object' && error.message) return String(error.message);
+    if (typeof error === 'string' && error) return error;
+    return fallback || 'Grove could not complete that request';
+  }
+
+  // Positions are insert-only on the server: an item that already has one keeps it.
+  // Batches go one after another; a failed batch rejects, and the caller retries next load.
+  function savePositions(list) {
+    var clean = (list || []).filter(function (p) {
+      return p && typeof p.id === 'string' && p.id &&
+        typeof p.x === 'number' && typeof p.y === 'number' && isFinite(p.x) && isFinite(p.y) &&
+        Math.abs(p.x) <= MAX_COORD && Math.abs(p.y) <= MAX_COORD;
+    }).map(function (p) { return { id: p.id, x: p.x, y: p.y }; });
+    var batches = [];
+    for (var i = 0; i < clean.length; i += MAX_POSITIONS) batches.push(clean.slice(i, i + MAX_POSITIONS));
+    return batches.reduce(function (chain, batch) {
+      return chain.then(function (results) {
+        return postJSON(ENDPOINTS.positions, { positions: batch }).then(function (res) {
+          if (!res.ok) throw new Error(errorText(res.body, 'Positions were not saved (' + res.status + ')'));
+          results.push(res.body);
+          return results;
+        });
+      });
+    }, Promise.resolve([]));
+  }
+
+  window.GroveLive = {
+    ENDPOINTS: ENDPOINTS,
+    KIND_STYLE: KIND_STYLE,
+    getJSON: getJSON,
+    postJSON: postJSON,
+    errorText: errorText,
+    savePositions: savePositions,
+    // GET the session: 200 {signed_in, self_item_id} when signed in, 401 otherwise.
+    session: function () { return getJSON(ENDPOINTS.session); },
+    // Google signs in on its own pages and comes back to the start of the app.
+    googleSignIn: function () { window.location.assign(ENDPOINTS.googleStart); },
+    emailStart: function (email) { return postJSON(ENDPOINTS.emailStart, { email: String(email || '').trim() }); },
+    emailVerify: function (email, code) {
+      return postJSON(ENDPOINTS.emailVerify, { email: String(email || '').trim(), code: String(code || '').trim() });
+    },
+    logout: function () { return postJSON(ENDPOINTS.logout); },
+  };
+})();
