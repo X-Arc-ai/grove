@@ -197,8 +197,9 @@ class ScreeningConfig:
     def from_environment(
         cls, *, own_identifiers: Iterable[str] = (), sensitive_classes: Iterable[str] = ()
     ) -> "ScreeningConfig":
-        """GROVE_RENAME_MAP and GROVE_DENYLIST name the files. Unset is empty; any fault in a
-        set file is a ConfigError, so the screener never runs half-configured."""
+        """GROVE_RENAME_MAP and GROVE_DENYLIST name the files. Unset is empty outside production
+        and a ConfigError with GROVE_ENV=production; any fault in a set file is a ConfigError, so
+        the screener never runs half-configured."""
         settings = load_screening_settings()
         return cls(
             rename=load_rename_map(settings.rename_map, RENAME_MAP_VAR),

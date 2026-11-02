@@ -299,6 +299,7 @@ def write_screened_source(
     if type(parser_version) is not str or _CODE.fullmatch(parser_version) is None:
         raise ValueError("parser_version is not a code")
     counts = _checked_counts(screened.counts)
+    _connector(tx, connector_id)
 
     at = clock.now(_world_of(tx))
     tx.run(
