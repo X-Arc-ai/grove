@@ -105,7 +105,7 @@ what an earlier one did.
 |---|---|---|---|
 | `create_item` | U C K P | **op_id**, **kind** (id, name or alias), **title**, **became_true**, **evidence_refs**, **reason**, temp_id, summary, body, properties (object of declared property names), search_terms (list of strings), status (required for a kind whose lifecycle class is `work_with_state`, optional for the others), recheck_by, recheck_how, distinct_from (list of `{item, reason}`) | `+ item 9a1e0c33 (task): <title>` |
 | `update_item` | U C K P | **op_id**, **item**, **version**, **fields** (any of title, summary, body, properties, search_terms, became_true, recheck_by, recheck_how), **evidence_refs**, **reason** | `* item 44b0aa12: <field>=<value>` |
-| `change_status` | U C K P W | **op_id**, **item**, **status**, **evidence_refs**, **reason**, version, stopped_being_true (terminal roles only), recheck_by | `* item 44b0aa12: status=<status>` |
+| `change_status` | U C K P W | **op_id**, **item**, **status**, **evidence_refs**, **reason**, version, stopped_being_true (terminal roles only, and refused on a change that goes to history only), recheck_by | `* item 44b0aa12: status=<status>` |
 | `end_item` | U C K P | **op_id**, **item**, **end_class**, **stopped_being_true**, **evidence_refs**, **reason**, version | `x item 44b0aa12 (<end class>)` |
 | `reopen_item` | C K P | **op_id**, **item**, **reason**, evidence_refs, recheck_by, version. Its world time comes from evidence_refs; with none it is unknown (its entries carry no world time and the status since is left unset), never the processing time | `^ item 44b0aa12 reopened` |
 | `create_link` | U C K P H | **op_id**, **from**, **meaning** (id, name or alias), **to**, **became_true**, **evidence_refs**, **reason**, temp_id, recheck_by, recheck_how, original_phrase (generic meaning only) | `> link 5c21aa90: 9a1e0c33 -[blocks]-> 31cdee01` |
@@ -161,7 +161,7 @@ time as `world_time` (ISO text).
 |---|---|---|
 | A caller with no write scope is refused by every operation | `scope_denied` | `test_bypass.py` |
 | An operation from a caller kind it does not list is refused | `scope_denied` | `test_bypass.py` |
-| A kind, a meaning or a status must exist after alias resolution, at create and at a status change | `unknown_kind`, `unknown_meaning`, `unknown_status` | `test_contract_d1.py`, `test_contract_d2.py` |
+| A kind or a meaning must exist after alias resolution; a status must be in the kind's vocabulary, at create and at a status change | `unknown_kind`, `unknown_meaning`, `unknown_status` | `test_contract_d1.py`, `test_contract_d2.py` |
 | A reversed alias swaps the endpoints | (none) | `test_contract_d1.py` |
 | Endpoint kinds must match the meaning | `endpoint_kind_mismatch` | `test_contract_d1.py` |
 | One active link per (from, meaning, to): a restatement adds evidence, not a link | (none) | `test_contract_d1.py` |
@@ -190,7 +190,7 @@ time as `world_time` (ISO text).
 | `end_item` and `end_link` need a valid end class and a world end time; `reopen_item` needs a reason; `end_evidence` needs a valid end reason | `invalid_arguments` (rules `missing_field`, `enum`) | `test_contract_d2.py` |
 | `attach_evidence` needs a target that exists, and is unique on message key, target and polarity | `not_found` (rule `target_not_found`) | `test_contract_d2.py` |
 | An item, a link or an evidence row ends once | `invalid_arguments` (rule `already_ended`) | `test_contract_d2.py` |
-| Only a terminal status carries `stopped_being_true` | `invalid_arguments` (rule `stopped_needs_terminal`) | `test_contract_d2.py` |
+| Only a terminal status carries `stopped_being_true`, and a change that goes to history only cannot carry it (the writer has no place to store it, so it refuses and never drops it) | `invalid_arguments` (rules `stopped_needs_terminal`, `stopped_on_history_only`) | `test_contract_d2.py` |
 | Only a link of the generic meaning keeps an original phrase | `invalid_arguments` (rule `original_phrase`) | `test_contract_d2.py` |
 | A stale version is refused | `version_conflict` | `test_contract_d2.py` |
 | One invalid operation rolls back the whole batch; a dependent of an operation refused at the end of the batch is named too; a failed commit raises and returns no receipt; an unknown commit outcome or an unreadable receipt is never a retryable "nothing written" | (none) | `test_atomicity.py` |
