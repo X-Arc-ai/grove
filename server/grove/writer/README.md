@@ -173,10 +173,10 @@ time as `world_time` (ISO text).
 | No new consequence link to an ended item: ended by `end_item`, or at a terminal status | `ended_target` | `test_contract_d1.py` |
 | `create_link` checks its endpoints under their write lock | (none) | `test_atomicity.py` |
 | An item of a work kind (lifecycle class `work_with_state`) is created with a status | `unknown_status` (rule `status_required`, with the valid list) | `test_contract_d2.py` |
-| Every claim names evidence; an evidence row names an episode read from its cited source and a locator that resolves | `missing_provenance`, `unresolvable_locator` | `test_contract_d2.py` |
-| A caller-supplied source type is refused; a caller's speaker kind never raises a row's source type | `caller_source_type` | `test_contract_d2.py` |
+| Every claim names evidence; an evidence row names an episode read from its cited source and a locator that resolves; a forgotten source is not citable | `missing_provenance`, `unresolvable_locator` (rule `source_forgotten`) | `test_contract_d2.py` |
+| A caller-supplied source type is refused; a caller's speaker kind never raises a row's source type; a scripted connector takes the source type of the connector type it imitates | `caller_source_type` | `test_contract_d2.py` |
 | An evidence row cited by `evidence_id` must be active | `missing_provenance` (rule `evidence_not_found`) | `test_contract_d2.py` |
-| A change entry or a provenance names a real evidence row, also when the cited row existed already | (none) | `test_contract_d2.py` |
+| A change entry or a provenance names a real evidence row, also when the cited row existed already; one message cited twice in one operation writes one row | (none) | `test_contract_d2.py` |
 | Became true is a clock or "unknown"; an end may not precede a start; a terminal status at create stores its end time | `missing_became_true`, `end_before_start` | `test_contract_d2.py` |
 | Required fields and required links of the kind hold on create and on every update, against the merged state; an update may not blank the title or a required field | `invalid_arguments` (rules `required_field`, `required_link`) | `test_contract_d2.py` |
 | Only verify moves last confirmed | `invalid_arguments` (rule `verify_only`) | `test_contract_d2.py` |
@@ -184,7 +184,7 @@ time as `world_time` (ISO text).
 | A cited verdict must be a recorded judgment; a caller's score, weight, band or load-bearing flag is refused | `unrecorded_verdict`, `caller_score` | `test_contract_d2.py` |
 | A contradicting row on a belief cites two recorded judgments of this belief (subject `belief:<id>`, a judge role, and the cited evidence row when the judgment names one), from two models, that both say it contradicts | `unrecorded_verdict` (rules `judgment_subject`, `judgment_role`, `judgment_evidence`), `second_judge_required`, `judges_disagree`, `judge_not_supports` (rule `judge_not_contradicts`) | `test_contract_d2.py` |
 | A terminal done, also one that goes to history only, needs in its batch an observed confirming row (written or cited again), or a rolled-up row whose premises are active confirming rows of the item's parts (linked by a meaning that rolls up completion), with every part at a terminal role and every done part covered | `terminal_needs_confirmation` | `test_contract_d2.py` |
-| A near-duplicate title needs `distinct_from` with a reason | `near_duplicate`, `invalid_arguments` (rule `distinct_reason`) | `test_contract_d2.py` |
+| A near-duplicate title (of an item's title or of an alias of the item) needs `distinct_from` with a reason | `near_duplicate`, `invalid_arguments` (rule `distinct_reason`) | `test_contract_d2.py` |
 | An inferred or rolled-up row names its premises, each an active evidence row of this world | `inferred_evidence` (rules `premises_required`, `premise_not_found`) | `test_contract_d2.py` |
 | `end_link` never ends a link of a primitive meaning | `unknown_meaning` (rule `primitive_meaning`) | `test_contract_d2.py` |
 | `end_item` and `end_link` need a valid end class and a world end time; `reopen_item` needs a reason; `end_evidence` needs a valid end reason | `invalid_arguments` (rules `missing_field`, `enum`) | `test_contract_d2.py` |
