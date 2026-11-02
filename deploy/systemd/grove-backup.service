@@ -6,4 +6,7 @@ After=docker.service
 [Service]
 Type=oneshot
 ExecStart=/opt/grove/src/deploy/backup.sh
+# Runs after every run, also after a KILL that skipped the script's own restart.
+ExecStopPost=/opt/grove/src/deploy/services-up.sh
 TimeoutStartSec=1h
+TimeoutStopSec=10min

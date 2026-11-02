@@ -33,15 +33,28 @@ record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: start"
 compose build api runner
 compose up --detach --wait neo4j
 # The migrations run from the image's copy of the checkout's server/ folder (store-map open point).
-compose run --rm --no-deps -T api python -m grove.writer.migrate
+compose_run api python -m grove.writer.migrate
 compose up --detach --wait --remove-orphans api runner
 mkdir -p "$GROVE_STATE"
 printf '%s\n' "$sha" >"$GROVE_STATE/deployed.sha"
 
-if "$here/smoke.sh" "$(public_base_url)" "$sha"; then
+if "$here/smoke.sh" "$(public_base_url)" "$sha" </dev/null; then
     record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: served, smoke ok"
 else
     record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: served, smoke FAILED"
     exit 1
 fi
+
+# Keep the images of this build and of the one it replaced, for a fast roll back; drop the rest.
+keep=" $sha ${previous:-} "
+docker image ls --format '{{.Repository}}:{{.Tag}}' | while read -r image; do
+    case $image in
+        grove-api:* | grove-runner:*)
+            case $keep in
+                *" ${image#*:} "*) ;;
+                *) docker image rm "$image" >/dev/null || log "could not remove $image" ;;
+            esac
+            ;;
+    esac
+done
 docker image prune --force >/dev/null
