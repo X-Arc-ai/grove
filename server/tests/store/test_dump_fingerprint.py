@@ -3,9 +3,9 @@
 import json
 import os
 from datetime import UTC, datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
 
 import pytest
+import pytz
 
 # The driver's time types, through the store module: only server/grove/store/ imports neo4j.
 from grove.store.dump_fingerprint import (
@@ -234,7 +234,11 @@ def test_the_live_index_rows_carry_their_options(driver, migrated):
 
 def test_the_encoding_keeps_a_zone_name_nanoseconds_a_srid_and_bytes_apart():
     fixed = DateTime(2026, 7, 1, 9, 0, 0, tzinfo=timezone(timedelta(hours=2)))
-    named = DateTime(2026, 7, 1, 9, 0, 0, tzinfo=ZoneInfo("Europe/Paris"))
+    # A pytz zone, as the driver itself returns. A stdlib ZoneInfo in a driver DateTime can crash
+    # the interpreter: its utcoffset reads the object as a stdlib datetime.
+    utc = DateTime(2026, 7, 1, 7, 0, 0, tzinfo=pytz.UTC)
+    named = utc.as_timezone(pytz.timezone("Europe/Paris"))
+    assert named.iso_format() == fixed.iso_format()
     assert encode(fixed) != encode(named)
     assert encode(Duration(seconds=1)) != encode(Duration(seconds=1, nanoseconds=1))
 

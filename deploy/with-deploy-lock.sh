@@ -53,21 +53,38 @@ take_over_stale() {
     mkdir "$lock" 2>/dev/null
 }
 
-mkdir -p "$(dirname "$lock")"
-if ! mkdir "$lock" 2>/dev/null; then
-    take_over_stale || refuse
-fi
-token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-printf 'token=%s\nholder=%s\npid=%s\nsince=%s\nsince_epoch=%s\n' "$token" \
-    "${GROVE_LOCK_HOLDER:-unnamed}" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date +%s)" \
-    >"$lock/owner"
-
 release_if_mine() {
     if grep -qx "token=$1" "$2/owner" 2>/dev/null; then
         rm -f "$2/owner"
         rmdir "$2" 2>/dev/null || true
     fi
 }
+
+token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+releaser=""
+
+finish() {
+    local status=$?
+    release_if_mine "$token" "$lock"
+    if [ -n "$releaser" ]; then kill "$releaser" 2>/dev/null || true; fi
+    exit "$status"
+}
+
+# Set before the lock is taken, so an owner file always means these are in place. bash runs them
+# only after the command below ends, so a signal to this shell alone keeps the lock while the
+# command runs. With no HUP trap, a HUP to this shell alone would free the lock at once. A closed
+# terminal signals the whole group, so the command ends too; the box lock still guards the box.
+trap finish EXIT
+trap 'exit 130' INT TERM
+trap 'exit 129' HUP
+
+mkdir -p "$(dirname "$lock")"
+if ! mkdir "$lock" 2>/dev/null; then
+    take_over_stale || refuse
+fi
+printf 'token=%s\nholder=%s\npid=%s\nsince=%s\nsince_epoch=%s\n' "$token" \
+    "${GROVE_LOCK_HOLDER:-unnamed}" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date +%s)" \
+    >"$lock/owner"
 
 # The releaser runs in a process group of its own (job control on for this one start), so a kill
 # of the holder's whole group leaves it alive. A TERM to it also ends its sleep, so a normal
@@ -81,17 +98,5 @@ wait "$nap"
 release_if_mine "$2" "$3"' releaser "$cap" "$token" "$lock" </dev/null >/dev/null 2>&1 &
 releaser=$!
 set +m
-
-finish() {
-    local status=$?
-    release_if_mine "$token" "$lock"
-    kill "$releaser" 2>/dev/null || true
-    exit "$status"
-}
-trap finish EXIT
-# bash runs these only after the command below ends, so the lock stays while it runs, also when a
-# closed terminal sends HUP. With no trap, a HUP would end this shell and free the lock at once.
-trap 'exit 130' INT TERM
-trap 'exit 129' HUP
 
 "$@"

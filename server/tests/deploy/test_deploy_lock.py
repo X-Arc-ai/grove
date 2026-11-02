@@ -190,7 +190,7 @@ def test_a_fresh_lock_folder_with_no_owner_file_is_held_and_says_so(tmp_path):
 
 @pytest.mark.parametrize(("signal_", "status"), [(signal.SIGHUP, 129), (signal.SIGTERM, 130)])
 def test_a_signal_to_the_holder_keeps_the_lock_until_the_command_ends(tmp_path, signal_, status):
-    """A closed terminal must not free the lock while the deploy still runs."""
+    """A signal to the holder alone must not free the lock while the command runs."""
     lock = tmp_path / "deploy.lock.d"
     holder = subprocess.Popen(
         ["bash", str(SCRIPT), "sleep", "3"], env=_env(tmp_path), start_new_session=True
