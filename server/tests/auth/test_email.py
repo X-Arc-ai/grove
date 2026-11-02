@@ -281,6 +281,19 @@ def test_an_invalid_address_is_400_naming_the_field_and_not_the_value(address, c
         assert address not in response.text
 
 
+def test_a_look_alike_address_reaches_no_other_account(client, driver, accounts, mailer):
+    """U+212A, the Kelvin sign, lowers to k. A start with it must be refused, not mailed."""
+    victim = "k" + accounts.address()
+    look_alike = "\u212a" + victim[1:]
+    # The collision this rule closes: both forms give one account key.
+    assert email_hash(look_alike) == email_hash(victim)
+    sent = len(mailer.sent)
+    response = client.post(START, json={"email": look_alike})
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["field"] == "email"
+    assert len(mailer.sent) == sent
+
+
 def test_a_lone_surrogate_in_an_address_is_400(client):
     body = b'{"email": "\\ud800@example.test"}'
     response = client.post(START, content=body, headers={"Content-Type": "application/json"})

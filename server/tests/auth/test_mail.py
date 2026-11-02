@@ -94,7 +94,13 @@ def test_the_environment_gives_a_mailer_only_with_both_values(monkeypatch):
 
 @pytest.mark.parametrize(
     "address",
-    [ADDRESS, "a@b.co", "a+tag@sub.example.test", "ä@example.test", "x" * 240 + "@example.test"],
+    [ADDRESS, "a@b.co", "a+tag@sub.example.test", "x" * 240 + "@example.test"],
 )
 def test_a_valid_address(address):
     assert valid_address(address) is True
+
+
+@pytest.mark.parametrize("address", ["\u212aate@example.test", "ä@example.test", "a@exämple.test"])
+def test_a_non_ascii_address_is_refused(address):
+    # The Kelvin sign lowers to k: as an account key it would reach kate@example.test.
+    assert valid_address(address) is False
