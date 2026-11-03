@@ -251,7 +251,7 @@ A point that a later lane resolves leaves the table above and is listed here wit
 | Point | Spec lines | Resolved by |
 |---|---|---|
 | The newest-id part of the fingerprint for a table with no id, and whether a rebuild keeps `touched_at`. | 812, 922 | `writer-b`: S49, the greatest value of the first unique key; S47, a rebuild sets `touched_at` to the last entry's recorded time and the fingerprint leaves it out |
-| D3's restore had not run on this store. | 806 to 808, 3065 | `writer-b`: S49, `grove.writer.restore`, with both restore paths tested |
+| D3's restore has not run on this store: the rebuild from history, the forget-ledger replay and D3's fingerprint. | 806 to 808, 3065 | `writer-b`: S49, `grove.writer.restore`, with both restore paths tested |
 | The as-of reads called `standing` with rows that held no evidence fields and no planned origin as they stood then. | 814, 826, 832 | `writer-b`: S48, both reads compute them at their own time and call `standings_of` |
 | A late terminal status that goes to history only stored no stop clock, and `change_status` refused one there. | 3160 | `writer-b`: S47, the stop clock is a history-only entry, and a world-axis read drops it under a later live status |
 | A "corrected by" or "superseded by" link with a future start would overtake its item at once. | 832 | `writer-b`: S46, a successor link never starts after now |
