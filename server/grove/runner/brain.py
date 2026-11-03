@@ -118,8 +118,7 @@ def _request_input(query: WorldQuery, request_id: str, n0: int) -> tuple[dict, l
 
 def pass_input(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str, Any]:
     """The input packet (3.5 rule 3): the pass's requests or job, and the batch form."""
-    query, primitives = _world(driver, world_id)
-    registry = read_registry(query, primitives)
+    query = WorldQuery(driver, world_id)
     blocks: list[DataBlock] = []
     entries = []
     job = None
@@ -138,8 +137,7 @@ def pass_input(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str, 
                 "trigger": job_row.get("trigger"),
                 "items": json.loads(job_row.get("input_references") or "[]"),
             }
-    kinds = sorted({kind.name for kind in registry.kinds.values()})
-    meanings = sorted({meaning.name for meaning in registry.meanings.values()})
+    kinds, meanings = vocabulary(query)
     return {
         "world_id": world_id,
         "run_id": record["id"],
@@ -154,19 +152,85 @@ def pass_input(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str, 
     }
 
 
+FIELD_GUIDE = {
+    "create_item": "op_id, kind, title, became_true, evidence_refs, reason; optional temp_id "
+    "(a new id that starts with the dollar sign, for later ops of the batch), summary, status "
+    "(required for task, plan, problem and assumption), recheck_by (required with a live status)",
+    "create_link": "op_id, from, meaning, to, became_true, evidence_refs, reason; from and to are "
+    "item ids or temp ids of this batch; meaning is one of meanings",
+    "update_item": "op_id, item, version, fields, evidence_refs, reason",
+    "change_status": "op_id, item, status, evidence_refs, reason",
+    "became_true": "unknown, or earliest, latest, precision (minute, hour, day, month, year) and "
+    "words",
+    "evidence_refs": "a list of ev_id (an evidence row of this batch) or evidence_id (a row that "
+    "exists), each with polarity supports or contradicts",
+}
+
+
+def _ends(raw: object, kinds_by_id: dict[str, dict], by_class: dict[str, list[str]]) -> object:
+    """A meaning's from or to side as kind names: "any", or the kinds it takes."""
+    try:
+        side = json.loads(raw) if isinstance(raw, str) else {}
+    except ValueError:
+        side = {}
+    if not isinstance(side, dict) or side.get("any"):
+        return "any"
+    names = {kinds_by_id[k]["name"] for k in side.get("kinds") or [] if k in kinds_by_id}
+    for lifecycle in side.get("classes") or []:
+        names.update(by_class.get(lifecycle, []))
+    return sorted(names)
+
+
+def vocabulary(query: WorldQuery) -> tuple[list[dict], list[dict]]:
+    """The world's own kinds (with their lifecycle class and status words) and meanings (with
+    the kinds each end takes), so an agent picks a meaning that fits before the writer checks."""
+    kinds = {
+        row["id"]: row
+        for row in query.read(
+            "MATCH (k:Kind) WHERE k.status = 'canonical' RETURN k.id AS id, k.name AS name, "
+            "k.lifecycle_class AS class, k.status_vocabulary AS vocabulary"
+        )
+    }
+    by_class: dict[str, list[str]] = {}
+    for row in kinds.values():
+        by_class.setdefault(row["class"], []).append(row["name"])
+    kind_list = []
+    for row in sorted(kinds.values(), key=lambda r: r["name"]):
+        try:
+            words = [entry.get("status") for entry in json.loads(row["vocabulary"] or "[]")]
+        except (ValueError, AttributeError):
+            words = []
+        kind_list.append({"name": row["name"], "class": row["class"], "statuses": words})
+    meanings = [
+        {
+            "name": row["name"],
+            "from": _ends(row["from_kinds"], kinds, by_class),
+            "to": _ends(row["to_kinds"], kinds, by_class),
+        }
+        for row in query.read(
+            "MATCH (m:Meaning) WHERE m.status = 'canonical' RETURN m.name AS name, "
+            "m.from_kinds AS from_kinds, m.to_kinds AS to_kinds ORDER BY m.name"
+        )
+    ]
+    return kind_list, meanings
+
+
 def batch_form(entry: dict[str, Any] | None) -> dict[str, Any]:
     """A filled example of one batch for the first request: code writes it, so it is no slot in
-    an instruction file. The agent replaces the kind, the title, the clock and the reason."""
+    an instruction file. The agent replaces the kinds, the titles, the meaning, the clocks and
+    the reasons, and drops what the source does not state."""
     if entry is None:
         return {
             "note": "Cite an evidence row that already exists with evidence_id; read it with "
             "brain get.",
-            "ops": [],
+            "fields": FIELD_GUIDE,
         }
     message = entry["messages"][0] if entry["messages"] else {"message_key": None, "at": None}
     locator = "whole" if "whole" in entry["locators"] else (entry["locators"] or ["whole"])[0]
+    support = [{"ev_id": "e1", "polarity": "supports"}]
     return {
         "request_id": entry["request_id"],
+        "fields": FIELD_GUIDE,
         "batch": {
             "evidence": [
                 {
@@ -186,12 +250,33 @@ def batch_form(entry: dict[str, Any] | None) -> dict[str, Any]:
                 {
                     "op": "create_item",
                     "op_id": "o1",
+                    "temp_id": "$i1",
                     "kind": "person",
                     "title": "The name as the source gives it",
                     "became_true": "unknown",
-                    "evidence_refs": [{"ev_id": "e1", "polarity": "supports"}],
+                    "evidence_refs": support,
                     "reason": "what in the source says it",
-                }
+                },
+                {
+                    "op": "create_item",
+                    "op_id": "o2",
+                    "temp_id": "$i2",
+                    "kind": "place",
+                    "title": "A second thing the source names",
+                    "became_true": "unknown",
+                    "evidence_refs": support,
+                    "reason": "what in the source says it",
+                },
+                {
+                    "op": "create_link",
+                    "op_id": "o3",
+                    "from": "$i1",
+                    "meaning": "related to",
+                    "to": "$i2",
+                    "became_true": "unknown",
+                    "evidence_refs": support,
+                    "reason": "what in the source relates the two",
+                },
             ],
         },
     }
