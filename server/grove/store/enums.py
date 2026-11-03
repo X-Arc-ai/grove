@@ -74,6 +74,11 @@ ENUMS: dict[str, tuple[str, ...]] = {
     "cardinality": ("many", "one_per_source", "one_per_target"),
     # Line 1235.
     "downstream_end": ("from", "to"),
+    # O13, line 3241: every meaning is directed from its first endpoint to its second; a reversed
+    # phrasing is a reversed alias, never a second direction.
+    "direction": ("from_to",),
+    # O13: no list in the spec for property_names.value_type (line 3091).
+    "value_type": ("text", "number", "boolean", "date", "instant"),
     # Lines 1572, 1573.
     "registry_status": ("provisional", "canonical", "split", "retired"),
     "registry_origin": ("starter", "minted", "merged_from", "split_from"),

@@ -16,6 +16,7 @@ from grove.store.asof import replay
 from grove.store.current import TERMINAL_ROLES, has_ended
 from grove.store.normalise import reads_blank
 from grove.store.primitives import KIND_BELIEF, PRIMITIVE_MEANING_IDS
+from grove.writer import ontology
 from grove.writer.clocks import (
     Clock,
     clock_columns,
@@ -107,6 +108,7 @@ class _Run:
         # Rows that existed already and that an operation of this batch cited again.
         self.cited_evidence: list[dict[str, Any]] = []
         self.recompute: dict[str, str] = {}
+        self.ontology = ontology.OntologyState()
 
     @property
     def at(self) -> datetime:
@@ -381,6 +383,14 @@ def _check_properties(run: _Run, kind: dict[str, Any], properties: dict[str, Any
     for name, value in properties.items():
         declared = _declared_property(run, kind, name)
         _spelled_once(sent, declared["name"], name, value)
+        item_id = ontology.value_names_item(run.tx, value)
+        if item_id is not None:
+            raise Refused(
+                "invalid_arguments",
+                "value_names_item",
+                f"the value of {declared['name']!r} names an item: write a link to it instead",
+                {"property": declared["name"], "item": item_id},
+            )
         named[declared["name"]] = value
         if declared.get("temporal_class") == "state" and declared["name"] not in state:
             state.append(declared["name"])
@@ -1456,6 +1466,8 @@ _HANDLERS = {
     "end_link": _end_link,
     "attach_evidence": _attach_evidence,
     "end_evidence": _end_evidence,
+    "propose_word": ontology.propose_word,
+    "promote_word": ontology.promote_word,
 }
 
 
@@ -1604,10 +1616,12 @@ def _finish(run: _Run, ops: list[Any]) -> None:
                     {"alternative": "reported done"},
                 ),
             )
+    ontology.finish(run, ops)
     _refuse_dependents(run, ops)
     if not run.refused:
         for target_id, target_type in run.recompute.items():
             _recompute(run, target_id, target_type)
+        ontology.count_usage(run)
 
 
 def apply_ops(

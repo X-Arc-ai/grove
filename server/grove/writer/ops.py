@@ -104,6 +104,30 @@ OPS: dict[str, OpSpec] = {
         ("reason",),
         "-",
     ),
+    # D8's ontology operations (B.2: propose U C K; the rest K P). grove.writer.ontology checks
+    # the declared fields, the neighbours and the judgments; the shape is checked here.
+    "propose_word": OpSpec(
+        _callers("UCK"),
+        (
+            "op_id",
+            "word_type",
+            "name",
+            "description",
+            "reason",
+            "worked_example",
+            "neighbours",
+            "declared",
+            "judgment_ids",
+        ),
+        ("kind", "proposed_capability"),
+        "o",
+    ),
+    "promote_word": OpSpec(
+        _callers("KP"),
+        ("op_id", "word_type", "word", "reason"),
+        ("kind",),
+        "o",
+    ),
 }
 
 UPDATE_FIELDS = (
@@ -386,6 +410,42 @@ def _check_fields(name: str, op: dict[str, Any]) -> None:
         raise Refused(
             "invalid_arguments", "missing_field", "attach_evidence names ev_id or evidence_id", {}
         )
+    if name in ("propose_word", "promote_word"):
+        _word_op_fields(name, op)
+
+
+def _word_op_fields(name: str, op: dict[str, Any]) -> None:
+    """The form of an ontology operation; the registry checks run in grove.writer.ontology."""
+    _enum(op.get("word_type"), "word_type", ("kind", "meaning", "property_name"))
+    if (op.get("word_type") == "property_name") != ("kind" in op):
+        raise Refused(
+            "invalid_arguments",
+            "missing_field" if op.get("word_type") == "property_name" else "unknown_field",
+            "a property name names its kind, and only a property name does",
+            {"field": "kind"},
+        )
+    if name == "promote_word":
+        _text(op.get("word"), "word")
+        return
+    for key in ("name", "description"):
+        _text(op.get(key), key)
+    example = op.get("worked_example")
+    if (
+        not isinstance(example, dict)
+        or len(example) != 1
+        or not ({"ev_id", "evidence_id"} & set(example))
+    ):
+        raise Refused(
+            "invalid_arguments",
+            "worked_example",
+            "worked_example is {ev_id} or {evidence_id}: the evidence row of a use",
+            {"field": "worked_example"},
+        )
+    _text(next(iter(example.values())), "worked_example")
+    if not isinstance(op.get("neighbours"), list):
+        raise Refused("invalid_arguments", "type", "neighbours is a list", {"field": "neighbours"})
+    if not isinstance(op.get("declared"), dict):
+        raise Refused("invalid_arguments", "type", "declared is an object", {"field": "declared"})
 
 
 def _check_op(op: Any) -> None:
@@ -510,6 +570,9 @@ def cited_ev_ids(op: dict[str, Any]) -> list[str]:
     cited = [ref["ev_id"] for ref in op.get("evidence_refs") or [] if "ev_id" in ref]
     if op.get("op") == "attach_evidence" and isinstance(op.get("ev_id"), str):
         cited.append(op["ev_id"])
+    example = op.get("worked_example") if op.get("op") == "propose_word" else None
+    if isinstance(example, dict) and isinstance(example.get("ev_id"), str):
+        cited.append(example["ev_id"])
     return cited
 
 
