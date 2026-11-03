@@ -20,17 +20,27 @@ from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
 from grove.api.errors import install_error_handlers, not_found
+from grove.api.internal import PREFIX as INTERNAL_PREFIX
+from grove.api.internal import router as internal_router
 from grove.api.mail import Mailer
 from grove.api.oauth import OAUTH_PATHS, OAuthDeps
 from grove.api.views import PREFIX, router
 from grove.mcp.tools import DEFAULT_TOOLS, Tool
+from grove.runner.passes import PassSettings, RunnerAuth
 from grove.store.connection import Driver, open_driver
 from grove.views.session import SESSION_COOKIE
 
 __all__ = ["WEB_DIST_ENV", "create_app"]
 
 # Answers the person's data or a secret: no cache may keep a copy.
-NO_STORE_PATHS = (PREFIX, AUTH_PREFIX, uploads.PREFIX, *OAUTH_PATHS, "/.well-known/")
+NO_STORE_PATHS = (
+    PREFIX,
+    AUTH_PREFIX,
+    INTERNAL_PREFIX,
+    uploads.PREFIX,
+    *OAUTH_PATHS,
+    "/.well-known/",
+)
 # A store that is down must not hold a probe for the driver's default 30 s.
 DRIVER_OPTIONS = {"connection_timeout": 5.0, "connection_acquisition_timeout": 10.0}
 
@@ -72,11 +82,15 @@ def create_app(
     world_id_for: Callable[[str], str] | None = None,
     mcp_tools: Sequence[Tool] | None = None,
     oauth_deps: OAuthDeps | None = None,
+    runner_auth: RunnerAuth | None = None,
+    pass_settings: PassSettings | None = None,
 ) -> FastAPI:
     """With a driver, the caller owns it: the app never closes it. With no mailer or google_http,
     sign-in loads the real one at first use. world_id_for gives a test its own t_ worlds.
     mcp_tools is the tool set of /mcp (None means grove.mcp.tools.DEFAULT_TOOLS); oauth_deps hands
-    the OAuth routes a fake resolver and transport for metadata documents, or a smaller window."""
+    the OAuth routes a fake resolver and transport for metadata documents, or a smaller window.
+    With no runner_auth, the internal routes read GROVE_GATEWAY_SECRET and
+    GROVE_RUNNER_TOKEN_SHA256 at first use."""
     settings = settings or load_api_settings()
 
     @asynccontextmanager
@@ -104,6 +118,8 @@ def create_app(
     app.state.auth = AuthDeps(mailer=mailer, google_http=google_http, world_id_for=world_id_for)
     app.state.oauth = oauth_deps or OAuthDeps()
     app.state.mcp_tools = tuple(DEFAULT_TOOLS if mcp_tools is None else mcp_tools)
+    app.state.runner_auth = runner_auth
+    app.state.pass_settings = pass_settings
     if driver is not None:
         app.state.driver = driver
     install_error_handlers(app)
@@ -125,6 +141,7 @@ def create_app(
     app.include_router(router)
     app.include_router(uploads.router)
     app.include_router(auth_router)
+    app.include_router(internal_router)
     folder = os.environ.get(WEB_DIST_ENV)
     if folder:
         _add_web_pages(app, folder)

@@ -40,6 +40,8 @@ Probed live on 2026-11-02 with synthetic text.
 | `transcription` | Voice Transcribe | continues |
 | `verification` | Spark, low | waits |
 | `second_opinion` | Glimmer, medium | waits |
+| `word_judge` (the first judge of a proposed word, D8) | Spark, low | waits |
+| `second_opinion_fallback` (the correlated second judge when Glimmer cannot be reached) | Spark, low | waits |
 | `consolidation` | Spark, high | waits |
 | `explain_break` | Spark, low | waits |
 | `update_pass` (the Learner's gateway calls) | Spark, low | waits |
@@ -65,7 +67,7 @@ Glimmer's GPU seconds run from the start of the attempt that answered, so the 50
 
 ## The gateway
 
-The gateway is a FastAPI app (`grove.models.gateway`), served with `python -m grove.models.gateway` on `GROVE_GATEWAY_HOST:GROVE_GATEWAY_PORT` (`127.0.0.1:18300`). It holds the Meta key and the Glimmer key. OpenCode's provider key is a run token, minted with `grove.models.gateway_auth.mint` by whoever holds `GROVE_GATEWAY_SECRET`: it binds one world, one run and one job, and it expires (at most 6 hours).
+The gateway is a FastAPI app (`grove.models.gateway`), served with `python -m grove.models.gateway` on `GROVE_GATEWAY_HOST:GROVE_GATEWAY_PORT` (`127.0.0.1:18300`). It holds the Meta key and the Glimmer key. OpenCode's provider key is a run token, minted with `grove.models.gateway_auth.mint` by whoever holds `GROVE_GATEWAY_SECRET`: it binds one world, one run and one job, and it expires (at most 6 hours). The API mints one per pass, with the pass's token cap (`docs/runner.md`).
 
 For each call it refuses an unknown or contributor model and a model that does not chat, keeps only the fields and message keys it knows (so `store`, `ignore_eos` or `chat_template` never reach a provider), takes text parts, raster images as `data:` URLs, function tools and function tool calls only, and schemas that refer only inside themselves (a provider never fetches a URL or searches the web for an agent), applies the budget gate and the run cap, sets the effort from the job table (`reasoning_effort` for Spark, `chat_template_kwargs.reasoning_strength` for Glimmer; an effort the agent sends is dropped, so an agent cannot raise its own spend), keeps the output limit from 1,024 to 65,536, drops the fields Meta refuses, turns a `tool_choice` other than `"auto"` into `"auto"` (`"none"` removes the tools), adds a cache key from the system message, asks for the usage chunk on a stream, sends the call on, and writes it to `model_calls`. A stream reaches the client byte for byte. A pump task owns each stream and its record: when the client leaves, the pump reads on for up to 120 seconds to get the usage chunk, which Meta sends only at the end, so the real tokens count against the ceiling and the run cap; if the chunk never comes, the row carries an estimate of four characters a token. A call that fails, an answer that is not a JSON object or cannot be decoded, a redirect, and a stream the client closes early are written with their outcome; an empty completion is written as `invalid_output` and passes on as it came. A provider's error message reaches the caller with the keys the gateway holds, their parts, and any bearer value removed; a 200 answer and a stream pass as they came. An answer of any odd shape is still metered: a field that cannot be read counts as absent, and an answer with no token counts gets the estimate. A `budget_reached` refusal carries a `Retry-After` header with the seconds to the reset.
 
@@ -106,12 +108,11 @@ The rows in `model_calls` do not hold the true cost of this route. A short sessi
 | Point | Owner lane |
 |---|---|
 | The job table has no row for load-bearing verification. D15 keeps those claims running at the ceiling and defers only the low-stakes ones; `verification` waits today. Add the job when the lane exists. | `truth-clock` |
-| Who mints a run token, and how the runner holds `GROVE_GATEWAY_SECRET`. A pass needs a `token_cap`: the ceiling stops new calls, and the cap bounds one run. A pass that gets `budget_reached` leaves its requests queued. | `runner` |
-| The judge's verdicts: A.1 has this layer record them in `judgments`, and no writer exists yet. | `truth-clock` |
+| The judge's verdicts: `grove.writer.judgments.record_judgments` stores them (S20), and `grove.models.judge.judge_word` records the word judges through it (`docs/store-map.md`, O12). The verify judge must record through it too. | `truth-clock` |
 | `transcribe` takes WAV only and no contact names or language bias: the forms probed for those fields were refused, and other encodings are not probed. | `ingest-a` |
 | `brain fetch` must send through `AllowlistTransport`, not call `EgressPolicy.check` and then use another client: the transport is what checks each redirect hop. | `cleanup` |
 | A process kill between an answer and its record loses that row, and so does a store failure at that moment. | `runner`, `deploy-a` |
-| The runner's network rules: a process that opens its own socket is out of the allowlist's reach. `GROVE_GATEWAY_HOST` has no loopback check, because a container network may need another address. | `runner`, `deploy-a` |
+| The runner's network rules: a process that opens its own socket is out of the allowlist's reach. The runner network is internal and its bridge is named `grove-runner`; the host firewall rule on it is still to write. `GROVE_GATEWAY_HOST` is `0.0.0.0` in the gateway's container, so the runner reaches it at `http://gateway:18300/v1`. | `deploy-b` |
 
 ## Tests
 

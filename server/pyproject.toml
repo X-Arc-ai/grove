@@ -5,6 +5,7 @@ description = "Grove: a live, time-aware representation of your world, built on 
 requires-python = ">=3.12,<3.13"
 license = { text = "Apache-2.0" }
 dependencies = [
+    "click>=8.1,<9",
     "fastapi>=0.120",
     "httpx>=0.28,<0.29",
     "jsonschema>=4.25",
@@ -12,6 +13,10 @@ dependencies = [
     "uvicorn>=0.38",
     "zstandard>=0.23,<0.26",
 ]
+
+[project.scripts]
+brain = "grove.cli.main:main"
+grove-brain-shell = "grove.runner.shell:main"
 
 [dependency-groups]
 dev = [
@@ -40,5 +45,6 @@ testpaths = ["tests"]
 markers = [
     "live: calls a model or the mail provider; runs only in a lane, never in CI",
     "browser: drives a real browser with Playwright; runs only in a lane, never in CI",
+    "opencode: runs the pinned OpenCode binary against a scripted local model; no model is called",
 ]
 addopts = "-m 'not live and not browser'"

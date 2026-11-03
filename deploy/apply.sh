@@ -83,7 +83,7 @@ if [ -n "$previous" ] && [ "$previous" != "$sha" ]; then
     write_state previous.sha "$previous"
 fi
 write_state deployed.sha "$sha"
-if ! compose up --detach --wait --remove-orphans api runner; then
+if ! compose up --detach --wait --remove-orphans api gateway runner; then
     record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: runs, services NOT healthy"
     exit 1
 fi

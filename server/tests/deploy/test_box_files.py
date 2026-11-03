@@ -79,7 +79,11 @@ def test_the_api_reads_the_secret_files_of_the_map():
         "/etc/grove/model-api.env",
         "/etc/grove/modal.env",
         "/etc/grove/resend.env",
+        "/etc/grove/gateway.env",
+        "/etc/grove/runner-auth.env",
+        "/etc/grove/glimmer.env",
     }
+    assert all(e["required"] is False for e in SERVICES["api"]["env_file"] if isinstance(e, dict))
     (mount,) = [m for m in SERVICES["api"]["volumes"] if m["target"].endswith(".json")]
     assert mount["source"] == "/etc/grove/google-oauth.json"
     assert mount["read_only"] is True
@@ -171,6 +175,7 @@ RUNNER_KEYS = {
     "security_opt",
     "depends_on",
     "logging",
+    "stop_grace_period",
 }
 
 
@@ -178,12 +183,24 @@ def test_the_runner_service_has_no_key_beyond_its_list():
     assert set(SERVICES["runner"]) == RUNNER_KEYS
 
 
+def test_the_runner_gets_the_time_to_end_its_passes_on_a_stop():
+    """The loop's own stop takes up to 15 s per pass (SIGTERM 10 s, SIGKILL 5 s), then it
+    removes the pass folder and ends the pass. Docker's default of 10 s cuts that short."""
+    assert SERVICES["runner"]["stop_grace_period"] == "40s"
+
+
 def test_the_runner_mounts_its_home_and_nothing_else():
     runner = SERVICES["runner"]
     assert runner["volumes"] == ["/var/lib/grove-runner:/var/lib/grove-runner"]
     assert runner["cap_drop"] == ["ALL"]
     assert runner["security_opt"] == ["no-new-privileges:true"]
-    assert runner["environment"] == {"GROVE_ENV": "production", "GROVE_API_URL": "http://api:8000"}
+    assert runner["environment"] == {
+        "GROVE_ENV": "production",
+        "GROVE_API_URL": "http://api:8000",
+        "GROVE_GATEWAY_URL": "http://gateway:18300/v1",
+        "GROVE_RUNNER_CONFIG": "/opt/grove/runner",
+        "GROVE_OPENCODE_BIN": "/usr/local/bin/opencode",
+    }
 
 
 def test_the_api_drops_every_capability_and_mounts_the_oauth_file_and_the_screening_folder():
@@ -253,6 +270,7 @@ def test_neo4j_takes_its_password_from_the_env_file_only():
 def test_the_images_follow_the_build_sha():
     assert SERVICES["api"]["image"].startswith("grove-api:${GROVE_BUILD_SHA")
     assert SERVICES["runner"]["image"].startswith("grove-runner:${GROVE_BUILD_SHA")
+    assert SERVICES["gateway"]["image"] == SERVICES["api"]["image"]
     assert SERVICES["api"]["environment"]["GROVE_BUILD_SHA"] == "${GROVE_BUILD_SHA}"
 
 
@@ -328,10 +346,11 @@ def test_nginx_gives_registration_its_own_zone_that_one_address_cannot_fill_the_
     assert MAX_REGISTRATIONS_PER_WINDOW == 1000
 
 
-def test_nginx_has_seven_locations_and_no_rule_that_can_answer_for_the_api():
+def test_nginx_has_eight_locations_and_no_rule_that_can_answer_for_the_api():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     assert re.findall(r"^[ \t]*location\b.*$", https, re.MULTILINE) == [
         "    location / {",
+        "    location /v1/internal/ {",
         "    location /v1/auth/email/ {",
         "    location = /register {",
         "    location = /authorize {",
@@ -349,7 +368,12 @@ def test_nginx_has_seven_locations_and_no_rule_that_can_answer_for_the_api():
         "if (",
         "deny ",
     ):
-        assert word not in https, word
+        assert word not in https.replace(_INTERNAL_BLOCK, ""), word
+    # The one block nginx answers itself: the internal routes, which are not the public API.
+    assert https.count(_INTERNAL_BLOCK) == 1
+
+
+_INTERNAL_BLOCK = "    location /v1/internal/ {\n        return 404;\n    }\n"
 
 
 def test_nginx_passes_what_the_api_and_a_stream_need():
@@ -455,7 +479,7 @@ def test_the_screening_folder_is_mounted_read_only_and_never_made_by_docker():
 
 
 def test_no_other_service_gets_a_screening_setting_or_the_upload_cap():
-    for name in ("runner", "neo4j"):
+    for name in ("runner", "gateway", "neo4j"):
         service = SERVICES[name]
         env = service.get("environment", {})
         for variable in (RENAME_MAP_VAR, DENYLIST_VAR, MAX_BYTES_VAR):
@@ -512,7 +536,7 @@ def test_the_upload_location_is_the_route_the_api_serves():
 def test_every_other_path_keeps_the_10m_limit_and_request_buffering():
     https = _https()
     blocks = _location_blocks(https)
-    assert len(blocks) == 7
+    assert len(blocks) == 8
     for match, block in blocks.items():
         if match == f"= {UPLOAD_PATH}":
             continue
@@ -538,3 +562,122 @@ def test_the_api_has_a_memory_limit_with_no_swap_that_holds_one_upload():
     )
     assert store + _size_bytes(api["mem_limit"]) <= 6 * 1024**3
     assert api["restart"] == "unless-stopped"
+
+
+# ---- the runner lane: the gateway and the runner loop -----------------------------------------
+
+# Every key the gateway service may have: it holds the model keys and the gateway secret.
+GATEWAY_KEYS = {
+    "image",
+    "command",
+    "restart",
+    "init",
+    "env_file",
+    "environment",
+    "networks",
+    "read_only",
+    "tmpfs",
+    "cap_drop",
+    "security_opt",
+    "depends_on",
+    "healthcheck",
+    "logging",
+}
+
+
+def test_the_gateway_runs_from_the_api_image_with_no_build_and_no_port():
+    gateway = SERVICES["gateway"]
+    assert set(gateway) == GATEWAY_KEYS
+    assert gateway["image"].startswith("grove-api:${GROVE_BUILD_SHA")
+    # No build key: `compose build api runner` builds the image it runs.
+    assert "build" not in gateway and "ports" not in gateway
+    assert gateway["command"] == ["python", "-m", "grove.models.gateway"]
+    assert gateway["networks"] == ["store", "runner", "egress"]
+    assert gateway["read_only"] is True
+    assert gateway["tmpfs"] == ["/tmp"]
+    assert gateway["cap_drop"] == ["ALL"]
+    assert gateway["security_opt"] == ["no-new-privileges:true"]
+    assert gateway["depends_on"] == {"neo4j": {"condition": "service_healthy"}}
+    assert "http://127.0.0.1:18300/health" in " ".join(gateway["healthcheck"]["test"])
+
+
+def test_the_gateway_reads_the_store_file_and_its_optional_secret_files():
+    env_file = SERVICES["gateway"]["env_file"]
+    assert env_file == [
+        "/etc/grove/neo4j.env",
+        {"path": "/etc/grove/gateway.env", "required": False},
+        {"path": "/etc/grove/model-api.env", "required": False},
+        {"path": "/etc/grove/glimmer.env", "required": False},
+    ]
+    # The API mints the tokens that the gateway checks, so both read the one secret file.
+    assert "/etc/grove/gateway.env" in _env_files(SERVICES["api"])
+    assert "/etc/grove/gateway.env" not in _env_files(SERVICES["runner"])
+
+
+def test_the_gateway_listens_where_the_runner_can_reach_it():
+    env = SERVICES["gateway"]["environment"]
+    assert env == {
+        "GROVE_ENV": "production",
+        "GROVE_NEO4J_URI": "bolt://neo4j:7687",
+        "GROVE_GATEWAY_HOST": "0.0.0.0",
+        "GROVE_GATEWAY_PORT": "18300",
+    }
+    url = SERVICES["runner"]["environment"]["GROVE_GATEWAY_URL"]
+    assert url == f"http://gateway:{env['GROVE_GATEWAY_PORT']}/v1"
+    assert set(SERVICES["runner"]["networks"]) <= set(SERVICES["gateway"]["networks"])
+    assert SERVICES["runner"]["depends_on"] == {
+        "api": {"condition": "service_started"},
+        "gateway": {"condition": "service_started"},
+    }
+
+
+def test_the_runner_network_has_a_stable_bridge_name_and_no_route_out():
+    runner = COMPOSE["networks"]["runner"]
+    assert runner["internal"] is True
+    name = runner["driver_opts"]["com.docker.network.bridge.name"]
+    assert name == "grove-runner"
+    # Linux caps an interface name at 15 characters.
+    assert len(name) <= 15
+
+
+def test_the_runner_image_runs_the_loop_with_the_repo_config():
+    text = (DEPLOY / "runner.Dockerfile").read_text(encoding="utf-8")
+    assert re.findall(r"^CMD (.+)$", text, re.MULTILINE) == ['["python", "-m", "grove.runner"]']
+    assert re.search(r"^COPY runner/ /opt/grove/runner/?$", text, re.MULTILINE)
+    assert "ENV PATH=/app/server/.venv/bin:$PATH" in text
+    assert "GROVE_RUNNER_CONFIG=/opt/grove/runner" in text
+    assert "GROVE_OPENCODE_BIN=/usr/local/bin/opencode" in text
+    assert "RUN uv sync --frozen --no-dev --no-install-project" in text
+    assert "RUN uv sync --frozen --no-dev\n" in text
+    assert "placeholder" not in text
+    assert not (DEPLOY / "runner-placeholder.sh").exists()
+    # The loop copies these into HOME before each pass, and .dockerignore must let them through.
+    assert (REPO / "runner" / "opencode.json").is_file()
+    assert sorted(path.name for path in (REPO / "runner" / "agents").glob("*.md"))
+    ignored = (REPO / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert not [line for line in ignored if line.strip("/").split("/")[0] == "runner"]
+
+
+def test_the_runner_image_pins_uv_as_the_api_image_does():
+    def uv_pin(name: str) -> str:
+        text = (DEPLOY / name).read_text(encoding="utf-8")
+        (pin,) = re.findall(r"--from=(ghcr\.io/astral-sh/uv:\S+)", text)
+        return pin
+
+    assert uv_pin("runner.Dockerfile") == uv_pin("api.Dockerfile")
+
+
+def test_the_brain_and_its_shell_are_console_scripts_next_to_the_venv_python():
+    pyproject = (REPO / "server" / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'brain = "grove.cli.main:main"' in pyproject
+    assert 'grove-brain-shell = "grove.runner.shell:main"' in pyproject
+
+
+def test_nginx_answers_no_internal_route_from_outside_the_box():
+    """The runner and the brain CLI reach /v1/internal on the runner network, never through
+    nginx: a request from outside meets a 404 before any token is read."""
+    https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
+    block = _location(https, "location /v1/internal/ {")
+    assert "return 404;" in block and "proxy_pass" not in block
+    http = (DEPLOY / "nginx" / "grove-http.conf.template").read_text(encoding="utf-8")
+    assert "proxy_pass" not in http
