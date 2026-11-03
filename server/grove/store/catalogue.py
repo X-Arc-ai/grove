@@ -614,7 +614,12 @@ SOURCES = Table(
         _ruling(
             "speakers",
             "json_ids",
-            "S46: message key to {kind, sender, original_author}, set by the connector's code",
+            "S46: message key to {kind, locator, sender, original_author}, set by the connector",
+        ),
+        _ruling(
+            "document",
+            "bool",
+            "S46: the connector stored an uploaded file or picture, not typed text",
         ),
         _col("forget state", "enum:forget_state", note="changed in place by a forget (line 2525)"),
         *_version_touched(),

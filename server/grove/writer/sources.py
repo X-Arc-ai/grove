@@ -148,6 +148,7 @@ def record_source(
     parser_version: str,
     untrusted: bool = False,
     speakers: Mapping[str, Mapping[str, str]] | None = None,
+    document: bool = False,
 ) -> str:
     _text(connector_id, "connector_id")
     speakers_text = speakers_json(speakers)
@@ -176,6 +177,7 @@ def record_source(
                 "parser_version": parser_version,
                 "untrusted": bool(untrusted),
                 "speakers": speakers_text,
+                "document": True if document is True else None,
                 "forget_state": _KEPT,
                 "version": _FIRST_VERSION,
                 "touched_at": at,
@@ -327,8 +329,12 @@ def write_screened_source(
     connector_id: str,
     parser_version: str,
     speakers: Mapping[str, Mapping[str, str]] | None = None,
+    document: bool = False,
 ) -> dict[str, Any]:
     """Write one :Source and its :ScreeningReceipt in the caller's transaction.
+
+    `document` (S46) is the connector's word that the source is an uploaded file or picture (a
+    PDF, an image, a scan), not text the person typed: only such a source can be an artifact.
 
     It returns the source id, the counts per class and the number of kept messages: no text.
     """
@@ -357,6 +363,7 @@ def write_screened_source(
             "parser_version": parser_version,
             "untrusted": True,
             **({"speakers": speakers_text} if speakers_text else {}),
+            **({"document": True} if document is True else {}),
             "forget_state": _KEPT,
             "version": _FIRST_VERSION,
             "touched_at": at,
@@ -382,6 +389,7 @@ def add_screened_source(
     parser_version: str,
     source_id: str | None = None,
     speakers: Mapping[str, Mapping[str, str]] | None = None,
+    document: bool = False,
 ) -> dict[str, Any]:
     """write_screened_source in a transaction of its own. With no source_id it mints one."""
 
@@ -396,6 +404,7 @@ def add_screened_source(
             connector_id=connector_id,
             parser_version=parser_version,
             speakers=speakers,
+            document=document,
         )
 
     return writer.transaction(work)

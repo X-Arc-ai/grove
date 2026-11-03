@@ -52,7 +52,13 @@ def test_a_chat_line_the_caller_calls_an_image_artifact_stays_a_chat_line(driver
 
 
 def test_a_line_of_a_note_is_no_artifact_and_the_whole_file_is(driver, w, talk):
-    notes = source(driver, w, "notes_files_releases", ["Receipt 4471: Okonkwo Hall deposit paid"])
+    notes = source(
+        driver,
+        w,
+        "notes_files_releases",
+        ["Receipt 4471: Okonkwo Hall deposit paid"],
+        document=True,
+    )
     as_line = line(notes, "n1", 1, statement_class="artifact")
     as_file = whole(notes, "n2", statement_class="artifact")
     ops = [
@@ -183,4 +189,50 @@ def test_a_callers_automated_speaker_never_raises_a_chat_line(driver, w, talk):
     one(
         refused(driver, w, [change_status(task, "done", "r2")], [again]),
         "terminal_needs_confirmation",
+    )
+
+
+def test_a_note_the_person_typed_is_no_artifact_even_whole(driver, w):
+    """The delta verifier's probe: a typed note stored whole, which the caller calls an
+    artifact, was confirmed. Only a source the connector stored as an uploaded file or picture
+    can be an artifact (S46)."""
+    typed_note = source(driver, w, "notes_files_releases", ["I moved to Velmora last week"])
+    uploaded = source(
+        driver, w, "notes_files_releases", ["Lease for 4 Kestrel Row, Velmora"], document=True
+    )
+    ops = [
+        create_item("event", "Moved to Velmora", "n1"),
+        create_item("event", "The Kestrel Row lease", "n2"),
+    ]
+    obs = [
+        whole(typed_note, "n1", statement_class="artifact"),
+        whole(uploaded, "n2", statement_class="artifact"),
+    ]
+    receipt = apply(driver, w, ops, obs, caller=LEARNER)
+    first = created_id(receipt, "+", "item", 0)
+    second = created_id(receipt, "+", "item", 1)
+    assert [row["source_type"] for row in evidence_on(driver, w, first)] == ["said"]
+    assert [row["source_type"] for row in evidence_on(driver, w, second)] == ["confirmed"]
+
+
+def test_a_confirmation_at_create_from_a_row_dated_after_now_is_refused(driver, w, frozen):
+    """The delta verifier's neuter N3b stayed green: the future guard at create had no test."""
+    pages = source(driver, w, "web_pages", ["The Kestrel ferry leaves pier 3 at 07:40"])
+    call = plant_node(
+        driver,
+        w,
+        "ModelCall",
+        model="spark",
+        job="extraction",
+        outcome="ok",
+        run_id="run-f1",
+        at=LATER,
+    )["id"]
+    future = whole(pages, "p1", at=LATER + timedelta(days=30), statement_class="report_state")
+    op = create_item("event", "The first ferry leaves at 07:40", "p1", confirmed_by_call=call)
+    frozen.set(LATER)
+    one(
+        refused(driver, w, [op], [future], run_id="run-f1"),
+        "not_confirmable",
+        "creating_evidence",
     )

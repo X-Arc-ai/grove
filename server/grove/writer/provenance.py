@@ -269,6 +269,7 @@ def resolve_observation(tx: WorldTx, observation: dict[str, Any]) -> dict[str, A
         facts = RowFacts(
             modality=observation["modality"],
             whole=observation["locator"] == "whole",
+            document=source.get("document") is True or connector_type == "screenshots",
             automated=meta.get("kind") == "automated",
             logged=(
                 connector_type == "calendar"
