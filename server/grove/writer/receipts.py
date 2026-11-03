@@ -3,7 +3,8 @@ read transaction. A stored receipt holds ids and codes only; titles, meaning nam
 read fresh when it is rendered, so no copy of free text sits in it.
 
 Grammar: `+` item created, `>` link created, `*` field changed, `x` ended, `^` reopened,
-`=` evidence attached (or a known link restated), `-` evidence ended.
+`=` evidence attached (or a known link restated), `-` evidence ended, `v` verified (D4: the
+disposition, the time the evidence speaks for, the source, and the next re-check by).
 """
 
 import json
@@ -138,7 +139,7 @@ def read_receipt(
         for entry in entries
         if entry.get("new_value_id")
         and (
-            entry["field"] in ("end_class", "end_reason")
+            entry["field"] in ("end_class", "end_reason", "verified")
             or (entry["entity_type"] == "link" and entry["field"] == "row")
         )
     ]
@@ -165,6 +166,13 @@ def read_receipt(
         line = _line(entry, values, evidence, touched)
         if line is not None:
             lines.append(line)
+    # A verify's `v` line carries its re-check by, so the `*` line of that field would repeat it.
+    verified = {line.entity_id for line in lines if line.symbol == "v"}
+    lines = [
+        line
+        for line in lines
+        if not (line.symbol == "*" and line.field == "recheck_by" and line.entity_id in verified)
+    ]
     return Receipt("saved", commit_id, change_set_id, request_id, tuple(lines))
 
 
@@ -176,6 +184,14 @@ def _line(
 ) -> ReceiptLine | None:
     entity_type, entity_id, name = entry["entity_type"], entry["entity_id"], entry["field"]
     value_id = entry.get("new_value_id")
+    if name == "verified" and entity_type in ("item", "link", "belief"):
+        # The value holds the verification id; the line keeps the id, never the text.
+        return ReceiptLine(
+            "v",
+            "link" if entity_type == "link" else "item",
+            entity_id,
+            value_id=values.get(value_id),
+        )
     if entity_type in ("item", "belief"):
         if name == "row":
             return ReceiptLine("+", "item", entity_id)
@@ -286,8 +302,81 @@ def _lookups(query: WorldQuery, receipt: Receipt) -> dict[str, dict[str, Any]]:
         row["id"]: row["name"]
         for row in query.read("MATCH (m:Meaning) RETURN m.id AS id, m.name AS name")
     }
-    values = _values(query, [line.value_id for line in receipt.lines if line.value_id])
-    return {"links": links, "items": items, "kinds": kinds, "meanings": meanings, "values": values}
+    values = _values(
+        query, [line.value_id for line in receipt.lines if line.value_id and line.symbol != "v"]
+    )
+    verification_ids = [line.value_id for line in receipt.lines if line.symbol == "v"]
+    verifications = {}
+    if verification_ids:
+        verifications = {
+            row["v"]["id"]: row["v"]
+            for row in query.read(
+                "MATCH (v:Verification) WHERE v.id IN $ids RETURN v", ids=verification_ids
+            )
+        }
+        source_ids = sorted(
+            {
+                piece["source_id"]
+                for row in verifications.values()
+                for piece in json.loads(row.get("evidence_pieces") or "[]")
+            }
+        )
+        types = {
+            row["id"]: row["type"]
+            for row in query.read(
+                "MATCH (s:Source) WHERE s.id IN $ids MATCH (c:Connector {id: s.connector_id}) "
+                "RETURN s.id AS id, c.type AS type",
+                ids=source_ids,
+            )
+        }
+        for row in verifications.values():
+            row["source_types_by_id"] = types
+    return {
+        "links": links,
+        "items": items,
+        "kinds": kinds,
+        "meanings": meanings,
+        "values": values,
+        "verifications": verifications,
+    }
+
+
+# How a `v` line names a source: the connector type, in words (no title, no locator).
+SOURCE_WORDS = {
+    "calendar": "the calendar",
+    "whatsapp": "a chat message",
+    "past_ai_conversations": "an AI conversation",
+    "voice_notes": "a voice note",
+    "notes_files_releases": "a file",
+    "screenshots": "a screenshot",
+    "git": "a commit",
+    "web_pages": "a fetched page",
+    "ai_host": "your words, through your AI host",
+    "person_in_views": "your answer",
+    "reminders": "a reminder",
+    "identity": "a profile",
+    "scripted": "a scripted source",
+}
+
+
+def _verified_text(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
+    head = f"v {line.entity_type} {short_id(line.entity_id)}: "
+    row = found["verifications"].get(line.value_id or "")
+    if row is None:
+        return head + "verified"
+    disposition = row.get("disposition") or "verified"
+    text = head + disposition
+    pieces = [p for p in json.loads(row.get("evidence_pieces") or "[]") if p.get("admitted")]
+    if disposition == "confirmed" and pieces:
+        newest = max(pieces, key=lambda piece: piece["time_spoken_for"])
+        at = datetime.fromisoformat(newest["time_spoken_for"]).astimezone(UTC)
+        kind = row.get("source_types_by_id", {}).get(newest["source_id"], "")
+        text += f" {at.strftime('%m-%d %H:%M')} against {SOURCE_WORDS.get(kind, 'a source')}"
+    after = row.get("recheck_by_after")
+    if after is not None and disposition in ("confirmed", "deferred"):
+        moment = after if isinstance(after, datetime) else datetime.fromisoformat(str(after))
+        text += f"; re-check by {moment.astimezone(UTC).strftime('%m-%d')}"
+    return text
 
 
 def _link_text(link_id: str, found: dict[str, dict[str, Any]]) -> str:
@@ -336,6 +425,8 @@ def _render_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
         )
     if line.symbol == "-":
         return f"- evidence {entity} ({line.end_reason})"
+    if line.symbol == "v":
+        return _verified_text(line, found)
     return f"{line.symbol} {line.entity_type} {entity}"
 
 

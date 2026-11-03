@@ -710,7 +710,7 @@ S27: parser, locator format, source-type mapping and speaker rules are code, not
 | scope | `scope` | `json_ids` | b1 | an allowlist compiled into the read (D14) |
 | settings | `settings` | `json_ids` | b1 | calendar log mode, calendar id, from date, days logged |
 | batch rule | `batch_rule` | `code` | b1 |  |
-| staleness limit | `staleness_limit` | `int` | b1 | days; absent means always fresh |
+| staleness limit | `staleness_limit` | `int` | b1 | days; absent means the type's Appendix C value (S49), always fresh for git |
 | expected read interval | `expected_read_interval` | `int` | b1 | seconds (D7) |
 | watermark | `watermark` | `locator` | b1 |  |
 | last attempted read | `last_attempted_read` | `instant` | b1 |  |
@@ -741,6 +741,7 @@ Indexes: `capabilities_connector_type_registry_id_idx` (connector_type, registry
 | staleness limit | `staleness_limit` | `int` | b1 | days, where it differs |
 | origin | `origin` | `enum:capability_origin` | b1 |  |
 | reason | `reason` | `value_id` | b1 |  |
+| (none) | `accepted_judgment_id` | `id` | ruling | S49: the second model's field_fit judgment that accepts a row minted with a word |
 | version | `version` | `int` | ruling | S12, line 3081 |
 | touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 
@@ -763,6 +764,7 @@ Indexes: `sources_world_id_connector_id_external_locator_idx` (world_id, connect
 | the screened content or a pointer to it | `content_pointer` | `locator` | b1 |  |
 | parser version | `parser_version` | `code` | b1 |  |
 | untrusted | `untrusted` | `bool` | b1 |  |
+| (none) | `speakers` | `json_ids` | ruling | S46: message key to {kind, sender, original_author}, set by the connector's code |
 | forget state | `forget_state` | `enum:forget_state` | b1 | changed in place by a forget (line 2525) |
 | version | `version` | `int` | ruling | S12, line 3081 |
 | touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
@@ -820,6 +822,7 @@ Indexes: `evidence_world_id_target_type_target_id_polarity_active_idx` (world_id
 | speaker kind | `speaker_kind` | `enum:speaker_kind` | b1 |  |
 | speaker item | `speaker_item` | `id` | b1 |  |
 | original author | `original_author` | `id` | b1 | an item id, for forwarded content |
+| (none) | `sender` | `code` | ruling | S46: the sender code of the source's metadata |
 | modality | `modality` | `enum:modality` | b1 |  |
 | active | `active` | `bool` | b1 |  |
 | recorded | `recorded` | `instant` | b1 |  |
@@ -986,6 +989,7 @@ A request commits once, in one batch, and `saved` moves in the same transaction 
 | (none) | `host_message_id` | `locator` | ruling | S41: B.3 remember, for the later pass |
 | (none) | `said_at` | `instant` | ruling | S41: B.3 remember, for the later pass |
 | (none) | `about` | `ids` | ruling | S41: B.3 remember, for the later pass |
+| (none) | `relay` | `enum:relay` | ruling | S48: remember, answer or correction |
 
 ### declines
 
@@ -1110,6 +1114,8 @@ Written only by the model-call layer (S20).
 | role | `role` | `enum:judgment_role` | b1 |  |
 | subject | `subject` | `ref` | b1 | S32: the claim, belief, word or pair judged; a word with no row yet is `value:<id>` |
 | the evidence row | `evidence_id` | `id` | b1 | where there is one |
+| (none) | `source_id` | `id` | ruling | S46: the stored source a judge read when no evidence row exists yet |
+| (none) | `locator` | `locator` | ruling | S46: where in that source |
 | verdict | `verdict` | `enum:verdict` | b1 |  |
 | stated confidence | `stated_confidence` | `float` | b1 |  |
 | correlated | `correlated` | `bool` | b1 | true when the second verdict is the same model family |
@@ -1158,7 +1164,7 @@ Columns are D4's (line 985); every check is one appended row.
 | agree | `agree` | `float` | b1 | computed by the writer |
 | disagree | `disagree` | `float` | b1 | computed by the writer |
 | ratio | `ratio` | `float` | b1 | computed by the writer |
-| band | `band` | `code` | b1 | computed by the writer; line 957 gives conditions, no names |
+| band | `band` | `enum:verification_band` | b1 | computed by the writer (S47) |
 | load-bearing | `loadbearing` | `bool` | b1 | as the writer found it |
 | disposition | `disposition` | `enum:disposition` | b1 |  |
 | override reason | `override_reason` | `value_id` | b1 |  |

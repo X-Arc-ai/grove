@@ -54,6 +54,40 @@ def _instant(value: Any, name: str) -> datetime:
         raise InvalidRecord("invalid_arguments", error.rule, f"{name}: {error}") from error
 
 
+_SPEAKER_KINDS = frozenset(ENUMS["speaker_kind"])
+_SPEAKER_KEYS = frozenset({"kind", "sender", "original_author"})
+_META_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+
+def speakers_json(speakers: Any) -> str | None:
+    """The speakers the connector's code read from a source's own metadata (S46): message key to
+    {kind, sender, original_author}. `sender` is a code the connector chose (never an address),
+    and `original_author` an item id. Only code that parses a source sets these, so the writer
+    lets them win over a caller's classification (D5: metadata first)."""
+    if speakers is None:
+        return None
+    if not isinstance(speakers, Mapping):
+        raise InvalidRecord("invalid_arguments", "type", "speakers maps message keys to speakers")
+    checked: dict[str, dict[str, str]] = {}
+    for key, entry in speakers.items():
+        if not isinstance(key, str) or _META_CODE.fullmatch(key) is None:
+            raise InvalidRecord("invalid_arguments", "type", "a speakers key is a message key")
+        if not isinstance(entry, Mapping) or set(entry) - _SPEAKER_KEYS:
+            raise InvalidRecord(
+                "invalid_arguments", "type", "a speaker is {kind, sender, original_author}"
+            )
+        if entry.get("kind") not in _SPEAKER_KINDS:
+            raise InvalidRecord("invalid_arguments", "enum", "a speaker kind is a speaker_kind")
+        for name in ("sender", "original_author"):
+            value = entry.get(name)
+            if value is not None and (
+                not isinstance(value, str) or _META_CODE.fullmatch(value) is None
+            ):
+                raise InvalidRecord("invalid_arguments", "type", f"{name} is a code")
+        checked[key] = {name: value for name, value in entry.items() if value is not None}
+    return json.dumps(checked, sort_keys=True) if checked else None
+
+
 def _connector(tx: WorldTx, connector_id: str) -> dict[str, Any]:
     rows = tx.run("MATCH (c:Connector {id: $id}) RETURN c", id=connector_id)
     if not rows:
@@ -108,8 +142,10 @@ def record_source(
     content_pointer: str | None = None,
     parser_version: str,
     untrusted: bool = False,
+    speakers: Mapping[str, Mapping[str, str]] | None = None,
 ) -> str:
     _text(connector_id, "connector_id")
+    speakers_text = speakers_json(speakers)
     _text(external_locator, "external_locator")
     _text(parser_version, "parser_version")
     if (content is None) == (content_pointer is None):
@@ -134,6 +170,7 @@ def record_source(
                 "content_pointer": content_pointer,
                 "parser_version": parser_version,
                 "untrusted": bool(untrusted),
+                "speakers": speakers_text,
                 "forget_state": _KEPT,
                 "version": _FIRST_VERSION,
                 "touched_at": at,
@@ -284,6 +321,7 @@ def write_screened_source(
     source_id: str,
     connector_id: str,
     parser_version: str,
+    speakers: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Write one :Source and its :ScreeningReceipt in the caller's transaction.
 
@@ -299,6 +337,7 @@ def write_screened_source(
     if type(parser_version) is not str or _CODE.fullmatch(parser_version) is None:
         raise ValueError("parser_version is not a code")
     counts = _checked_counts(screened.counts)
+    speakers_text = speakers_json(speakers)
     _connector(tx, connector_id)
 
     at = clock.now(_world_of(tx))
@@ -312,6 +351,7 @@ def write_screened_source(
             "content": screened.content(),
             "parser_version": parser_version,
             "untrusted": True,
+            **({"speakers": speakers_text} if speakers_text else {}),
             "forget_state": _KEPT,
             "version": _FIRST_VERSION,
             "touched_at": at,
@@ -336,6 +376,7 @@ def add_screened_source(
     connector_id: str,
     parser_version: str,
     source_id: str | None = None,
+    speakers: Mapping[str, Mapping[str, str]] | None = None,
 ) -> dict[str, Any]:
     """write_screened_source in a transaction of its own. With no source_id it mints one."""
 
@@ -349,6 +390,7 @@ def add_screened_source(
             source_id=chosen,
             connector_id=connector_id,
             parser_version=parser_version,
+            speakers=speakers,
         )
 
     return writer.transaction(work)
