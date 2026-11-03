@@ -153,13 +153,23 @@ HISTORY_VALUES = 12 + 11 + PROPERTY_COUNT + SEEDED_ROWS + 1
 EMPTY_AT_BIRTH = {
     # Signin writes the own item after the seed (S40), so a new world row holds no value.
     "worlds": {"self_item_id"},
-    "kinds": {"worked_example", "nearest_neighbours_at_mint", "first_used", "last_used"},
+    # disputed_fields (O5) and earning_episodes (O8): a minted word's only (lane ontology).
+    "kinds": {
+        "worked_example",
+        "nearest_neighbours_at_mint",
+        "first_used",
+        "last_used",
+        "disputed_fields",
+        "earning_episodes",
+    },
     "meanings": {
         "worked_example",
         "nearest_neighbours_at_mint",
         "first_used",
         "last_used",
         "cardinality_group",
+        "disputed_fields",
+        "earning_episodes",
     },
     "aliases": {"valid_from", "valid_to", "worked_example"},
     "change_entries": {"old_value_id", "evidence_id", "request_id", "run_id", "inverse_of"},

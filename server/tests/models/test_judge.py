@@ -1,5 +1,5 @@
-"""The verification judges (grove.models.judge) against the live dev store, with every provider
-faked by httpx.MockTransport, as test_layer.py fakes them.
+"""The verification judges (grove.models.verify_judge) against the live dev store, with every
+provider faked by httpx.MockTransport, as test_layer.py fakes them.
 
 Spec, D4 "Verification judges": the judge is a fixed prompt that code runs, takes one claim and
 the excerpts of its evidence rows, returns a verdict per row as constrained JSON, runs at high
@@ -21,10 +21,11 @@ import pytest
 import grove
 from grove import clock
 from grove.clock import TestClock
-from grove.models import judge as judges
+from grove.models import verify_judge as judges
 from grove.models.config import ModelSettings
 from grove.models.errors import BudgetReached, InvalidOutput
-from grove.models.judge import (
+from grove.models.layer import ModelLayer
+from grove.models.verify_judge import (
     EXCERPT_LIMIT,
     JudgeInputError,
     Piece,
@@ -36,7 +37,6 @@ from grove.models.judge import (
     judge,
     second_judge,
 )
-from grove.models.layer import ModelLayer
 from grove.prompts.builder import instructions_root
 from grove.store.query import WorldQuery
 from grove.writer.model_calls import set_budget_ceiling
@@ -262,7 +262,8 @@ def judged_fields(row: dict) -> tuple:
         row.get("locator"),
         row["verdict"],
         row.get("stated_confidence"),
-        row.get("correlated"),
+        # The writer stores false for a judgment that is not correlated; read it as absent.
+        row.get("correlated") or None,
     )
 
 
@@ -485,7 +486,7 @@ def test_the_second_judge_runs_on_glimmer_and_is_not_correlated(driver, w, make_
     assert (call["job"], call["model"]) == ("second_opinion_load_bearing", GLIMMER)
     rows = judgments(driver, w)
     assert {row["role"] for row in rows} == {"second_judge"}
-    assert all(row.get("correlated") is None for row in rows)
+    assert not any(row.get("correlated") for row in rows)
     assert judged.correlated is False
 
 

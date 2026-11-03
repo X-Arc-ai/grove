@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from grove.models.judge import VERDICTS, Piece, judge, second_judge
 from grove.models.layer import ModelLayer
+from grove.models.verify_judge import VERDICTS, Piece, judge, second_judge
 from grove.store.query import WorldQuery
 from grove.writer.testing import plant_node
 from tests.models.test_live import live_settings

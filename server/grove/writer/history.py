@@ -33,6 +33,8 @@ class Stamp:
     change_set_id: str
     request_id: str | None = None
     run_id: str | None = None
+    # The caller's kind (B.2's letters), for an operation whose rule differs by caller (O9).
+    caller_kind: str | None = None
 
 
 def _iso(value: Any) -> Any:
