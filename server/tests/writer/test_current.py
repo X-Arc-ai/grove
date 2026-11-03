@@ -35,6 +35,7 @@ from grove.writer import BatchDeclined
 from grove.writer import apply as apply_module
 from grove.writer.testing import plant_link, plant_node
 from grove.writer.tx import WorldTx, WorldWriter
+from tests.writer import helpers
 from tests.writer.helpers import (
     NoStore,
     apply,
@@ -43,7 +44,6 @@ from tests.writer.helpers import (
     create_link,
     created_id,
     iso,
-    make_source,
     new_op_id,
     observation,
     read,
@@ -61,6 +61,29 @@ AUGUST = datetime(2027, 8, 2, 9, 0, tzinfo=UTC)
 FLIGHT = "2027-07-12"
 MOVED = "2027-07-19"
 RECHECK = "2027-07-14T00:00:00+00:00"
+
+# Every source here is read after the last time a test cites: an export or a fetch comes after
+# the messages it holds, and a row may not speak for a time after its source's read (S46).
+READ_LATE = datetime(2027, 9, 1, 9, 0, tzinfo=UTC)
+
+
+def make_source(driver, world_id: str, connector_type: str, lines: list[str], **connector: Any):
+    provider = clock._provider
+    if not isinstance(provider, TestClock):
+        return helpers.make_source(driver, world_id, connector_type, lines, **connector)
+    before = provider.now()
+    provider.set(READ_LATE)
+    try:
+        return helpers.make_source(driver, world_id, connector_type, lines, **connector)
+    finally:
+        provider.set(before)
+
+
+@pytest.fixture
+def chat(driver, seeded, frozen):
+    """The shared chat fixture, read late like every source here, on the frozen clock."""
+    return make_source(driver, seeded["world_id"], "whatsapp", helpers.CHAT_LINES)
+
 
 CALENDAR_LINES = [
     "Flight to Velmora, Ilse Okonkwo, 12 July",

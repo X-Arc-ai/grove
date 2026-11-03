@@ -154,7 +154,7 @@ class _Run:
         found = self.resolved.get(ev_id)
         if found is None:
             try:
-                found = resolve_observation(self.tx, self.observations[ev_id])
+                found = resolve_observation(self.tx, self.observations[ev_id], now=self.at)
             except Refused as refused:
                 found = refused
             self.resolved[ev_id] = found

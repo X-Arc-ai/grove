@@ -157,8 +157,31 @@ def _one(tx: WorldTx, cypher: str, **params: Any) -> dict[str, Any] | None:
     return rows[0]["n"] if rows else None
 
 
-def resolve_observation(tx: WorldTx, observation: dict[str, Any]) -> dict[str, Any]:
-    """The observation as the columns of an evidence row (no id, target or polarity yet)."""
+# Entries that are dated ahead by nature: a calendar entry or a reminder for a later day. They are
+# planned, so a date after the read or after now proves nothing and is allowed (D5).
+DATED_AHEAD = frozenset({"calendar", "reminders"})
+
+
+def dated_after_read(
+    connector_type: str, source: dict[str, Any], source_time: datetime, now: datetime | None
+) -> bool:
+    """True for a row that speaks for a time after its source was read (`received_at`, the fetch
+    or export time) or after now, outside the calendar and reminders. No source speaks for a time
+    after Grove read it: such a date would escape a staleness limit, give a done or a period's
+    start a time no source spoke for, and read as "confirmed against ... of <that day>"."""
+    if connector_type in DATED_AHEAD:
+        return False
+    if now is not None and source_time > now:
+        return True
+    received = source.get("received_at")
+    return received is not None and source_time > received
+
+
+def resolve_observation(
+    tx: WorldTx, observation: dict[str, Any], *, now: datetime | None = None
+) -> dict[str, Any]:
+    """The observation as the columns of an evidence row (no id, target or polarity yet). `now`
+    is the batch's time: a row may not speak for a time after it, nor after its source's read."""
     source = _one(tx, "MATCH (n:Source {id: $id}) RETURN n", id=observation["source_id"])
     if source is None:
         raise Refused(
@@ -212,6 +235,13 @@ def resolve_observation(tx: WorldTx, observation: dict[str, Any]) -> dict[str, A
                 )
 
     source_time = parse_instant(observation["source_time"])
+    if dated_after_read(connector_type, source, source_time, now):
+        raise Refused(
+            "invalid_arguments",
+            "future_evidence",
+            "a row is dated after its source was read, or after now",
+            {"ev_id": observation["ev_id"]},
+        )
     statement_class = observation["statement_class"]
     # Speaker and modality come from metadata first (D5): the connector's code stored them on the
     # source, and they win over the caller's classification.

@@ -70,8 +70,14 @@ def w(frozen, seeded):
 
 
 @pytest.fixture
-def talk(driver, w):
-    return make_source(driver, w, "whatsapp", CHAT_LINES)
+def talk(driver, w, frozen):
+    # The chat export is read after every message these tests cite: a row may not speak for a
+    # time after its source's read (S46). The tests' clock stays within 60 days of NOW.
+    frozen.set(NOW + timedelta(days=60))
+    try:
+        return make_source(driver, w, "whatsapp", CHAT_LINES)
+    finally:
+        frozen.set(NOW)
 
 
 @pytest.fixture
@@ -272,7 +278,9 @@ def _attach_confirming_evidence(driver, w, frozen, talk, pages, claim):
         "ev_id": "a1",
         "polarity": "supports",
     }
-    apply(driver, w, [op], [fetched(pages, "a1", at=frozen.now())], caller=LEARNER)
+    # A new fetch of the page, stored first, gives the row it cites now.
+    refetch = make_source(driver, w, "web_pages", PAGE_LINES)
+    apply(driver, w, [op], [fetched(refetch, "a1", at=frozen.now())], caller=LEARNER)
 
 
 def _end_evidence(driver, w, frozen, talk, pages, claim):

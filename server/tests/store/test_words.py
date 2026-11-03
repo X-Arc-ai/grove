@@ -391,8 +391,14 @@ def test_a_verify_reads_today_against_the_page_and_then_the_lapsed_horizon(
 def test_dates_read_in_the_persons_timezone_from_the_creating_row(driver, w, frozen, talk):
     # 23:30 UTC on 1 Mar is 03:30 on 2 Mar in Dubai.
     frozen.set(datetime(2027, 3, 1, 23, 30, tzinfo=UTC))
+    # The export is read now, after the message it holds.
+    late_chat = make_source(driver, w, "whatsapp", CHAT_LINES)
     ev = observation(
-        talk, "late", 2, at=datetime(2027, 3, 1, 23, 20, tzinfo=UTC), person_timezone="Asia/Dubai"
+        late_chat,
+        "late",
+        2,
+        at=datetime(2027, 3, 1, 23, 20, tzinfo=UTC),
+        person_timezone="Asia/Dubai",
     )
     op = create_item("organisation", "Brightwater Rowing Club", "late")
     hall = created_id(apply(driver, w, [op], [ev]))
