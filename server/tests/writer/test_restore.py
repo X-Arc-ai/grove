@@ -23,7 +23,7 @@ from grove.store.d3_fingerprint import (
     read_once,
 )
 from grove.store.query import WorldQuery
-from grove.store.replay import ReplayRefused, read_history, rebuild
+from grove.store.replay import MEASURES, ReplayRefused, read_history, rebuild
 from grove.writer.restore import (
     FORGOTTEN_MARKER,
     RestoreMismatch,
@@ -56,6 +56,8 @@ from tests.writer.helpers import (
 
 RECHECK = iso(T0 + timedelta(days=30))
 CONFIRMED = T0 + timedelta(minutes=50)
+# The columns a rebuild cannot hold: touched_at, and the D8 measures (S47).
+KEPT = frozenset({"touched_at", *MEASURES})
 
 
 # --- builders ---------------------------------------------------------------------------------
@@ -356,8 +358,9 @@ def test_rebuild_fingerprint_equals_live(driver, mixed):
     for table, rows in held.items():
         assert set(projection.rows[table]) == set(rows), table
         for row_id, row in rows.items():
-            rebuilt = {k: v for k, v in projection.rows[table][row_id].items() if k != "touched_at"}
-            assert rebuilt == {k: v for k, v in row.items() if k != "touched_at"}, (table, row_id)
+            # touched_at and the D8 measures are columns no entry holds (S47).
+            rebuilt = {k: v for k, v in projection.rows[table][row_id].items() if k not in KEPT}
+            assert rebuilt == {k: v for k, v in row.items() if k not in KEPT}, (table, row_id)
 
     venue = projection.items[mixed["venue"]]
     # create, two updates in one batch, a status change, the planted verify; the history-only

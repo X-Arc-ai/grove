@@ -79,6 +79,13 @@ _FIXED = frozenset({"id", "world_id", "version", "touched_at"})
 _DERIVED = frozenset(
     {"active_key", "property_values", "derived_source_type", "derivation", "speaker", "modality"}
 )
+# D8's measures on the words (spec line 1580: the earning bar and the measures). The writer sets
+# them at the end of every batch with no change entry and no version (line 1581: the version moves
+# with an ontology operation), so no rebuild from history can hold them: a pure rebuild leaves them
+# as the row entry wrote them, a rebuild in place keeps them from the row it replaces, and D3's
+# fingerprint leaves them out (S47).
+MEASURES = frozenset({"uses", "distinct_episodes", "first_used", "last_used", "earning_episodes"})
+MEASURE_TABLES = ("kinds", "meanings", "property_names")
 _JSON_TEXT = frozenset({"properties", "recheck_how"})
 _CLAIM_ITEM = ("derived_source_type", "derivation", "speaker", "modality")
 _CLAIM_LINK = ("derived_source_type", "derivation")

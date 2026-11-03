@@ -21,13 +21,20 @@ from grove.store.d3_fingerprint import fingerprint, live_fingerprint, projection
 from grove.store.history_reads import item_history
 from grove.store.primitives import MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY
 from grove.store.query import WorldQuery
-from grove.store.replay import FORGOTTEN_MARKER, known_as_of, read_history, rebuild
+from grove.store.replay import (
+    FORGOTTEN_MARKER,
+    MEASURES,
+    known_as_of,
+    read_history,
+    rebuild,
+)
 from grove.views.graph import Window, graph_payload, node_payload
 from grove.writer.restore import restore, take_snapshot
 from grove.writer.worlds import create_world
 from tests.writer.helpers import (
     CHAT_LINES,
     LEARNER,
+    PERSON,
     apply,
     at_minute,
     clock_at,
@@ -58,12 +65,16 @@ from tests.writer.test_contract_d3 import (
     supersede,
     undo,
 )
+from tests.writer.test_ontology import GODPARENT, godparent_link, meaning_row, mint_godparent
 from tests.writer.test_restore import (
     history_values,
     last_confirmed,
     plant_ledger,
     purge_world_rows,
 )
+
+# The columns a rebuild cannot hold: touched_at, and the D8 measures (S47).
+KEPT = frozenset({"touched_at", *MEASURES})
 
 
 def day(number: int, hour: int = 12) -> datetime:
@@ -606,6 +617,85 @@ def every_operation(driver, seeded, chat) -> dict[str, str]:
     }
 
 
+# D3 over D8's ontology operations (develop merged #13) ------------------------------------------
+
+
+def earned_word(driver, w: str, chat) -> dict[str, Any]:
+    """A meaning minted provisional by the Learner, then used in two more distinct episodes, so the
+    writer promotes it canonical at the end of the third batch (D8's earning bar)."""
+    mint, _ = mint_godparent(driver, w, chat)
+    link = godparent_link(driver, w)
+    [ends] = WorldQuery(driver, w).read(
+        "MATCH (a:Item)-[l:LINK {id: $id}]->(b:Item) RETURN a.id AS a, b.id AS b", id=link["id"]
+    )
+    for kind, line, ev_id in (
+        ("whatsapp", "a second invented chat", "s1"),
+        ("notes_files_releases", "an invented note", "n1"),
+    ):
+        source = make_source(driver, w, kind, [f"{line} about the christening"])
+        apply(
+            driver,
+            w,
+            [create_link(ends["a"], GODPARENT, ends["b"], ev_id)],
+            [observation(source, ev_id, 1)],
+            caller=LEARNER,
+        )
+    return {"mint": mint.change_set_id, "meaning": meaning_row(driver, w, GODPARENT)}
+
+
+def test_rebuild_and_restore_keep_a_word_minted_and_earned(driver, seeded, chat):
+    """D3's rebuild and full restore over D8's mint and promotion: the fingerprints match (the
+    worked example's entry is one operation with its mint, S47), and the restore keeps the
+    word's measures, which no entry holds, from the snapshot."""
+    w = seeded["world_id"]
+    word = earned_word(driver, w, chat)["meaning"]
+    assert (word["status"], word["distinct_episodes"], word["version"]) == ("canonical", 3, 2)
+    query = WorldQuery(driver, w)
+    entries, values = read_history(query)
+    projection = rebuild(entries, values)
+    live = live_fingerprint(driver, w)
+    assert fingerprint(projection.rows, projection.history, live["tables"]) == live
+    assert projection.rows["meanings"][word["id"]]["version"] == 2
+    held = projection_rows(query)
+    for table, rows in held.items():
+        for row_id, row in rows.items():
+            rebuilt = {k: v for k, v in projection.rows[table][row_id].items() if k not in KEPT}
+            assert rebuilt == {k: v for k, v in row.items() if k not in KEPT}, (table, row_id)
+
+    snapshot = json.loads(json.dumps(take_snapshot(driver, w)))
+    purge_world_rows(driver, w)
+    restore(driver, w, snapshot, [])
+
+    after = meaning_row(driver, w, GODPARENT)
+    assert {key: after.get(key) for key in MEASURES} == {key: word.get(key) for key in MEASURES}
+    assert after["distinct_episodes"] == 3 and json.loads(after["earning_episodes"])
+
+
+def test_an_undo_of_a_mint_retires_the_word_and_marks_its_change_log_row(driver, seeded, chat):
+    """D3's undo over a D8 mint: the minted word is retired (the inverse O10 names), the change
+    log row names the undo (O10's undone by), the rebuild matches, and an undo of that undo puts
+    the word back and clears the mark."""
+    w = seeded["world_id"]
+    mint, _ = mint_godparent(driver, w, chat)
+
+    first = apply(driver, w, [undo(mint.change_set_id)], [], caller=PERSON)
+
+    assert meaning_row(driver, w, GODPARENT)["status"] == "retired"
+    [log] = WorldQuery(driver, w).read("MATCH (c:OntologyChange {operation: 'propose'}) RETURN c")
+    assert (log["c"]["undone_by"], log["c"]["version"]) == (first.change_set_id, 2)
+    query = WorldQuery(driver, w)
+    entries, values = read_history(query)
+    projection = rebuild(entries, values)
+    live = live_fingerprint(driver, w)
+    assert fingerprint(projection.rows, projection.history, live["tables"]) == live
+
+    apply(driver, w, [undo(first.change_set_id)], [], caller=PERSON)
+
+    assert meaning_row(driver, w, GODPARENT)["status"] == "provisional"
+    [log] = WorldQuery(driver, w).read("MATCH (c:OntologyChange {operation: 'propose'}) RETURN c")
+    assert log["c"].get("undone_by") is None and log["c"]["version"] == 3
+
+
 def test_rebuild_matches_live_after_every_d3_operation(driver, every_operation):
     """D3 How to test it, the rebuild path: replaying the live change history into a scratch store
     yields projections whose fingerprint equals the live one, every clock and ended link included,
@@ -620,8 +710,9 @@ def test_rebuild_matches_live_after_every_d3_operation(driver, every_operation):
     for table, rows in held.items():
         assert set(projection.rows[table]) == set(rows), table
         for row_id, row in rows.items():
-            rebuilt = {k: v for k, v in projection.rows[table][row_id].items() if k != "touched_at"}
-            assert rebuilt == {k: v for k, v in row.items() if k != "touched_at"}, (table, row_id)
+            # touched_at and the D8 measures are columns no entry holds (S47).
+            rebuilt = {k: v for k, v in projection.rows[table][row_id].items() if k not in KEPT}
+            assert rebuilt == {k: v for k, v in row.items() if k not in KEPT}, (table, row_id)
     task = projection.items[every_operation["task"]]
     assert task["became_true_words"] == held["items"][every_operation["task"]]["became_true_words"]
     assert projection.items[every_operation["spent"]]["lesson_in"]

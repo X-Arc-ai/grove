@@ -23,6 +23,7 @@ names a registry word: code reads declared fields and ids only.
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from grove.store.enums import ENUMS
@@ -735,6 +736,9 @@ class _Word:
     message_key: str
     change_id: str
     outcome: str
+    # The reason value id of the operation's row entry: the worked example's entry carries it,
+    # so the two are one operation for the rebuild's version rule (S47).
+    reason_id: str | None = None
 
 
 @dataclass
@@ -1193,6 +1197,7 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
             message_key=message_key,
             change_id=change_id,
             outcome=verdicts.outcome,
+            reason_id=reason_id,
         )
     )
 
@@ -1377,6 +1382,7 @@ def _worked_examples(run: Any, ops: list[Any]) -> None:
             field="worked_example",
             new=match["id"],
             world_time=run.at,
+            reason_id=word.reason_id,
             evidence_id=match["id"],
         )
 
@@ -1545,3 +1551,84 @@ __all__ = [
     "same_word_value",
     "value_names_item",
 ]
+
+
+# The registry rows that D3's composite operations move (grove.writer.composite) -------------
+# D8 (line 1641) keeps every Cypher statement that names a registry label in this module, so the
+# writer lint can see each one: a merge's item aliases, and an undo's inverse of a registry entry.
+
+REGISTRY_LABELS = ("Alias", "Kind", "Meaning", "PropertyName", "Capability")
+
+
+def registry_label(run: Any, row_id: str) -> str:
+    for label in REGISTRY_LABELS:
+        if run.tx.run(f"MATCH (n:{label} {{id: $id}}) RETURN n.id AS id", id=row_id):
+            return label
+    raise Refused("not_found", "registry_row_not_found", f"no registry row {row_id}", {})
+
+
+def lock_registry(run: Any, label: str, row_id: str) -> dict[str, Any]:
+    rows = run.tx.run(
+        f"MATCH (n:{label} {{id: $id}}) SET n.touched_at = $at RETURN n", id=row_id, at=run.at
+    )
+    if not rows:
+        raise Refused("not_found", "registry_row_not_found", f"no registry row {row_id}", {})
+    return rows[0]["n"]
+
+
+def set_registry(run: Any, label: str, row_id: str, columns: dict[str, Any]) -> None:
+    run.tx.run(f"MATCH (n:{label} {{id: $id}}) SET n += $columns", id=row_id, columns=columns)
+
+
+def bump_registry(run: Any, label: str, row_id: str) -> None:
+    run.tx.run(
+        f"MATCH (n:{label} {{id: $id}}) SET n.version = coalesce(n.version, 0) + 1", id=row_id
+    )
+
+
+# O10: the change log of D8's ontology operations names the undo that reversed each row.
+# A range, not `=`: an instant read back from the store and one the writer wrote can carry their
+# zone in two forms, which Cypher's equality tells apart; Python compares the instants exactly.
+_LOG_AT = (
+    "MATCH (c:OntologyChange) WHERE c.at >= $low AND c.at <= $high AND c.undone_by IS NULL "
+    "RETURN c.id AS id, c.at AS at, c.rows_before AS before, c.rows_after AS after"
+)
+_LOG_WINDOW = timedelta(seconds=1)
+_LOG_UNDONE_BY = "MATCH (c:OntologyChange) WHERE c.undone_by = $by RETURN c.id AS id"
+_SET_LOG = (
+    "MATCH (c:OntologyChange {id: $id}) SET c.undone_by = $by, "
+    "c.version = coalesce(c.version, 1) + 1, c.touched_at = $at"
+)
+
+
+def _logged_ids(text: str | None) -> set[str]:
+    """The registry row ids a change-log row's rows before or after name: a row entry's value
+    ({table, row}) or a row's id and fields ({table, id, ...})."""
+    try:
+        parts = json.loads(text or "[]")
+    except ValueError:
+        return set()
+    found: set[str] = set()
+    for part in parts if isinstance(parts, list) else []:
+        if isinstance(part, dict):
+            row = part.get("row") if isinstance(part.get("row"), dict) else part
+            if isinstance(row.get("id"), str):
+                found.add(row["id"])
+    return found
+
+
+def mark_undone(run: Any, entries: list[dict[str, Any]], change_set: str) -> None:
+    """The change-log rows that the undone change set's ontology operations wrote (the rows of
+    its time that name one of its registry rows) take this undo's change set as `undone_by`, with
+    the S12 pair. When the undone change set is itself an undo, the rows it marked are cleared:
+    their operation stands again. The table is a snapshot table, so no change entry is written."""
+    registry = {entry["entity_id"] for entry in entries if entry["entity_type"] == "registry_row"}
+    if registry:
+        at = entries[0]["recorded_at"]
+        for row in run.tx.run(_LOG_AT, low=at - _LOG_WINDOW, high=at + _LOG_WINDOW):
+            if row["at"] != at:
+                continue
+            if (_logged_ids(row["before"]) | _logged_ids(row["after"])) & registry:
+                run.tx.run(_SET_LOG, id=row["id"], by=run.stamp.change_set_id, at=run.at)
+    for row in run.tx.run(_LOG_UNDONE_BY, by=change_set):
+        run.tx.run(_SET_LOG, id=row["id"], by=None, at=run.at)
