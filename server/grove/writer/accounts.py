@@ -273,7 +273,12 @@ def _create_own_item(
             commit_id=new_id(world_id),
             change_set_id=new_id(world_id),
         )
-        ops, observations = _own_item_batch(title, source_id, episode_id, at)
+        # The row speaks for the sign-in itself: the moment its pointer source was stored, never a
+        # later time (a source cannot speak for a time after it was read, S46).
+        spoken = tx.run(
+            "MATCH (s:Source {id: $id}) RETURN s.received_at AS at", id=source_id
+        )[0]["at"]
+        ops, observations = _own_item_batch(title, source_id, episode_id, spoken or at)
         faults, by_index = shape_refusals({"ops": ops, "evidence": list(observations.values())})
         if faults:
             raise BatchDeclined(faults, batch_size=len(ops))

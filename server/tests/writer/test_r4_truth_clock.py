@@ -233,8 +233,8 @@ def test_a_confirmation_at_create_from_a_row_dated_after_now_is_refused(driver, 
     frozen.set(LATER)
     one(
         refused(driver, w, [op], [future], run_id="run-f1"),
-        "not_confirmable",
-        "creating_evidence",
+        "invalid_arguments",
+        "future_evidence",
     )
 
 
@@ -273,6 +273,60 @@ def test_a_confirmation_at_create_from_a_row_dated_after_its_read_is_refused(dri
     op = create_item("event", "The first ferry leaves at 07:40", "p1", confirmed_by_call=call)
     one(
         refused(driver, w, [op], [after_read], run_id="run-r1"),
-        "not_confirmable",
-        "creating_evidence",
+        "invalid_arguments",
+        "future_evidence",
     )
+
+
+def test_a_done_from_a_file_row_dated_after_its_read_is_refused(driver, w, frozen, talk):
+    """The third delta verifier's blocker: a whole uploaded file read on one day, cited as an
+    artifact dated later, gave a task its done and read as "confirmed against a file of" that
+    later day. Every row is bounded where it is typed, so the batch is refused."""
+    files = source(
+        driver, w, "notes_files_releases", ["Signed hand-over: the seating plan"], document=True
+    )
+    frozen.set(LATER)
+    task = open_task(driver, w, talk)
+    after_read = whole(files, "f1", at=LATER - timedelta(minutes=1), statement_class="artifact")
+    one(
+        refused(driver, w, [change_status(task, "done", "f1")], [after_read]),
+        "invalid_arguments",
+        "future_evidence",
+    )
+    assert item_row(driver, w, task)["status_role"] == "open"
+
+
+def test_a_done_from_a_row_dated_after_now_is_refused(driver, w, frozen, talk):
+    task = open_task(driver, w, talk)
+    frozen.set(LATER)
+    files = source(
+        driver, w, "notes_files_releases", ["Signed hand-over: the seating plan"], document=True
+    )
+    ahead = whole(files, "f2", at=LATER + timedelta(days=30), statement_class="artifact")
+    one(
+        refused(driver, w, [change_status(task, "done", "f2")], [ahead]),
+        "invalid_arguments",
+        "future_evidence",
+    )
+    assert item_row(driver, w, task)["status_role"] == "open"
+
+
+def test_a_calendar_entry_for_next_week_is_still_a_plan(driver, w):
+    """A calendar entry is dated ahead by nature: it stays allowed, and planned."""
+    calendar = source(driver, w, "calendar", ["Dinner at Okonkwo Hall"])
+    entry = whole(calendar, "c1", at=NOW + timedelta(days=7), statement_class="intention")
+    plan = created_id(
+        apply(
+            driver,
+            w,
+            [
+                create_item(
+                    "plan", "Dinner at Okonkwo Hall", "c1", status="proposed", recheck_by=RENEWED
+                )
+            ],
+            [entry],
+            caller=LEARNER,
+        )
+    )
+    [row] = evidence_on(driver, w, plan)
+    assert row["source_type"] == "planned"
