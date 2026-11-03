@@ -85,6 +85,7 @@ def add_entry(
     reason_id: str | None = None,
     evidence_id: str | None = None,
     history_only: bool = False,
+    inverse_of: str | None = None,
 ) -> None:
     past_of = entity_id if entity_type == "item" and field in CONTENT_FIELDS else None
     old_id = None
@@ -107,6 +108,7 @@ def add_entry(
         "run_id": stamp.run_id,
         "commit_id": stamp.commit_id,
         "change_set_id": stamp.change_set_id,
+        "inverse_of": inverse_of,
         "history_only": history_only,
     }
     tx.run(_ADD_ENTRY, entry=compact(entry))
