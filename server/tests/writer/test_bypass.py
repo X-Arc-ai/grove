@@ -71,6 +71,9 @@ B2_CALLERS = {
     "end_link": "UCKPW",
     "attach_evidence": "UCKPW",
     "end_evidence": "CKP",
+    # D8's ontology operations (lane ontology): propose U C K, the rest K P.
+    "propose_word": "UCK",
+    "promote_word": "KP",
 }
 NOT_LISTED = [
     (op, letter)
@@ -171,6 +174,17 @@ def payload(op: str, ids: dict[str, Any]) -> dict[str, Any]:
         },
         "attach_evidence": lambda: {"target": ids["task"], "ev_id": "e9", "polarity": "supports"},
         "end_evidence": lambda: {"evidence": ids["evidence"], "end_reason": "correction"},
+        "propose_word": lambda: {
+            "word_type": "meaning",
+            "name": "is godparent of",
+            "description": "the first person is a godparent of the second",
+            "reason": "no existing meaning says it",
+            "worked_example": {"ev_id": "e9"},
+            "neighbours": [],
+            "declared": {},
+            "judgment_ids": [],
+        },
+        "promote_word": lambda: {"word_type": "meaning", "word": "part of", "reason": reason},
     }
     body = shapes[op]() if op in shapes else {}
     return {"op": op, "op_id": body.pop("op_id", None) or new_op_id(), **body}

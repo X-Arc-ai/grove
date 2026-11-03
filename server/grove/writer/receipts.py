@@ -3,8 +3,9 @@ read transaction. A stored receipt holds ids and codes only; titles, meaning nam
 read fresh when it is rendered, so no copy of free text sits in it.
 
 Grammar: `+` item created, `>` link created, `*` field changed, `x` ended, `^` reopened,
-`=` evidence attached (or a known link restated), `-` evidence ended, `u` change set undone. A
-merge prints `* item <a> merged into <b>`, and a spent record `x record <r> (spent; lesson in <b>)`.
+`=` evidence attached (or a known link restated), `-` evidence ended, `u` change set undone, `o`
+ontology (a word minted, an alias made from a mint, a word promoted). A merge prints
+`* item <a> merged into <b>`, and a spent record `x record <r> (spent; lesson in <b>)`.
 """
 
 import json
@@ -143,7 +144,7 @@ def read_receipt(
         if entry.get("new_value_id")
         and (
             entry["field"] in ("end_class", "end_reason", "merged_into", "lesson_in")
-            or (entry["entity_type"] == "link" and entry["field"] == "row")
+            or (entry["entity_type"] in ("link", "registry_row") and entry["field"] == "row")
         )
     ]
     values = _values(query, coded)
@@ -246,6 +247,14 @@ def _line(
             )
         if name == "end_reason" and values.get(value_id):
             return ReceiptLine("-", "evidence", entity_id, end_reason=values.get(value_id))
+    if entity_type == "registry_row" and name in ("row", "status"):
+        # O10: a mint or an alias (row), a promotion (status). The table rides in field.
+        if name == "row":
+            stored = values.get(value_id) or {}
+            table = stored.get("table") if isinstance(stored, dict) else None
+            status = (stored.get("row") or {}).get("status") if isinstance(stored, dict) else None
+            return ReceiptLine("o", "registry_row", entity_id, field=table, end_class=status)
+        return ReceiptLine("o", "registry_row", entity_id, field="status", value_id=value_id)
     return None
 
 
@@ -307,7 +316,81 @@ def _lookups(query: WorldQuery, receipt: Receipt) -> dict[str, dict[str, Any]]:
         for row in query.read("MATCH (m:Meaning) RETURN m.id AS id, m.name AS name")
     }
     values = _values(query, [line.value_id for line in receipt.lines if line.value_id])
-    return {"links": links, "items": items, "kinds": kinds, "meanings": meanings, "values": values}
+    words = _registry_words(query, receipt)
+    return {
+        "links": links,
+        "items": items,
+        "kinds": kinds,
+        "meanings": meanings,
+        "values": values,
+        "words": words,
+    }
+
+
+_WORD_TYPES = {"Kind": "kind", "Meaning": "meaning", "PropertyName": "property name"}
+
+
+def _registry_words(query: WorldQuery, receipt: Receipt) -> dict[str, dict[str, Any]]:
+    """The registry rows an `o` line names, read fresh: a word's type and name, an alias's phrase
+    and its target's type and name, or a capability minted with a word and that word."""
+    ids = sorted({line.entity_id for line in receipt.lines if line.symbol == "o"})
+    if not ids:
+        return {}
+    found: dict[str, dict[str, Any]] = {}
+    for label, word_type in _WORD_TYPES.items():
+        for row in query.read(
+            f"MATCH (n:{label}) WHERE n.id IN $ids RETURN n.id AS id, n.name AS name", ids=ids
+        ):
+            found[row["id"]] = {"type": word_type, "name": row["name"]}
+    for row in query.read(
+        "MATCH (a:Alias) WHERE a.id IN $ids RETURN a.id AS id, a.phrase AS phrase, "
+        "a.target_type AS target_type, a.target_id AS target_id",
+        ids=ids,
+    ):
+        found[row["id"]] = {
+            "type": "alias",
+            "phrase": row["phrase"],
+            "target_type": row["target_type"],
+            "target_id": row["target_id"],
+        }
+    for row in query.read(
+        "MATCH (c:Capability) WHERE c.id IN $ids RETURN c.id AS id, "
+        "c.connector_type AS connector_type, c.capability AS capability, "
+        "c.registry_id AS target_id",
+        ids=ids,
+    ):
+        found[row["id"]] = {"type": "capability", **row}
+    targets = sorted(
+        row["target_id"] for row in found.values() if row["type"] in ("alias", "capability")
+    )
+    if targets:
+        for label, word_type in _WORD_TYPES.items():
+            for row in query.read(
+                f"MATCH (n:{label}) WHERE n.id IN $ids RETURN n.id AS id, n.name AS name",
+                ids=targets,
+            ):
+                found.setdefault(row["id"], {"type": word_type, "name": row["name"]})
+    return found
+
+
+def _word_text(word_id: str, found: dict[str, dict[str, Any]]) -> str:
+    word = found["words"].get(word_id)
+    if word is None:
+        return f"word {short_id(word_id)}"
+    return f'{word["type"]} "{word["name"]}"'
+
+
+def _ontology_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
+    word = found["words"].get(line.entity_id) or {}
+    if word.get("type") == "alias":
+        return f'o alias "{word["phrase"]}" for {_word_text(word["target_id"], found)}'
+    if word.get("type") == "capability":
+        target = _word_text(word["target_id"], found)
+        return f"o capability {word['connector_type']} {word['capability']} for {target}"
+    if line.field == "status":
+        status = _shown(found["values"].get(line.value_id))
+        return f"o promote {_word_text(line.entity_id, found)} ({status})"
+    return f"o mint {_word_text(line.entity_id, found)} ({line.end_class})"
 
 
 def _link_text(link_id: str, found: dict[str, dict[str, Any]]) -> str:
@@ -362,6 +445,8 @@ def _render_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
         )
     if line.symbol == "-":
         return f"- evidence {entity} ({line.end_reason})"
+    if line.symbol == "o":
+        return _ontology_line(line, found)
     return f"{line.symbol} {line.entity_type} {entity}"
 
 

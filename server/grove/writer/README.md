@@ -206,10 +206,55 @@ what an earlier one did.
 | `merge` | C K P | **op_id**, **survivor**, **absorbed**, **reason**, evidence_refs | `* item a3b7c1d2 merged into b7e8f9a0`, the re-pointed links |
 | `undo` | P W | **op_id**, **change_set**, **reason** | `u change set 18422aa0 undone`, then the inverse lines |
 | `retire_record` | K | **op_id**, **record**, **lesson** (the belief or head that holds its lesson), **reason**, version | `x record 9a1e0c33 (spent; lesson in b7e8f9a0)` |
+| `propose_word` | U C K | **op_id**, **word_type** (`kind`, `meaning`, `property_name`), **name**, **description**, **reason**, **worked_example** (`{ev_id}` or `{evidence_id}`), **neighbours** (`[{word, distinction}]`), **declared**, **judgment_ids**, kind (a property name's kind, required for one), proposed_capability (`{connector_type, capability}`), reversed (a meaning that reads its first neighbour from the other end) | `o mint meaning "is godparent of" (provisional)` or `o alias "is pals with" for meaning "related to"` |
+| `promote_word` | K P | **op_id**, **word_type**, **word** (id or name), **reason**, kind (for a property name) | `o promote meaning "is godparent of" (canonical)` |
+
+### The ontology operations (D8's floor)
+
+`grove.writer.ontology` holds them; `docs/store-map.md` has the rulings O1 to O13. A word that a
+`propose_word` mints is usable by its name in every later operation of the same batch.
+
+- **Reuse first.** A name that resolves to a word of its type, or that a retired or split word
+  holds, is refused with rule `word_exists`; a primitive name with `primitive_word`.
+- **Declared fields** (`declared`). A kind: `lifecycle_class` and `status_vocabulary`
+  (`[{status, role}]`, each role one of its class's roles; a work kind lists at least one). A
+  meaning: `from_kinds` and `to_kinds` (`{"any": true}` or `{"kinds": [...], "classes": [...]}`),
+  `direction` (`from_to`), `cardinality`, `carries_consequences` with `downstream_end` when true,
+  `temporal_class` with `default_horizon` (days) for a state word only, and optional
+  `decomposition`, `rolls_up_completion`, `cardinality_group`. A property name: `value_type` and
+  the same temporal pair. A field the writer sets (`status`, `origin`, `generic`, the counts) is
+  refused with rule `writer_field`.
+- **Neighbours.** Exactly the two nearest existing words of the type (as many as the registry
+  holds when it holds fewer), each with a distinction; the first is the one the judges compare.
+- **Direction.** A meaning may state `reversed: true`: the phrase reads its first neighbour from the
+  other end. The judges judge that reading, and an alias made from the mint is reversed. An alias
+  whose declared ends fit the neighbour only the other way round is refused, rule `alias_direction`.
+- **Judgments.** Two `same_word` judgments of the word against its first neighbour, from two model
+  calls of two models, or a second one marked `correlated`. Both `same`: the phrase becomes an alias
+  of that neighbour. Anything else: the word is minted provisional. A `field_fit` judgment covers
+  one disputable field; a field that a judgment disputes, or that none covers, takes the safer
+  value and is listed in `disputed_fields`. The subjects follow S32 (ruling O3).
+- **The valve.** At most 3 mints a batch (`MINT_VALVE`), rule `mint_valve`.
+- **The worked example** is the evidence row, written or cited in this batch from the named
+  observation, of a use of the word; else rule `worked_example_unused`.
+- **Usage and the earning bar.** At the end of every batch the writer adds the batch's uses and new
+  distinct episodes to each word they reached, and promotes a provisional word at 3 distinct
+  episodes (`EARNING_BAR`) in the same transaction. `promote_word` needs the bar from K; the person
+  promotes at once.
+- **The change log.** One `:OntologyChange` per mint, alias and promotion, with its inverse.
+
+The judges run outside the writer: `grove.models.judge.judge_word` calls Spark (job `word_judge`)
+and Glimmer (job `second_opinion`), with a correlated Spark judge (`second_opinion_fallback`) when
+Glimmer cannot be reached, and records each verdict with `grove.writer.judgments.record_judgments`.
+`grove.ontology.plan_words` runs them in order, after reuse first and the valve, and settles each
+word as the writer will. `fit_links` puts every phrase it could not propose on the generic meaning,
+phrase kept, and gives a link of a meaning that settled as a state its re-check by.
 
 `accounts.py` is not a B.2 operation: it holds sign-in's writes (S20, S40), users, sessions, email
 codes and the person's own item. Only `server/grove/api/auth.py` calls it. `docs/signin.md` has the
 flows.
+
+### The composite operations (D3)
 
 D3's composite operations live in `composite.py` (`writer-b`). Each moves lineage, the head and the
 links in the batch's one transaction, and nothing is deleted:
@@ -251,7 +296,8 @@ these operations (rule `belief_transition`): the beliefs lane moves beliefs by D
 
 The other B.2 operations belong to later lanes: verify and the confirmation at create (`truth-clock`);
 beliefs and contradictions (`beliefs`); proposals and marks (`walk`); questions, holds and
-mentions (`cleanup`, `ingest-b`); ontology operations (`ontology`); forget (`forget`).
+mentions (`cleanup`, `ingest-b`); forget (`forget`). D8's merge, split, rename, retire and undo are
+P1 (Appendix D, P1 item 3): the change log stores the inverse each of them will need.
 
 Two B.2 clauses of the operations above wait for the `walk` lane, because no walk and no R1 ending
 exist yet: "triggers the walk" on `change_status` and `end_item`, and "R1's endings come back only
@@ -472,4 +518,13 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | An undo of an automatic change takes one call and keeps both change sets; it conflicts when the row moved since; a late value's undo restores the as-of read; an undone creation is refuted; only the person or the writer undoes; the starter set is not undone | `version_conflict` (rule `undo_conflict`), `invalid_arguments` (rules `already_undone`, `not_undoable`), `scope_denied` | `test_contract_d3.py` |
 | A spent record leaves `current()`, keeps its evidence and its history, and reads true on the world axis; only the consolidation agent retires, and only a record | `invalid_arguments` (rule `not_a_record`), `scope_denied` | `test_contract_d3.py` |
 | A clock entry holds the value id of its words | (none) | `test_contract_d3.py` |
+| A proposed word that resolves already mints nothing; a reversed phrase swaps the ends | `invalid_arguments` (rule `word_exists`) | `test_ontology.py` |
+| A new word is minted provisional with its reason, its worked example, its ends and two named neighbours; one episode restated stays provisional, three distinct episodes make it canonical in the same transaction | (none) | `test_ontology.py` |
+| A proposal cites two recorded same-word judgments of this word, from two models or a correlated second judge; two `same` make an alias; a disagreement mints | `second_judge_required` (rules `judgments_required`, `two_models`), `unrecorded_verdict` (rules `unrecorded_verdict`, `judgment_subject`, `judgment_role`, `judgment_verdict`, `judgment_call`) | `test_ontology.py` |
+| A disputed or unjudged field takes the safer value; a capability is stored only when the second model accepts it | (none) | `test_ontology.py` |
+| A kind's vocabulary maps every status to a role of its class | `unmapped_status` (rules `unmapped_status`, `no_vocabulary`, `status_named_twice`) | `test_ontology.py` |
+| A batch mints at most three words; the worked example is a use in the batch; a proposal names its neighbours, each with a distinction | `invalid_arguments` (rules `mint_valve`, `worked_example_unused`, `neighbours_required`, `neighbour_twice`, `neighbour_unknown`, `distinction_required`) | `test_ontology.py` |
+| A phrase read from the other end becomes a reversed alias; a verdict on one reading never counts for the other; an alias whose declared ends fit only reversed is refused; ending a row and attaching another from one conversation earns nothing | `invalid_arguments` (rule `alias_direction`), `unrecorded_verdict` (rule `judgment_subject`) | `test_ontology.py` |
+| The person promotes a word at once; the consolidation agent only at the bar | `invalid_arguments` (rules `earning_bar`, `already_canonical`) | `test_ontology.py` |
+| The Oct 2 drill: no operation of an agent writes the registry or a primitive, an agent cannot declare a writer-set field, an edited seed never reaches a living world, the runner holds no store credential and the store refuses a process with none | `invalid_arguments` (rules `unknown_op`, `writer_field`, `primitive_word`), `not_found` | `test_ontology_drill.py` |
 | Labelled pairs: reworded titles at 0.8, 0.86 and 1.0 are refused, pairs at 0.72 and 0.3 come back as candidates, and revision N after N-1 passes only with `distinct_from` and is logged with `override_used`; `distinct_from` clears only the item it names; a title that differs only by an invisible format character meets the gate | `near_duplicate` | `test_neardup_labelled.py` |
