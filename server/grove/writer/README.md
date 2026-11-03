@@ -112,7 +112,7 @@ with successors then, which stays with them on its standing.
 | `stopped_believing(query, start, end)` | The endings recorded in `[start, end)` that were beliefs Grove gave up: `refuted` only. An ending in the world, a retirement, a slot link replaced, a re-pointed merge link and a spent record are not. |
 | `rebuild(entries, values, *, known_at=None, validate=True)` | The projections the entries give, in sequence, as a `Projection` (`rows[table][id]`, `history`, `forgotten`). Each entry is checked as the writer checks it, against the registry as rebuilt so far; a failed check raises `ReplayRefused(sequence, rule)`. History-only entries never move a row. |
 | `live_fingerprint(driver, world_id, *, forgotten=())` and `fingerprint(rows, history, tables, *, forgotten=())` | D3's fingerprint: every projection row's id, clocks, `recheck_by`, status, end class and version (and `active` on evidence), the history's last sequence and entry count, and each snapshot table's count and newest id. No text, and no `touched_at`. |
-| `take_snapshot`, `load_snapshot`, `rebuild_in_place`, `replay_ledger`, `restore` | D3's one restore procedure, in its four steps; `restore` raises `RestoreMismatch` and the store must not go live when the fingerprint does not match the snapshot's, recomputed without the ids the ledger forgot since. `python -m grove.writer.restore fingerprint|rebuild --world <id>` runs it on a store loaded from a dump. |
+| `take_snapshot`, `load_snapshot`, `rebuild_in_place`, `replay_ledger`, `restore` | D3's one restore procedure, in its four steps; `restore` raises `RestoreMismatch` and the store must not go live when the fingerprint does not match the snapshot's, recomputed without the ids the ledger forgot since. `replay_ledger` refuses a `field_value` or `named_value` row that names a row entry's value (`ReplayRefused`, rule `row_value`) before it marks anything. The writers are stopped for the whole restore. `python -m grove.writer.restore fingerprint|rebuild --world <id>` runs it on a store loaded from a dump. |
 
 ### The resolver
 
@@ -236,7 +236,8 @@ links in the batch's one transaction, and nothing is deleted:
   a field goes back to its old value, a late value gets a late inverse at its own world time, a
   created item or link ends as `refuted`, a created evidence row ends (`correction`), an ended one
   is active again, a created registry row is `retired`. It is refused when a row the change set
-  moved has moved since (`version_conflict`, rule `undo_conflict`), when the change set was undone
+  moved has moved since (`version_conflict`, rule `undo_conflict`; a `restated` or
+  `no_head_update` marker moves no row), when the change set was undone
   already (`already_undone`), when it is the starter set (`not_undoable`), or when a value it holds
   was forgotten (`value_forgotten`). An undo can itself be undone.
 - `retire_record` ends a record on the record axis only: `end_class` `spent` and `lesson_in` (the

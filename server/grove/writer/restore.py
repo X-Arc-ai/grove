@@ -84,6 +84,10 @@ _MARK_VALUES = (
     "MATCH (v:HistoryValue) WHERE v.id IN $ids AND v.value <> $marker "
     "SET v.value = $marker, v.forgotten_at = $at"
 )
+_ROW_VALUE = (
+    "MATCH (e:ChangeEntry {field: 'row'}) WHERE e.new_value_id IN $ids "
+    "RETURN e.sequence AS sequence ORDER BY e.sequence LIMIT 1"
+)
 
 
 class RestoreMismatch(RuntimeError):
@@ -348,6 +352,11 @@ def replay_ledger(
     rows on them hold, in their rows and in their entries, reads the marker. No change entry is
     touched.
 
+    A `field_value` or `named_value` row that names the value of a `row` entry is refused
+    (ReplayRefused, rule `row_value`) before any value is marked: that value holds the whole row,
+    so the marker would remove the row and the replay would then refuse its evidence and links.
+    Which column of a create value a forget reaches is the forget lane's design (store map).
+
     Then the projections are rebuilt from the history as the ledger left it, in the same
     transaction: that is the redaction (D3 step 3). A row whose own value reads the marker is
     not rebuilt, so a forgotten item, its links and their evidence rows leave the projection,
@@ -359,6 +368,21 @@ def replay_ledger(
 
     def work(tx: WorldTx) -> set[str]:
         tx.lock_world()
+        named_values = sorted(
+            {
+                value_id
+                for row in rows
+                if row["target_type"] != _FORGET_ITEM
+                for value_id in row.get("internal_ids") or []
+            }
+        )
+        whole = tx.run(_ROW_VALUE, ids=named_values) if named_values else []
+        if whole:
+            raise ReplayRefused(
+                whole[0]["sequence"],
+                "row_value",
+                "a forget of one value names the value that holds a whole row",
+            )
         forgotten: set[str] = set()
         for row in rows:
             named = list(row.get("internal_ids") or [])
@@ -461,7 +485,11 @@ def restore(
     world's fingerprint without the forgotten ids, with `forgotten` (the ids, sorted). Raises
     RestoreMismatch before any write when the snapshot does not give its own recorded
     fingerprint, and after the restore when the world does not match it; ReplayRefused when an
-    entry of the snapshot fails a check (the rebuild then writes nothing)."""
+    entry of the snapshot fails a check (the rebuild then writes nothing), or when a ledger row
+    names a row entry's value (rule `row_value`; the ledger replay then marks nothing). After a
+    refusal or a mismatch the world holds what was loaded, for a person to read: it must not go
+    live. The writers are stopped for the whole procedure: its four steps are four
+    transactions."""
     ledger = list(ledger_rows)
     recorded = snapshot["fingerprint"]
     history = {"last_sequence": recorded["last_sequence"], "entries": recorded["entries"]}
