@@ -43,6 +43,11 @@ _LIST_GRANTS = (
     "g.scopes_granted AS scopes, g.granted_at AS granted_at "
     "ORDER BY g.granted_at DESC, g.id DESC"
 )
+# Every grant row of the world, revoked ones too: a revoked grant keeps its row and its client's.
+_WORLD_GRANTS = (
+    "MATCH (g:OAuthGrant {world_id: $world_id}) "
+    "RETURN count(g) AS grants, count(CASE WHEN g.client_id = $client_id THEN 1 END) AS of_client"
+)
 
 
 @dataclass(frozen=True)
@@ -55,6 +60,17 @@ class ClientRow:
     secret_hash: str | None
     registered_at: datetime | None
     fetched_at: datetime | None
+    # False only for a document's client that a fetch found and no row holds yet: document_client
+    # builds it, and only an Approve stores it.
+    stored: bool = True
+
+
+@dataclass(frozen=True)
+class WorldGrants:
+    """The grant rows of one world, revoked ones too, and whether one of them names the client."""
+
+    count: int
+    has_client: bool
 
 
 @dataclass(frozen=True)
@@ -127,6 +143,11 @@ def find_access_token(driver: Driver, token_hash: str, now: datetime) -> TokenRo
         resource=row["resource"],
         expires_at=row["expires_at"],
     )
+
+
+def world_grants(driver: Driver, world_id: str, client_id: str) -> WorldGrants:
+    row = PlatformQuery(driver).read(_WORLD_GRANTS, world_id=world_id, client_id=client_id)[0]
+    return WorldGrants(count=row["grants"], has_client=row["of_client"] > 0)
 
 
 def list_grants(driver: Driver, world_id: str) -> list[GrantRow]:

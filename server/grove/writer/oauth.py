@@ -60,8 +60,8 @@ _ATTEMPTS = 3
 # Clients ----------------------------------------------------------------------------------------
 
 _ADD_CLIENT = "CREATE (c:OAuthClient) SET c = $row"
-# The client id of a document is its URL, one row for every person who uses that host. Only the
-# first fetch sets the type and the registration time; every fetch refreshes what the document says.
+# The client id of a document is its URL, one row for every person who uses that host. The first
+# Approve sets the type and the registration time; each write stores what the document says.
 _ENSURE_DOCUMENT_CLIENT = (
     "MERGE (c:OAuthClient {client_id: $client_id}) "
     "ON CREATE SET c.registration_type = $registration_type, c.registered_at = $at "

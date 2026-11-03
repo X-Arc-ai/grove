@@ -21,7 +21,7 @@ The code:
 2. The host reads the protected-resource metadata, then the authorization-server metadata of the server it names.
 3. The host registers at `POST /register`, or uses the URL of its own Client ID Metadata Document as its `client_id`.
 4. The host opens `GET /authorize?...` in the person's browser. With no session, Grove sends the person to `/signin?next=<the authorize path and query>`, and the sign-in comes back to the same `/authorize` URL. Grove shows the consent page.
-5. The person presses Approve. Grove stores the grant and a code, and redirects to the host with `code`, `state` and `iss`. Deny redirects with `error=access_denied`.
+5. The person presses Approve. Grove stores the grant and a code (for a document client with no row, its row first), and redirects to the host with `code`, `state` and `iss`. Deny redirects with `error=access_denied`.
 6. The host exchanges the code with its PKCE verifier at `POST /token` and gets an access token and a refresh token.
 7. The host calls `POST /mcp` with `Authorization: Bearer <access token>`. Each tool call runs in the token's world only.
 8. Before the access token expires, the host refreshes it at `POST /token`. Each refresh gives a new pair and ends the old refresh token.
@@ -36,8 +36,8 @@ Every answer on these paths carries `Cache-Control: no-store`. The OAuth endpoin
 | `GET /.well-known/oauth-protected-resource`, `GET /.well-known/oauth-protected-resource/mcp` | `resource` `<base>/mcp`, `authorization_servers` `[<base>]`, `scopes_supported` (the three scopes), `bearer_methods_supported` `["header"]`, `resource_name` `"Grove"`. `Access-Control-Allow-Origin: *`. |
 | `GET /.well-known/oauth-authorization-server`, `GET /.well-known/oauth-authorization-server/mcp`, `GET /.well-known/openid-configuration` | `issuer` `<base>`; `authorization_endpoint`, `token_endpoint`, `registration_endpoint`, `revocation_endpoint` under `<base>`; `response_types_supported` `["code"]`; `response_modes_supported` `["query"]`; `grant_types_supported` `["authorization_code", "refresh_token"]`; `code_challenge_methods_supported` `["S256"]`; `token_endpoint_auth_methods_supported` and `revocation_endpoint_auth_methods_supported` `["none", "client_secret_post", "client_secret_basic"]`; `scopes_supported`; `client_id_metadata_document_supported` true; `authorization_response_iss_parameter_supported` true. `Access-Control-Allow-Origin: *`. |
 | `POST /register` | 201 with the client. 400 `invalid_redirect_uri` or `invalid_client_metadata`. 429 `temporarily_unavailable` with `Retry-After` over the cap. |
-| `GET /authorize` | 200 the consent page, 303 to sign-in, or a 400 HTML page for every refusal. It never redirects to the host. 503 typed `unavailable` when the consent page is not built. |
-| `POST /authorize/decision` | 302 to the host with a code or `access_denied`, only after a valid `csrf`; a 400 or 401 HTML page for every refusal. |
+| `GET /authorize` | 200 the consent page, 303 to sign-in, or a 400 HTML page for every refusal. It never redirects to the host. A 503 HTML page with `Retry-After: 5` when a document fetch is busy and no copy can serve. 503 typed `unavailable` when the consent page is not built. |
+| `POST /authorize/decision` | 302 to the host with a code or `access_denied`, only after a valid `csrf`; a 400 or 401 HTML page for every refusal; a 503 HTML page with `Retry-After: 5` when a document fetch is busy and no copy can serve. |
 | `POST /token` | 200 the tokens. 400 `invalid_request`, `invalid_grant`, `unsupported_grant_type`, `invalid_scope`, `invalid_target`. 401 `invalid_client`. |
 | `POST /revoke` | 200 `{}` once the client is authenticated, whatever the token was. 400 `invalid_request` with no `token`. 401 `invalid_client`. |
 | `GET /v1/views/connections` | The person's live hosts (session). |
@@ -56,12 +56,13 @@ The constants are in `server/grove/oauth/__init__.py`, and the limits of a docum
 | An authorization code | 5 minutes, used once |
 | An access token | 1 hour (`expires_in` 3600) |
 | A refresh token | 30 days, used once: each refresh rotates it |
-| Registrations across the server | At most 1000 an hour, `POST /register` and new document rows together, an in-process sliding window on `clock.monotonic()`. A restart resets it. |
-| nginx on `/register` | 4 a minute per address, a burst of 20, 429 above that (zone `grove_register`). One address reaches 240 an hour, so it cannot fill the cap across the server. |
-| nginx on `/token` and `/authorize` | 30 a minute per address, a burst of 20, 429 above that (zone `grove_oauth`, one count per address for the two paths together). `/authorize/decision`, `/revoke` and `/mcp` have no limit of nginx. |
+| Registrations across the server | At most 1000 an hour, `POST /register` alone, an in-process sliding window on `clock.monotonic()`. A restart resets it. A document spends none of it. |
+| nginx on `/register` | 4 a minute per address, a burst of 20, 429 above that (zone `grove_register`). One address reaches about 260 an hour (240 and the burst), so one address stays under the cap across the server. Four or more addresses can still fill it. |
+| nginx on `/token`, `/authorize` and `/authorize/decision` | 30 a minute per address, a burst of 20, 429 above that (zone `grove_oauth`, one count per address for the three paths together). `/revoke` and `/mcp` have no limit of nginx. |
 | A Client ID Metadata Document | Fetched again after 1 hour. When that fetch fails, a copy fetched in the last 24 hours still serves. |
-| A fetch of a document | 5 seconds in all, for the lookup, every address, the headers and the body. At most 4 run in the process; over that a fetch is refused at once. |
-| A client that no grant names | Deleted by a later registration, at most 100 per registration: a dynamic client once it is 7 days old, a document's copy once its last fetch is past the 24 hours above |
+| A fetch of a document | 5 seconds in all, for the lookup, every address, the headers and the body. One at a time per person, and at most 4 in the process; over either limit a fetch is refused at once. |
+| The grants of one world | At most 100 rows (`MAX_GRANTS_PER_WORLD`), counted with revoked ones, because a grant keeps its client row in the store. A soft cap: approvals at one time can pass it by a few. |
+| A client that no grant names | Deleted by a later write of a client (a registration, the Approve that stores a document's row, or the refresh of a row), at most 100 per write: a dynamic client once it is 7 days old, a document's copy once its last fetch is past the 24 hours above |
 | An expired code | Deleted by a later code of the same client one day after it expired |
 
 ## The scopes
@@ -87,13 +88,15 @@ The answer: `client_id` (a UUIDv7, S32), `client_id_issued_at`, `redirect_uris`,
 
 ### Client ID Metadata Documents
 
-A `client_id` that is an `https://` URL with a path other than `/` names a document that describes the client. Grove fetches it at `/authorize`, only for a person who has signed in (`server/grove/oauth/metadata_document.py`): https only, port 443 unless the URL names one, no user part, no dot segment in the path (`%2e` counts as a dot), a host that resolves only to global addresses, a connection to the checked address with the original host as SNI and as Host (no second DNS lookup), no proxy, no redirect, at most 5 KiB.
+A `client_id` that is an `https://` URL with a path other than `/` names a document that describes the client. Grove fetches it at `/authorize` and at the decision, only for a person who has signed in (`server/grove/oauth/metadata_document.py`): https only, port 443 unless the URL names one, no user part, no dot segment in the path (`%2e` counts as a dot), a host that resolves only to global addresses, a connection to the checked address with the original host as SNI and as Host (no second DNS lookup), no proxy, no redirect, at most 5 KiB.
 
 A global address is one that Python calls global, that carries no inner address (IPv4-mapped, 6to4, Teredo, NAT64), and that is not in `::/96`, `::ffff:0:0:0/96` or `fec0::/10`, and has no ISATAP interface id (`::5efe:`).
 
-One fetch takes at most 5 seconds in all. It runs in a daemon thread, because neither `getaddrinfo` nor a read timeout gives a total limit, and the route holds a thread of the API's pool. At the limit the caller refuses and stops the worker, which shuts down its connection and tries no further address. At most 4 workers run in the process, and each holds its slot until it ends. Over that a fetch is refused at once, so no request queues on a slow host. A refusal for that reason is a failed fetch like any other.
+One fetch takes at most 5 seconds in all. It runs in a daemon thread, because neither `getaddrinfo` nor a read timeout gives a total limit, and the route holds a thread of the API's pool. At the limit the caller refuses and stops the worker, which shuts down its connection and tries no further address. At most 4 workers run in the process, and one person holds at most one of them. A worker holds its slot and its person's turn until it ends, also after the caller stopped waiting. Over either limit a fetch is refused at once as busy (`DocumentBusy`), and no request reaches the host, so no request queues on a slow host.
 
-The document must be strict JSON (`server/grove/strict_json.py`): an object whose `client_id` equals the URL exactly, with a `client_name` that is not empty once it is cleaned, valid `redirect_uris`, no `client_secret`, no `client_secret_expires_at`, and no `token_endpoint_auth_method` other than `none`. The copy is the client row, with `registration_type` `metadata_document`. A URL with no row takes a slot of the registration window before it is stored, and a full window refuses the new row. A refetch of a known row takes no slot.
+A busy refusal serves a copy of the last 24 hours when one exists, as any failed fetch does. With no such copy, `/authorize` and the decision answer a 503 page on Grove ("Grove is busy", try again in a moment) with `Retry-After: 5`, because a busy fetch says nothing about the app. Any other refused fetch with no copy gets the 400 page "Grove does not know this app". Four people can still hold the 4 slots with slow hosts: the others then get the 503 page.
+
+The document must be strict JSON (`server/grove/strict_json.py`): an object whose `client_id` equals the URL exactly, with a `client_name` that is not empty once it is cleaned, valid `redirect_uris`, no `client_secret`, no `client_secret_expires_at`, and no `token_endpoint_auth_method` other than `none`. The copy is the client row, with `registration_type` `metadata_document`. The row of a new document is written only at an Approve, after the `csrf` check and just before the grant. With no row, a request fetches and checks the document and stores nothing: the consent page shows what the fetch found, and `GET /authorize`, a Deny, a refused decision and a wrong `csrf` write no row, for any caller. So the consent page and the decision of a new document each fetch it. A row that exists serves while it is fresh, and after the hour the next request refreshes it, whatever the request's decision is. A document spends no slot of the registration window, for a new row or a refetch: that window serves `POST /register` alone.
 
 ## The authorization request
 
@@ -107,7 +110,7 @@ The document must be strict JSON (`server/grove/strict_json.py`): an object whos
 6. `resource`, when given, is `<base>/mcp` (a trailing slash is allowed).
 7. A valid session. Else 303 to `/signin?next=<the /authorize path and query, url-encoded>`.
 
-Every refusal from step 1 to step 6 is a 400 HTML page on Grove, from the template of the consent page, with every value escaped, no `Location`, and no `state` sent anywhere. The page names the rule, never a value of the request. `response_type`, `code_challenge`, `code_challenge_method`, `scope` or `state` given twice is refused the same way; `resource` may repeat only when each value is `<base>/mcp`, with or without the trailing slash. A parameter with an empty value counts as absent.
+Every refusal from step 1 to step 6 is a 400 HTML page on Grove, from the template of the consent page, with every value escaped, no `Location`, and no `state` sent anywhere. The page names the rule, never a value of the request. The one other answer of step 1 is the 503 page of a busy fetch, under "Client ID Metadata Documents". `response_type`, `code_challenge`, `code_challenge_method`, `scope` or `state` given twice is refused the same way; `resource` may repeat only when each value is `<base>/mcp`, with or without the trailing slash. A parameter with an empty value counts as absent.
 
 Grove never redirects to a client by itself. Registration is open, so anyone can register a redirect URI on any https host, and an automatic redirect to it would make Grove an open redirector (RFC 9700 section 4.11.2: redirect automatically only to a URI you trust). The only two redirects to a client are Approve and Deny, after a valid `csrf`, because the person pressed a button. So a host that sends a bad request gets no `error` at its redirect: the person sees the page.
 
@@ -117,7 +120,7 @@ The server keeps a `next` of at most 2048 characters (`MAX_NEXT_LENGTH` in `serv
 
 ## The consent page
 
-`web/consent.html` holds two marks, each exactly once: `<!--grove:title-->` in its `<title>` and `<!--grove:consent-->` where the server puts the fragment (`server/grove/oauth/consent.py`). `web/build.py` fails when a mark is missing or doubled. The API reads `$GROVE_WEB_DIST/consent.html` at each request, so a page built later needs no restart. With no built page, an answer that needs it is a typed 503 `unavailable` ("the consent page is not built"). The 400 and 401 pages use the same template with an error fragment.
+`web/consent.html` holds two marks, each exactly once: `<!--grove:title-->` in its `<title>` and `<!--grove:consent-->` where the server puts the fragment (`server/grove/oauth/consent.py`). `web/build.py` fails when a mark is missing or doubled. The API reads `$GROVE_WEB_DIST/consent.html` at each request, so a page built later needs no restart. With no built page, an answer that needs it is a typed 503 `unavailable` ("the consent page is not built"). The 400, 401 and 503 pages use the same template with an error fragment.
 
 The page shows:
 
@@ -131,7 +134,9 @@ The form contract, which a host's test driver may read: each field is `<input ty
 
 `csrf` is the hex HMAC-SHA256, keyed by the session cookie value, over the sorted `k=v` lines (each value percent-encoded) of `client_id`, `redirect_uri`, `redirect_given`, `scope`, `code_challenge`, `state` and `resource`. The headers are `Cache-Control: no-store`, `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'` and `Referrer-Policy: no-referrer`.
 
-`POST /authorize/decision` takes the form (`application/x-www-form-urlencoded`, at most 16 KiB and 64 fields) and reads the session first, for every client: no valid session is a 401 page, before any other check and any fetch. Then it runs the checks of `/authorize` again, and each refusal is a 400 page with no `Location`. A wrong `csrf` is a 400 page ("This page has expired"). A decision that is neither `approve` nor `deny` is a 400 page ("This answer is not valid"). Approve stores the grant and a code and redirects with `code` (`gvc_...`), `state` and `iss`. Deny redirects with `error=access_denied`, `state` and `iss`.
+`POST /authorize/decision` takes the form (`application/x-www-form-urlencoded`, at most 16 KiB and 64 fields) and reads the session first, for every client: no valid session is a 401 page, before any other check and any fetch. Then it runs the checks of `/authorize` again, and each refusal is a 400 page with no `Location`, or the 503 page of a busy fetch. A wrong `csrf` is a 400 page ("This page has expired"). The `csrf` stops another site, and it does not stop a person who is signed in, because it is keyed by that person's own cookie. So a request that fails it has still reached the fetch, and it writes no new row. A decision that is neither `approve` nor `deny` is a 400 page ("This answer is not valid"). Deny redirects with `error=access_denied`, `state` and `iss`.
+
+Approve reads the world's grants before any write. When this world has no grant for this client and already holds 100 grant rows, the answer is a 400 page ("You have too many connected apps"), for a dynamic and a document client, with no row and no grant. A Deny and a client that already has a grant in this world pass, also when that grant is revoked, because a new consent uses that row again. The page asks the person to disconnect an app, and a disconnect does not lower the count: a revoked grant keeps its row and still counts. The read and the writes are separate transactions, so approvals at one time can pass the cap by a few. Then Approve stores the row of a document client that has none, the grant and a code, and redirects with `code` (`gvc_...`), `state` and `iss`.
 
 ## The token endpoint
 
