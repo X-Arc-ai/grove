@@ -13,6 +13,8 @@ from typing import Any
 
 from grove.ids import new_id
 from grove.store.asof import replay
+from grove.store.current import TERMINAL_ROLES, has_ended
+from grove.store.normalise import reads_blank
 from grove.store.primitives import KIND_BELIEF, PRIMITIVE_MEANING_IDS
 from grove.writer.clocks import (
     Clock,
@@ -23,13 +25,15 @@ from grove.writer.clocks import (
     parse_instant,
     sort_key,
 )
+from grove.writer.declines import write_override_row
 from grove.writer.errors import BatchDeclined, Refusal, Refused
 from grove.writer.history import Stamp, add_entry, add_text, compact, row_json
-from grove.writer.neardup import MAX_CANDIDATES_SHOWN, similarity, threshold_for
+from grove.writer.neardup import MAX_CANDIDATES_SHOWN, threshold_for
 from grove.writer.ops import is_temp, op_label, temp_refs
 from grove.writer.provenance import OBSERVATION_COLUMNS, resolve_observation
 from grove.writer.receipts import short_id
-from grove.writer.registry import TERMINAL_ROLES, Registry
+from grove.writer.registry import Registry
+from grove.writer.resolver import title_scores
 from grove.writer.source_types import claim_fields
 from grove.writer.tx import WorldTx
 
@@ -60,7 +64,9 @@ _SUPPORTING = "MATCH (e:Evidence {target_id: $id, polarity: 'supports', active: 
 
 
 def _before_commit() -> None:
-    """The last statement inside the transaction body: a test replaces it to inject a failure."""
+    """The last statement inside the transaction body, from apply_ops or, for apply_batch, from
+    api.py after the request's `saved`: a test replaces it to inject a failure or a kill, with
+    everything written and nothing committed."""
 
 
 @dataclass
@@ -352,15 +358,31 @@ def _declared_property(run: _Run, kind: dict[str, Any], name: str) -> dict[str, 
     return declared
 
 
+def _spelled_once(sent: dict[str, tuple[str, Any]], name: str, key: str, value: Any) -> None:
+    """Two spellings of one property in one operation (an alias, a case form) with different
+    values would keep the last and lose the other with no refusal, so the operation is refused."""
+    # JSON's own text: Python calls 1 and True equal, and JSON does not.
+    if name in sent and _json(sent[name][1]) != _json(value):
+        raise Refused(
+            "invalid_arguments",
+            "property_named_twice",
+            f"two spellings of property {name!r} carry different values: send one",
+            {"property": name, "keys": [sent[name][0], key]},
+        )
+    sent.setdefault(name, (key, value))
+
+
 def _check_properties(run: _Run, kind: dict[str, Any], properties: dict[str, Any]) -> dict:
     """The properties under their declared names. A state property sits only on a record, and a
     record holds at most one (D1, D4)."""
     named: dict[str, Any] = {}
+    sent: dict[str, tuple[str, Any]] = {}
     state: list[str] = []
     for name, value in properties.items():
         declared = _declared_property(run, kind, name)
+        _spelled_once(sent, declared["name"], name, value)
         named[declared["name"]] = value
-        if declared.get("temporal_class") == "state":
+        if declared.get("temporal_class") == "state" and declared["name"] not in state:
             state.append(declared["name"])
     if state and kind.get("lifecycle_class") != "record":
         raise Refused(
@@ -390,11 +412,16 @@ def _required_fields(kind: dict[str, Any]) -> list[str]:
     return names
 
 
+def _present(value: Any) -> bool:
+    if isinstance(value, str):
+        return not reads_blank(value)
+    return value not in (None, [])
+
+
 def _has_field(item: dict[str, Any], name: str) -> bool:
-    if item.get(name) not in (None, "", []):
+    if _present(item.get(name)):
         return True
-    properties = json.loads(item.get("properties") or "{}")
-    return properties.get(name) not in (None, "", [])
+    return _present(json.loads(item.get("properties") or "{}").get(name))
 
 
 def _state_property(run: _Run, item: dict[str, Any]) -> bool:
@@ -422,11 +449,8 @@ def _claim_about_now(run: _Run, item: dict[str, Any], kind: dict[str, Any]) -> b
 
 
 def _ended(item: dict[str, Any]) -> bool:
-    return bool(
-        item.get("end_class")
-        or item.get("stopped_being_true_precision")
-        or item.get("status_role") in TERMINAL_ROLES
-    )
+    # Reads and guards share one liveness rule (spec line 2758), so the guard asks current().
+    return has_ended(item)
 
 
 def _head_world_time(run: _Run, item_id: str, field: str) -> datetime | None:
@@ -479,21 +503,17 @@ def _words(run: _Run, prefix: str, clock: Clock | None) -> dict[str, Any]:
 
 def _near_duplicates(
     run: _Run, kind: dict[str, Any], title: str, distinct_from: list[dict[str, Any]]
-) -> list[tuple[str, str]]:
+) -> tuple[list[tuple[str, str]], list[dict[str, Any]]]:
+    """The named pairs, and the candidates at or above the threshold that a pair overrides.
+
+    The gate weighs only items with no end class, at the resolution level. The resolver's
+    candidate band scores with the same helper, and keeps ended items."""
     rows = run.tx.run(
         "MATCH (i:Item {kind: $kind}) WHERE i.end_class IS NULL "
         "RETURN i.id AS id, i.title AS title",
         kind=kind["id"],
     )
-    scores = {row["id"]: similarity(title, row["title"] or "") for row in rows}
-    if scores:
-        aliases = run.tx.run(
-            "MATCH (a:Alias {target_type: 'item'}) WHERE a.target_id IN $ids "
-            "RETURN a.target_id AS id, a.phrase AS phrase",
-            ids=list(scores),
-        )
-        for alias in aliases:
-            scores[alias["id"]] = max(scores[alias["id"]], similarity(title, alias["phrase"]))
+    scores = title_scores(run.tx, title, {row["id"]: row["title"] for row in rows})
     threshold = threshold_for(kind["id"])
     candidates = sorted(
         ((score, item_id) for item_id, score in scores.items() if score >= threshold),
@@ -519,7 +539,12 @@ def _near_duplicates(
         )
     for item_id in named:
         _one(run, _READ_ITEM, "item", item_id, lock=False)
-    return list(named.items())
+    overridden = [
+        {"item_id": item_id, "score": round(score, 3)}
+        for score, item_id in candidates
+        if item_id in named
+    ]
+    return list(named.items()), overridden
 
 
 def _record_pairs(
@@ -581,7 +606,7 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
                 f"kind {kind['name']!r} requires {name}",
                 {"field": name},
             )
-    pairs = _near_duplicates(run, kind, op["title"], op.get("distinct_from") or [])
+    pairs, overridden = _near_duplicates(run, kind, op["title"], op.get("distinct_from") or [])
     stopped = None
     if role in TERMINAL_ROLES:
         # A terminal status at create carries its end time: no later than the evidence.
@@ -630,6 +655,8 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     )
     _write_evidence(run, plans, "item", item_id, reason_id)
     _record_pairs(run, item_id, pairs, provenance)
+    if overridden:
+        write_override_row(run.tx, run.stamp.request_id, op["op_id"], overridden, run.at)
     run.touch(item_id, index)
     if role == "done":
         run.done_items[item_id] = index
@@ -665,8 +692,10 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             else:
                 merged = json.loads(item.get("properties") or "{}")
             old = json.loads(item.get("properties") or "{}") or None
+            sent: dict[str, tuple[str, Any]] = {}
             for key, part in value.items():
                 name_of = _declared_property(run, kind, key)["name"]
+                _spelled_once(sent, name_of, key, part)
                 if part is None:
                     merged.pop(name_of, None)
                 else:
@@ -675,7 +704,7 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             new = merged or None
             columns = {"properties": _json(new), "property_values": _property_values(new)}
         elif name in ("title", "summary", "body"):
-            new = value or None
+            new = value if _present(value) else None
             columns = {name: new}
         elif name == "search_terms":
             new = value or None
@@ -1155,6 +1184,10 @@ def _create_link(run: _Run, index: int, op: dict[str, Any]) -> None:
         link_id = existing[0]["l"]["id"]
         if op.get("temp_id"):
             run.temps[op["temp_id"]] = ("link", link_id)
+        _settle(run, plans, link_id)
+        if all(plan.known for plan in plans):
+            # Every row is in the store already: a reason text would be a value no entry names.
+            return
         reason_id = run.text(op["reason"])
         written = _write_evidence(run, plans, "link", link_id, reason_id)
         if written:
@@ -1385,6 +1418,10 @@ def _attach_evidence(run: _Run, index: int, op: dict[str, Any]) -> None:
     if target_type == "belief" and op["polarity"] == "contradicts":
         _judged_this(run, judgments, target_id, op.get("evidence_id"))
         _two_judges(judgments)
+    _settle(run, plans, target_id)
+    if all(plan.known for plan in plans):
+        # The row is in the store already: a reason text would be a value no entry names.
+        return
     reason_id = run.text(op["reason"]) if op.get("reason") else None
     _write_evidence(run, plans, target_type, target_id, reason_id)
 
@@ -1580,8 +1617,13 @@ def apply_ops(
     ops: list[Any],
     observations: dict[str, dict[str, Any]],
     pre_refused: dict[int, Refusal],
+    before_commit: bool = True,
 ) -> None:
-    """The whole batch inside one write transaction. Raises BatchDeclined on any refusal."""
+    """The whole batch inside one write transaction. Raises BatchDeclined on any refusal.
+
+    A caller that owns its transaction (sign-in's own item) gets the `_before_commit` seam last.
+    apply_batch passes before_commit=False and calls the seam itself, after the request's
+    `saved`, so a kill there leaves both written and nothing committed."""
     run = _Run(tx, stamp, observations)
     for index, op in enumerate(ops):
         if index in pre_refused:
@@ -1606,4 +1648,5 @@ def apply_ops(
             },
             request_id=stamp.request_id,
         )
-    _before_commit()
+    if before_commit:
+        _before_commit()

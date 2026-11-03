@@ -8,9 +8,13 @@ shared set over the size of the union.
 from grove.store.normalise import normalise_phrase
 
 # Per kind id. Appendix C's resolution level is the default: the writer flags only what would
-# resolve. writer-a2 calibrates per kind from labelled pairs.
+# resolve. It stays one starting value until ingest-b calibrates it per kind on the backfill's
+# labelled pairs, successive revisions among them (D10 layer 3).
 NEAR_DUPLICATE_THRESHOLD: dict[str, float] = {}
 DEFAULT_THRESHOLD = 0.8
+# Appendix C's lower level (pg_trgm's default): at or above it an item is a candidate for the
+# ambiguity ladder, below it a name is new.
+CANDIDATE_THRESHOLD = 0.3
 MAX_CANDIDATES_SHOWN = 5
 
 

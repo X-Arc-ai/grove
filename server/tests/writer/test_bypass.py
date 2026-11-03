@@ -9,20 +9,34 @@ that WorldQuery.read and PlatformQuery.read run in read transactions that Neo4j 
 in. That case is not repeated here.
 """
 
+import inspect
 from typing import Any
 from uuid import uuid4
 
 import pytest
 
+import grove.writer as writer_package
 from grove.lints import writer_rule
 from grove.lints._scan import Finding
 from grove.store.errors import Neo4jError
-from grove.writer import BatchDeclined, Caller, apply_batch
+from grove.writer import (
+    BatchDeclined,
+    Caller,
+    apply_batch,
+    apply_request,
+    claim_next_request,
+    enqueue_request,
+    fail_request,
+    finish_request,
+    write_request_row,
+)
 from grove.writer import ops as op_catalogue
 from tests.lints.conftest import Repo
 from tests.writer.helpers import (
     READ_ONLY,
+    NoStore,
     apply,
+    assert_only_decline_log,
     at_minute,
     batch,
     clock_at,
@@ -175,13 +189,6 @@ def placeholder_ids() -> dict[str, Any]:
     return {"world_id": world, "version": 1, "observations": [observation(src, "e9", 9)], **ids}
 
 
-class NoStore:
-    """A driver that fails the test the moment anything asks it for the store."""
-
-    def __getattr__(self, name: str):
-        raise AssertionError(f"the store was reached before the scope check: {name}")
-
-
 def test_the_catalogue_holds_every_operation_of_this_lane():
     assert set(B2_CALLERS) <= set(OPS)
 
@@ -209,6 +216,48 @@ def test_a_read_only_token_is_refused_before_the_store_is_read():
     assert named == sorted((op["op_id"], "scope_denied") for op in ops)
 
 
+QUEUE_WRITES = {
+    "enqueue_request": lambda store, world, caller: enqueue_request(
+        store, world, caller, "k-1", source_id="s-1"
+    ),
+    "write_request_row": lambda store, world, caller: write_request_row(
+        store, caller, "k-1", source_id="s-1"
+    ),
+    "apply_request": lambda store, world, caller: apply_request(
+        store, world, caller, "k-1", {"ops": []}
+    ),
+    "claim_next_request": lambda store, world, caller: claim_next_request(
+        store, world, caller, worker="pass-1"
+    ),
+    "finish_request": lambda store, world, caller: finish_request(
+        store, world, caller, "k-1", worker="pass-1"
+    ),
+    "fail_request": lambda store, world, caller: fail_request(
+        store, world, caller, "k-1", "boom", worker="pass-1"
+    ),
+}
+
+
+def test_the_bypass_table_holds_every_write_function_the_writer_exports():
+    exported = {
+        name
+        for name in writer_package.__all__
+        if inspect.isfunction(getattr(writer_package, name))
+        and "caller" in inspect.signature(getattr(writer_package, name)).parameters
+    }
+    assert exported == {"apply_batch", *QUEUE_WRITES}
+
+
+@pytest.mark.parametrize("name", sorted(QUEUE_WRITES))
+def test_a_read_only_token_is_refused_by_every_write_of_the_queue(name):
+    world = f"t_writer-a2_{uuid4()}"
+
+    with pytest.raises(BatchDeclined) as declined:
+        QUEUE_WRITES[name](NoStore(), world, READ_ONLY)
+
+    assert {r.code for r in declined.value.refusals} == {"scope_denied"}
+
+
 @pytest.mark.parametrize(("op_name", "letter"), NOT_LISTED, ids=[f"{o}-{k}" for o, k in NOT_LISTED])
 def test_an_operation_refuses_a_caller_kind_it_does_not_list(driver, rows, op_name, letter):
     world_id = rows["world_id"]
@@ -218,7 +267,7 @@ def test_an_operation_refuses_a_caller_kind_it_does_not_list(driver, rows, op_na
     refusals = refusals_of(driver, world_id, [op], rows["observations"], caller_of(letter))
 
     assert [(r.op_id, r.code) for r in refusals] == [(op["op_id"], "scope_denied")]
-    assert count_rows(driver, world_id) == before
+    assert_only_decline_log(driver, world_id, before, refusals)
 
 
 @pytest.mark.parametrize("op_name", sorted(B2_CALLERS))

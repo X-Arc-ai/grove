@@ -4,7 +4,6 @@ Spec, D2 "How to test it": "Atomicity: one invalid operation rolls back its whol
 injected commit failure returns an error, never a receipt."
 """
 
-import re
 import threading
 from itertools import count
 from typing import Any
@@ -13,6 +12,8 @@ import pytest
 from neo4j._sync.work.transaction import TransactionBase
 from neo4j.exceptions import DatabaseError, IncompleteCommit, ServiceUnavailable
 
+from grove import clock
+from grove.ids import new_id
 from grove.writer import (
     BatchDeclined,
     ReceiptUnavailable,
@@ -21,10 +22,12 @@ from grove.writer import (
 )
 from grove.writer import api as api_module
 from grove.writer import apply as apply_module
-from grove.writer.tx import WorldTx
+from grove.writer.history import Stamp
+from grove.writer.tx import WorldTx, WorldWriter
 from tests.writer.helpers import (
     PERSON,
     apply,
+    assert_only_decline_log,
     at_minute,
     clock_at,
     count_rows,
@@ -38,7 +41,7 @@ from tests.writer.helpers import (
 )
 
 RECHECK = "2027-06-01T00:00:00+00:00"
-_WRITE_CLAUSE = re.compile(r"\b(?:CREATE|MERGE|SET)\b", re.IGNORECASE)
+_ITEM_WRITE = "CREATE (i:Item)"
 
 
 def titles(driver, world_id: str) -> set[str]:
@@ -65,6 +68,13 @@ def assert_nothing_written(driver, world_id: str, before: dict[str, int]) -> Non
     assert titles(driver, world_id) == set()
 
 
+def assert_only_the_log(driver, world_id: str, before: dict[str, int], refusals: list) -> None:
+    """A decline: nothing of the batch stands, and the decline's own log is all that changed."""
+    assert_only_decline_log(driver, world_id, before, refusals)
+    assert entries_by(driver, world_id, PERSON.actor) == 0
+    assert titles(driver, world_id) == set()
+
+
 def refused(driver, world_id: str, ops: list[dict], evidence: list[dict]) -> list:
     with pytest.raises(BatchDeclined) as declined:
         apply(driver, world_id, ops, evidence)
@@ -85,7 +95,7 @@ def test_one_invalid_operation_last_of_five_rolls_back_the_whole_batch(driver, s
     refusals = refused(driver, world_id, ops, [observation(chat, "e1", 1)])
 
     assert [(r.op_id, r.code) for r in refusals] == [(ops[4]["op_id"], "unknown_meaning")]
-    assert_nothing_written(driver, world_id, before)
+    assert_only_the_log(driver, world_id, before, refusals)
 
 
 def test_a_refusal_in_the_middle_names_only_the_failing_operation(driver, seeded, chat):
@@ -101,7 +111,7 @@ def test_a_refusal_in_the_middle_names_only_the_failing_operation(driver, seeded
     refusals = refused(driver, world_id, ops, [observation(chat, "e1", 1)])
 
     assert [(r.op_id, r.code) for r in refusals] == [(ops[1]["op_id"], "unknown_kind")]
-    assert_nothing_written(driver, world_id, before)
+    assert_only_the_log(driver, world_id, before, refusals)
 
 
 def test_two_failing_operations_are_both_named_in_one_decline(driver, seeded, chat):
@@ -120,7 +130,7 @@ def test_two_failing_operations_are_both_named_in_one_decline(driver, seeded, ch
         (ops[0]["op_id"], "unknown_kind"),
         (ops[3]["op_id"], "unknown_meaning"),
     ]
-    assert_nothing_written(driver, world_id, before)
+    assert_only_the_log(driver, world_id, before, refusals)
 
 
 def test_an_operation_on_a_declined_temp_id_is_refused_as_depending_on_it(driver, seeded, chat):
@@ -137,7 +147,7 @@ def test_an_operation_on_a_declined_temp_id_is_refused_as_depending_on_it(driver
     assert set(refusals) == {ops[1]["op_id"], ops[2]["op_id"]}
     assert refusals[ops[1]["op_id"]].code == "unknown_kind"
     assert refusals[ops[2]["op_id"]].rule == "depends_on_declined"
-    assert_nothing_written(driver, world_id, before)
+    assert_only_the_log(driver, world_id, before, list(refusals.values()))
 
 
 def test_an_injected_commit_failure_raises_write_failed_and_returns_no_receipt(
@@ -160,6 +170,56 @@ def test_an_injected_commit_failure_raises_write_failed_and_returns_no_receipt(
 
     assert calls, "the hook never ran, so no commit failure was injected"
     assert_nothing_written(driver, world_id, before)
+
+
+class _Crash(Exception):
+    """Raised by the seam, so the transaction rolls back."""
+
+
+def test_a_caller_that_owns_its_transaction_gets_the_seam_last(driver, seeded, chat, monkeypatch):
+    # Sign-in calls apply_ops in its own transaction and proves its atomicity through this seam.
+    world_id = seeded["world_id"]
+    calls = []
+
+    def crash() -> None:
+        calls.append(1)
+        raise _Crash
+
+    monkeypatch.setattr(apply_module, "_before_commit", crash)
+    before = count_rows(driver, world_id)
+    stamp = Stamp(
+        world_id=world_id,
+        at=clock.now(world_id),
+        actor=PERSON.actor,
+        commit_id=new_id(world_id),
+        change_set_id=new_id(world_id),
+        request_id="own-tx-1",
+    )
+
+    def work(tx: WorldTx) -> None:
+        apply_module.apply_ops(
+            tx,
+            stamp=stamp,
+            ops=[create_item("person", "Rowan", "e1")],
+            observations={"e1": observation(chat, "e1", 1)},
+            pre_refused={},
+        )
+
+    with pytest.raises(_Crash):
+        WorldWriter(driver, world_id).transaction(work)
+
+    assert calls == [1]
+    assert_nothing_written(driver, world_id, before)
+
+
+def test_apply_batch_runs_the_seam_once(driver, seeded, chat, monkeypatch):
+    world_id = seeded["world_id"]
+    calls = []
+    monkeypatch.setattr(apply_module, "_before_commit", lambda: calls.append(1))
+
+    apply(driver, world_id, [create_item("person", "Rowan", "e1")], [observation(chat, "e1", 1)])
+
+    assert calls == [1]
 
 
 def test_a_commit_failure_in_a_second_batch_keeps_the_first_and_writes_nothing_more(
@@ -198,7 +258,8 @@ def test_a_failure_in_a_later_statement_of_the_transaction_leaves_no_row(
             seen["failed"] = True
             raise DatabaseError("injected failure after a write statement")
         rows = original(self, cypher, **params)
-        if _WRITE_CLAUSE.search(cypher):
+        # The request row's MERGE comes first in the batch: this test is about the batch's rows.
+        if _ITEM_WRITE in cypher:
             seen["wrote"] = True
         return rows
 
@@ -271,7 +332,7 @@ def test_a_dependent_of_an_operation_refused_at_the_end_of_the_batch_is_named(
     assert refusals[ops[1]["op_id"]].code == code
     assert refusals[ops[2]["op_id"]].rule == "depends_on_declined"
     assert refusals[ops[3]["op_id"]].rule == "depends_on_declined"
-    assert_nothing_written(driver, world_id, before)
+    assert_only_the_log(driver, world_id, before, list(refusals.values()))
 
 
 def _commit_then(error: Exception, monkeypatch) -> list[int]:
@@ -336,7 +397,10 @@ def test_a_receipt_that_cannot_be_read_after_the_commit_says_the_batch_is_saved(
 
 def test_create_link_checks_its_endpoints_under_the_write_lock(driver, seeded, chat, monkeypatch):
     # apply.py: "An operation reads and locks the rows it touches, checks them, and only then
-    # writes." An end_item on the target waits until create_link has checked and committed.
+    # writes." An end_item on the target waits until create_link has checked and committed. The
+    # world lock would serialise the two batches on its own, so it is off: the item lock is what
+    # this test proves.
+    monkeypatch.setattr(WorldTx, "lock_world", lambda self: None)
     world_id = seeded["world_id"]
     work = {"status": "open", "recheck_by": RECHECK}
     apply(
