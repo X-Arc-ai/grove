@@ -27,7 +27,8 @@ these PRs. A merged PR establishes repository inclusion, not public deployment o
 | [#14](https://github.com/X-Arc-ai/grove/pull/14) | 2026-11-03T14:58:28Z | MERGED | 2026-11-03T17:20:15Z | dd6b3a57c41b100e9f8cacc08503d5694406db04 | Runner: OpenCode passes with Grove's four agents, the brain CLI, the loop, and the gateway on the box |
 | [#15](https://github.com/X-Arc-ai/grove/pull/15) | 2026-11-03T15:00:43Z | OPEN | Not merged | None | truth-clock: verify, the judge, capabilities and source types (D4, D5) |
 | [#16](https://github.com/X-Arc-ai/grove/pull/16) | 2026-11-03T15:01:48Z | OPEN | Not merged | None | D3: corrections never overwrite (writer-b) |
-| [#17](https://github.com/X-Arc-ai/grove/pull/17) | 2026-11-03T15:08:36Z | OPEN | Not merged | None | Ingest: chat-export connectors, the upload route and upload-only tokens |
+| [#17](https://github.com/X-Arc-ai/grove/pull/17) | 2026-11-03T15:08:36Z | DRAFT | Not merged | None | Ingest: chat-export connectors, the upload route and upload-only tokens |
+| [#18](https://github.com/X-Arc-ai/grove/pull/18) | 2026-11-03T22:04:36Z | DRAFT | Not merged | None | Submission documents: judge path, architecture, and event evidence |
 
 ## Pre-event material
 
