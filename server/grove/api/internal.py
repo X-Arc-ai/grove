@@ -6,6 +6,7 @@ pass of one world and refuses once that pass's run record has ended. A pass toke
 world in its requests: every read and write goes to the world the token binds.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Annotated, Any
 
@@ -45,6 +46,7 @@ MAX_BATCH_BYTES = 2 * 1024 * 1024
 MAX_SMALL_BODY = 16 * 1024
 OUTCOMES = frozenset({"ok", "failed", "killed", "timeout", "stopped", "preempted", "budget"})
 router = APIRouter(prefix=PREFIX)
+_ITEM_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 def _bearer(request: Request) -> str | None:
@@ -178,17 +180,30 @@ def brain_pass(request: Request, live: Pass) -> dict[str, Any]:
     return brain.pass_input(request.app.state.driver, live.world_id, live.record)
 
 
-@router.get("/brain/recall")
-def brain_recall(request: Request, live: Pass, q: str = "", limit: int = 10) -> dict[str, Any]:
-    if not q.strip() or len(q) > 500:
+@router.post("/brain/recall")
+async def brain_recall(request: Request, live: Pass) -> dict[str, Any]:
+    """The text comes in the body: a URL, and so an access log line, never holds it."""
+    body = await read_json_body(request, MAX_SMALL_BODY)
+    if not isinstance(body, dict):
+        raise invalid_arguments("the body is {q, limit?}", "body")
+    q, limit = body.get("q"), body.get("limit", 10)
+    if not isinstance(q, str) or not q.strip() or len(q) > 500:
         raise invalid_arguments("q is 1 to 500 characters of text to look up", "q")
-    if not 1 <= limit <= brain.RECALL_LIMIT:
+    if (
+        isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or not 1 <= limit <= brain.RECALL_LIMIT
+    ):
         raise invalid_arguments(f"limit is 1 to {brain.RECALL_LIMIT}", "limit")
-    return brain.recall(request.app.state.driver, live.world_id, q, limit=limit)
+    return await run_in_threadpool(
+        brain.recall, request.app.state.driver, live.world_id, q, limit=limit
+    )
 
 
 @router.get("/brain/items/{item_id}")
 def brain_get(item_id: str, request: Request, live: Pass) -> dict[str, Any]:
+    if _ITEM_ID.fullmatch(item_id) is None:
+        raise not_found("no item with that id in this world")
     found = brain.get_item(request.app.state.driver, live.world_id, item_id)
     if found is None:
         raise not_found("no item with that id in this world")

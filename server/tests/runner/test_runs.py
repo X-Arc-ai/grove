@@ -139,3 +139,21 @@ def test_a_requeued_job_comes_back_at_once_and_keeps_its_attempts(driver, seeded
     assert runs.end_job(driver, seeded, job_id, worker="w1", done=False, requeue=True) == "queued"
     again = runs.claim_job(driver, seeded, agent="curator", worker="w2")
     assert again is not None and again["attempts"] == 1
+
+
+def test_a_job_put_back_joins_the_queued_job_of_its_agent(driver, seeded, frozen):
+    """Regression (R4 verifier): a requeue next to a newer queued job gave two queued jobs."""
+    first = runs.enqueue_job(
+        driver, seeded, agent="curator", trigger="after_update", input_references=["a"], priority=20
+    )
+    runs.claim_job(driver, seeded, agent="curator", worker="w1")
+    second = runs.enqueue_job(
+        driver, seeded, agent="curator", trigger="after_update", input_references=["b"], priority=20
+    )
+    assert second != first
+    assert runs.end_job(driver, seeded, first, worker="w1", done=False, requeue=True) == "done"
+    queued = WorldQuery(driver, seeded).read(
+        "MATCH (j:Job {state: 'queued'}) RETURN j.id AS id, j.input_references AS refs"
+    )
+    assert [row["id"] for row in queued] == [second]
+    assert json.loads(queued[0]["refs"]) == ["b", "a"]

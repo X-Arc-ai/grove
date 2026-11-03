@@ -11,6 +11,7 @@ arguments: an argument would put the batch through the shell's word rules.
 
 import json
 import os
+import re
 import sys
 from typing import Any
 
@@ -20,6 +21,8 @@ import httpx
 API_URL_ENV = "GROVE_API_URL"
 TOKEN_ENV = "GROVE_PASS_TOKEN"
 MAX_BATCH_BYTES = 2 * 1024 * 1024
+# The text form of a row id (grove.ids.new_id). Nothing else reaches a URL path.
+_ITEM_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 
 
@@ -107,13 +110,16 @@ def pass_() -> None:
 @click.option("--limit", type=click.IntRange(1, 20), default=10, show_default=True)
 def recall(text: tuple[str, ...], limit: int) -> None:
     """Items whose title, summary or search terms match TEXT."""
-    _emit(_call("GET", "/recall", params={"q": " ".join(text), "limit": limit}))
+    # The text goes in the body, never in the URL: an access log keeps URLs.
+    _emit(_call("POST", "/recall", json={"q": " ".join(text), "limit": limit}))
 
 
 @brain.command()
 @click.argument("item_id")
 def get(item_id: str) -> None:
     """One item: its fields, its active links and its active evidence rows."""
+    if _ITEM_ID.fullmatch(item_id) is None:
+        raise BrainError("invalid_arguments", "an item id is a UUID, as brain recall shows it")
     _emit(_call("GET", f"/items/{item_id}"))
 
 

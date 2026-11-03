@@ -18,7 +18,7 @@ agent only reads and proposes, through the `brain` CLI, and the writer decides (
 
 | Credential | Holder | Where | What it can do |
 |---|---|---|---|
-| Runner token | the runner service | `/etc/grove/runner.env` (`GROVE_RUNNER_TOKEN`); the API holds only its sha256 (`GROVE_RUNNER_TOKEN_SHA256`, `/etc/grove/runner-auth.env`) | list due work, start and end passes. It reads no world data. |
+| Runner token | the runner service | `/etc/grove/runner.env` (`GROVE_RUNNER_TOKEN`); the API holds only its sha256 (`GROVE_RUNNER_TOKEN_SHA256`, `/etc/grove/runner-auth.env`) | list due work, start and end passes. It reads no world data itself, but a pass it starts gets a pass token for that world, so a copy of `runner.env` can read and propose in any world with due work: keep it as `gateway.env` is kept. |
 | Pass token `p1.` | one OpenCode run | its environment (`GROVE_PASS_TOKEN`) | the `brain` routes of one world, as one agent, with `grove.read` and `grove.propose`. It expires with the pass's time cap, and the API refuses it once the run record has ended. |
 | Gateway run token `g1.` | one OpenCode run | its provider key (`GROVE_RUN_TOKEN`, read by `runner/opencode.json`) | model calls of one world, one run and one job, up to the pass's token cap. |
 
@@ -45,8 +45,12 @@ from nothing (`grove.runner.loop.opencode_env`): it never holds the runner token
    process group. `grove` runs `brain status`, hands the pass to the named subagent with the task
    tool, and returns its summary. A watchdog kills the group at the time cap. OpenCode's data,
    state and temporary folders are in the pass's own folder (`passes/<run id>/`), which is
-   removed when the pass ends: its session store holds every tool output, so the person's
-   words, and nothing of a pass stays in the runner's HOME, where no forget reaches.
+   removed when the pass ends, also when it fails: its session store holds every tool output,
+   so the person's words, and nothing of a pass stays in the runner's HOME, where no forget
+   reaches. A runner killed before that removes every pass folder when it starts again, and it
+   rebuilds OpenCode's config folder from nothing at each start. The watchdog kills OpenCode's
+   process group; OpenCode starts each bash call in a session of its own, so a `brain` call
+   already sent finishes on its own (one HTTP call), and the writer keeps it to one effect.
 4. `end_pass` hands back each claimed request the pass did not settle: `fail_request` with a
    retry (code `not_proposed`, or `pass_<outcome>`), so the next pass applies it once. The writer
    keys a commit on the request id, so a request that committed before a kill is saved and is
@@ -61,7 +65,11 @@ runner stops that pass (outcome `preempted`), its job goes back to the queue at 
 attempt spent, and the Learner starts on a later poll.
 
 A runner that is killed with no time to end its passes leaves its requests `applying` until their
-leases pass; then they are due again. A stop signal (the nightly backup stops the service) ends
+leases pass; then they are due again. Its run reads `running` until the time cap plus the margin
+has passed; then the due list marks it `abandoned` and puts the job it held back in the queue. A
+job put back joins a queued job of the same agent when there is one, so a world holds one queued
+job per agent. A stop of the service ends a Curator or Connector pass as `stopped`, and its job
+goes back with no attempt spent. A stop signal (the nightly backup stops the service) ends
 each running pass as `stopped`.
 
 | Setting | Default | Where |
@@ -83,8 +91,8 @@ exit status 1.
 |---|---|---|
 | `brain status` | `GET /v1/internal/brain/status` | the pass, its agent and inputs, and the world's counts |
 | `brain pass` | `GET /v1/internal/brain/pass` | the input packet: the requests with their source, episode, locators and messages; the job; the kinds and meanings with the kinds each end takes; the statement classes; a filled batch form and a field guide |
-| `brain recall TEXT` | `GET /v1/internal/brain/recall` | a lexical lookup over titles, summaries and search terms, no model call. `hosts-b` replaces it with D7's recall |
-| `brain get ITEM` | `GET /v1/internal/brain/items/{id}` | one item, its active links and its active evidence rows |
+| `brain recall TEXT` | `POST /v1/internal/brain/recall` (the text in the body, never in a URL an access log keeps) | a lexical lookup over titles, summaries and search terms, no model call. `hosts-b` replaces it with D7's recall |
+| `brain get ITEM` | `GET /v1/internal/brain/items/{id}` (an id of the row id form only) | one item, its active links and its active evidence rows |
 | `brain propose [--request ID]` | `POST /v1/internal/brain/propose` | the batch from stdin (a heredoc) or `--file`; saved with a receipt, or declined with the writer's reasons. A Learner proposes under one of its requests; one repair of a decline is allowed |
 | `brain finish ID` | `POST /v1/internal/brain/finish` | a request of the pass with nothing to save: saved with no commit |
 

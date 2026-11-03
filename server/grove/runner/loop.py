@@ -51,6 +51,14 @@ def log(event: str, **fields: Any) -> None:
     print(f"grove-runner {event} {parts}".rstrip(), flush=True)
 
 
+class NotConfigured(Exception):
+    """A setting the loop needs is unset. It names the variables, never a value."""
+
+    def __init__(self, names: list[str]) -> None:
+        super().__init__(", ".join(names))
+        self.names = list(names)
+
+
 @dataclass(frozen=True)
 class LoopSettings:
     api_url: str
@@ -77,7 +85,7 @@ class LoopSettings:
             if not env.get(name)
         ]
         if missing:
-            raise SystemExit(f"grove-runner: not set: {', '.join(missing)}")
+            raise NotConfigured(missing)
         return cls(
             api_url=env["GROVE_API_URL"].rstrip("/"),
             runner_token=env["GROVE_RUNNER_TOKEN"],
@@ -132,22 +140,26 @@ def config_home(home: Path) -> Path:
 
 def prepare_home(home: Path, config_dir: Path) -> None:
     """The repo's runner/ config as OpenCode's only config: opencode.json and the four agents.
-    A file left from an earlier image is replaced, and an agent file that is gone is removed."""
+
+    OpenCode's config folder is rebuilt from nothing, because OpenCode also reads other files
+    and folders there (a second config, plugins, tools, commands), and the folder outlives every
+    image on the box. Every pass folder left by a runner that was killed is removed: each holds
+    OpenCode's session store, and so the person's words, outside the store and its forget."""
     target = config_home(home)
-    target.mkdir(parents=True, exist_ok=True)
-    for folder in ("tmp", ".local/share", ".local/state", ".cache", "passes"):
+    if target.exists():
+        shutil.rmtree(target)
+    target.mkdir(parents=True)
+    for folder in ("tmp", ".local/share", ".local/state", ".cache"):
         (home / folder).mkdir(parents=True, exist_ok=True)
+    passes = home / "passes"
+    if passes.exists():
+        shutil.rmtree(passes)
+    passes.mkdir()
     shutil.copyfile(config_dir / "opencode.json", target / "opencode.json")
     agents = target / "agents"
-    if agents.exists():
-        shutil.rmtree(agents)
     agents.mkdir()
     for path in sorted((config_dir / "agents").glob("*.md")):
         shutil.copyfile(path, agents / path.name)
-    # OpenCode also reads agent/ (singular): nothing may wait there.
-    stray = target / "agent"
-    if stray.exists():
-        shutil.rmtree(stray)
 
 
 def opencode_env(
@@ -212,7 +224,9 @@ def summarise(events_path: Path) -> tuple[str, int, bool]:
             tools += 1
         elif event.get("type") == "text" and isinstance(part.get("text"), str):
             last_text = part["text"]
-        if "budget_reached" in line:
+        # Only OpenCode's own error event carries the gateway's refusal. A tool output can hold
+        # any stored text, so it never sets the outcome.
+        if event.get("type") == "error" and "budget_reached" in json.dumps(event.get("error")):
             budget = True
     return last_text[:MAX_SUMMARY], tools, budget
 
@@ -246,47 +260,49 @@ def run_pass(settings: LoopSettings, run: PassRun) -> tuple[str, str]:
     for folder in ("data", "state", "tmp"):
         (work / folder).mkdir(parents=True, exist_ok=True)
     events = work / "events.jsonl"
-    command = [
-        settings.opencode_bin,
-        "run",
-        "--agent",
-        "grove",
-        "--format",
-        "json",
-        "--title",
-        f"{grant['agent']} pass",
-        pass_message(grant),
-    ]
-    with open(events, "wb") as out, open(work / "opencode.log", "wb") as err:
-        run.process = subprocess.Popen(
-            command,
-            cwd=work,
-            env=opencode_env(settings, grant, work),
-            stdin=subprocess.DEVNULL,
-            stdout=out,
-            stderr=err,
-            start_new_session=True,
-        )
-        started = clock.monotonic()
-        outcome = None
-        while outcome is None:
-            try:
-                code = run.process.wait(timeout=1.0)
-                outcome = "ok" if code == 0 else "failed"
-            except subprocess.TimeoutExpired:
-                if run.stop.is_set():
-                    _kill_group(run.process)
-                    outcome = "preempted" if run.preempted else "stopped"
-                elif clock.monotonic() - started >= grant["time_cap_seconds"]:
-                    _kill_group(run.process)
-                    outcome = "timeout"
-    text, tools, budget = summarise(events)
-    if budget and outcome != "ok":
-        outcome = "budget"
-    summary = f"tool_calls={tools} exit={run.process.returncode}\n{text}".strip()
-    if not settings.keep_pass_logs:
-        shutil.rmtree(work, ignore_errors=True)
-    return outcome, summary
+    try:
+        command = [
+            settings.opencode_bin,
+            "run",
+            "--agent",
+            "grove",
+            "--format",
+            "json",
+            "--title",
+            f"{grant['agent']} pass",
+            pass_message(grant),
+        ]
+        with open(events, "wb") as out, open(work / "opencode.log", "wb") as err:
+            run.process = subprocess.Popen(
+                command,
+                cwd=work,
+                env=opencode_env(settings, grant, work),
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                start_new_session=True,
+            )
+            started = clock.monotonic()
+            outcome = None
+            while outcome is None:
+                try:
+                    code = run.process.wait(timeout=1.0)
+                    outcome = "ok" if code == 0 else "failed"
+                except subprocess.TimeoutExpired:
+                    if run.stop.is_set():
+                        _kill_group(run.process)
+                        outcome = "preempted" if run.preempted else "stopped"
+                    elif clock.monotonic() - started >= grant["time_cap_seconds"]:
+                        _kill_group(run.process)
+                        outcome = "timeout"
+        text, tools, budget = summarise(events)
+        if budget and outcome != "ok":
+            outcome = "budget"
+        return outcome, f"tool_calls={tools} exit={run.process.returncode}\n{text}".strip()
+    finally:
+        # Also when the pass raises: the folder holds the person's words.
+        if not settings.keep_pass_logs:
+            shutil.rmtree(work, ignore_errors=True)
 
 
 class Runner:
@@ -380,14 +396,30 @@ class Runner:
 
 
 def main() -> None:
-    runner = Runner(LoopSettings.from_environment())
+    """The service. With no runner token yet (the first deploy, before deploy/runner-secrets.sh
+    runs), it logs once and waits for its stop signal instead of exiting: a crash loop would fail
+    the deploy's `compose up --wait`, and the next deploy brings the token."""
+    stopping = threading.Event()
+    holder: dict[str, Runner] = {}
 
     def on_signal(signum: int, _: Any) -> None:
         log("stopping", signal=signum)
-        runner.stopping.set()
+        stopping.set()
+        if "runner" in holder:
+            holder["runner"].stopping.set()
 
     signal.signal(signal.SIGTERM, on_signal)
     signal.signal(signal.SIGINT, on_signal)
+    try:
+        settings = LoopSettings.from_environment()
+    except NotConfigured as missing:
+        log("not_configured", missing=",".join(missing.names))
+        stopping.wait()
+        return
+    runner = Runner(settings)
+    holder["runner"] = runner
+    if stopping.is_set():
+        return
     runner.serve()
 
 

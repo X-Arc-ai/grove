@@ -37,11 +37,12 @@ def queue_store(
     *,
     request_id: str | None = None,
     at: datetime = datetime(2026, 11, 2, 9, 0, tzinfo=UTC),
+    key: str = "m1",
 ) -> str:
     """A `store` as hosts-b will queue it: an ai_host source, screened, with its request row."""
     connector = record_connector(driver, world_id, "ai_host")
     screened = Screener(ScreeningConfig()).screen_source(
-        "", [Message(key="m1", sender=None, text=text, at=at)]
+        "", [Message(key=key, sender=None, text=text, at=at)]
     )
     key = hashlib.sha256(screened.content().encode("utf-8")).hexdigest()
 

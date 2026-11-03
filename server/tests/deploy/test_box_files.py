@@ -163,11 +163,18 @@ RUNNER_KEYS = {
     "security_opt",
     "depends_on",
     "logging",
+    "stop_grace_period",
 }
 
 
 def test_the_runner_service_has_no_key_beyond_its_list():
     assert set(SERVICES["runner"]) == RUNNER_KEYS
+
+
+def test_the_runner_gets_the_time_to_end_its_passes_on_a_stop():
+    """The loop's own stop takes up to 15 s per pass (SIGTERM 10 s, SIGKILL 5 s), then it
+    removes the pass folder and ends the pass. Docker's default of 10 s cuts that short."""
+    assert SERVICES["runner"]["stop_grace_period"] == "40s"
 
 
 def test_the_runner_mounts_its_home_and_nothing_else():
