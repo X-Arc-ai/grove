@@ -37,7 +37,7 @@ _ITEMS_OF_KIND = (
 )
 _ITEM_ALIASES = (
     "MATCH (a:Alias {target_type: 'item'}) WHERE a.target_id IN $ids "
-    "RETURN a.target_id AS id, a.phrase AS phrase"
+    "RETURN a.target_id AS id, a.phrase AS phrase, a.status AS status"
 )
 _DISTINCT_PAIRS = (
     "MATCH (d:DistinctPair) WHERE d.item_a = $id OR d.item_b = $id "
@@ -227,6 +227,9 @@ def title_scores(source: Source, phrase: str, titles: dict[str, str | None]) -> 
     scores = {item_id: similarity(phrase, title or "") for item_id, title in titles.items()}
     if scores:
         for alias in read_rows(source, _ITEM_ALIASES, ids=list(scores)):
+            if not usable(alias):
+                # A retired or split alias holds its history only (O14), as for a word.
+                continue
             alias_score = similarity(phrase, alias["phrase"] or "")
             scores[alias["id"]] = max(scores[alias["id"]], alias_score)
     return scores

@@ -346,3 +346,57 @@ def test_output_never_holds_the_matched_text(repo):
     assert_red(result, "a.py:1: writer/cypher")
     assert "secret_context" not in result.stdout
     assert "Item" not in result.stdout
+
+
+# D8's mechanical boundary (the Oct 2 drill): inside the writer, only the ontology operations and
+# the world seed write the registry labels, and only the judgments writer writes judgments.
+
+REGISTRY_WRITES = {
+    "Kind": "CRE~ATE (n:Kind) SE~T n += $row",
+    "Meaning": "MATCH (m:Meaning {id: $id}) SE~T m.status = 'canonical'",
+    "PropertyName": "ME~RGE (p:PropertyName {id: $id})",
+    "OntologyChange": "MATCH (c:OntologyChange) DE~LETE c",
+    "Judgment": "CRE~ATE (j:Judgment) SE~T j += $row",
+}
+OWNERS = {
+    "Kind": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
+    "Meaning": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
+    "PropertyName": ("server/grove/writer/ontology.py",),
+    "OntologyChange": ("server/grove/writer/ontology.py",),
+    "Judgment": ("server/grove/writer/judgments.py",),
+}
+
+
+@pytest.mark.parametrize("label", sorted(REGISTRY_WRITES))
+@pytest.mark.parametrize("rel", ["server/grove/writer/sneaky.py", "server/grove/writer/apply.py"])
+def test_a_registry_write_outside_its_owner_fails_inside_the_writer(repo, label, rel):
+    repo.plant(rel, module(REGISTRY_WRITES[label]))
+    assert_red(repo.lint("writer"), f"{rel}:1: writer/registry")
+
+
+@pytest.mark.parametrize("label", sorted(REGISTRY_WRITES))
+def test_a_registry_write_in_its_owner_file_stays_clean(repo, label):
+    for rel in OWNERS[label]:
+        repo.plant(rel, module(REGISTRY_WRITES[label]))
+    assert_clean(repo.lint("writer"))
+
+
+def test_a_registry_read_in_the_writer_stays_clean(repo):
+    repo.plant(
+        "server/grove/writer/sneaky.py",
+        module("MATCH (m:Meaning) MATCH (j:Judgment) RETURN m.name, j.verdict"),
+    )
+    assert_clean(repo.lint("writer"))
+
+
+def test_a_judgment_write_in_the_ontology_module_fails(repo):
+    repo.plant("server/grove/writer/ontology.py", module(REGISTRY_WRITES["Judgment"]))
+    assert_red(repo.lint("writer"), "server/grove/writer/ontology.py:1: writer/registry")
+
+
+def test_a_registry_label_inside_a_label_expression_fails_too(repo):
+    repo.plant(
+        "server/grove/writer/sneaky.py",
+        module("MATCH (n:Item|Meaning {id: $id}) SE~T n.status = 'canonical'"),
+    )
+    assert_red(repo.lint("writer"), "server/grove/writer/sneaky.py:1: writer/registry")
