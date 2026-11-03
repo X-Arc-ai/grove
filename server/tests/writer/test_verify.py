@@ -359,7 +359,7 @@ def test_a_piece_cited_by_its_evidence_row_and_a_judgment_from_record_judgments_
         driver,
         w,
         model_call,
-        [JudgmentRow("first_judge", f"item:{claim}", "supports", NOW, evidence_id=row["id"])],
+        [JudgmentRow("first_judge", f"item:{claim}", "supports", at=NOW, evidence_id=row["id"])],
     )
     frozen.set(VERIFY_AT)
     ops = [verify(claim, [{"evidence_id": row["id"], "judgment_id": judgment}])]

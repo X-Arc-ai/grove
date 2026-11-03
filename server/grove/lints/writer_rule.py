@@ -11,6 +11,11 @@ helper in server/tests/writer/.
 
 Python means a .py or .pyw file, or a file of any other name whose first line runs python.
 
+Inside the writer package, a second rule holds D8's mechanical boundary (the Oct 2 drill): write
+Cypher that names a registry label (kinds, meanings, property names, the ontology change log) sits
+only in the ontology operations and the world seed, and write Cypher that names the judgments label
+only in the judgments writer (S20). An alias row is left out: other operations write item aliases.
+
 Evasions this lint cannot close: getattr, importlib or __import__ with a name built at run time;
 exec or eval of built text; Cypher assembled by join, format, % or +=, or held in named constants
 that are joined later; a write word cut in two by an f-string hole; a fragment that has a write
@@ -37,6 +42,18 @@ from grove.lints._scan import (
 )
 
 ALLOWED_PREFIXES = ("server/grove/writer/", "server/migrations/", "server/tests/writer/")
+WRITER_PREFIX = "server/grove/writer/"
+# D8 (line 1641): the registry changes only through the ontology operations.
+GUARDED_LABELS = {
+    "Kind": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
+    "Meaning": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
+    # The world seed writes the starter property names (S50), as it writes the starter kinds.
+    "PropertyName": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
+    "OntologyChange": ("server/grove/writer/ontology.py",),
+    "Judgment": ("server/grove/writer/judgments.py",),
+}
+# A label after a colon, or inside a label expression after |, & or ! (n:Item|Meaning).
+_LABEL = re.compile(r"[:|&!]\s*`?(" + "|".join(GUARDED_LABELS) + r")\b")
 NEO4J_PREFIX = "server/grove/store/"
 PRODUCTION_PREFIX = "server/grove/"
 TESTS_PACKAGE = "tests"
@@ -135,6 +152,24 @@ def _check_python(root: Path, rel: str) -> list[Finding]:
     return findings
 
 
+def _check_registry(root: Path, rel: str) -> list[Finding]:
+    """Write Cypher in the writer package that names a guarded label outside its owner files."""
+    tree = parse_python(root, rel)
+    if tree is None:
+        return []
+    findings = []
+    for start, text in string_values(tree):
+        if not _writes(start, text):
+            continue
+        masked = mask_cypher(text)
+        for match in _LABEL.finditer(masked):
+            if rel not in GUARDED_LABELS[match.group(1)]:
+                findings.append(
+                    Finding(rel, line_of(start, masked, match.start()), "writer/registry")
+                )
+    return findings
+
+
 def _closing_quote(text: str, start: int) -> int:
     quote = text[start]
     position = start + 1
@@ -189,6 +224,8 @@ def check(root: Path, base: str | None = None) -> list[Finding]:
         python = not rel.endswith(CYPHER_SUFFIXES) and is_python(root, rel)
         if python and rel.startswith(PRODUCTION_PREFIX):
             findings += _check_tests_imports(root, rel)
+        if python and rel.startswith(WRITER_PREFIX):
+            findings += _check_registry(root, rel)
         if rel.startswith(ALLOWED_PREFIXES):
             continue
         if rel.endswith(CYPHER_SUFFIXES):

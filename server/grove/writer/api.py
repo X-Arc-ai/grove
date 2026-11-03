@@ -204,6 +204,7 @@ def apply_batch(
         change_set_id=new_id(world_id),
         request_id=key,
         run_id=run_id,
+        caller_kind=caller.kind,
     )
 
     def work(tx: WorldTx) -> None:
