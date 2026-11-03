@@ -596,9 +596,10 @@ def test_writes_exactly_the_catalogue_properties(driver, world, test_clock):
     receipt = one(driver, world, "ScreeningReceipt")
 
     # content_pointer is the other form of B.1's "content or a pointer to it": the content is
-    # inline, so the pointer is absent. speakers (S46) is absent when the connector read none.
+    # inline, so the pointer is absent. speakers and document (S46) are absent when the connector
+    # read no speakers and stored typed text.
     source_props = {prop for column in SOURCES.columns for prop in column.props}
-    assert set(source) == source_props - {"content_pointer", "speakers"}
+    assert set(source) == source_props - {"content_pointer", "speakers", "document"}
     assert set(receipt) == {prop for column in SCREENING_RECEIPTS.columns for prop in column.props}
     for table, row in ((SOURCES, source), (SCREENING_RECEIPTS, receipt)):
         for column in table.columns:

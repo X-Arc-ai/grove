@@ -79,6 +79,7 @@ def source(
     lines: list[str],
     *,
     speakers: dict[str, dict[str, str]] | None = None,
+    document: bool = False,
     **connector: Any,
 ) -> dict[str, str]:
     """A stored source with the speakers its connector's code read from its metadata."""
@@ -91,6 +92,7 @@ def source(
         content="\n".join(lines),
         parser_version="test-1",
         speakers=speakers,
+        document=document,
     )
     episode_id = record_episode(
         driver,
@@ -254,7 +256,13 @@ def test_done_with_only_said_or_reported_done_evidence_is_refused_and_reported_d
 
 def test_a_confirming_artifact_in_the_same_transaction_allows_done(driver, w, talk):
     task = open_task(driver, w, talk)
-    files = source(driver, w, "notes_files_releases", ["Signed hand-over: the seating plan, sent"])
+    files = source(
+        driver,
+        w,
+        "notes_files_releases",
+        ["Signed hand-over: the seating plan, sent"],
+        document=True,
+    )
     # The whole stored file is the artifact (S46); a line of a note never is.
     artifact = whole(files, "f1", statement_class="artifact")
     done = line(talk, "d1", 2, statement_class="report_happened")
