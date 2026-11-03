@@ -274,18 +274,26 @@ def test_an_item_ended_in_the_past_reads_ended_after_its_stop(driver, seeded, ch
         create_item("place", "Okonkwo hall", "c1"),
         create_item("place", "Okonkwo hall annex", "c1"),
         create_item("organisation", "Velmora ferry company", "c1"),
+        create_item("place", "Velmora ferry kiosk", "c1"),
     ]
     receipt = apply(driver, w, ops, [observation(chat, "c1", 1, at=OCT_20)])
-    shop, hall, annex, ferry = (created_id(receipt, nth=n) for n in range(4))
+    shop, hall, annex, ferry, kiosk = (created_id(receipt, nth=n) for n in range(5))
     # Recorded on 3 November, with evidence of that day: both stopped on 28 October. The ferry
     # stopped at a time no one gave, told by a message of 28 October: with no stop clock, the
-    # end entry's world time places the end.
+    # end entry's world time places the end. The kiosk closed some time before 28 October: a
+    # stop clock with no earliest bound sits at its latest (grove.writer.clocks.sort_key).
     frozen.set(NOV_3)
     told = observation(chat, "c2", 2, at=NOV_3)
     ops = [
         end_item(shop, "ended_in_the_world", clock_at(OCT_28), "c2"),
         end_item(hall, "superseded", clock_at(OCT_28), "c2"),
         end_item(ferry, "ended_in_the_world", "unknown", "c3"),
+        end_item(
+            kiosk,
+            "ended_in_the_world",
+            {"precision": "before", "latest": iso(OCT_28)},
+            "c2",
+        ),
     ]
     apply(driver, w, ops, [told, observation(chat, "c3", 3, at=OCT_28)])
     superseded = plant_successor(
@@ -302,12 +310,15 @@ def test_an_item_ended_in_the_past_reads_ended_after_its_stop(driver, seeded, ch
         (),
     )
     assert before.items[ferry].standing.state == "current"
+    assert before.items[kiosk].standing.state == "current"
+    assert "stopped_being_true_latest" not in before.items[kiosk].row
 
     after = world_as_of(query, NOV_1)
     # The end entries' world time is 3 November: the replay alone would still read it current.
     assert "end_class" not in item_as_of(query, shop, NOV_1)
     assert shop not in after.items
     assert ferry not in after.items
+    assert kiosk not in after.items
     # An overtaken item stays, ended, with its successor on the standing.
     kept = after.items[hall]
     assert (kept.standing.state, kept.standing.end_class) == ("ended", "superseded")
