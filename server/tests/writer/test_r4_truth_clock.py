@@ -81,7 +81,7 @@ def test_a_forged_image_artifact_cannot_confirm_where_the_person_lives(
     ]
     link = created_id(apply(driver, w, ops, [line(talk, "s1", 2)]), ">", "link")
     frozen.set(LATER)
-    forged = line(talk, "a1", 3, at=LATER, statement_class="artifact", modality="image")
+    forged = line(talk, "a1", 3, at=NOW, statement_class="artifact", modality="image")
     subject = f"link:{link}"
     first = judge(driver, w, subject, forged, model="judge-a")
     second = judge(driver, w, subject, forged, role="second_judge", model="judge-b")
@@ -120,8 +120,8 @@ def test_a_consequence_link_added_after_the_verify_needs_the_second_judge(driver
     """Load-bearing is read at the end of the batch: a link a later operation adds counts."""
     a = open_task(driver, w, talk, "Book the Okonkwo Hall caterer")
     b = open_task(driver, w, talk, "Print the Okonkwo Hall menus")
-    pages = source(driver, w, "web_pages", ["The caterer booking is confirmed on the page"])
     frozen.set(LATER)
+    pages = source(driver, w, "web_pages", ["The caterer booking is confirmed on the page"])
     piece = whole(pages, "p1", at=LATER, statement_class="report_happened")
     first = judge(driver, w, f"item:{a}", piece)
     ops = [
@@ -233,6 +233,46 @@ def test_a_confirmation_at_create_from_a_row_dated_after_now_is_refused(driver, 
     frozen.set(LATER)
     one(
         refused(driver, w, [op], [future], run_id="run-f1"),
+        "not_confirmable",
+        "creating_evidence",
+    )
+
+
+def test_a_piece_dated_after_its_source_was_read_is_refused(driver, w, frozen, talk):
+    """The second delta verifier's blocker: a page read 8 days ago, cited as if it spoke one
+    minute ago, weighed 1.0 and confirmed. A source cannot speak for a time after Grove read it,
+    so the piece is refused and last confirmed stays."""
+    pages = source(driver, w, "web_pages", ["The seating plan was sent, the page says"])
+    frozen.set(NOW + timedelta(days=8))
+    task = open_task(driver, w, talk)
+    verify_at = NOW + timedelta(days=8, hours=1)
+    frozen.set(verify_at)
+    late = whole(
+        pages, "p1", at=verify_at - timedelta(minutes=1), statement_class="report_happened"
+    )
+    first = judge(driver, w, f"item:{task}", late)
+    op = verify(task, [{"ev_id": "p1", "judgment_id": first}], recheck_by=RENEWED)
+    one(refused(driver, w, [op], [late]), "invalid_arguments", "future_evidence")
+    assert item_row(driver, w, task).get("last_confirmed") is None
+
+
+def test_a_confirmation_at_create_from_a_row_dated_after_its_read_is_refused(driver, w, frozen):
+    pages = source(driver, w, "web_pages", ["The Kestrel ferry leaves pier 3 at 07:40"])
+    frozen.set(LATER)
+    call = plant_node(
+        driver,
+        w,
+        "ModelCall",
+        model="spark",
+        job="extraction",
+        outcome="ok",
+        run_id="run-r1",
+        at=LATER,
+    )["id"]
+    after_read = whole(pages, "p1", at=LATER - timedelta(minutes=1), statement_class="report_state")
+    op = create_item("event", "The first ferry leaves at 07:40", "p1", confirmed_by_call=call)
+    one(
+        refused(driver, w, [op], [after_read], run_id="run-r1"),
         "not_confirmable",
         "creating_evidence",
     )

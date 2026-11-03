@@ -432,8 +432,9 @@ def test_a_claim_no_specific_row_and_no_default_covers_cannot_be_confirmed(
             [line(talk, "k1", 1)],
         )
     )
-    src = source(driver, w, connector, ["The brass key of Okonkwo Hall, on its hook"])
+    # The lane fetches the source at LATER and stores it first; the piece speaks for no later.
     frozen.set(LATER)
+    src = source(driver, w, connector, ["The brass key of Okonkwo Hall, on its hook"])
     piece = whole(src, "p1", at=NOW + timedelta(minutes=30), statement_class="artifact")
     if connector == "screenshots":
         piece["modality"] = "image"
@@ -460,8 +461,8 @@ def test_a_minted_words_capability_row_applies_only_once_the_second_model_accept
         reason="a commit to the venue registry confirms the venue",
         version=1,
     )
-    git = source(driver, w, "git", [f"commit {GIT_TOKEN} Register Okonkwo Hall as a venue"])
     frozen.set(LATER)
+    git = source(driver, w, "git", [f"commit {GIT_TOKEN} Register Okonkwo Hall as a venue"])
     commit = observation(
         git,
         "g1",
@@ -515,8 +516,8 @@ def test_an_identity_source_confirms_a_name_and_is_refused_for_where_someone_liv
     ]
     receipt = apply(driver, w, ops, [line(talk, "s1", 1)])
     ilse, link = created_id(receipt, nth=0), created_id(receipt, ">", "link")
-    identity = source(driver, w, "identity", ["profile: Ilse Varga, of Velmora"])
     frozen.set(LATER)
+    identity = source(driver, w, "identity", ["profile: Ilse Varga, of Velmora"])
     profile = whole(identity, "id1", at=NOW + timedelta(minutes=30), statement_class="report_state")
 
     pieces = [{"ev_id": "id1", "judgment_id": judge(driver, w, f"link:{link}", profile)}]
@@ -545,7 +546,7 @@ def test_an_inferred_claim_carries_derivation_inferred_and_verify_refuses_it(
     )
     [premise] = evidence_on(driver, w, booking)
     frozen.set(LATER)
-    inferred = line(talk, "i1", 4, at=LATER, derivation="inferred", premises=[premise["id"]])
+    inferred = line(talk, "i1", 4, at=NOW, derivation="inferred", premises=[premise["id"]])
     dinner = created_id(
         apply(driver, w, [create_item("event", "The Varga dinner takes place", "i1")], [inferred])
     )
@@ -788,7 +789,7 @@ def test_a_remember_without_the_persons_words_is_the_hosts_and_never_confirms(
 ):
     src = host_source(driver, w, "They finished the seating plan", "remember")
     task = open_task(driver, w, talk)
-    relayed = whole(src, "h1", at=NOW + timedelta(minutes=30), statement_class="report_happened")
+    relayed = whole(src, "h1", at=NOW, statement_class="report_happened")
     one(
         refused(driver, w, [change_status(task, "done", "h1")], [relayed]),
         "terminal_needs_confirmation",

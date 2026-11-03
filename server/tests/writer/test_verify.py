@@ -71,14 +71,24 @@ def w(frozen, seeded):
     return seeded["world_id"]
 
 
-@pytest.fixture
-def talk(driver, w):
-    return make_source(driver, w, "whatsapp", CHAT_LINES)
+def read_at(frozen, at: datetime, make):
+    """Store a source as the lane reads it: at `at`, the fetch or export time. A piece speaks for
+    a time no later than that read (verify refuses one dated after it)."""
+    frozen.set(at)
+    try:
+        return make()
+    finally:
+        frozen.set(NOW)
 
 
 @pytest.fixture
-def pages(driver, w):
-    return make_source(driver, w, "web_pages", PAGE_LINES)
+def talk(driver, w, frozen):
+    return read_at(frozen, VERIFY_AT, lambda: make_source(driver, w, "whatsapp", CHAT_LINES))
+
+
+@pytest.fixture
+def pages(driver, w, frozen):
+    return read_at(frozen, VERIFY_AT, lambda: make_source(driver, w, "web_pages", PAGE_LINES))
 
 
 def page_piece(src: dict, ev_id: str, line: int, at: datetime, **extra: Any) -> dict[str, Any]:
@@ -416,7 +426,7 @@ def test_a_verify_whose_only_evidence_is_inferred_is_refused(driver, w, frozen, 
 def test_a_verify_for_a_claim_no_capability_covers_is_refused(driver, w, frozen, talk):
     # Git confirms records and work items, never a lasting thing (D5's default table).
     claim = organisation(driver, w, talk)
-    git = make_source(driver, w, "git", GIT_LINES)
+    git = read_at(frozen, VERIFY_AT, lambda: make_source(driver, w, "git", GIT_LINES))
     frozen.set(VERIFY_AT)
     commit = observation(
         git,
@@ -696,7 +706,7 @@ def test_a_piece_past_its_staleness_limit_weighs_0(driver, w, frozen, talk, page
 
 def test_a_claim_whose_only_reachable_source_is_an_identity_record_is_deferred(driver, w, frozen):
     # Where someone lives is a state link; an identity source confirms identity fields only.
-    talk = make_source(driver, w, "whatsapp", CHAT_LINES)
+    talk = read_at(frozen, VERIFY_AT, lambda: make_source(driver, w, "whatsapp", CHAT_LINES))
     said = [observation(talk, f"s{n}", n, at=NOW - timedelta(minutes=5)) for n in (1, 2)]
     receipt = apply(
         driver,
@@ -709,7 +719,9 @@ def test_a_claim_whose_only_reachable_source_is_an_identity_record_is_deferred(d
         said,
     )
     link = created_id(receipt, ">", "link")
-    identity = make_source(driver, w, "identity", IDENTITY_LINES)
+    identity = read_at(
+        frozen, VERIFY_AT, lambda: make_source(driver, w, "identity", IDENTITY_LINES)
+    )
     frozen.set(VERIFY_AT)
     profile = observation(identity, "id1", 1, at=FRESH, locator="key:Velmora")
     pieces = [piece("id1", judge(driver, w, f"link:{link}", profile))]
@@ -736,11 +748,14 @@ def test_the_verifications_table_agrees_with_the_claims_clocks(driver, w, frozen
     confirm_with_two_pages(driver, w, frozen, pages, first, f"item:{first}")
     # The second claim is confirmed, then a later deferral leaves its last confirmed alone.
     frozen.set(VERIFY_AT + timedelta(hours=1))
-    p4 = page_piece(pages, "p4", 4, VERIFY_AT + timedelta(minutes=10))
+    # Each re-check fetches the page again and stores the fetch first.
+    refetch = make_source(driver, w, "web_pages", PAGE_LINES)
+    p4 = page_piece(refetch, "p4", 4, VERIFY_AT + timedelta(minutes=10))
     subject = f"item:{second}"
     apply(driver, w, [verify(second, [piece("p4", judge(driver, w, subject, p4))])], [p4])
     frozen.set(VERIFY_AT + timedelta(days=1))
-    p2 = page_piece(pages, "p2b", 2, VERIFY_AT + timedelta(hours=20))
+    next_day = make_source(driver, w, "web_pages", PAGE_LINES)
+    p2 = page_piece(next_day, "p2b", 2, VERIFY_AT + timedelta(hours=20))
     later = [piece("p2b", judge(driver, w, subject, p2, "not_about_claim"))]
     apply(driver, w, [verify(second, later, "deferred", recheck_by=LATER_RECHECK)], [p2])
 

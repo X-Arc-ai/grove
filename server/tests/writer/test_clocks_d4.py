@@ -75,8 +75,13 @@ def talk(driver, w):
 
 
 @pytest.fixture
-def pages(driver, w):
-    return make_source(driver, w, "web_pages", PAGE_LINES)
+def pages(driver, w, frozen):
+    # The page is fetched at FETCHED and stored first: a piece speaks for that read, no later.
+    frozen.set(FETCHED)
+    try:
+        return make_source(driver, w, "web_pages", PAGE_LINES)
+    finally:
+        frozen.set(NOW)
 
 
 def said(talk: dict, ev_id: str, line: int, at: datetime | None = None, **extra: Any) -> dict:
@@ -357,7 +362,9 @@ def test_a_deferral_moves_recheck_by_and_leaves_last_confirmed(
     task = confirmed_task[1]
     before = item_row(driver, w, task)
     frozen.set(VERIFY_AT + timedelta(days=1))
-    piece = fetched(pages, "d1", at=VERIFY_AT + timedelta(hours=3))
+    # The re-check fetches the page again; the fetch is stored first.
+    refetch = make_source(driver, w, "web_pages", PAGE_LINES)
+    piece = fetched(refetch, "d1", at=VERIFY_AT + timedelta(hours=3))
     judgment = judge(driver, w, f"item:{task}", piece, "not_about_claim")
     apply(
         driver,
@@ -412,14 +419,15 @@ def extraction_call(driver, w: str, run_id: str, at: datetime) -> str:
 def test_a_claim_created_from_a_page_fetched_in_this_pass_has_the_fetch_time(
     driver, w, frozen, pages
 ):
-    # The page source was received at NOW, the fetch time; the extraction call of this run read it.
-    call = extraction_call(driver, w, "run-pass-1", NOW + timedelta(minutes=1))
-    frozen.set(NOW + timedelta(minutes=2))
-    page = fetched(pages, "f1", at=NOW)
+    # The page source was received at FETCHED, the fetch time; the extraction call of this run
+    # read it.
+    call = extraction_call(driver, w, "run-pass-1", FETCHED + timedelta(minutes=1))
+    frozen.set(FETCHED + timedelta(minutes=2))
+    page = fetched(pages, "f1", at=FETCHED)
     op = create_item("organisation", "Okonkwo Hall", "f1", confirmed_by_call=call)
     hall = created_id(apply(driver, w, [op], [page], caller=LEARNER, run_id="run-pass-1"))
     row = item_row(driver, w, hall)
-    assert utc(row["last_confirmed"]) == NOW
+    assert utc(row["last_confirmed"]) == FETCHED
     [source] = read(driver, w, "MATCH (s:Source {id: $id}) RETURN s", id=pages["source_id"])
     assert utc(row["last_confirmed"]) == utc(source["s"]["received_at"])
     [verification] = read(driver, w, "MATCH (v:Verification {claim_id: $id}) RETURN v", id=hall)
@@ -430,9 +438,9 @@ def test_a_claim_created_from_a_page_fetched_in_this_pass_has_the_fetch_time(
 def test_a_confirmation_at_create_from_another_run_or_a_chat_line_is_refused(
     driver, w, frozen, talk, pages
 ):
-    call = extraction_call(driver, w, "run-pass-1", NOW + timedelta(minutes=1))
-    frozen.set(NOW + timedelta(minutes=2))
-    page = fetched(pages, "f1", at=NOW)
+    call = extraction_call(driver, w, "run-pass-1", FETCHED + timedelta(minutes=1))
+    frozen.set(FETCHED + timedelta(minutes=2))
+    page = fetched(pages, "f1", at=FETCHED)
     op = create_item("organisation", "Okonkwo Hall", "f1", confirmed_by_call=call)
     one(refused(driver, w, [op], [page], run_id="run-pass-2"), "unrecorded_verdict")
     chat_op = create_item("organisation", "Okonkwo Hall", "c1", confirmed_by_call=call)
@@ -444,9 +452,9 @@ def test_a_confirmation_at_create_from_another_run_or_a_chat_line_is_refused(
 
 
 def test_a_load_bearing_claim_at_creation_is_refused_that_confirmation(driver, w, frozen, pages):
-    call = extraction_call(driver, w, "run-pass-1", NOW + timedelta(minutes=1))
-    frozen.set(NOW + timedelta(minutes=2))
-    page = fetched(pages, "f1", at=NOW)
+    call = extraction_call(driver, w, "run-pass-1", FETCHED + timedelta(minutes=1))
+    frozen.set(FETCHED + timedelta(minutes=2))
+    page = fetched(pages, "f1", at=FETCHED)
     ops = [
         create_item(
             "task",

@@ -37,9 +37,12 @@ LOCATOR_SCHEMES: dict[str, frozenset[str]] = {
 _NOT_DECIDERS = frozenset({"ai_host", "automated"})
 _ANSWER_RELAYS = frozenset({"answer", "correction"})
 _RELAYED = frozenset({"ai_host", "person_in_views"})
+# One request stores one source; the order makes the read the same on every run even if a later
+# path ever lets two requests name one source (the first one wins).
 _REQUEST_OF_SOURCE = (
     "MATCH (r:Request {source_id: $id}) RETURN r.verbatim AS verbatim, "
-    "r.host_message_id AS host_message_id, r.relay AS relay"
+    "r.host_message_id AS host_message_id, r.relay AS relay "
+    "ORDER BY r.created_at, r.id LIMIT 1"
 )
 MIN_KEY_LENGTH = 4
 _LINES = re.compile(r"(\d+)(?:-(\d+))?")
