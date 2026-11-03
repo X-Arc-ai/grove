@@ -85,7 +85,7 @@ def test_a_deploy_runs_its_steps_in_order(box):
     assert "build api runner" in box.calls()[build]
     neo4j_up = box.index("up --detach --wait neo4j", build)
     migrate = box.index("python -m grove.writer.migrate", neo4j_up)
-    services_up = box.index("up --detach --wait --remove-orphans api runner", migrate)
+    services_up = box.index("up --detach --wait --remove-orphans api gateway runner", migrate)
     smoke = box.index(f"{BASE}/healthz", services_up)
     box.index("docker image prune", smoke)
 
@@ -239,13 +239,13 @@ def test_a_backup_stops_the_writers_fingerprints_dumps_and_starts_them_again(box
     order = [
         "flock -w 1800 9",
         "compose --project-name grove",  # the first compose call, below
-        "stop runner api",
+        "stop runner gateway api",
         "python -m grove.store.dump_fingerprint",
         "stop neo4j",
         "neo4j-admin database dump neo4j --to-path=/backups",
         "start neo4j",
         f"python -m grove.store.dump_fingerprint --expect {FP}",
-        "start api runner",
+        "start api gateway runner",
         "docker network create --internal grove-restorecheck-",
         "neo4j-admin database load neo4j --from-stdin",
         "--env NEO4J_AUTH=none",
@@ -278,7 +278,7 @@ def test_a_failed_dump_still_starts_the_store_and_its_writers(box):
     assert done.returncode != 0
     dump = box.index("neo4j-admin database dump")
     start_store = box.index("start neo4j", dump)
-    box.index("start api runner", start_store)
+    box.index("start api gateway runner", start_store)
     assert not [name for name in _backup_files(box) if name.endswith(".dump")]
     assert "FAILED" in box.log_text("backup.log")
     assert not [path for path in box.backups.iterdir() if path.name.startswith(".work-")]
@@ -289,7 +289,7 @@ def test_a_store_that_changed_across_the_dump_fails_the_backup(box):
     done = box.run("backup.sh", FAKE_FP_AFTER_FIRST="b" * 64)
     assert done.returncode != 0
     assert "the store changed across the dump" in done.stderr
-    box.index("start api runner")
+    box.index("start api gateway runner")
     assert not [name for name in _backup_files(box) if name.endswith(".dump")]
 
 
@@ -445,7 +445,7 @@ def test_an_empty_dump_fails_the_backup_and_is_not_kept(box):
     assert done.returncode != 0
     assert "the dump wrote no file" in done.stderr
     assert not [name for name in _backup_files(box) if name.endswith(".dump")]
-    box.index("start api runner")
+    box.index("start api gateway runner")
 
 
 def test_a_backup_stopped_by_systemd_mid_dump_starts_the_services_again(box):
@@ -466,7 +466,7 @@ def test_a_backup_stopped_by_systemd_mid_dump_starts_the_services_again(box):
     assert process.returncode == 143
     dump = box.index("neo4j-admin database dump")
     start = box.index("start neo4j", dump)
-    box.index("start api runner", start)
+    box.index("start api gateway runner", start)
     assert "FAILED (exit 143)" in box.log_text("backup.log")
 
 
@@ -475,7 +475,7 @@ def test_the_backup_unit_starts_the_services_after_any_run(box):
     done = box.run("services-up.sh")
     assert done.returncode == 0, done.stderr
     start = box.index("start neo4j")
-    box.index("start api runner", start)
+    box.index("start api gateway runner", start)
     unit = (box.src / "deploy" / "systemd" / "grove-backup.service").read_text()
     assert "ExecStopPost=/opt/grove/src/deploy/services-up.sh" in unit
 
@@ -590,7 +590,7 @@ def test_the_services_script_removes_left_one_off_containers_before_the_store_st
     assert "label=com.docker.compose.project=grove" in box.calls()[listing]
     removed = box.index("docker rm --force --volumes oneoff-dump", listing)
     start = box.index("start neo4j", removed)
-    box.index("start api runner", start)
+    box.index("start api gateway runner", start)
     box.index("ps --quiet api", start)
 
 
@@ -763,7 +763,7 @@ def test_the_services_script_starts_the_writers_even_when_the_store_is_slow(box)
     assert done.returncode == 0, done.stderr
     assert "neo4j is not healthy yet" in done.stdout + done.stderr
     start = box.index("start neo4j")
-    box.index("start api runner", start)
+    box.index("start api gateway runner", start)
 
 
 def test_the_services_script_fails_when_only_the_api_is_unhealthy(box):
@@ -780,7 +780,7 @@ def test_a_one_off_container_that_cannot_be_removed_does_not_stop_the_start(box)
     )
     assert done.returncode == 0, done.stderr
     assert "could not remove one-off container stuck" in done.stdout + done.stderr
-    box.index("start api runner", box.index("start neo4j"))
+    box.index("start api gateway runner", box.index("start neo4j"))
 
 
 def test_bootstrap_says_which_tool_is_missing(box):
@@ -817,7 +817,7 @@ def test_the_services_script_starts_the_writers_again_after_compose_refused_them
     box.deployed()
     done = box.run("services-up.sh", FAKE_START_REFUSALS="2", GROVE_SERVICES_TRIES="5")
     assert done.returncode == 0, done.stderr
-    starts = [call for call in box.calls() if call.endswith("start api runner")]
+    starts = [call for call in box.calls() if call.endswith("start api gateway runner")]
     assert len(starts) == 3
 
 
@@ -826,7 +826,7 @@ def test_the_services_script_gives_up_after_its_tries_and_says_so(box):
     done = box.run("services-up.sh", FAKE_START_REFUSALS="99", GROVE_SERVICES_TRIES="3")
     assert done.returncode != 0
     assert "not all healthy" in done.stderr
-    assert len([call for call in box.calls() if call.endswith("start api runner")]) == 3
+    assert len([call for call in box.calls() if call.endswith("start api gateway runner")]) == 3
 
 
 def test_a_failed_backup_hands_over_to_the_unit_that_keeps_trying(box):
@@ -838,7 +838,7 @@ def test_a_backup_waits_for_the_store_before_its_first_read(box):
     box.deployed()
     done = box.run("backup.sh")
     assert done.returncode == 0, done.stderr
-    stop = box.index("stop runner api")
+    stop = box.index("stop runner gateway api")
     start = box.index("start neo4j", stop)
     probe = box.index("ps --quiet neo4j", start)
     assert probe < box.index("grove.store.dump_fingerprint", start)
@@ -850,7 +850,7 @@ def test_a_backup_makes_no_dump_while_the_store_is_unhealthy(box):
     assert done.returncode != 0
     assert "neo4j is not healthy, so no dump" in done.stderr
     assert not [call for call in box.calls() if "neo4j-admin" in call]
-    box.index("start api runner")
+    box.index("start api gateway runner")
 
 
 def test_a_later_failure_on_the_first_certificate_makes_the_old_sites_live_again(box):
@@ -880,7 +880,7 @@ def test_a_failed_write_of_the_state_file_keeps_the_old_record(box):
     done = box.run("deploy.sh", SHA)
     assert done.returncode != 0
     assert (box.state / "deployed.sha").read_text().strip() == OTHER_SHA
-    assert not [call for call in box.calls() if "--remove-orphans api runner" in call]
+    assert not [call for call in box.calls() if "--remove-orphans api gateway runner" in call]
 
 
 def test_a_deploy_leaves_no_temporary_state_file(box):
@@ -972,3 +972,29 @@ def test_the_smoke_asks_for_every_page(box):
     assert box.run("deploy.sh", SHA).returncode == 0
     box.index(f"{BASE}/signin")
     box.index(f"{BASE}/privacy")
+
+
+# ---- the runner lane: the gateway -------------------------------------------------------------
+
+
+def test_the_services_script_fails_when_only_the_gateway_is_unhealthy(box):
+    box.deployed()
+    done = box.run("services-up.sh", FAKE_UNHEALTHY="gateway", GROVE_SERVICES_TRIES="2")
+    assert done.returncode != 0
+    assert "not all healthy" in done.stderr
+    box.index("ps --quiet gateway", box.index("start api gateway runner"))
+
+
+def test_a_backup_stops_the_gateway_before_its_first_fingerprint(box):
+    # The gateway writes a model_calls row for each call: a row written between the two
+    # fingerprints fails the backup with "the store changed across the dump".
+    box.deployed()
+    done = box.run("backup.sh")
+    assert done.returncode == 0, done.stderr
+    stop = box.index("stop runner gateway api")
+    first = box.index("grove.store.dump_fingerprint")
+    assert stop < first
+    assert not [
+        call for call in box.calls()[stop:first] if " start " in f" {call} " and "gateway" in call
+    ]
+    box.index("start api gateway runner", box.index(f"--expect {FP}", first))
