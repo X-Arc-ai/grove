@@ -1,15 +1,20 @@
-"""The registry as the writer reads it inside its transaction: kinds, meanings, aliases, property
-names, and the status vocabulary of each kind.
+"""The registry as the writer reads it inside its transaction, or a reader through a WorldQuery:
+kinds, meanings, aliases, property names, and the status vocabulary of each kind.
 
 The primitive rows live in world '' and a WorldTx cannot read them, so their fields come from
 grove.store.primitives (they never change). A caller may not create an item of the belief kind or
 a link of a primitive meaning: the beliefs lane and the composite operations mint those.
+
+The resolution order is grove.writer.resolver's. The methods here are its strict form for the
+writer: what does not resolve to one usable word is refused, and an ambiguous phrase is never
+picked (rule ambiguous_phrase).
 """
 
 import json
 from dataclasses import dataclass
 from typing import Any
 
+from grove.store.current import TERMINAL_ROLES, read_rows
 from grove.store.normalise import normalise_phrase
 from grove.store.primitives import (
     KIND_BELIEF,
@@ -18,16 +23,21 @@ from grove.store.primitives import (
     PRIMITIVE_MEANINGS,
 )
 from grove.writer.errors import Refused
-from grove.writer.tx import WorldTx
+from grove.writer.resolver import AMBIGUOUS, Resolution, Source, resolve_word, usable
 
-TERMINAL_ROLES = frozenset({"done", "cancelled", "ended"})
 REPORTED_DONE = "reported done"
-_UNUSABLE = frozenset({"retired", "split"})
 _REGISTRY_TARGETS = ("kind", "meaning", "property_name")
 
 
-def _usable(row: dict[str, Any]) -> bool:
-    return row.get("status") not in _UNUSABLE
+def _unresolved(found: Resolution, code: str, word: str, valid: list[str]) -> Refused:
+    if found.outcome == AMBIGUOUS:
+        return Refused(
+            code,
+            "ambiguous_phrase",
+            f"{found.phrase!r} names more than one {word}: send one of them by name",
+            {"candidates": list(found.candidates), "valid": valid},
+        )
+    return Refused(code, code, f"no {word} {found.phrase!r}", {"valid": valid})
 
 
 @dataclass
@@ -38,17 +48,21 @@ class Registry:
     property_names: list[dict[str, Any]]
 
     @classmethod
-    def load(cls, tx: WorldTx) -> "Registry":
-        kinds = {row["k"]["id"]: row["k"] for row in tx.run("MATCH (k:Kind) RETURN k")}
-        meanings = {row["m"]["id"]: row["m"] for row in tx.run("MATCH (m:Meaning) RETURN m")}
+    def load(cls, source: Source) -> "Registry":
+        """From a WorldTx inside the batch's transaction, or from a WorldQuery for a reader."""
+        kinds = {row["k"]["id"]: row["k"] for row in read_rows(source, "MATCH (k:Kind) RETURN k")}
+        meanings = {
+            row["m"]["id"]: row["m"] for row in read_rows(source, "MATCH (m:Meaning) RETURN m")
+        }
         aliases = [
             row["a"]
-            for row in tx.run(
+            for row in read_rows(
+                source,
                 "MATCH (a:Alias) WHERE a.target_type IN $types RETURN a",
                 types=list(_REGISTRY_TARGETS),
             )
         ]
-        names = [row["p"] for row in tx.run("MATCH (p:PropertyName) RETURN p")]
+        names = [row["p"] for row in read_rows(source, "MATCH (p:PropertyName) RETURN p")]
         return cls(kinds, meanings, aliases, names)
 
     # Kinds ------------------------------------------------------------------------------------
@@ -57,17 +71,6 @@ class Registry:
         if kind_id == KIND_BELIEF:
             return {"id": KIND_BELIEF, **PRIMITIVE_KIND_BELIEF}
         return self.kinds[kind_id]
-
-    def _alias_target(self, target_type: str, phrase: str) -> dict[str, Any] | None:
-        wanted = normalise_phrase(phrase)
-        for alias in self.aliases:
-            if (
-                alias.get("target_type") == target_type
-                and alias.get("normalised_phrase") == wanted
-                and _usable(alias)
-            ):
-                return alias
-        return None
 
     def resolve_kind(self, ref: str) -> dict[str, Any]:
         wanted = normalise_phrase(ref)
@@ -78,22 +81,13 @@ class Registry:
                 "a belief is minted by the beliefs operations, not by create_item",
                 {"valid": self.kind_names()},
             )
-        usable = [row for row in self.kinds.values() if _usable(row)]
-        for row in usable:
-            if row["id"] == ref or row["name"] == ref:
-                return row
-        for row in usable:
-            if normalise_phrase(row["name"]) == wanted:
-                return row
-        alias = self._alias_target("kind", ref)
-        if alias is not None and alias["target_id"] in self.kinds:
-            return self.kinds[alias["target_id"]]
-        raise Refused(
-            "unknown_kind", "unknown_kind", f"no kind {ref!r}", {"valid": self.kind_names()}
-        )
+        found = resolve_word(self, "kind", ref)
+        if found.target is None:
+            raise _unresolved(found, "unknown_kind", "kind", self.kind_names())
+        return found.target
 
     def kind_names(self) -> list[str]:
-        return sorted(row["name"] for row in self.kinds.values() if _usable(row))
+        return sorted(row["name"] for row in self.kinds.values() if usable(row))
 
     # Meanings ---------------------------------------------------------------------------------
 
@@ -103,10 +97,10 @@ class Registry:
         return self.meanings[meaning_id]
 
     def meaning_names(self) -> list[str]:
-        return sorted(row["name"] for row in self.meanings.values() if _usable(row))
+        return sorted(row["name"] for row in self.meanings.values() if usable(row))
 
     def resolve_meaning(self, ref: str) -> tuple[dict[str, Any], bool]:
-        """(the meaning, whether the phrase was a reversed alias)."""
+        """(the meaning, whether the phrase was a reversed alias: the caller swaps the ends)."""
         wanted = normalise_phrase(ref)
         primitive_names = {
             normalise_phrase(str(row["name"])) for row in PRIMITIVE_MEANINGS.values()
@@ -118,22 +112,10 @@ class Registry:
                 "a primitive meaning is written only by the writer's composite operations",
                 {"valid": self.meaning_names()},
             )
-        usable = [row for row in self.meanings.values() if _usable(row)]
-        for row in usable:
-            if row["id"] == ref or row["name"] == ref:
-                return row, False
-        for row in usable:
-            if normalise_phrase(row["name"]) == wanted:
-                return row, False
-        alias = self._alias_target("meaning", ref)
-        if alias is not None and alias["target_id"] in self.meanings:
-            return self.meanings[alias["target_id"]], bool(alias.get("reversed"))
-        raise Refused(
-            "unknown_meaning",
-            "unknown_meaning",
-            f"no meaning {ref!r}",
-            {"valid": self.meaning_names()},
-        )
+        found = resolve_word(self, "meaning", ref)
+        if found.target is None:
+            raise _unresolved(found, "unknown_meaning", "meaning", self.meaning_names())
+        return found.target, found.reversed
 
     def slot_meanings(self, meaning: dict[str, Any]) -> list[str]:
         """The meanings that share one cardinality slot with this one."""
@@ -183,25 +165,21 @@ class Registry:
     # Property names ---------------------------------------------------------------------------
 
     def property_name(self, kind_id: str, name: str) -> dict[str, Any] | None:
-        of_kind = [
-            row for row in self.property_names if row.get("kind") == kind_id and _usable(row)
-        ]
-        for row in of_kind:
-            if row.get("name") == name:
-                return row
-        for row in of_kind:
-            if normalise_phrase(row.get("name", "")) == normalise_phrase(name):
-                return row
-        alias = self._alias_target("property_name", name)
-        if alias is not None:
-            for row in of_kind:
-                if row["id"] == alias["target_id"]:
-                    return row
-        return None
+        """The declared property of this kind, or None. Only the aliases of this kind's property
+        names count (line 1649: per kind), and a phrase that reaches two of them is refused."""
+        found = resolve_word(self, "property_name", name, kind_id=kind_id)
+        if found.outcome == AMBIGUOUS:
+            raise Refused(
+                "invalid_arguments",
+                "ambiguous_phrase",
+                f"{name!r} names more than one property of this kind: send one of them by name",
+                {"property": name, "candidates": list(found.candidates)},
+            )
+        return found.target
 
     def property_names_of(self, kind_id: str) -> list[str]:
         return sorted(
             row["name"]
             for row in self.property_names
-            if row.get("kind") == kind_id and _usable(row) and row.get("name")
+            if row.get("kind") == kind_id and usable(row) and row.get("name")
         )

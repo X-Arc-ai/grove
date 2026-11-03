@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from grove.store.enums import ENUMS
+from grove.store.normalise import reads_blank
 from grove.writer.clocks import ClockError, parse_clock, parse_instant
 from grove.writer.errors import Refusal, Refused
 
@@ -201,7 +202,7 @@ def _forbidden(keys: Any, table: dict[str, tuple[str, str]], where: str) -> None
 
 
 def _text(value: Any, name: str, *, rule: str = "type") -> str:
-    if not isinstance(value, str) or not value.strip():
+    if not isinstance(value, str) or reads_blank(value):
         raise Refused("invalid_arguments", rule, f"{name} must be non-empty text", {"field": name})
     return value
 
@@ -234,13 +235,13 @@ def _enum(value: Any, name: str, allowed: tuple[str, ...]) -> None:
 
 
 def _string_list(value: Any, name: str) -> None:
-    ok = isinstance(value, list) and all(isinstance(v, str) and v.strip() for v in value)
+    ok = isinstance(value, list) and all(isinstance(v, str) and not reads_blank(v) for v in value)
     if not ok:
         raise Refused("invalid_arguments", "type", f"{name} is a list of text", {"field": name})
 
 
 def _recheck_how(value: Any) -> None:
-    if not isinstance(value, dict | str) or (isinstance(value, str) and not value.strip()):
+    if not isinstance(value, dict | str) or (isinstance(value, str) and reads_blank(value)):
         raise Refused(
             "invalid_arguments",
             "type",
@@ -319,7 +320,7 @@ def _update_fields(fields: Any) -> None:
                 {"field": key, "valid": list(UPDATE_FIELDS)},
             )
     for key, value in fields.items():
-        if key == "title" and (not isinstance(value, str) or not value.strip()):
+        if key == "title" and (not isinstance(value, str) or reads_blank(value)):
             raise Refused("invalid_arguments", "required_field", "title may not be blank", {})
         if key in ("summary", "body") and value is not None and not isinstance(value, str):
             raise Refused("invalid_arguments", "type", f"{key} is text", {"field": key})
@@ -464,7 +465,7 @@ def check_observation(observation: Any) -> None:
             )
     for key in _PROVENANCE_KEYS:
         value = observation.get(key)
-        if not isinstance(value, str) or not value.strip():
+        if not isinstance(value, str) or reads_blank(value):
             raise Refused(
                 "missing_provenance",
                 f"missing_{key}",
@@ -561,7 +562,7 @@ def shape_refusals(batch: Any) -> tuple[list[Refusal], dict[int, Refusal]]:
     observations: dict[str, Any] = {}
     for observation in evidence:
         ev_id = observation.get("ev_id") if isinstance(observation, dict) else None
-        if not isinstance(ev_id, str) or not ev_id.strip():
+        if not isinstance(ev_id, str) or reads_blank(ev_id):
             message = "every observation has an ev_id"
             faults.append(Refusal(None, None, "invalid_arguments", "missing_field", message, {}))
         elif ev_id in observations:

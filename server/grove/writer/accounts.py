@@ -66,11 +66,6 @@ _OLDEST_WORLD = (
     "RETURN w.id AS id, w.self_item_id AS self_item_id "
     "ORDER BY w.created_at, w.id LIMIT 1"
 )
-# One direct SET takes the row's write lock until commit, as S10 does for the sequence. The value
-# stays the same: a change here would leave a gap in the world's change entries.
-_LOCK_WORLD = (
-    CYPHER_PREFIX + "MATCH (w:World {id: $world_id}) SET w.next_sequence = w.next_sequence"
-)
 _READ_OWN_ITEM = CYPHER_PREFIX + "MATCH (w:World {id: $world_id}) RETURN w.self_item_id AS own"
 _SET_OWN_ITEM = CYPHER_PREFIX + "MATCH (w:World {id: $world_id}) SET w.self_item_id = $item_id"
 _FIND_CONNECTOR = "MATCH (c:Connector {type: $type}) RETURN c.id AS id ORDER BY c.id LIMIT 1"
@@ -83,9 +78,13 @@ _ADD_SESSION = "CREATE (s:Session) SET s = $row"
 _REVOKE_SESSION = (
     "MATCH (s:Session {token_hash: $token_hash}) WHERE s.revoked_at IS NULL SET s.revoked_at = $at"
 )
-# Each write below locks the rows, so two calls for one address run one after the other.
+# Each write below locks the rows, so two calls for one address run one after the other. The lock
+# reads no column, as in tx.py: `SET c.attempts = c.attempts` read the count before it waited and
+# wrote that stale value back after, so a start at the limit erased a wrong try that committed
+# during the wait, and the limit of tries on a code did not hold.
 _LOCK_CODES = (
-    "MATCH (c:EmailCode {email_hash: $email_hash}) SET c.attempts = c.attempts "
+    "MATCH (c:EmailCode {email_hash: $email_hash}) "
+    "SET c.lock_marker = true REMOVE c.lock_marker "
     "RETURN c.created_at AS created_at"
 )
 _END_EARLIER_CODES = (
@@ -189,7 +188,7 @@ def _ensure_connector(driver: Driver, world_id: str) -> str:
     """One connector per world: the world's lock makes the second caller find the first's row."""
 
     def work(tx: WorldTx) -> str:
-        tx.unscoped().run(_LOCK_WORLD, world_id=world_id).consume()
+        tx.lock_world()
         found = tx.run(_FIND_CONNECTOR, type=CONNECTOR_TYPE)
         if found:
             return found[0]["id"]
@@ -260,8 +259,8 @@ def _create_own_item(
     """The item and World.self_item_id commit together, or neither does."""
 
     def work(tx: WorldTx) -> str:
+        tx.lock_world()
         managed = tx.unscoped()
-        managed.run(_LOCK_WORLD, world_id=world_id).consume()
         # A read of its own, after the lock: an earlier read may predate another caller's commit.
         record = managed.run(_READ_OWN_ITEM, world_id=world_id).single()
         if record is not None and record["own"]:

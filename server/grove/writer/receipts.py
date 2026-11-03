@@ -70,8 +70,9 @@ class ReceiptLine:
 @dataclass(frozen=True)
 class Receipt:
     state: str
-    commit_id: str
-    change_set_id: str
+    # None only for a request a pass finished with nothing to write: no commit happened.
+    commit_id: str | None
+    change_set_id: str | None
     request_id: str | None
     lines: tuple[ReceiptLine, ...] = field(default_factory=tuple)
 
@@ -342,10 +343,23 @@ def render_receipt(driver: Driver, world_id: str, receipt: Receipt | DeclinedRec
     """The receipt in D2's fixed grammar, with titles, names and values read fresh."""
     if isinstance(receipt, DeclinedReceipt):
         return receipt.render()
-    head = f"{receipt.state} ({len(receipt.lines)}), commit {short_id(receipt.commit_id)}"
+    head = f"{receipt.state} ({len(receipt.lines)})"
+    if receipt.commit_id:
+        head += f", commit {short_id(receipt.commit_id)}"
     if receipt.request_id:
         head += f", request {short_id(receipt.request_id)}"
+    query = WorldQuery(driver, world_id)
+    if receipt.commit_id is None:
+        return "\n".join([head, *_finished_source(query, receipt.request_id)])
     if not receipt.lines:
         return head
-    found = _lookups(WorldQuery(driver, world_id), receipt)
+    found = _lookups(query, receipt)
     return "\n".join([head, *(f"  {_render_line(line, found)}" for line in receipt.lines)])
+
+
+def _finished_source(query: WorldQuery, request_id: str | None) -> list[str]:
+    """A receipt with no commit has no entry to name, so it names the source the pass read."""
+    rows = query.read("MATCH (r:Request {id: $id}) RETURN r.source_id AS id", id=request_id)
+    if not rows or not rows[0]["id"]:
+        return []
+    return [f"  source {short_id(rows[0]['id'])}: nothing to write"]
