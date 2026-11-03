@@ -3,16 +3,20 @@
 import hashlib
 import re
 import secrets
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Any
 
-from neo4j import Driver
+from neo4j import Driver, Transaction
 
 from grove import clock
 from grove.ids import new_id
 from grove.store.catalogue import WORLD_LABELS
 from grove.store.connection import DATABASE
 from grove.store.primitives import PRIMITIVE_WORLD
+from grove.store.query import CYPHER_PREFIX, collect
 from grove.writer.worlds import create_world
 
 _TEST_WORLD = re.compile(r"t_[a-z0-9-]+_[0-9a-f-]{32,36}")
@@ -150,6 +154,88 @@ def set_self_item(driver: Driver, world_id: str, item_id: str | None) -> None:
     refuse_real_world(world_id)
     with driver.session(database=DATABASE) as session:
         session.run(_SET_SELF_ITEM, world_id=world_id, item_id=item_id).consume()
+
+
+# A client ages only through a grant of a test world, so no real client can change here. The grant
+# comes first because a client that no grant names may be deleted by any run's cleanup once it is
+# old: make it fresh, consent, then age it.
+_AGE_GRANTED_CLIENT = (
+    "CYPHER 25 MATCH (g:OAuthGrant {client_id: $client_id, world_id: $world_id}) "
+    "MATCH (c:OAuthClient {client_id: $client_id}) "
+    "SET c.registered_at = $at, "
+    "c.fetched_at = CASE WHEN c.fetched_at IS NULL THEN NULL ELSE $at END "
+    "RETURN c.client_id AS client_id"
+)
+
+
+def age_granted_client(driver: Driver, world_id: str, client_id: str, at: datetime) -> None:
+    """Move back the registration time, and a document's fetch time, of a client that a grant of
+    this test world names. Raises ValueError when no such grant and client exist."""
+    refuse_real_world(world_id)
+    with driver.session(database=DATABASE) as session:
+        record = session.run(
+            _AGE_GRANTED_CLIENT, client_id=client_id, world_id=world_id, at=at
+        ).single()
+    if record is None:
+        raise ValueError("no grant of this test world names that client")
+
+
+# Deletes that no writer function makes, for a test that races a lock against a deleted row.
+DROP_TOKEN = "MATCH (t:OAuthToken {token_hash: $token_hash}) DETACH DELETE t"
+DROP_GRANT = "MATCH (g:OAuthGrant {id: $grant_id}) DETACH DELETE g"
+
+_HELD_TAG = "held_by_test"
+_SHOW_TRANSACTIONS = "CYPHER 25 SHOW TRANSACTIONS YIELD transactionId, status, metaData"
+_TRANSACTION_ID = re.compile(r"neo4j-transaction-\d+")
+_POLL_SECONDS = 0.02
+
+
+class HeldTransaction:
+    """An open write transaction, so a test can make another transaction wait on its locks and say
+    when they end. The statements are the writer's own: `run` adds what its `_rows` adds."""
+
+    def __init__(self, driver: Driver, tx: Transaction, tag: str) -> None:
+        self.driver = driver
+        self.tx = tx
+        self._tag = tag
+
+    def run(self, cypher: str, **params: Any) -> list[dict]:
+        return collect(self.tx.run(CYPHER_PREFIX + cypher, params), None)
+
+    def commit(self) -> None:
+        self.tx.commit()
+
+    def blocks(self, done: Callable[[], bool], *, wait_seconds: float = 20.0) -> bool:
+        """True as soon as the store shows another transaction blocked by this one. False when
+        `done` says the other work ended first, or after `wait_seconds`."""
+        deadline = clock.monotonic() + wait_seconds
+        while clock.monotonic() < deadline:
+            if done():
+                return False
+            with self.driver.session(database=DATABASE) as session:
+                rows = session.run(_SHOW_TRANSACTIONS).data()
+            own = [
+                row["transactionId"]
+                for row in rows
+                if (row["metaData"] or {}).get(_HELD_TAG) == self._tag
+            ]
+            if own and any(own[0] in _TRANSACTION_ID.findall(row["status"] or "") for row in rows):
+                return True
+            time.sleep(_POLL_SECONDS)
+        return False
+
+
+@contextmanager
+def held_transaction(driver: Driver) -> Iterator[HeldTransaction]:
+    """A write transaction that stays open until the test commits it; else it rolls back."""
+    tag = new_id()
+    with driver.session(database=DATABASE) as session:
+        tx = session.begin_transaction(metadata={_HELD_TAG: tag})
+        try:
+            yield HeldTransaction(driver, tx, tag)
+        finally:
+            if not tx.closed():
+                tx.rollback()
 
 
 def purge_test_account(driver: Driver, email_hash: str) -> None:

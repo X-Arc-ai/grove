@@ -1,4 +1,6 @@
-"""The placeholder API: the health probe, the protected-resource metadata and the 401 of /mcp."""
+"""The API's probes and discovery: the health probe, the protected-resource metadata, the
+authorization server metadata, and the 401 of /mcp with no token. tests/hosts has the rest of
+OAuth and /mcp."""
 
 import os
 import socket
@@ -52,8 +54,26 @@ def test_the_host_name_comes_from_configuration_only(driver):
         app = create_app(ApiSettings(public_base_url=base), driver_factory=open_driver)
         with TestClient(app) as test_client:
             body = test_client.get("/.well-known/oauth-protected-resource").json()
+            server = test_client.get("/.well-known/oauth-authorization-server").json()
         assert body["resource"] == f"{base}/mcp"
         assert body["authorization_servers"] == [base]
+        assert server["issuer"] == base
+        assert {server[name] for name in ("authorization_endpoint", "token_endpoint")} == {
+            f"{base}/authorize",
+            f"{base}/token",
+        }
+        assert server["registration_endpoint"] == f"{base}/register"
+        assert server["revocation_endpoint"] == f"{base}/revoke"
+
+
+def test_the_metadata_is_for_any_origin(client):
+    for path in (
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-authorization-server",
+    ):
+        response = client.get(path)
+        assert response.headers["access-control-allow-origin"] == "*"
+        assert response.headers["cache-control"] == "no-store"
 
 
 @pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
@@ -61,7 +81,8 @@ def test_an_unauthenticated_mcp_call_gets_401_with_the_metadata_url(client, meth
     response = client.request(method, "/mcp")
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == (
-        'Bearer resource_metadata="https://grove.example/.well-known/oauth-protected-resource"'
+        'Bearer resource_metadata="https://grove.example/.well-known/oauth-protected-resource", '
+        'scope="grove.read grove.write"'
     )
 
 

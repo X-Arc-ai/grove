@@ -9,6 +9,8 @@ from grove.config import ConfigError
 
 # A local run or a test with no public host. Production has no default: the name is configuration.
 LOCAL_BASE_URL = "http://127.0.0.1:8000"
+# The folder of the built pages (web/dist). The consent page is read from it at request time.
+WEB_DIST_ENV = "GROVE_WEB_DIST"
 # A.3's scopes, in the order the metadata lists them.
 SCOPES = ("grove.read", "grove.write", "grove.sensitive_write")
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})

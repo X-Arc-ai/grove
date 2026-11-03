@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="referrer" content="no-referrer" />
+  <meta name="robots" content="noindex" />
+  <!-- The server puts the page's title in the mark, and the question or the error in the second mark below. -->
+  <title><!--grove:title--></title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="./favicon.svg" />
+  <!-- The theme the person chose in the views, when there is one. The page reads the same with no script. -->
+  <script>try{var t=localStorage.getItem('grove-minimal-codex-theme');if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t);}catch(_){}</script>
+  <link rel="stylesheet" href="./site.css" />
+  <style>
+    /* The sign-in card of the views: a centred card, the wordmark, mono type, the same buttons. */
+    body.consent{justify-content:center;padding:40px 16px}
+    .consent-main{width:100%;max-width:440px;margin:0 auto}
+    .consent-card{padding:32px;background:color-mix(in srgb,var(--surface) 97%,transparent);border:1px solid var(--border);border-radius:8px;font:400 12px/1.7 var(--mono);box-shadow:0 0 80px 50px color-mix(in srgb,var(--bg) 65%,transparent)}
+    .consent-brand{text-align:center;margin:0 0 24px}
+    .consent-brand .wm{font-size:40px}
+    .consent-card h1{margin:0 0 12px;font:500 18px/1.4 var(--mono);letter-spacing:-.025em;text-align:center;text-wrap:balance}
+    .consent-who{margin:0 0 24px;color:var(--text-secondary);text-align:center;overflow-wrap:anywhere;text-wrap:pretty}
+    .consent-who strong{color:var(--text);font-weight:500}
+    .consent-facts{display:grid;gap:8px;margin:0 0 22px;padding:14px 0;border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+    .consent-facts div{display:grid;grid-template-columns:96px minmax(0,1fr);gap:12px}
+    .consent-facts dt,.consent-label{font:400 9.5px/2 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--text-secondary)}
+    .consent-facts dd{margin:0;overflow-wrap:anywhere}
+    .consent-facts dd strong{font-weight:500}
+    .consent-label{margin:0 0 8px;line-height:1.5}
+    .consent-scopes{display:grid;gap:8px;margin:0 0 24px;list-style:none}
+    .consent-scopes li{position:relative;padding-left:18px}
+    .consent-scopes li::before{content:'';position:absolute;left:2px;top:.65em;width:6px;height:6px;border-radius:50%;background:var(--dot)}
+    .consent-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .consent-actions button{min-height:44px;padding:10px 14px;border:1px solid var(--border);border-radius:5px;font:500 12px/1.4 var(--mono);cursor:pointer}
+    .consent-deny{background:var(--bg);color:var(--text)}
+    .consent-approve{background:var(--text);border-color:var(--text);color:var(--surface)}
+    .consent-actions button:hover{opacity:.85}
+    .consent-actions button:focus-visible{outline:2px solid var(--ring-person);outline-offset:2px}
+    .consent-note{margin:20px 0 0;color:var(--text-secondary);font-size:10.5px;text-align:center;text-wrap:pretty}
+    .consent-foot{margin:16px 0 0;font:400 11px/1.5 var(--mono);color:var(--text-secondary);text-align:center}
+    @media (max-width:480px){
+      body.consent{justify-content:flex-start;padding:24px 16px}
+      .consent-card{padding:24px}
+      .consent-facts div{grid-template-columns:minmax(0,1fr);gap:0}
+    }
+  </style>
+</head>
+<body class="consent">
+  <main class="consent-main">
+    <section class="consent-card" aria-labelledby="consent-title">
+      <header class="consent-brand"><span class="wm" role="img" aria-label="Grove"><span>grove</span><span class="wm-dot" aria-hidden="true"></span></span></header>
+<!--grove:consent-->
+    </section>
+    <p class="consent-foot"><a href="/privacy">Privacy</a></p>
+  </main>
+</body>
+</html>
