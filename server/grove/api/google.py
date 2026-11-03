@@ -23,7 +23,8 @@ SCOPE = "openid email profile"
 ISSUERS = ("https://accounts.google.com", "accounts.google.com")
 CALLBACK_PATH = "/v1/auth/google/callback"
 DEFAULT_NEXT = "/"
-MAX_NEXT_LENGTH = 512
+# Room for the /authorize path and query that the consent page sends a person to sign in from.
+MAX_NEXT_LENGTH = 2048
 _TIMEOUT_SECONDS = 10.0
 _JWT_PARTS = 3
 _CLIENT_FIELDS = ("client_id", "client_secret", "auth_uri", "token_uri")
