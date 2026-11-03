@@ -88,6 +88,32 @@ anything else reads `planned`; (4)
 `not_started` for a known start after `at`; (5) `current`. The successors and the scheduled values
 ride on every state.
 
+### The two time axes, the history and the restore (D3)
+
+```python
+from grove.store.asof import world_as_of, item_as_of
+from grove.store.replay import known_as_of, rebuild, read_history, ReplayRefused, FORGOTTEN_MARKER
+from grove.store.history_reads import item_history, changes_between, stopped_believing
+from grove.store.d3_fingerprint import live_fingerprint, fingerprint
+from grove.writer.restore import take_snapshot, restore, rebuild_in_place, replay_ledger
+```
+
+Both as-of reads return `grove.store.axes.AsOf`: `axis`, `at`, and `items` and `links` keyed by id,
+each an `AsOfRow(row, standing)`. A row that did not stand at `at` is left out, except an item
+with successors then, which stays with them on its standing.
+
+| Function | What it does |
+|---|---|
+| `world_as_of(query, at, *, item_ids=None)` | What was true at world time `at`, with everything Grove knows now. Item content is the replay at `at`; the ending is the head's, placed by its stop clock (its earliest bound, else its latest, else the world time of the end entry); a refuted item is never true and is left out; `spent` does not end anything on this axis; a replayed stop clock drops while the replayed status is live. Claim fields and the planned origin come from the evidence rows active now whose source time is at or before `at`. Links: the head row, when `link_standing` at `at` is current. Successors: the successor links that stand at `at`. |
+| `known_as_of(query, at)` | What Grove believed at record time `at`: the head rebuilt from the entries recorded by then, read at world time `at` (an ending whose stop clock lies wholly after `at` had not happened yet, never for `refuted` or `spent`). |
+| `item_as_of(query, item_id, world_time)` | The raw replay of one item's columns (D1's head rule). It is the building block of `world_as_of`, not a read path: it carries no standing and no successors. |
+| `item_history(query, item_id)` | Every entry of the item, of its links, of their evidence rows and of its belief row, in sequence, with old and new values decoded and the reason as text; `.successors` are the item's successors now. The item page's "what Grove believed, when, on what evidence, and what replaced it". |
+| `changes_between(query, start, end)` | The changes recorded in `[start, end)`, one per entity and change set, each with `kind` (`created`, `changed`, `ended`, `reopened`, `undone`) and, for an ending, its `end_class` or `end_reason`, so "ended in the world" and "refuted" are told apart. |
+| `stopped_believing(query, start, end)` | The endings recorded in `[start, end)` that were beliefs Grove gave up: `refuted` only. An ending in the world, a retirement, a slot link replaced, a re-pointed merge link and a spent record are not. |
+| `rebuild(entries, values, *, known_at=None, validate=True)` | The projections the entries give, in sequence, as a `Projection` (`rows[table][id]`, `history`, `forgotten`). Each entry is checked as the writer checks it, against the registry as rebuilt so far; a failed check raises `ReplayRefused(sequence, rule)`. History-only entries never move a row. |
+| `live_fingerprint(driver, world_id, *, forgotten=())` and `fingerprint(rows, history, tables, *, forgotten=())` | D3's fingerprint: every projection row's id, clocks, `recheck_by`, status, end class and version (and `active` on evidence), the history's last sequence and entry count, and each snapshot table's count and newest id. No text, and no `touched_at`. |
+| `take_snapshot`, `load_snapshot`, `rebuild_in_place`, `replay_ledger`, `restore` | D3's one restore procedure, in its four steps; `restore` raises `RestoreMismatch` and the store must not go live when the fingerprint does not match the snapshot's, recomputed without the ids the ledger forgot since. `python -m grove.writer.restore fingerprint|rebuild --world <id>` runs it on a store loaded from a dump. |
+
 ### The resolver
 
 ```python
