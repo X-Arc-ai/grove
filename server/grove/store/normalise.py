@@ -6,7 +6,8 @@ import unicodedata
 # space or joiner, a soft hyphen, a byte order mark, a direction mark) is invisible, so two
 # phrases that read the same must not differ by one. The screening lane drops them for its own
 # matching too.
-_DROPPED = frozenset({"Mn", "Cf"})
+_FORMAT = "Cf"
+_DROPPED = frozenset({"Mn", _FORMAT})
 # ASCII punctuation also sits in these three symbol categories. Other symbols, emoji among them,
 # stay: a phrase made of one must not normalise to nothing.
 _PUNCTUATION_SYMBOLS = frozenset({"Sc", "Sk", "Sm"})
@@ -15,6 +16,12 @@ _PUNCTUATION_SYMBOLS = frozenset({"Sc", "Sk", "Sm"})
 def _is_punctuation(char: str) -> bool:
     category = unicodedata.category(char)
     return category.startswith("P") or category in _PUNCTUATION_SYMBOLS
+
+
+def reads_blank(text: str) -> bool:
+    """True when a text holds only whitespace and invisible format characters: `str.strip` does not
+    see a zero-width space, so the blank checks of the writer ask this."""
+    return all(char.isspace() or unicodedata.category(char) == _FORMAT for char in text)
 
 
 def normalise_phrase(phrase: str) -> str:

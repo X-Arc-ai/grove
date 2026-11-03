@@ -2,7 +2,7 @@
 
 import pytest
 
-from grove.store.normalise import normalise_phrase
+from grove.store.normalise import normalise_phrase, reads_blank
 
 SURROGATES = range(0xD800, 0xE000)
 
@@ -60,6 +60,19 @@ def test_an_emoji_stays_so_the_phrase_is_not_empty():
 def test_an_emoji_with_a_joiner_stays_so_the_phrase_is_not_empty():
     family = "\U0001f468‍\U0001f469‍\U0001f467"
     assert normalise_phrase(family) == "\U0001f468\U0001f469\U0001f467"
+
+
+@pytest.mark.parametrize("text", ["", "   ", "\t\n", "\u200b", "\ufeff\u200e", " \u00ad \u2060"])
+def test_only_whitespace_and_format_characters_read_blank(text):
+    assert reads_blank(text)
+    assert normalise_phrase(text) == ""
+
+
+@pytest.mark.parametrize(
+    "text", ["a", "...", "\u200ba", "\U0001f3e0", "\U0001f468\u200d\U0001f469"]
+)
+def test_a_text_with_anything_else_does_not_read_blank(text):
+    assert not reads_blank(text)
 
 
 def test_a_compatibility_capital_is_folded():

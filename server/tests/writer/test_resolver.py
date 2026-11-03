@@ -498,18 +498,75 @@ def test_two_spellings_of_one_property_in_an_update_are_refused(driver, seeded, 
         assert json.loads(item_row(driver, world_id, ropes)["properties"]) == {"owner": "Rowan"}
 
 
-def test_two_spellings_with_one_value_are_one_property(driver, seeded, chat):
+@pytest.mark.parametrize(
+    ("one", "other"),
+    [(1, True), (0, False), ([1, 2], [True, 2]), ({"a": 1}, {"a": True})],
+    ids=["one-true", "zero-false", "list", "object"],
+)
+def test_values_python_calls_equal_and_json_does_not_are_two_values(
+    driver, seeded, chat, one, other
+):
     world_id = seeded["world_id"]
     organisation = seeded["kinds"]["organisation"]
     owner = plant_property(driver, world_id, organisation, "owner")
     plant_alias(driver, world_id, "property_name", owner["id"], "owner name")
     op = create_item(
-        "organisation", "Ilse Ropes", "e1", properties={"owner": "Ilse", "owner name": "Ilse"}
+        "organisation", "Ilse Ropes", "e1", properties={"owner": one, "owner name": other}
+    )
+
+    refusal = refusal_of(driver, world_id, [op], [observation(chat, "e1", 2)])
+
+    assert (refusal.code, refusal.rule) == ("invalid_arguments", "property_named_twice")
+
+
+@pytest.mark.parametrize(
+    ("one", "other"),
+    [("Ilse", "Ilse"), ({"a": 1, "b": 2}, {"b": 2, "a": 1})],
+    ids=["text", "object-in-another-order"],
+)
+def test_two_spellings_with_one_value_are_one_property(driver, seeded, chat, one, other):
+    world_id = seeded["world_id"]
+    organisation = seeded["kinds"]["organisation"]
+    owner = plant_property(driver, world_id, organisation, "owner")
+    plant_alias(driver, world_id, "property_name", owner["id"], "owner name")
+    op = create_item(
+        "organisation", "Ilse Ropes", "e1", properties={"owner": one, "owner name": other}
     )
 
     ropes = created_id(apply(driver, world_id, [op], [observation(chat, "e1", 2)]))
 
-    assert json.loads(item_row(driver, world_id, ropes)["properties"]) == {"owner": "Ilse"}
+    assert json.loads(item_row(driver, world_id, ropes)["properties"]) == {"owner": one}
+
+
+def test_two_spellings_of_one_state_property_are_one_state_property(driver, seeded, chat):
+    # A record holds one state property, and these two keys are one property.
+    world_id = seeded["world_id"]
+    event = seeded["kinds"]["event"]
+    reading = plant_node(
+        driver,
+        world_id,
+        "PropertyName",
+        kind=event,
+        name="reading",
+        value_type="text",
+        temporal_class="state",
+        status="canonical",
+        origin="minted",
+        minted_by="test",
+        version=1,
+    )
+    plant_alias(driver, world_id, "property_name", reading["id"], "the reading")
+    op = create_item(
+        "event",
+        "Ilse read the meter",
+        "e1",
+        recheck_by=RECHECK,
+        properties={"reading": "41", "the reading": "41"},
+    )
+
+    made = created_id(apply(driver, world_id, [op], [observation(chat, "e1", 2)]))
+
+    assert json.loads(item_row(driver, world_id, made)["properties"]) == {"reading": "41"}
 
 
 def test_each_kind_stores_the_property_under_its_own_name(driver, seeded, chat):

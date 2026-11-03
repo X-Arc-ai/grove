@@ -83,7 +83,8 @@ own writes, so a guard inside a batch sees what the batch wrote.
 The rules of `standing`, in order: (1) `ended`; (2) `overtaken` by an active "corrected by" or
 "superseded by" successor; (3) a bounded period, or a record that a plan scheduled, reads by its
 evidence and never by a date: confirmed and not inferred goes on (a period, or a record with a
-scheduled start, also needs a known start), reported done and not inferred reads `reported`, anything else reads `planned`; (4)
+scheduled start, also needs a known start), reported done and not inferred reads `reported`,
+anything else reads `planned`; (4)
 `not_started` for a known start after `at`; (5) `current`. The successors and the scheduled values
 ride on every state.
 
@@ -390,6 +391,7 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | An alias of a retired or split word reaches nothing | `unknown_kind`, `unknown_meaning` | `test_resolver.py` |
 | A phrase with two usable targets is never picked | `unknown_kind`, `unknown_meaning`, `invalid_arguments` (rule `ambiguous_phrase`) | `test_resolver.py` |
 | A phrase that normalises to nothing is refused | `invalid_arguments` (rule `empty_phrase`) | `test_resolver.py` |
+| A text of only whitespace and invisible format characters reads blank: a title, a reason, a `distinct_from` reason or a required field is refused | `invalid_arguments` (rules `required_field`, `type`, `distinct_reason`) | `test_contract_d2.py` |
 | A property name resolves per kind: an alias of another kind's property is no match | `invalid_arguments` (rule `unknown_property`) | `test_resolver.py` |
 | Two spellings of one property in one create or update with different values are refused, so no value is lost | `invalid_arguments` (rule `property_named_twice`) | `test_resolver.py` |
 | An unmapped or ambiguous link phrase rides on the generic meaning with its phrase kept, never on a meaning that carries consequences | (none) | `test_resolver.py` |

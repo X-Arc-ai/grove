@@ -4,10 +4,12 @@ import hashlib
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from threading import Barrier, Event
+from typing import Any
 
 import pytest
 
 from grove.api import auth as auth_module
+from grove.store.connection import DATABASE
 from grove.store.errors import STORE_UNAVAILABLE
 from grove.store.query import WorldQuery
 from grove.store.scope import check_world_id
@@ -43,6 +45,9 @@ from tests.auth.conftest import (
     world_counts,
     worlds_of,
 )
+from tests.writer.harness import wait_until_blocked
+from tests.writer.helpers import apply as apply_batch_of
+from tests.writer.helpers import create_item, created_id, make_source, observation
 
 
 def _world_of(driver, account_id: str) -> dict:
@@ -178,6 +183,66 @@ def test_two_first_sign_ins_of_one_address_make_one_of_everything(driver, accoun
     assert query.read("MATCH (s:Source) RETURN count(s) AS n")[0]["n"] in (1, 2)
 
 
+@pytest.mark.parametrize("seam", ["_ensure_connector", "_create_own_item"])
+def test_a_first_sign_in_that_waited_for_the_world_lock_leaves_the_counter_alone(
+    driver, accounts, monkeypatch, seam
+):
+    """Regression: sign-in locked with `SET w.next_sequence = w.next_sequence`, which reads the
+    value before it waits and writes it back after. The waiter set the counter behind the entries
+    the holder committed, so every later batch of the world collided with a used sequence."""
+    hashed = email_hash(accounts.address())
+    holding, opened = Event(), Event()
+    seen: dict[str, str] = {}
+    real = getattr(accounts_module, seam)
+    barrier = Barrier(2, timeout=30)
+
+    def one_then_the_other(*args: Any, **kwargs: Any) -> Any:
+        seen["world_id"] = args[1]
+        if barrier.wait() != 0:
+            assert holding.wait(60), "the first sign-in never held the world's lock"
+        return real(*args, **kwargs)
+
+    def hold_the_first() -> None:
+        if not holding.is_set():
+            holding.set()
+            assert opened.wait(60), "the test never opened the gate"
+
+    monkeypatch.setattr(accounts_module, seam, one_then_the_other)
+    monkeypatch.setattr(apply_module, "_before_commit", hold_the_first)
+
+    def sign_in(method: str):
+        return ensure_account(driver, hashed, method=method, world_id_for=accounts.world_id_for)
+
+    with ThreadPoolExecutor(2) as pool:
+        running = [pool.submit(sign_in, method) for method in ("email", "google")]
+        assert holding.wait(60)
+        waited = wait_until_blocked(driver, seen["world_id"], "SET w.lock_marker = true")
+        opened.set()
+        first, second = (each.result(timeout=60) for each in running)
+
+    world_id = first.world_id
+    assert second.world_id == world_id and first.self_item_id == second.self_item_id
+    counter, last_entry = _counter_and_last_entry(driver, world_id)
+    assert counter == last_entry, "the counter fell behind the entries"
+    pages = make_source(driver, world_id, "web_pages", ["Maren Dovik signed the charter"])
+    made = create_item("person", "Maren Dovik", "e1")
+    receipt = apply_batch_of(
+        driver, world_id, [made], [observation(pages, "e1", 1, locator="whole")]
+    )
+    assert receipt.state == "saved" and created_id(receipt)
+    assert waited, "the second sign-in did not wait for the world's lock"
+
+
+def _counter_and_last_entry(driver, world_id: str) -> tuple[int, int]:
+    query = WorldQuery(driver, world_id)
+    last = query.read("MATCH (c:ChangeEntry) RETURN max(c.sequence) AS last")[0]["last"]
+    with driver.session(database=DATABASE) as session:
+        record = session.run(
+            "MATCH (w:World {id: $w}) RETURN w.next_sequence AS counter", w=world_id
+        ).single()
+    return record["counter"], last
+
+
 def test_two_first_sign_ins_that_meet_at_the_own_item_transaction_make_one_item(
     driver, accounts, monkeypatch
 ):
@@ -225,11 +290,12 @@ def test_the_own_item_transaction_waits_for_the_world_lock_and_then_reads_again(
     holding, release = Event(), Event()
 
     def hold_the_lock(tx):
-        managed = tx.unscoped()
-        managed.run(accounts_module._LOCK_WORLD, world_id=world).consume()
+        tx.lock_world()
         holding.set()
         assert release.wait(30)
-        managed.run(accounts_module._SET_OWN_ITEM, world_id=world, item_id=other_item).consume()
+        tx.unscoped().run(
+            accounts_module._SET_OWN_ITEM, world_id=world, item_id=other_item
+        ).consume()
 
     with ThreadPoolExecutor(2) as pool:
         holder = pool.submit(WorldWriter(driver, world).transaction, hold_the_lock)

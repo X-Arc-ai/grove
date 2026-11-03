@@ -427,14 +427,38 @@ def test_a_terminal_status_stopped_before_its_start_is_refused(driver, seeded, c
 # Updates ------------------------------------------------------------------------------------
 
 
-def test_an_update_that_blanks_the_title_is_refused(driver, seeded, chat):
+# A text that reads blank: `str.strip` sees the first two and not the others.
+BLANK = ["", "   ", "\u200b", "\ufeff\u200e", " \u00ad "]
+
+
+@pytest.mark.parametrize("title", BLANK)
+def test_an_update_that_blanks_the_title_is_refused(driver, seeded, chat, title):
     w = seeded["world_id"]
     item = make_item(driver, w, chat, 1, title="Ilse Tamsin")
     ev = observation(chat, "e1", 5)
-    op = update_item(item, version_of(driver, w, item), {"title": ""}, "e1")
+    op = update_item(item, version_of(driver, w, item), {"title": title}, "e1")
     refusal = one(refused(driver, w, [op], [ev]), "invalid_arguments")
     assert refusal.rule == "required_field"
     assert item_row(driver, w, item)["title"] == "Ilse Tamsin"
+
+
+@pytest.mark.parametrize("title", BLANK)
+def test_a_create_with_a_blank_title_is_refused(driver, seeded, chat, title):
+    w = seeded["world_id"]
+    op = create_item("person", title, "e1")
+    refusal = one(refused(driver, w, [op], [observation(chat, "e1", 5)]), "invalid_arguments")
+    assert refusal.rule == "required_field"
+    assert read(driver, w, "MATCH (i:Item) RETURN i.id AS id") == []
+
+
+@pytest.mark.parametrize("reason", BLANK)
+def test_a_blank_reason_on_an_operation_is_refused(driver, seeded, chat, reason):
+    w = seeded["world_id"]
+    item = make_item(driver, w, chat, 1, title="Ilse Tamsin")
+    op = update_item(item, version_of(driver, w, item), {"summary": "runs the venue"}, "e1")
+    op["reason"] = reason
+    refusal = one(refused(driver, w, [op], [observation(chat, "e1", 5)]), "invalid_arguments")
+    assert refusal.rule == "type"
 
 
 @pytest.mark.parametrize("where", ["create_item", "update_item_fields"])
@@ -965,6 +989,15 @@ def set_kind(driver, world_id: str, kind_id: str, **columns) -> None:
         ).consume()
 
 
+@pytest.mark.parametrize("summary", ["   ", "\u200b"])
+def test_a_create_with_a_blank_required_field_is_refused(driver, seeded, chat, summary):
+    w = seeded["world_id"]
+    set_kind(driver, w, seeded["kinds"]["person"], required_fields='["summary"]')
+    op = create_item("person", "Ilse Tamsin", "e1", summary=summary)
+    refusal = one(refused(driver, w, [op], [observation(chat, "e1", 5)]), "invalid_arguments")
+    assert refusal.rule == "required_field"
+
+
 def test_a_create_without_a_required_field_is_refused(driver, seeded, chat):
     w = seeded["world_id"]
     set_kind(driver, w, seeded["kinds"]["person"], required_fields='["summary"]')
@@ -976,12 +1009,13 @@ def test_a_create_without_a_required_field_is_refused(driver, seeded, chat):
     assert "summary" in details_text(refusal)
 
 
-def test_an_update_that_blanks_a_required_field_is_refused(driver, seeded, chat):
+@pytest.mark.parametrize("blank", [None, "", "   ", "\u200b"])
+def test_an_update_that_blanks_a_required_field_is_refused(driver, seeded, chat, blank):
     w = seeded["world_id"]
     item = make_item(driver, w, chat, 1, title="Ilse Tamsin", summary="runs the venue")
     set_kind(driver, w, seeded["kinds"]["person"], required_fields='["summary"]')
     ev = observation(chat, "e1", 5)
-    op = update_item(item, version_of(driver, w, item), {"summary": None}, "e1")
+    op = update_item(item, version_of(driver, w, item), {"summary": blank}, "e1")
     refusal = one(refused(driver, w, [op], [ev]), "invalid_arguments")
     assert refusal.rule == "required_field"
     assert item_row(driver, w, item)["summary"] == "runs the venue"
@@ -1379,7 +1413,11 @@ def test_a_kind_alias_resolves_to_its_canonical_kind(driver, seeded, chat):
     assert item_row(driver, w, item)["kind"] == seeded["kinds"]["task"]
 
 
-@pytest.mark.parametrize("entry", [{}, {"reason": "   "}], ids=["absent", "blank"])
+@pytest.mark.parametrize(
+    "entry",
+    [{}, {"reason": "   "}, {"reason": "\u200b"}],
+    ids=["absent", "blank", "format-characters"],
+)
 def test_distinct_from_without_a_reason_is_refused(driver, seeded, chat, entry):
     w = seeded["world_id"]
     first = make_task(driver, w, chat, 1, title=FIRST_TITLE)
