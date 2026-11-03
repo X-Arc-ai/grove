@@ -2,6 +2,7 @@
 order (the Curator after a Learner pass that changed items, the Connector on Appendix C)."""
 
 import json
+from dataclasses import replace
 from datetime import timedelta
 
 import pytest
@@ -70,12 +71,14 @@ def test_a_queued_store_is_granted_to_a_learner_pass(driver, seeded, auth, froze
 
 
 def test_one_pass_at_a_time_per_world(driver, seeded, auth, frozen):
+    one = replace(FAST, learner_requests=1)
     queue_store(driver, seeded)
-    queue_store(driver, seeded, "Remember: Tomas Reyes joins the Elm Street fair committee.")
-    start_pass(driver, auth, seeded, settings=FAST)
+    second = queue_store(driver, seeded, "Remember: Tomas Reyes joins the Elm Street fair.")
+    start_pass(driver, auth, seeded, settings=one)
+    assert request_state(driver, seeded, second).status == "queued"
     with pytest.raises(PassBusy):
-        start_pass(driver, auth, seeded, settings=FAST)
-    assert all(row["world_id"] != seeded for row in due_work(driver, settings=FAST))
+        start_pass(driver, auth, seeded, settings=one)
+    assert all(row["world_id"] != seeded for row in due_work(driver, settings=one))
 
 
 def test_nothing_due_gives_no_grant(driver, seeded, auth, frozen):
@@ -104,7 +107,8 @@ def test_a_killed_pass_leaves_its_request_queued_and_the_next_pass_applies_it_on
     again = apply_request(driver, seeded, caller_for("learner"), key, batch, run_id="late")
     assert again.api_state == "saved"
     assert len(items(driver, seeded, "Lina Okafor")) == 1
-    assert start_pass(driver, auth, seeded, settings=FAST) is None
+    # Nothing is left for a Learner (the Curator's job on the new items is the next pass).
+    assert start_pass(driver, auth, seeded, agent="learner", settings=FAST) is None
 
 
 def test_a_pass_that_dies_with_no_end_comes_back_through_its_lease(driver, seeded, auth, frozen):
@@ -180,7 +184,19 @@ def test_a_learner_pass_that_changed_nothing_queues_no_curator(driver, seeded, a
 def test_ten_changed_items_queue_the_connector_and_one_does_not(driver, seeded, auth, frozen):
     for n in range(CONNECTOR_CHANGED_ITEMS):
         queue_store(driver, seeded, f"Remember: invented person number {n} joins the fair.")
-    names = [f"Invented Person {n}" for n in range(CONNECTOR_CHANGED_ITEMS)]
+    # Ten invented names far apart, so no title meets the near-duplicate gate.
+    names = [
+        "Lina Okafor",
+        "Tomas Reyes",
+        "Ines Varga",
+        "Kofi Mensah",
+        "Aiko Tanaka",
+        "Ravi Patel",
+        "Marta Sousa",
+        "Olu Adeyemi",
+        "Sven Lund",
+        "Noor Haddad",
+    ]
     grant = start_pass(driver, auth, seeded, settings=FAST)
     key, batch = learner_batch(driver, seeded, grant, title=names[0])
     apply_request(driver, seeded, caller_for("learner"), key, batch, run_id=grant.run_id)
@@ -204,7 +220,7 @@ def test_ten_changed_items_queue_the_connector_and_one_does_not(driver, seeded, 
                 "episode_id": entry["episode_id"],
             }
             batch["ops"] = [batch["ops"][0] | {"title": names[done]}]
-            apply_request(
+            saved = apply_request(
                 driver,
                 seeded,
                 caller_for("learner"),
@@ -212,6 +228,7 @@ def test_ten_changed_items_queue_the_connector_and_one_does_not(driver, seeded, 
                 batch,
                 run_id=grant.run_id,
             )
+            assert saved.api_state == "saved", saved.to_api()
             done += 1
             if done == CONNECTOR_CHANGED_ITEMS:
                 break

@@ -150,18 +150,27 @@ def prepare_home(home: Path, config_dir: Path) -> None:
         shutil.rmtree(stray)
 
 
-def opencode_env(settings: LoopSettings, grant: dict[str, Any]) -> dict[str, str]:
-    """The whole environment of the OpenCode process: nothing of the runner's own leaks in."""
+def opencode_env(
+    settings: LoopSettings, grant: dict[str, Any], work: Path | None = None
+) -> dict[str, str]:
+    """The whole environment of the OpenCode process: nothing of the runner's own leaks in.
+
+    With `work` (the pass's own folder), OpenCode's data, state and temporary folders live in it:
+    its session store holds every tool output, so the person's words, and the folder goes when
+    the pass ends. No copy of a pass outlives it in the runner's HOME, where no forget reaches."""
     home = settings.home
+    data = work / "data" if work is not None else home / ".local" / "share"
+    state = work / "state" if work is not None else home / ".local" / "state"
+    tmp = work / "tmp" if work is not None else home / "tmp"
     env = {
         "PATH": os.pathsep.join(
             [str(Path(settings.brain_bin).parent), "/usr/local/bin", "/usr/bin", "/bin"]
         ),
         "HOME": str(home),
-        "TMPDIR": str(home / "tmp"),
+        "TMPDIR": str(tmp),
         "XDG_CONFIG_HOME": str(home / ".config"),
-        "XDG_DATA_HOME": str(home / ".local" / "share"),
-        "XDG_STATE_HOME": str(home / ".local" / "state"),
+        "XDG_DATA_HOME": str(data),
+        "XDG_STATE_HOME": str(state),
         "XDG_CACHE_HOME": str(home / ".cache"),
         "SHELL": settings.shell_bin,
         "PYTHONUTF8": "1",
@@ -232,7 +241,8 @@ def run_pass(settings: LoopSettings, run: PassRun) -> tuple[str, str]:
     """Runs OpenCode for one grant. Returns (outcome, summary)."""
     grant = run.grant
     work = settings.home / "passes" / grant["run_id"]
-    work.mkdir(parents=True, exist_ok=True)
+    for folder in ("data", "state", "tmp"):
+        (work / folder).mkdir(parents=True, exist_ok=True)
     events = work / "events.jsonl"
     command = [
         settings.opencode_bin,
@@ -249,7 +259,7 @@ def run_pass(settings: LoopSettings, run: PassRun) -> tuple[str, str]:
         run.process = subprocess.Popen(
             command,
             cwd=work,
-            env=opencode_env(settings, grant),
+            env=opencode_env(settings, grant, work),
             stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=err,

@@ -41,7 +41,10 @@ from nothing (`grove.runner.loop.opencode_env`): it never holds the runner token
    their job.
 3. The runner runs `opencode run --agent grove --format json "<pass message>"` in its own
    process group. `grove` runs `brain status`, hands the pass to the named subagent with the task
-   tool, and returns its summary. A watchdog kills the group at the time cap.
+   tool, and returns its summary. A watchdog kills the group at the time cap. OpenCode's data,
+   state and temporary folders are in the pass's own folder (`passes/<run id>/`), which is
+   removed when the pass ends: its session store holds every tool output, so the person's
+   words, and nothing of a pass stays in the runner's HOME, where no forget reaches.
 4. `end_pass` hands back each claimed request the pass did not settle: `fail_request` with a
    retry (code `not_proposed`, or `pass_<outcome>`), so the next pass applies it once. The writer
    keys a commit on the request id, so a request that committed before a kill is saved and is

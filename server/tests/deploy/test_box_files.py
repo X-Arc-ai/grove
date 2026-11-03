@@ -66,7 +66,11 @@ def test_the_api_reads_the_secret_files_of_the_map():
         "/etc/grove/model-api.env",
         "/etc/grove/modal.env",
         "/etc/grove/resend.env",
+        "/etc/grove/gateway.env",
+        "/etc/grove/runner-auth.env",
+        "/etc/grove/glimmer.env",
     }
+    assert all(e["required"] is False for e in SERVICES["api"]["env_file"] if isinstance(e, dict))
     (mount,) = SERVICES["api"]["volumes"]
     assert mount["source"] == "/etc/grove/google-oauth.json"
     assert mount["read_only"] is True
@@ -170,7 +174,13 @@ def test_the_runner_mounts_its_home_and_nothing_else():
     assert runner["volumes"] == ["/var/lib/grove-runner:/var/lib/grove-runner"]
     assert runner["cap_drop"] == ["ALL"]
     assert runner["security_opt"] == ["no-new-privileges:true"]
-    assert runner["environment"] == {"GROVE_ENV": "production", "GROVE_API_URL": "http://api:8000"}
+    assert runner["environment"] == {
+        "GROVE_ENV": "production",
+        "GROVE_API_URL": "http://api:8000",
+        "GROVE_GATEWAY_URL": "http://gateway:18300/v1",
+        "GROVE_RUNNER_CONFIG": "/opt/grove/runner",
+        "GROVE_OPENCODE_BIN": "/usr/local/bin/opencode",
+    }
 
 
 def test_the_api_drops_every_capability_and_mounts_one_file():
@@ -236,6 +246,7 @@ def test_neo4j_takes_its_password_from_the_env_file_only():
 def test_the_images_follow_the_build_sha():
     assert SERVICES["api"]["image"].startswith("grove-api:${GROVE_BUILD_SHA")
     assert SERVICES["runner"]["image"].startswith("grove-runner:${GROVE_BUILD_SHA")
+    assert SERVICES["gateway"]["image"] == SERVICES["api"]["image"]
     assert SERVICES["api"]["environment"]["GROVE_BUILD_SHA"] == "${GROVE_BUILD_SHA}"
 
 
@@ -332,3 +343,112 @@ def test_the_image_gets_the_data_flow_file_for_the_privacy_page_and_no_other_doc
     assert "docs" not in ignored
     # A later line wins in .dockerignore, so the exception must follow the rule it opens.
     assert ignored.index("!docs/data-flow.md") > ignored.index("docs/*")
+
+
+# ---- the runner lane: the gateway and the runner loop -----------------------------------------
+
+# Every key the gateway service may have: it holds the model keys and the gateway secret.
+GATEWAY_KEYS = {
+    "image",
+    "command",
+    "restart",
+    "init",
+    "env_file",
+    "environment",
+    "networks",
+    "read_only",
+    "tmpfs",
+    "cap_drop",
+    "security_opt",
+    "depends_on",
+    "healthcheck",
+    "logging",
+}
+
+
+def test_the_gateway_runs_from_the_api_image_with_no_build_and_no_port():
+    gateway = SERVICES["gateway"]
+    assert set(gateway) == GATEWAY_KEYS
+    assert gateway["image"].startswith("grove-api:${GROVE_BUILD_SHA")
+    # No build key: `compose build api runner` builds the image it runs.
+    assert "build" not in gateway and "ports" not in gateway
+    assert gateway["command"] == ["python", "-m", "grove.models.gateway"]
+    assert gateway["networks"] == ["store", "runner", "egress"]
+    assert gateway["read_only"] is True
+    assert gateway["tmpfs"] == ["/tmp"]
+    assert gateway["cap_drop"] == ["ALL"]
+    assert gateway["security_opt"] == ["no-new-privileges:true"]
+    assert gateway["depends_on"] == {"neo4j": {"condition": "service_healthy"}}
+    assert "http://127.0.0.1:18300/health" in " ".join(gateway["healthcheck"]["test"])
+
+
+def test_the_gateway_reads_the_store_file_and_its_optional_secret_files():
+    env_file = SERVICES["gateway"]["env_file"]
+    assert env_file == [
+        "/etc/grove/neo4j.env",
+        {"path": "/etc/grove/gateway.env", "required": False},
+        {"path": "/etc/grove/model-api.env", "required": False},
+        {"path": "/etc/grove/glimmer.env", "required": False},
+    ]
+    # The API mints the tokens that the gateway checks, so both read the one secret file.
+    assert "/etc/grove/gateway.env" in _env_files(SERVICES["api"])
+    assert "/etc/grove/gateway.env" not in _env_files(SERVICES["runner"])
+
+
+def test_the_gateway_listens_where_the_runner_can_reach_it():
+    env = SERVICES["gateway"]["environment"]
+    assert env == {
+        "GROVE_ENV": "production",
+        "GROVE_NEO4J_URI": "bolt://neo4j:7687",
+        "GROVE_GATEWAY_HOST": "0.0.0.0",
+        "GROVE_GATEWAY_PORT": "18300",
+    }
+    url = SERVICES["runner"]["environment"]["GROVE_GATEWAY_URL"]
+    assert url == f"http://gateway:{env['GROVE_GATEWAY_PORT']}/v1"
+    assert set(SERVICES["runner"]["networks"]) <= set(SERVICES["gateway"]["networks"])
+    assert SERVICES["runner"]["depends_on"] == {
+        "api": {"condition": "service_started"},
+        "gateway": {"condition": "service_started"},
+    }
+
+
+def test_the_runner_network_has_a_stable_bridge_name_and_no_route_out():
+    runner = COMPOSE["networks"]["runner"]
+    assert runner["internal"] is True
+    name = runner["driver_opts"]["com.docker.network.bridge.name"]
+    assert name == "grove-runner"
+    # Linux caps an interface name at 15 characters.
+    assert len(name) <= 15
+
+
+def test_the_runner_image_runs_the_loop_with_the_repo_config():
+    text = (DEPLOY / "runner.Dockerfile").read_text(encoding="utf-8")
+    assert re.findall(r"^CMD (.+)$", text, re.MULTILINE) == ['["python", "-m", "grove.runner"]']
+    assert re.search(r"^COPY runner/ /opt/grove/runner/?$", text, re.MULTILINE)
+    assert "ENV PATH=/app/server/.venv/bin:$PATH" in text
+    assert "GROVE_RUNNER_CONFIG=/opt/grove/runner" in text
+    assert "GROVE_OPENCODE_BIN=/usr/local/bin/opencode" in text
+    assert "RUN uv sync --frozen --no-dev --no-install-project" in text
+    assert "RUN uv sync --frozen --no-dev\n" in text
+    assert "placeholder" not in text
+    assert not (DEPLOY / "runner-placeholder.sh").exists()
+    # The loop copies these into HOME before each pass, and .dockerignore must let them through.
+    assert (REPO / "runner" / "opencode.json").is_file()
+    assert sorted(path.name for path in (REPO / "runner" / "agents").glob("*.md"))
+    ignored = (REPO / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    assert not [line for line in ignored if line.strip("/").split("/")[0] == "runner"]
+
+
+def test_the_runner_image_pins_uv_as_the_api_image_does():
+    def uv_pin(name: str) -> str:
+        text = (DEPLOY / name).read_text(encoding="utf-8")
+        (pin,) = re.findall(r"--from=(ghcr\.io/astral-sh/uv:\S+)", text)
+        return pin
+
+    assert uv_pin("runner.Dockerfile") == uv_pin("api.Dockerfile")
+
+
+def test_the_brain_and_its_shell_are_console_scripts_next_to_the_venv_python():
+    pyproject = (REPO / "server" / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'brain = "grove.cli.main:main"' in pyproject
+    assert 'grove-brain-shell = "grove.runner.shell:main"' in pyproject

@@ -192,6 +192,11 @@ def test_opencode_gets_the_pass_credentials_and_nothing_of_the_runner(driver, ri
     assert env["SHELL"] == str(BIN / "grove-brain-shell")
     assert env["HOME"] == str(runner.settings.home)
     assert env["XDG_CONFIG_HOME"] == str(runner.settings.home / ".config")
+    # OpenCode's session store (every tool output) lives in the pass's folder, which is gone.
+    passes = runner.settings.home / "passes"
+    assert env["XDG_DATA_HOME"].startswith(str(passes)) and env["TMPDIR"].startswith(str(passes))
+    assert env["XDG_STATE_HOME"].startswith(str(passes))
+    assert not Path(env["XDG_DATA_HOME"]).exists()
     for flag in OPENCODE_FLAGS:
         assert env[flag] == "1", flag
     assert {"OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_DISABLE_PROJECT_CONFIG"} <= set(env)

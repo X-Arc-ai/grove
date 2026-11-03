@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# The daily offline backup (A.5; Neo4j Community has no online backup): stop the runner and the
-# API, record the dump fingerprint, stop Neo4j, dump, start everything again, load the new dump
-# into a scratch store and compare its fingerprint, then remove dumps older than 30 days.
+# The daily offline backup (A.5; Neo4j Community has no online backup): stop the runner, the
+# gateway and the API, record the dump fingerprint, stop Neo4j, dump, start everything again, load
+# the new dump into a scratch store and compare its fingerprint, then remove dumps older than 30
+# days.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -25,10 +26,10 @@ services_down=0
 finish() {
     local status=$?
     if [ "$services_down" = 1 ]; then
-        log "starting neo4j, api and runner again"
+        log "starting neo4j, api, gateway and runner again"
         compose start neo4j || true
         wait_healthy neo4j || true
-        compose start api runner || true
+        compose start api gateway runner || true
     fi
     rm -rf "${work:?}"
     [ "$status" = 0 ] || record backup.log "backup $name FAILED (exit $status)"
@@ -45,9 +46,12 @@ install -d -m 700 "$GROVE_BACKUP_DIR"
 # A backup killed outright leaves its work folder with a partial dump. The lock is held, so no
 # other backup owns one now.
 find "$GROVE_BACKUP_DIR" -mindepth 1 -maxdepth 1 -type d -name '.work-*' -exec rm -rf {} +
-log "backup $name: stopping the runner and the API"
+log "backup $name: stopping the runner, the gateway and the API"
 services_down=1
-compose stop runner api
+# Every writer of the store stops before the first fingerprint. The gateway writes a model_calls
+# row for each call, and a write between the two fingerprints fails the backup with 'the store
+# changed across the dump'.
+compose stop runner gateway api
 # A catch-up run after a boot can come before the store is up, or after a backup left it stopped.
 compose start neo4j
 wait_healthy neo4j "${GROVE_SERVICES_TRIES:-300}" || die "neo4j is not healthy, so no dump"
@@ -65,7 +69,7 @@ wait_healthy neo4j || die "neo4j did not come back after the dump"
 # The store must be what was fingerprinted: nothing wrote while the services were down.
 compose_run api python -m grove.store.dump_fingerprint --expect "$fingerprint" >/dev/null ||
     die "the store changed across the dump"
-compose start api runner
+compose start api gateway runner
 services_down=0
 log "backup $name: services running again"
 
