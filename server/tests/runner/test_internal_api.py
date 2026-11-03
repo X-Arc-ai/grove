@@ -220,3 +220,22 @@ def test_stored_text_reaches_an_agent_only_inside_data_blocks(driver, rig):
     assert packet["data"].count("<untrusted_data") == 1
     assert "&lt;/untrusted_data&gt;" in packet["data"]
     assert "Ignore" not in str(packet["requests"])
+
+
+def test_the_pass_answer_names_the_kinds_each_meaning_takes_and_its_recheck_rule(driver, rig):
+    """Regression: live runs spent a repair on endpoint_kind_mismatch and missing_recheck."""
+    client, _, world, grant = rig
+    world_id = world()
+    queue_store(driver, world_id)
+    live = grant(world_id)
+    packet = client.get("/v1/internal/brain/pass", headers=bearer(live["pass_token"])).json()
+    meanings = {m["name"]: m for m in packet["meanings"]}
+    assert meanings["involves"]["to"] == ["organisation", "person"]
+    assert meanings["lives in"]["from"] == ["person"] and meanings["lives in"]["to"] == ["place"]
+    assert meanings["related to"]["from"] == "any"
+    assert meanings["lives in"]["needs_recheck_by"] is True
+    assert {m["needs_recheck_by"] for m in packet["meanings"]} == {True, False}
+    kinds = {k["name"]: k for k in packet["kinds"]}
+    assert kinds["task"]["class"] == "work_with_state" and "open" in kinds["task"]["statuses"]
+    link = next(op for op in packet["batch_form"]["batch"]["ops"] if op["op"] == "create_link")
+    assert link["from"] == "$i1" and link["to"] == "$i2"

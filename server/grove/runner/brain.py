@@ -157,7 +157,9 @@ FIELD_GUIDE = {
     "(a new id that starts with the dollar sign, for later ops of the batch), summary, status "
     "(required for task, plan, problem and assumption), recheck_by (required with a live status)",
     "create_link": "op_id, from, meaning, to, became_true, evidence_refs, reason; from and to are "
-    "item ids or temp ids of this batch; meaning is one of meanings",
+    "item ids or temp ids of this batch; meaning is one of meanings, and its ends take the kinds "
+    "it lists; recheck_by (an ISO time, such as a week ahead) when the meaning has "
+    "needs_recheck_by",
     "update_item": "op_id, item, version, fields, evidence_refs, reason",
     "change_status": "op_id, item, status, evidence_refs, reason",
     "became_true": "unknown, or earliest, latest, precision (minute, hour, day, month, year) and "
@@ -206,10 +208,13 @@ def vocabulary(query: WorldQuery) -> tuple[list[dict], list[dict]]:
             "name": row["name"],
             "from": _ends(row["from_kinds"], kinds, by_class),
             "to": _ends(row["to_kinds"], kinds, by_class),
+            # The writer refuses a link of a state meaning with no re-check date (missing_recheck).
+            "needs_recheck_by": row["temporal_class"] == "state",
         }
         for row in query.read(
             "MATCH (m:Meaning) WHERE m.status = 'canonical' RETURN m.name AS name, "
-            "m.from_kinds AS from_kinds, m.to_kinds AS to_kinds ORDER BY m.name"
+            "m.from_kinds AS from_kinds, m.to_kinds AS to_kinds, "
+            "m.temporal_class AS temporal_class ORDER BY m.name"
         )
     ]
     return kind_list, meanings
