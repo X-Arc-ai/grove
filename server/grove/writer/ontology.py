@@ -612,7 +612,8 @@ def check_proposal(
     # Reuse first, before any other refusal: a proposal of an existing word is word_exists, so
     # the plan writes with the word and never sends its phrase to the generic meaning.
     name = check_name(registry, word_type, proposal.get("name"), kind_id)
-    if word_type != "property_name" and proposal.get("kind") is not None:
+    if word_type != "property_name" and "kind" in proposal:
+        # The operation's shape check refuses any kind key on another word type, null too.
         raise _bad("unknown_field", "only a property name names its kind", {"field": "kind"})
     name = _short(name, "name", MAX_NAME)
     description = _short(_text(proposal.get("description"), "description"), "description")
@@ -1385,6 +1386,9 @@ def _ledger(row: dict[str, Any]) -> set[str]:
     try:
         decoded = json.loads(held) if isinstance(held, str) else []
     except ValueError:
+        decoded = []
+    if not isinstance(decoded, list):
+        # Only _usage writes the ledger, as a JSON list; anything else holds no episode.
         decoded = []
     return {episode for episode in decoded if isinstance(episode, str)}
 

@@ -29,6 +29,7 @@ a claim about now), and a phrase sent to the generic meaning is rewritten to it 
 kept. A phrase that resolves to an existing word is the caller's and stays as it is.
 """
 
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -129,7 +130,8 @@ def plan_words(
     valve: int = MINT_VALVE,
 ) -> WordPlan:
     base = Registry.load(WorldQuery(driver, world_id))
-    registry = Registry.load(WorldQuery(driver, world_id))
+    # One read: the plan's copy starts equal to the registry the base records.
+    registry = copy.deepcopy(base)
     ops: list[dict[str, Any]] = []
     words: list[PlannedWord] = []
     generic: list[str] = []
@@ -299,10 +301,13 @@ def fit_links(plan: WordPlan, ops: list[dict[str, Any]], *, now: datetime) -> li
             continue
         after = _resolves(plan.registry, meaning)
         target = None
-        if after is not None and after.target is not None:
+        # A planned row's id and a generic phrase's row id are the plan's own: never a phrase.
+        if after is not None and after.target is not None and after.via != "id":
             target = after.target
         elif plan.generic_meaning is not None and (
-            (found := _resolves(generic_phrases, meaning)) is not None and found.outcome != NONE
+            (found := _resolves(generic_phrases, meaning)) is not None
+            and found.outcome != NONE
+            and found.via != "id"
         ):
             op = {**op, "meaning": plan.generic_meaning["id"], "original_phrase": meaning}
             target = plan.generic_meaning

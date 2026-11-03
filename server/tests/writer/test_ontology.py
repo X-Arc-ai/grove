@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+from grove.store.connection import DATABASE
 from grove.store.normalise import normalise_phrase
 from grove.store.query import WorldQuery
 from grove.writer import BatchDeclined, render_receipt
@@ -1538,3 +1539,69 @@ def test_a_property_sent_as_null_at_create_is_no_use_of_its_name(driver, seeded,
         before["distinct_episodes"],
         before["uses"],
     )
+
+
+def test_attachments_before_the_write_in_one_batch_are_no_use_of_its_property(driver, seeded, chat):
+    """The other operation order: two chats attach to the item first, then a third chat's update
+    writes owner, all in one batch. Only the update's own row speaks for the property name."""
+    world_id = seeded["world_id"]
+    mint_owner(driver, world_id, chat)
+    before = prop_row(driver, world_id, "owner")
+    item = _item_ref(driver, world_id, "Replant the orchard")
+    sources = {
+        n: make_source(driver, world_id, "whatsapp", [f"invented order chat {n}"])
+        for n in (1, 2, 3)
+    }
+    attaches = [
+        {
+            "op": "attach_evidence",
+            "op_id": new_op_id(),
+            "target": item["id"],
+            "ev_id": f"s{n}",
+            "polarity": "supports",
+        }
+        for n in (2, 3)
+    ]
+    update = {
+        "op": "update_item",
+        "op_id": new_op_id(),
+        "item": item["id"],
+        "version": item["v"],
+        "fields": {"properties": {"owner": "the vestry"}},
+        "evidence_refs": supports("s1"),
+        "reason": "the owner changed",
+    }
+    apply(
+        driver,
+        world_id,
+        [*attaches, update],
+        [observation(sources[n], f"s{n}", 1) for n in (1, 2, 3)],
+        caller=LEARNER,
+    )
+    after = prop_row(driver, world_id, "owner")
+    assert (after["status"], after["distinct_episodes"], after["uses"]) == (
+        "provisional",
+        before["distinct_episodes"] + 1,
+        before["uses"] + 1,
+    )
+
+
+def test_a_ledger_that_is_not_a_list_holds_no_episode_and_never_stops_the_batch(
+    driver, seeded, chat
+):
+    world_id = seeded["world_id"]
+    owner = mint_owner(driver, world_id, chat)
+    # The registry row is changed by hand: no writer path can store such a ledger.
+    with driver.session(database=DATABASE) as session:
+        session.run(
+            "MATCH (p:PropertyName {id: $id, world_id: $w}) SET p.earning_episodes = '5'",
+            id=owner["id"],
+            w=world_id,
+        ).consume()
+    src = make_source(driver, world_id, "whatsapp", ["invented: the vestry"])
+    _set_properties(
+        driver, world_id, "Replant the orchard", src, "s1", at_minute(1), {"owner": "vestry"}
+    )
+    row = prop_row(driver, world_id, "owner")
+    assert row["distinct_episodes"] == owner["distinct_episodes"] + 1
+    assert len(json.loads(row["earning_episodes"])) == 1
