@@ -11,7 +11,7 @@ from grove import clock
 from grove.api import auth as auth_module
 from grove.store.connection import DATABASE
 from grove.store.errors import STORE_UNAVAILABLE
-from grove.store.query import CYPHER_PREFIX, WorldQuery
+from grove.store.query import WorldQuery
 from grove.writer import accounts as accounts_module
 from grove.writer.accounts import email_hash
 from tests.auth.conftest import (
@@ -202,7 +202,7 @@ def _a_start_waits_at_the_code_rows(driver, hashed: str) -> bool:
 
 
 def test_a_start_at_the_limit_that_waited_for_a_wrong_try_leaves_its_count_alone(
-    client, driver, accounts, mailer
+    app, client, driver, accounts, mailer, monkeypatch
 ):
     """Regression: the start's lock was `SET c.attempts = c.attempts`, which reads the count before
     it waits and writes it back after. A start at the limit answers 429 and still commits, so a
@@ -211,23 +211,32 @@ def test_a_start_at_the_limit_that_waited_for_a_wrong_try_leaves_its_count_alone
     for _ in range(5):
         assert client.post(START, json={"email": address}).status_code == 200
     right = mailer.last_code(address)
-    live = codes_of(driver, address)[-1]["c"]
-    assert live.get("used_at") is None
+    holding, release = Event(), Event()
+    real = accounts_module._rows
 
-    # The first statement of a wrong try, held open: it holds the row with its count uncommitted.
-    with driver.session(database=DATABASE) as session, ThreadPoolExecutor(1) as pool:
-        wrong_try = session.begin_transaction()
-        wrong_try.run(CYPHER_PREFIX + accounts_module._LOCK_CODE, id=live["id"]).consume()
-        start = pool.submit(client.post, START, json={"email": address})
+    def hold_the_first_wrong_try(tx, cypher, **params):
+        rows = real(tx, cypher, **params)
+        if cypher == accounts_module._LOCK_CODE and not holding.is_set():
+            holding.set()
+            assert release.wait(60), "the test never released the wrong try"
+        return rows
+
+    monkeypatch.setattr(accounts_module, "_rows", hold_the_first_wrong_try)
+    wrong = {"email": address, "code": _wrong(right)}
+
+    with ThreadPoolExecutor(2) as pool:
+        wrong_try = pool.submit(browser(app).post, VERIFY, json=wrong)
+        assert holding.wait(60), "the wrong try never reached the code's lock"
+        start = pool.submit(browser(app).post, START, json={"email": address})
         waited = _a_start_waits_at_the_code_rows(driver, email_hash(address))
-        wrong_try.commit()
+        release.set()
+        assert wrong_try.result(timeout=60).status_code == 401
         assert start.result(timeout=60).status_code == 429
 
     assert codes_of(driver, address)[-1]["c"]["attempts"] == 1, "the start erased the wrong try"
     # So the limit holds: four more wrong tries make five, and the right code then comes too late.
     for _ in range(4):
-        response = client.post(VERIFY, json={"email": address, "code": _wrong(right)})
-        assert response.status_code == 401
+        assert client.post(VERIFY, json=wrong).status_code == 401
     assert client.post(VERIFY, json={"email": address, "code": right}).status_code == 401
     assert user_of(driver, address) is None
     assert waited, "the start did not wait for the wrong try"
