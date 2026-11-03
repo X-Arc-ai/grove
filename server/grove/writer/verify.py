@@ -17,8 +17,9 @@ Last confirmed moves to the time the evidence speaks for: the newest admitted su
 """
 
 import json
+import re
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 from grove.store import capabilities as caps
@@ -897,6 +898,7 @@ def confirm_at_create(run: "_Run", pending: CreateConfirm) -> None:
 # Horizons -------------------------------------------------------------------------------------
 
 PLAN_MARGIN = timedelta(days=1)
+_DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 def scheduled_latest(value: Any) -> datetime | None:
@@ -904,6 +906,16 @@ def scheduled_latest(value: Any) -> datetime | None:
     from grove.writer.clocks import ClockError, parse_clock
 
     if isinstance(value, str):
+        if _DAY.fullmatch(value.strip()):
+            # A bare date is a day: its latest instant is the day's end in UTC, and the plan's
+            # one-day margin covers any timezone (S50).
+            try:
+                day = date.fromisoformat(value.strip())
+            except ValueError:
+                return None
+            return datetime.combine(day + timedelta(days=1), time(0, 0), UTC) - timedelta(
+                microseconds=1
+            )
         try:
             return parse_instant(value)
         except ClockError:

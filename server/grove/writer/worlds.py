@@ -293,7 +293,7 @@ def _seed(tx: WorldTx, world_id: str, starter: dict[str, Any], at: datetime) -> 
             row = _alias_row(alias, ids["meanings"][declared["name"]], run)
             _add_row(tx, "Alias", row, run)
             ids["aliases"][row["normalised_phrase"]] = row["id"]
-    _seed_property_names(tx, starter, ids["kinds"], run)
+    ids["property_names"] = _seed_property_names(tx, starter, ids["kinds"], run)
     return ids
 
 
@@ -301,10 +301,15 @@ def _seeded_ids(tx: WorldTx) -> dict[str, dict[str, str]]:
     def read(query: str) -> dict[str, str]:
         return {row["key"]: row["id"] for row in tx.run(query, origin=_ORIGIN)}
 
+    kind_names = {kind_id: name for name, kind_id in read(_STARTER_KINDS).items()}
     return {
         "kinds": read(_STARTER_KINDS),
         "meanings": read(_STARTER_MEANINGS),
         "aliases": read(_STARTER_ALIASES),
+        "property_names": {
+            f"{kind_names.get(row['kind'], row['kind'])} {row['name']}": row["id"]
+            for row in tx.run(_STARTER_PROPERTY_NAMES, origin=_ORIGIN)
+        },
     }
 
 
