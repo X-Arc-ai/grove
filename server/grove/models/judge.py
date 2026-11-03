@@ -29,6 +29,7 @@ from grove.writer.ontology import (
     CheckedProposal,
     field_fit_value,
     same_word_subject,
+    same_word_value,
 )
 
 FIRST_JOB = "word_judge"
@@ -118,6 +119,7 @@ def _blocks(
         "description": checked.description,
         "declared fields": checked.field_values,
         "fields to judge": list(checked.disputable),
+        "reads the existing word from the other end": checked.reversed,
     }
     if checked.neighbours:
         row = checked.neighbours[0].row
@@ -178,7 +180,15 @@ def judge_word(
     blocks = _blocks(driver, world_id, checked, example)
     subject = None
     if checked.neighbours:
-        name_ref = store_subject_value(driver, world_id, checked.name)
+        name_ref = store_subject_value(
+            driver,
+            world_id,
+            json.dumps(
+                same_word_value(checked.word_type, checked.name, checked.reversed),
+                sort_keys=True,
+                ensure_ascii=False,
+            ),
+        )
         subject = same_word_subject(name_ref, checked.word_type, checked.neighbours[0].row["id"])
     field_refs = {
         name: store_subject_value(

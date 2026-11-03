@@ -51,7 +51,8 @@ GUARDED_LABELS = {
     "OntologyChange": ("server/grove/writer/ontology.py",),
     "Judgment": ("server/grove/writer/judgments.py",),
 }
-_LABEL = re.compile(r":\s*`?(" + "|".join(GUARDED_LABELS) + r")\b")
+# A label after a colon, or inside a label expression after |, & or ! (n:Item|Meaning).
+_LABEL = re.compile(r"[:|&!]\s*`?(" + "|".join(GUARDED_LABELS) + r")\b")
 NEO4J_PREFIX = "server/grove/store/"
 PRODUCTION_PREFIX = "server/grove/"
 TESTS_PACKAGE = "tests"

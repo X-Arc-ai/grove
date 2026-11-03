@@ -119,7 +119,7 @@ OPS: dict[str, OpSpec] = {
             "declared",
             "judgment_ids",
         ),
-        ("kind", "proposed_capability"),
+        ("kind", "proposed_capability", "reversed"),
         "o",
     ),
     "promote_word": OpSpec(

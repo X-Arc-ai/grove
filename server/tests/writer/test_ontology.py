@@ -20,11 +20,13 @@ from grove.writer.ontology import (
     SAFER_HORIZON_DAYS,
     field_fit_value,
     same_word_subject,
+    same_word_value,
 )
 from grove.writer.registry import Registry
 from grove.writer.resolver import resolve_link_phrase
 from grove.writer.testing import plant_node
 from tests.writer.helpers import (
+    CURATOR,
     LEARNER,
     PERSON,
     T0,
@@ -84,12 +86,15 @@ def judged(
     models: tuple[str, str] = (SPARK, GLIMMER),
     correlated: bool = False,
     fields: dict[str, tuple[Any, str]] | None = None,
+    reversed_: bool = False,
 ) -> list[str]:
     """Two same-word judgments, one per model call, and the second judge's field-fit verdicts:
     `fields` maps a field to (its declared value, the verdict)."""
     neighbour_row = meaning_row(driver, world_id, neighbour) if word_type == "meaning" else None
     neighbour_id = neighbour_row["id"] if neighbour_row else neighbour
-    name_ref = store_subject_value(driver, world_id, name)
+    name_ref = store_subject_value(
+        driver, world_id, json.dumps(same_word_value(word_type, name, reversed_))
+    )
     subject = same_word_subject(name_ref, word_type, neighbour_id)
     ids: list[str] = []
     for index, (verdict, model) in enumerate(zip(verdicts, models, strict=True)):
@@ -431,7 +436,9 @@ def test_a_proposal_without_two_recorded_judgments_of_this_word_is_refused(
         ids = judged(driver, world_id, name="is a neighbour of")
     else:
         call = model_call(driver, world_id, SPARK)
-        name_ref = store_subject_value(driver, world_id, GODPARENT)
+        name_ref = store_subject_value(
+            driver, world_id, json.dumps(same_word_value("meaning", GODPARENT))
+        )
         generic = meaning_row(driver, world_id, "related to")
         ids = record_judgments(
             driver,
@@ -584,7 +591,7 @@ def test_a_new_kind_is_usable_at_once_and_its_statuses_keep_their_roles(driver, 
     world_id = seeded["world_id"]
     registry = Registry.load(WorldQuery(driver, world_id))
     task = next(kind for kind in registry.kinds.values() if kind["name"] == "task")
-    name_ref = store_subject_value(driver, world_id, "errand")
+    name_ref = store_subject_value(driver, world_id, json.dumps(same_word_value("kind", "errand")))
     subject = same_word_subject(name_ref, "kind", task["id"])
     vocabulary = [{"status": "to do", "role": "open"}, {"status": "run", "role": "done"}]
     ids = []
@@ -781,7 +788,9 @@ def test_owner_owned_by_and_owner_name_resolve_to_one_property_name(driver, seed
     titles = {2: "Mend the hedge by the lane", 3: "Paint the barn door"}
     for line, phrase in ((2, "owned_by"), (3, "owner_name")):
         ev = f"e{line}"
-        name_ref = store_subject_value(driver, world_id, phrase)
+        name_ref = store_subject_value(
+            driver, world_id, json.dumps(same_word_value("property_name", phrase))
+        )
         subject = same_word_subject(name_ref, "property_name", owner["id"])
         ids = []
         for model in (SPARK, GLIMMER):
@@ -858,3 +867,186 @@ def test_a_retired_item_alias_no_longer_counts_at_the_near_duplicate_gate(driver
             assert refusals[0].code == "near_duplicate"
         else:
             apply(driver, world_id, [op], [observation(chat, "e2", 2)], caller=PERSON)
+
+
+# Regressions of the first R4 verifier (blockers 1 and 2) ----------------------------------------
+
+
+def test_restating_one_episode_by_ending_and_reattaching_never_earns_a_word(driver, seeded, chat):
+    """Blocker 2: a correction that ends a row and attaches another from the same conversation adds
+    no distinct episode, because the ended row still shows the episode spoke for the word."""
+    world_id = seeded["world_id"]
+    mint_godparent(driver, world_id, chat)
+    link = godparent_link(driver, world_id)
+    for line in (2, 3, 4):
+        active = read(
+            driver,
+            world_id,
+            "MATCH (e:Evidence {target_id: $id, active: true}) RETURN e.id AS id",
+            id=link["id"],
+        )
+        ev = f"e{line}"
+        ops = [
+            {
+                "op": "end_evidence",
+                "op_id": new_op_id(),
+                "evidence": active[0]["id"],
+                "end_reason": "correction",
+            },
+            {
+                "op": "attach_evidence",
+                "op_id": new_op_id(),
+                "target": link["id"],
+                "ev_id": ev,
+                "polarity": "supports",
+            },
+        ]
+        apply(driver, world_id, ops, [observation(chat, ev, line)], caller=CURATOR)
+    row = meaning_row(driver, world_id, GODPARENT)
+    assert (row["status"], row["distinct_episodes"]) == ("provisional", 1)
+    episodes = read(
+        driver,
+        world_id,
+        "MATCH (e:Evidence {target_id: $id}) RETURN count(DISTINCT e.episode_id) AS c",
+        id=link["id"],
+    )
+    assert episodes[0]["c"] == 1
+
+
+PREREQUISITE = "is a prerequisite for"
+ANY_TO_WORK = {
+    **PERMANENT_PERSON_TO_PERSON,
+    "from_kinds": {"any": True},
+    "to_kinds": {"any": True},
+    "temporal_class": "state",
+    "default_horizon": 30,
+    "carries_consequences": True,
+    "downstream_end": "to",
+}
+
+
+def tasks(ev_id: str) -> list[dict[str, Any]]:
+    return [
+        create_item(
+            "task", "Fix the barn roof", ev_id, temp_id="$roof", status="open", recheck_by=RECHECK
+        ),
+        create_item(
+            "task", "Store the hay", ev_id, temp_id="$hay", status="open", recheck_by=RECHECK
+        ),
+    ]
+
+
+def test_a_phrase_that_reads_its_neighbour_from_the_other_end_becomes_a_reversed_alias(
+    driver, seeded, chat
+):
+    """Blocker 1: the reading is stated and judged, and the alias carries it, so the link is stored
+    the right way round: the roof is needed by the hay, so the hay depends on the roof."""
+    world_id = seeded["world_id"]
+    depends = meaning_row(driver, world_id, "depends on")
+    neighbours = [
+        {"word": "depends on", "distinction": "none found"},
+        {"word": "blocks", "distinction": "blocks stops work, a prerequisite only comes first"},
+    ]
+    ids = judged(
+        driver,
+        world_id,
+        name=PREREQUISITE,
+        neighbour="depends on",
+        verdicts=("same", "same"),
+        reversed_=True,
+    )
+    ops = [
+        *tasks("e1"),
+        propose(
+            "e1", ids, name=PREREQUISITE, neighbours=neighbours, declared=ANY_TO_WORK, reversed=True
+        ),
+        create_link("$roof", PREREQUISITE, "$hay", "e1", recheck_by=RECHECK),
+    ]
+    receipt = apply(driver, world_id, ops, [observation(chat, "e1", 1)], caller=LEARNER)
+    alias = read(driver, world_id, "MATCH (a:Alias {phrase: $p}) RETURN a", p=PREREQUISITE)[0]["a"]
+    assert (alias["target_id"], alias["reversed"]) == (depends["id"], True)
+    link = read(
+        driver,
+        world_id,
+        "MATCH (a:Item)-[l:LINK]->(b:Item) RETURN a.title AS a, b.title AS b, l.meaning AS m",
+    )
+    assert link == [{"a": "Store the hay", "b": "Fix the barn roof", "m": depends["id"]}]
+    change = read(driver, world_id, "MATCH (c:OntologyChange) RETURN c")[0]["c"]
+    assert change["operation"] == "propose" and sorted(change["judgment_ids"]) == sorted(ids)
+    assert json.loads(change["rows_after"])[0]["table"] == "aliases"
+    assert change["evidence_ids"] == [alias["worked_example"]]
+    assert f'o alias "{PREREQUISITE}" for meaning "depends on"' in render_receipt(
+        driver, world_id, receipt
+    )
+
+
+def test_a_verdict_on_one_reading_never_counts_for_the_other(driver, seeded, chat):
+    world_id = seeded["world_id"]
+    neighbours = [
+        {"word": "depends on", "distinction": "none found"},
+        {"word": "blocks", "distinction": "blocks stops work, a prerequisite only comes first"},
+    ]
+    unreversed = judged(
+        driver, world_id, name=PREREQUISITE, neighbour="depends on", verdicts=("same", "same")
+    )
+    ops = [
+        *tasks("e1"),
+        propose(
+            "e1",
+            unreversed,
+            name=PREREQUISITE,
+            neighbours=neighbours,
+            declared=ANY_TO_WORK,
+            reversed=True,
+        ),
+        create_link("$roof", PREREQUISITE, "$hay", "e1", recheck_by=RECHECK),
+    ]
+    refusals = refused(driver, world_id, ops, [observation(chat, "e1", 1)])
+    assert ("unrecorded_verdict", "judgment_subject") in [(r.code, r.rule) for r in refusals]
+    assert not read(driver, world_id, "MATCH (a:Alias {phrase: $p}) RETURN a", p=PREREQUISITE)
+
+
+def test_an_alias_whose_declared_ends_fit_only_the_other_way_round_is_refused(driver, seeded, chat):
+    """Blocker 1, the mechanical guard: "possesses" declared from a person to a plan cannot be an
+    unreversed alias of "owned by", whose second end is a person or an organisation."""
+    world_id = seeded["world_id"]
+    neighbours = [
+        {"word": "owned by", "distinction": "none found"},
+        {"word": "assigned to", "distinction": "assigned to gives work, not ownership"},
+    ]
+    declared = {
+        **PERMANENT_PERSON_TO_PERSON,
+        "from_kinds": {"kinds": ["person"]},
+        "to_kinds": {"kinds": ["plan"]},
+    }
+    ids = judged(
+        driver, world_id, name="possesses", neighbour="owned by", verdicts=("same", "same")
+    )
+    ops = [
+        create_item("person", "Ilse Marrow", "e1", temp_id="$ilse"),
+        create_item(
+            "plan",
+            "Replant the orchard",
+            "e1",
+            temp_id="$plan",
+            status="proposed",
+            recheck_by=RECHECK,
+        ),
+        propose("e1", ids, name="possesses", neighbours=neighbours, declared=declared),
+        create_link("$ilse", "possesses", "$plan", "e1", recheck_by=RECHECK),
+    ]
+    refusals = refused(driver, world_id, ops, [observation(chat, "e1", 1)])
+    assert ("invalid_arguments", "alias_direction") in [(r.code, r.rule) for r in refusals]
+    assert not read(driver, world_id, "MATCH (a:Alias {phrase: 'possesses'}) RETURN a")
+
+
+def test_a_reading_from_the_other_end_is_for_meanings_and_texts_have_a_length(driver, seeded, chat):
+    world_id = seeded["world_id"]
+    for over, rule in (
+        ({"word_type": "kind", "reversed": True}, "type"),
+        ({"name": "x" * 121}, "too_long"),
+        ({"reason": "y" * 2001}, "too_long"),
+    ):
+        op = propose("e1", judged(driver, world_id), **over)
+        refusals = refused(driver, world_id, [*people("e1"), op], [observation(chat, "e1", 1)])
+        assert refusals[0].rule == rule, (over, refusals)

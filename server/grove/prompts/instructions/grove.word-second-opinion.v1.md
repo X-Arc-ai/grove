@@ -4,7 +4,9 @@ You are the second judge of one proposed word. Another model judged it first, an
 
 The first question block holds the proposed word: its type, its name, its description and its declared fields. The second question block holds the nearest existing word. The source block holds the line where the proposed word was used.
 
-First, judge the word. Answer same when the existing word says everything that the source line says with the proposed word. Answer different when the proposed word says something that the existing word cannot say. A word that reverses the direction of the existing word is the same word. When you are not sure, answer different.
+First, judge the word. Answer same when the existing word says everything that the source line says with the proposed word. Answer different when the proposed word says something that the existing word cannot say. When you are not sure, answer different.
+
+Read both words in one direction, from the first item to the second. The first question block says whether the proposed word reads the existing word from the other end. When it says false, compare the first item, the proposed word, the second item with the first item, the existing word, the second item. When it says true, compare them with the second item, the existing word, the first item. A word that reads the existing word from the other end when the block says false is different, because an alias in the wrong direction turns every link written with it around.
 
 Then judge each declared field that the first question block lists under fields to judge. Answer fits when the source line supports the declared value. Answer does_not_fit when it does not, or when you are not sure.
 

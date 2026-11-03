@@ -174,7 +174,7 @@ what an earlier one did.
 | `end_link` | U C K P W | **op_id**, **link** (not of a primitive meaning), **end_class**, **stopped_being_true**, **reason**, evidence_refs | `x link 2f07ab11: ... (<end class>)` |
 | `attach_evidence` | U C K P W | **op_id**, **target** (item, link or belief id), **ev_id** or **evidence_id**, **polarity**, judgment_ids | `= item 77d2aa01 evidence e88f0a1b (supports, said)` |
 | `end_evidence` | C K P | **op_id**, **evidence**, **end_reason** (`correction`, `forget`, `merge`) | `- evidence e88f0a1b (correction)` |
-| `propose_word` | U C K | **op_id**, **word_type** (`kind`, `meaning`, `property_name`), **name**, **description**, **reason**, **worked_example** (`{ev_id}` or `{evidence_id}`), **neighbours** (`[{word, distinction}]`), **declared**, **judgment_ids**, kind (a property name's kind, required for one), proposed_capability (`{connector_type, capability}`) | `o mint meaning "is godparent of" (provisional)` or `o alias "is pals with" for meaning "related to"` |
+| `propose_word` | U C K | **op_id**, **word_type** (`kind`, `meaning`, `property_name`), **name**, **description**, **reason**, **worked_example** (`{ev_id}` or `{evidence_id}`), **neighbours** (`[{word, distinction}]`), **declared**, **judgment_ids**, kind (a property name's kind, required for one), proposed_capability (`{connector_type, capability}`), reversed (a meaning that reads its first neighbour from the other end) | `o mint meaning "is godparent of" (provisional)` or `o alias "is pals with" for meaning "related to"` |
 | `promote_word` | K P | **op_id**, **word_type**, **word** (id or name), **reason**, kind (for a property name) | `o promote meaning "is godparent of" (canonical)` |
 
 ### The ontology operations (D8's floor)
@@ -194,6 +194,9 @@ what an earlier one did.
   refused with rule `writer_field`.
 - **Neighbours.** Exactly the two nearest existing words of the type (as many as the registry
   holds when it holds fewer), each with a distinction; the first is the one the judges compare.
+- **Direction.** A meaning may state `reversed: true`: the phrase reads its first neighbour from the
+  other end. The judges judge that reading, and an alias made from the mint is reversed. An alias
+  whose declared ends fit the neighbour only the other way round is refused, rule `alias_direction`.
 - **Judgments.** Two `same_word` judgments of the word against its first neighbour, from two model
   calls of two models, or a second one marked `correlated`. Both `same`: the phrase becomes an alias
   of that neighbour. Anything else: the word is minted provisional. A `field_fit` judgment covers
@@ -442,6 +445,7 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | A disputed or unjudged field takes the safer value; a capability is stored only when the second model accepts it | (none) | `test_ontology.py` |
 | A kind's vocabulary maps every status to a role of its class | `unmapped_status` (rules `unmapped_status`, `no_vocabulary`, `status_named_twice`) | `test_ontology.py` |
 | A batch mints at most three words; the worked example is a use in the batch; a proposal names its neighbours, each with a distinction | `invalid_arguments` (rules `mint_valve`, `worked_example_unused`, `neighbours_required`, `neighbour_twice`, `neighbour_unknown`, `distinction_required`) | `test_ontology.py` |
+| A phrase read from the other end becomes a reversed alias; a verdict on one reading never counts for the other; an alias whose declared ends fit only reversed is refused; ending a row and attaching another from one conversation earns nothing | `invalid_arguments` (rule `alias_direction`), `unrecorded_verdict` (rule `judgment_subject`) | `test_ontology.py` |
 | The person promotes a word at once; the consolidation agent only at the bar | `invalid_arguments` (rules `earning_bar`, `already_canonical`) | `test_ontology.py` |
 | The Oct 2 drill: no operation of an agent writes the registry or a primitive, an agent cannot declare a writer-set field, an edited seed never reaches a living world, the runner holds no store credential and the store refuses a process with none | `invalid_arguments` (rules `unknown_op`, `writer_field`, `primitive_word`), `not_found` | `test_ontology_drill.py` |
 | Labelled pairs: reworded titles at 0.8, 0.86 and 1.0 are refused, pairs at 0.72 and 0.3 come back as candidates, and revision N after N-1 passes only with `distinct_from` and is logged with `override_used`; `distinct_from` clears only the item it names; a title that differs only by an invisible format character meets the gate | `near_duplicate` | `test_neardup_labelled.py` |
