@@ -39,7 +39,10 @@ Probed live on 2026-11-02 with synthetic text.
 | `extraction` | Spark, minimal | continues |
 | `transcription` | Voice Transcribe | continues |
 | `verification` | Spark, low | waits |
+| `verification_load_bearing` (the first judge of a load-bearing claim, `grove.models.judge`) | Spark, low | continues |
 | `second_opinion` | Glimmer, medium | waits |
+| `second_opinion_load_bearing` (the second judge of a load-bearing claim) | Glimmer, medium | continues |
+| `second_opinion_correlated` (the second judge on Spark when Glimmer cannot be reached; its verdicts are recorded as correlated) | Spark, low | continues |
 | `consolidation` | Spark, high | waits |
 | `explain_break` | Spark, low | waits |
 | `update_pass` (the Learner's gateway calls) | Spark, low | waits |
@@ -48,6 +51,8 @@ Probed live on 2026-11-02 with synthetic text.
 | `smoke` | Spark, minimal | waits |
 
 The backfill's calls use `backfill_triage` and `backfill_extraction`, which wait at the ceiling, because the build plan's backfill stops there.
+
+The verification judges are code in `grove.models.judge` (D4). `judge` runs the fixed prompt `grove.judge.v1` on Spark, with the claim and each excerpt in a labelled data block, at `high` effort when sources conflict and at the job's effort otherwise. `second_judge` runs `grove.judge-second.v1` on Glimmer, and on Spark under `second_opinion_correlated` when Glimmer cannot be reached (not configured, a provider error, a rate limit, or an egress refusal). Each verdict is written to `judgments` by `grove.writer.judgments.record_judgments` against the call that made it, and only this package calls that function. An answer that does not give each excerpt exactly one verdict writes no judgment and raises `invalid_output`.
 
 Each world has one `budgets` row per day (UTC, from the clock provider). `record_model_call` writes the call and adds its cost to `spent` in one transaction; the call that brings `spent` to the ceiling turns the state to `reached`. From then on, a job that waits is refused with `budget_reached` (HTTP 429, retryable, with `resets_at`, the next midnight UTC) before any request leaves. A job that continues still runs: triage, extraction and transcription keep memory current, run in code, and are the cheap part. Every call through the gateway stops at the ceiling, whatever job its token names, so a runaway agent loop stops there, and a Learner pass that waits leaves its requests queued for the reset. A new day starts a new row with the ceiling of `GROVE_DAILY_BUDGET_USD`. The operator changes a day's ceiling with `set_budget_ceiling`; `None` removes it. Calls that pass the gate at the same moment can end the day above the ceiling by the cost of those calls. Ruling S39 in `docs/store-map.md` has the store side.
 
@@ -105,9 +110,7 @@ The rows in `model_calls` do not hold the true cost of this route. A short sessi
 
 | Point | Owner lane |
 |---|---|
-| The job table has no row for load-bearing verification. D15 keeps those claims running at the ceiling and defers only the low-stakes ones; `verification` waits today. Add the job when the lane exists. | `truth-clock` |
 | Who mints a run token, and how the runner holds `GROVE_GATEWAY_SECRET`. A pass needs a `token_cap`: the ceiling stops new calls, and the cap bounds one run. A pass that gets `budget_reached` leaves its requests queued. | `runner` |
-| The judge's verdicts: A.1 has this layer record them in `judgments`, and no writer exists yet. | `truth-clock` |
 | `transcribe` takes WAV only and no contact names or language bias: the forms probed for those fields were refused, and other encodings are not probed. | `ingest-a` |
 | `brain fetch` must send through `AllowlistTransport`, not call `EgressPolicy.check` and then use another client: the transport is what checks each redirect hop. | `cleanup` |
 | A process kill between an answer and its record loses that row, and so does a store failure at that moment. | `runner`, `deploy-a` |

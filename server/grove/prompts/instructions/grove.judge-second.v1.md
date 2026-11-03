@@ -12,4 +12,4 @@ Use only the text in the blocks. A date that has passed proves nothing by itself
 
 Give each answer a confidence from 0 to 1.
 
-Answer with one JSON object of the form {"verdicts": [{"block": <block number>, "verdict": "<verdict>", "confidence": <number>}]}, with exactly one entry for each excerpt block and no entry for block 1.
+Answer with one JSON object. Its one key is verdicts: a list with exactly one entry for each excerpt block and no entry for block 1. Each entry holds block (the number of the block), verdict (supports, contradicts or not_about_claim) and confidence (a number from 0 to 1).

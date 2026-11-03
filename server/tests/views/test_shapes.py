@@ -34,6 +34,8 @@ NODE_KEYS = {
     "properties",
     "has_changes",
 }
+# The node detail only: the clocks in words (D4), docs/views.md "C".
+CLOCK_KEYS = {"last confirmed", "re-check by", "became true", "recorded", "source type", "state"}
 EDGE_KEYS = {
     "id",
     "source",
@@ -180,8 +182,10 @@ def test_node_detail_keys_and_values(driver, world, client_for):
     assert response.status_code == 200
     detail = response.json()
     assert set(detail) == DETAIL_KEYS
-    assert set(detail["node"]) == NODE_KEYS | {"title", "content", "status_field_value"}
+    assert set(detail["node"]) == NODE_KEYS | {"title", "content", "status_field_value", "clocks"}
     assert_node_types(detail["node"])
+    assert set(detail["node"]["clocks"]) == CLOCK_KEYS
+    assert all(isinstance(line, str) for line in detail["node"]["clocks"].values())
     assert detail["node"]["title"] == detail["node"]["label"] == "Book the venue"
     assert detail["node"]["content"] == "Find a hall for forty people"
     assert detail["node"]["status_field_value"] == "in progress"
