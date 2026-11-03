@@ -8,7 +8,11 @@ add connectors.
 Rules every parser keeps:
 - A message key comes from message_key() and a chat's locator from chat_locator(). Both are
   opaque fingerprints of the source's own ids, so no name or term can ride in them (store-map
-  open point, spec line 2505), and the screener leaves them as they are.
+  open point, spec line 2505). Each is one word (the prefix glued to the hex), so a rename form
+  or a denylist term, which matches whole words only, cannot match a part of it; register()
+  refuses a prefix whose key or locator screening would change.
+- Read through the upload's budget (Upload.budget, grove.ingest.archive): one upload expands to
+  at most MAX_READ_BYTES and MAX_RECORDS, whatever the file holds.
 - Text goes through clean_text() first: the store and the model layer refuse lone surrogates.
 - A message is dated by its own time, never by the upload's (D10, "Order and time").
 - Speaker and modality come from the source's metadata (D5). Machine text is never filed under
@@ -22,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import BinaryIO
 
+from grove.screening import Denylist, Message, RenameMap, Screener, ScreeningConfig
 from grove.store.enums import ENUMS
 
 SPEAKER_KINDS = frozenset(ENUMS["speaker_kind"])
@@ -35,6 +40,15 @@ _KEY_HEX = 32
 _SEPARATOR = "\x1f"
 # A UTF-16 half with no partner: JSON can spell one, UTF-8 cannot hold it.
 _SURROGATE = re.compile("[\ud800-\udfff]")
+_EARLIEST = datetime.min.replace(tzinfo=UTC)
+
+# What one upload may expand to, whatever its size on the wire: the bytes read out of archives
+# and compressed streams, and the JSON lines parsed. Past either, the upload is refused, so a
+# small crafted file cannot take the API's memory. An export larger than this goes in parts:
+# a re-import is idempotent.
+MAX_READ_BYTES = 768 * 1024 * 1024
+MAX_RECORDS = 1_000_000
+_TOO_LARGE = "the export holds more than one upload takes: upload it in parts"
 
 
 class NotAnExport(ValueError):
@@ -63,22 +77,23 @@ def _check_prefix(prefix: str) -> None:
 
 
 def message_key(prefix: str, *parts: object) -> str:
-    """The message key: `<prefix>-<32 hex>`, a fingerprint of the source's own ids for one
-    message (A.4: for Claude Code the session id and the record's uuid). Same parts, same key, so
-    a re-import is idempotent; a later export that repeats a message repeats its key."""
+    """The message key: `<prefix><32 hex>`, one word, a fingerprint of the source's own ids for
+    one message (A.4: for Claude Code the session id and the record's uuid). Same parts, same
+    key, so a re-import is idempotent; a later export that repeats a message repeats its key.
+    No separator: a prefix that stood as a word of its own ("cc") would match a rename form."""
     _check_prefix(prefix)
     if not parts:
         raise ValueError("a message key needs the ids it stands for")
-    return f"{prefix}-{_fingerprint(parts)}"
+    return f"{prefix}{_fingerprint(parts)}"
 
 
 def chat_locator(prefix: str, chat_id: object) -> str:
-    """The external locator of one chat (one source per chat and read): `<prefix>-<32 hex>`.
-    Each chat gets its own, so two chats never share a locator (store-map open point)."""
+    """The external locator of one chat (one source per chat and read): `<prefix><32 hex>`, one
+    word. Each chat gets its own, so two chats never share a locator (store-map open point)."""
     _check_prefix(prefix)
     if chat_id is None or str(chat_id) == "":
         raise ValueError("a chat locator needs the chat's id")
-    return f"{prefix}-{_fingerprint(('chat', chat_id))}"
+    return f"{prefix}{_fingerprint(('chat', chat_id))}"
 
 
 def clean_text(value: object) -> str:
@@ -122,7 +137,7 @@ def utc_from_iso(value: object) -> datetime | None:
     return moment.astimezone(UTC)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ParsedMessage:
     """One message as a parser read it. Screening runs on it next; nothing here is stored yet."""
 
@@ -176,13 +191,39 @@ class ParsedChat:
         return f"ParsedChat(messages={len(self.messages)})"
 
 
+class ReadBudget:
+    """What one upload may still expand to. The archive readers charge it; past a limit the
+    upload is NotAnExport, and nothing has been written yet."""
+
+    __slots__ = ("bytes_left", "records_left")
+
+    def __init__(self, *, max_bytes: int = MAX_READ_BYTES, max_records: int = MAX_RECORDS) -> None:
+        self.bytes_left = max_bytes
+        self.records_left = max_records
+
+    def take_bytes(self, count: int) -> None:
+        self.bytes_left -= count
+        if self.bytes_left < 0:
+            raise NotAnExport(_TOO_LARGE)
+
+    def take_record(self) -> None:
+        self.records_left -= 1
+        if self.records_left < 0:
+            raise NotAnExport(_TOO_LARGE)
+
+    def __repr__(self) -> str:
+        return f"ReadBudget(bytes_left={self.bytes_left}, records_left={self.records_left})"
+
+
 @dataclass
 class Upload:
-    """The uploaded file: a seekable binary stream and its size. Its name is never read: a file
-    name can hold a name (R1, D14), so a parser knows the format by the bytes."""
+    """The uploaded file: a seekable binary stream, its size and its read budget. Its name is
+    never read: a file name can hold a name (R1, D14), so a parser knows the format by the bytes.
+    """
 
     stream: BinaryIO
     size: int
+    budget: ReadBudget = field(default_factory=ReadBudget, repr=False)
 
     def head(self, count: int = 8) -> bytes:
         self.stream.seek(0)
@@ -198,6 +239,20 @@ class Upload:
         if len(data) > limit:
             raise NotAnExport("the file is larger than this format allows")
         return data
+
+
+def in_time_order(messages: Sequence[ParsedMessage]) -> list[ParsedMessage]:
+    """The messages in their own time order (D10), for a chat that a parser merged from more
+    than one file: the archive's file order says nothing about time. The sort is stable, and a
+    message with no time keeps its place after the message it follows."""
+    keyed = []
+    last = _EARLIEST
+    for index, message in enumerate(messages):
+        if message.at is not None:
+            last = message.at
+        keyed.append((last, index, message))
+    keyed.sort(key=lambda row: (row[0], row[1]))
+    return [message for _, _, message in keyed]
 
 
 def one_episode(messages: Sequence[ParsedMessage]) -> list[list[ParsedMessage]]:
@@ -256,11 +311,35 @@ class ConnectorSpec:
 
 
 _SPECS: dict[str, ConnectorSpec] = {}
+_SAMPLE_IDS = ("sample", "0123456789", "a1b2c3d4e5")
+
+
+def _screening_keeps(prefix: str) -> bool:
+    """Whether screening leaves this prefix's keys and locators as they are: with the detectors
+    alone, and with the prefix itself as a rename form and as a denylist term."""
+    configs = (
+        ScreeningConfig(),
+        ScreeningConfig(rename=RenameMap.from_mapping({prefix: "Person A"})),
+        ScreeningConfig(denylist=Denylist([prefix])),
+    )
+    for config in configs:
+        screener = Screener(config)
+        for sample in _SAMPLE_IDS:
+            locator = chat_locator(prefix, sample)
+            key = message_key(prefix, sample)
+            screened = screener.screen_source(locator, [Message(key=key, sender=None, text="ok")])
+            if screened.locator != locator or [m.key for m in screened.messages] != [key]:
+                return False
+    return True
 
 
 def register(spec: ConnectorSpec) -> ConnectorSpec:
+    """Adds a provider. A key prefix whose keys or locators screening would change is refused,
+    because the pipeline fails such a chat closed (take_in, KeyChanged)."""
     if not isinstance(spec, ConnectorSpec):
         raise TypeError("register takes a ConnectorSpec")
+    if not _screening_keeps(spec.key_prefix):
+        raise ValueError("screening changes this key prefix's keys: choose another prefix")
     known = _SPECS.get(spec.provider)
     if known is not None and known is not spec:
         raise ValueError(f"provider {spec.provider} is registered already")

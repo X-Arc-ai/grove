@@ -9,8 +9,10 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from starlette.requests import Request
 
 from grove.api import uploads
+from grove.api.errors import ApiError
 from grove.ids import new_id
 from grove.ingest import (
     ConnectorSpec,
@@ -463,15 +465,20 @@ def test_production_screening_renames_and_drops(
 # The upload slots.
 
 
-def test_two_running_uploads_make_a_third_wait(driver, seeded_world, client_for, test_clock):
+def test_the_api_runs_one_upload_at_a_time():
+    # One upload at the caps holds about 2.5 GiB; the api container has 4 GiB.
+    assert uploads.MAX_PARALLEL_UPLOADS == 1
+
+
+def test_a_running_upload_makes_the_next_wait(driver, seeded_world, client_for, test_clock):
     client = client_for(seeded_world)
-    assert uploads.UPLOAD_SLOTS.acquire(blocking=False)
-    assert uploads.UPLOAD_SLOTS.acquire(blocking=False)
+    for _ in range(uploads.MAX_PARALLEL_UPLOADS):
+        assert uploads.UPLOAD_SLOTS.acquire(blocking=False)
     try:
         response = upload(client)
     finally:
-        uploads.UPLOAD_SLOTS.release()
-        uploads.UPLOAD_SLOTS.release()
+        for _ in range(uploads.MAX_PARALLEL_UPLOADS):
+            uploads.UPLOAD_SLOTS.release()
     assert response.status_code == 429
     assert response.json() == {
         "error": {
@@ -485,13 +492,16 @@ def test_two_running_uploads_make_a_third_wait(driver, seeded_world, client_for,
     assert upload(client).status_code == 200
 
 
-def test_one_running_upload_leaves_a_slot(seeded_world, client_for, test_clock):
+def test_a_free_slot_takes_the_upload(seeded_world, client_for, test_clock):
     client = client_for(seeded_world)
-    assert uploads.UPLOAD_SLOTS.acquire(blocking=False)
+    taken = uploads.MAX_PARALLEL_UPLOADS - 1
+    for _ in range(taken):
+        assert uploads.UPLOAD_SLOTS.acquire(blocking=False)
     try:
         assert upload(client).status_code == 200
     finally:
-        uploads.UPLOAD_SLOTS.release()
+        for _ in range(taken):
+            uploads.UPLOAD_SLOTS.release()
 
 
 def test_a_refused_upload_gives_its_slot_back(seeded_world, client_for, test_clock):
@@ -499,10 +509,10 @@ def test_a_refused_upload_gives_its_slot_back(seeded_world, client_for, test_clo
     for _ in range(3):
         assert upload(client, b"not json at all").status_code == 400
         assert upload(client, b"").status_code == 400
-    assert uploads.UPLOAD_SLOTS.acquire(blocking=False)
-    assert uploads.UPLOAD_SLOTS.acquire(blocking=False)
-    uploads.UPLOAD_SLOTS.release()
-    uploads.UPLOAD_SLOTS.release()
+    for _ in range(uploads.MAX_PARALLEL_UPLOADS):
+        assert uploads.UPLOAD_SLOTS.acquire(blocking=False)
+    for _ in range(uploads.MAX_PARALLEL_UPLOADS):
+        uploads.UPLOAD_SLOTS.release()
 
 
 # The connectors read.
@@ -570,3 +580,15 @@ def test_the_connectors_read_sorts_by_type_then_provider(
 
 def test_the_connectors_read_needs_a_session(anonymous, test_clock):
     assert_refused(anonymous.get(CONNECTORS_PATH), 401, "unauthenticated")
+
+
+def _request_with_length(length: str) -> Request:
+    return Request({"type": "http", "headers": [(b"content-length", length.encode())]})
+
+
+def test_a_declared_length_over_the_cap_is_refused_before_the_body_is_read():
+    with pytest.raises(ApiError) as refused:
+        uploads._check_declared_length(_request_with_length("1001"), 1000)
+    assert refused.value.status == 400
+    uploads._check_declared_length(_request_with_length("1000"), 1000)
+    uploads._check_declared_length(_request_with_length("not a number"), 1000)

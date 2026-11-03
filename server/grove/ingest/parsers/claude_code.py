@@ -11,7 +11,7 @@ successful tool output and every text a program put in the person's slot are dro
 
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -25,6 +25,7 @@ from grove.ingest.connector import (
     Upload,
     clean_text,
     clip,
+    in_time_order,
     message_key,
     register,
     utc_from_iso,
@@ -71,47 +72,73 @@ _INTERRUPTED = frozenset(
 )
 
 
-def _span(tag: str) -> re.Pattern[str]:
-    return re.compile(rf"<{tag}>.*?</{tag}>", re.DOTALL)
+def _replace_spans(text: str, tag: str, replace: Callable[[str], str]) -> str:
+    """Each `<tag>...</tag>` span, leftmost first and up to the nearest closer, replaced by
+    `replace(inner text)`. One pass: an opener with no closer after it ends the search, since no
+    later opener has one either. (A lazy `<tag>.*?</tag>` regex scans to the end of the text from
+    every unclosed opener, which made a crafted line cost quadratic time.)"""
+    opener, closer = f"<{tag}>", f"</{tag}>"
+    out: list[str] = []
+    position = 0
+    while True:
+        start = text.find(opener, position)
+        if start < 0:
+            break
+        end = text.find(closer, start + len(opener))
+        if end < 0:
+            break
+        out.append(text[position:start])
+        out.append(replace(text[start + len(opener) : end]))
+        position = end + len(closer)
+    if not out:
+        return text
+    out.append(text[position:])
+    return "".join(out)
+
+
+def _cut_spans(text: str, tag: str) -> str:
+    return _replace_spans(text, tag, lambda _inner: "")
+
+
+def _first_inner(text: str, tag: str) -> str | None:
+    """The text inside the first closed `<tag>...</tag>` span, or None."""
+    opener, closer = f"<{tag}>", f"</{tag}>"
+    start = text.find(opener)
+    if start < 0:
+        return None
+    end = text.find(closer, start + len(opener))
+    return None if end < 0 else text[start + len(opener) : end]
 
 
 # Text a program put inside the person's message: cut out whole.
-_INJECTED_SPANS = tuple(
-    _span(tag)
-    for tag in (
-        "system-reminder",
-        "local-command-stdout",
-        "local-command-stderr",
-        "local-command-caveat",
-        "bash-stdout",
-        "bash-stderr",
-        "command-message",
-    )
+_INJECTED_TAGS = (
+    "system-reminder",
+    "local-command-stdout",
+    "local-command-stderr",
+    "local-command-caveat",
+    "bash-stdout",
+    "bash-stderr",
+    "command-message",
 )
-_COMMAND_NAME = re.compile(r"<command-name>(.*?)</command-name>", re.DOTALL)
-_COMMAND_ARGS = re.compile(r"<command-args>(.*?)</command-args>", re.DOTALL)
-_BASH_INPUT = re.compile(r"<bash-input>(.*?)</bash-input>", re.DOTALL)
 _TOOL_ERROR_TAG = re.compile(r"</?tool_use_error>")
-# A tool result can carry a reminder the program added to it: no tool wrote that text.
-_REMINDER = _span("system-reminder")
 
 
 def _person_text(raw: str) -> str:
     """The person's own words in one text part: injected spans cut, a command call as `/x a b`,
     a shell escape as `! cmd`. A part that is only program output or an interrupt mark is empty."""
     text = clean_text(raw)
-    for pattern in _INJECTED_SPANS:
-        text = pattern.sub("", text)
-    name = _COMMAND_NAME.search(text)
+    for tag in _INJECTED_TAGS:
+        text = _cut_spans(text, tag)
+    name = _first_inner(text, "command-name")
     if name is not None:
-        command = name.group(1).strip()
+        command = name.strip()
         if command and not command.startswith("/"):
             command = "/" + command
-        args = _COMMAND_ARGS.search(text)
-        call = " ".join(part for part in (command, args.group(1).strip() if args else "") if part)
-        rest = _COMMAND_ARGS.sub("", _COMMAND_NAME.sub("", text)).strip()
+        args = _first_inner(text, "command-args")
+        call = " ".join(part for part in (command, args.strip() if args else "") if part)
+        rest = _cut_spans(_cut_spans(text, "command-name"), "command-args").strip()
         text = "\n\n".join(part for part in (call, rest) if part)
-    text = _BASH_INPUT.sub(lambda match: "! " + match.group(1).strip(), text).strip()
+    text = _replace_spans(text, "bash-input", lambda inner: "! " + inner.strip()).strip()
     return "" if text in _INTERRUPTED else text
 
 
@@ -146,7 +173,8 @@ def _result_text(content: object) -> str:
 
 
 def _error_digest(block: dict[str, Any]) -> str:
-    text = _REMINDER.sub("", clean_text(_result_text(block.get("content"))))
+    # A tool result can carry a reminder the program added to it: no tool wrote that text.
+    text = _cut_spans(clean_text(_result_text(block.get("content"))), "system-reminder")
     text = _TOOL_ERROR_TAG.sub("", text)
     return f"[tool error] {clip(text, _ERROR_DIGEST)}".rstrip()
 
@@ -254,9 +282,10 @@ class _Chat:
             self.messages.append(ParsedMessage(key=key, text=text, at=at, speaker_kind=speaker))
 
     def parsed(self) -> ParsedChat:
+        # A subagent file and its parent's file join one chat in archive order: sort by time.
         return ParsedChat(
             chat_id=self.chat_id,
-            messages=tuple(self.messages),
+            messages=tuple(in_time_order(self.messages)),
             started_at=min(self.times) if self.times else None,
             ended_at=max(self.times) if self.times else None,
         )
@@ -268,10 +297,11 @@ def _is_record(value: object) -> bool:
     return isinstance(value.get("sessionId"), str) or value["type"] in _NO_SESSION_TYPES
 
 
-def _records(data: bytes) -> list[dict[str, Any]] | None:
-    """The file's records in line order, or None when no line is a Claude Code record."""
-    records = [value for _, value in archive.json_lines(data) if isinstance(value, dict)]
-    return records if any(_is_record(value) for value in records) else None
+def _records(data: bytes, upload: Upload) -> Iterator[dict[str, Any]]:
+    """The file's Claude Code records in line order, one at a time."""
+    for _, value in archive.json_lines(data, budget=upload.budget):
+        if _is_record(value):
+            yield value
 
 
 def _files(upload: Upload) -> Iterable[bytes]:
@@ -284,11 +314,8 @@ def parse(upload: Upload) -> Iterator[ParsedChat]:
     chats: dict[str, _Chat] = {}
     recognised = False
     for data in _files(upload):
-        records = _records(data)
-        if records is None:
-            continue
-        recognised = True
-        for record in records:
+        for record in _records(data, upload):
+            recognised = True
             session = record.get("sessionId")
             uuid = record.get("uuid")
             if not isinstance(session, str) or not session or not isinstance(uuid, str) or not uuid:

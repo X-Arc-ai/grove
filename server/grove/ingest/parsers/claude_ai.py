@@ -21,6 +21,7 @@ from grove.ingest.connector import (
     Upload,
     clean_text,
     clip,
+    in_time_order,
     message_key,
     register,
     utc_from_iso,
@@ -48,34 +49,47 @@ def _base_name(path: str) -> str:
     return path.replace("\\", "/").rsplit("/", 1)[-1].lower()
 
 
-def _conversations(upload: Upload) -> list[dict[str, Any]]:
-    """The conversation rows of every conversations.json in the upload, in file order."""
+def _documents(upload: Upload) -> Iterator[bytes]:
+    """The bytes of each conversations.json in the upload, one at a time."""
     if archive.is_zip(upload):
-        blobs = [
-            member.data
-            for member in archive.zip_members(upload, suffixes=(_DOCUMENT,))
-            if _base_name(member.path) == _DOCUMENT
-        ]
-        if not blobs:
+        found = False
+        for member in archive.zip_members(upload, suffixes=(_DOCUMENT,)):
+            if _base_name(member.path) == _DOCUMENT:
+                found = True
+                data = member.data
+                del member
+                yield data
+                del data
+        if not found:
             raise NotAnExport(_NOT_AN_EXPORT)
-    else:
-        data = upload.read_all(archive.MAX_MEMBER_BYTES)
-        # A cheap look first, so a large file of another kind is not parsed as JSON.
-        if not data.removeprefix(_BOM).lstrip().startswith(b"["):
-            raise NotAnExport(_NOT_AN_EXPORT)
-        blobs = [data]
-    rows: list[Any] = []
-    for blob in blobs:
+        return
+    data = upload.read_all(archive.MAX_MEMBER_BYTES)
+    # A cheap look first, so a large file of another kind is not parsed as JSON.
+    if not data.removeprefix(_BOM).lstrip().startswith(b"["):
+        raise NotAnExport(_NOT_AN_EXPORT)
+    yield data
+
+
+def _conversations(upload: Upload) -> Iterator[dict[str, Any]]:
+    """The conversation rows of every conversations.json in the upload, in file order. One
+    document is parsed at a time, and dropped before the next."""
+    rows = False
+    found = False
+    for blob in _documents(upload):
         document = archive.json_document(blob)
+        del blob
         if not isinstance(document, list):
             raise NotAnExport(_NOT_AN_EXPORT)
-        rows.extend(document)
-    conversations = [row for row in rows if isinstance(row, dict) and _is_conversation(row)]
+        for row in document:
+            rows = True
+            if isinstance(row, dict) and _is_conversation(row):
+                found = True
+                yield row
+        del document
     # One odd row does not block the export, but rows with no conversation shape at all are
     # another provider's file.
-    if rows and not conversations:
+    if rows and not found:
         raise NotAnExport(_NOT_AN_EXPORT)
-    return conversations
 
 
 def _is_conversation(row: dict[str, Any]) -> bool:
@@ -230,7 +244,9 @@ class _Chat:
             self.ended = ended
 
     def parsed(self) -> ParsedChat:
-        return ParsedChat(self.chat_id, tuple(self.messages), self.started, self.ended)
+        # One chat in two files joins in file order: sort by time (D10).
+        messages = tuple(in_time_order(self.messages))
+        return ParsedChat(self.chat_id, messages, self.started, self.ended)
 
 
 def parse(upload: Upload) -> Iterator[ParsedChat]:

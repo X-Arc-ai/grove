@@ -9,13 +9,14 @@ import hashlib
 import io
 import json
 import random
+import re
 import zipfile
 from datetime import UTC, datetime, timedelta
 
 import pytest
 import zstandard
 
-from grove.ingest import NotAnExport, ParsedChat, chat_locator, message_key
+from grove.ingest import NotAnExport, ParsedChat, ReadBudget, Upload, chat_locator, message_key
 from grove.ingest.parsers import codex
 from grove.ingest.take_in import NOTHING_NEW, TAKEN_IN, take_in
 from grove.screening import Message, Screener, ScreeningConfig
@@ -82,7 +83,9 @@ def _line(minute: int, kind: str, payload: dict) -> dict:
     return {"timestamp": _ts(minute), "type": kind, "payload": payload}
 
 
-def _meta(session: str = SESSION, *, originator: str = "codex_cli_rs", source: str = "cli") -> dict:
+def _meta(
+    session: str = SESSION, *, originator: str = "codex_cli_rs", source: object = "cli"
+) -> dict:
     return _line(
         0,
         "session_meta",
@@ -470,7 +473,7 @@ def test_keys_are_deterministic_unique_and_prefixed():
 
     assert first == second
     assert len(set(first)) == len(first)
-    assert all(key.startswith("cx-") for key in first)
+    assert all(re.fullmatch(r"cx[0-9a-f]{32}", key) for key in first)
     assert first == [message_key("cx", SESSION, number) for number, *_ in EXPECTED]
 
 
@@ -690,4 +693,91 @@ def test_take_in_screens_invented_names(driver, seeded_world, test_clock):
     assert [(row["speaker_kind"], row["text"]) for row in content] == [
         ("person", "Person A wants the tomato bed moved."),
         ("ai_host", "I moved the tomato bed."),
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        {"subagent": "review"},
+        {"subagent": {"thread_spawn": {"parent_thread_id": "t-0001", "depth": 1}}},
+        {"subagent": "compact"},
+    ],
+)
+def test_a_subagent_session_files_its_prompt_under_the_ai_host(source):
+    """A subagent's prompt is the parent agent's text, never the person's (D5)."""
+    lines = [
+        _meta(source=source),
+        _item(1, _message("user", _text_in("Review the diff against main."))),
+        _item(2, _message("assistant", _text_out("The diff looks fine."))),
+    ]
+
+    assert _rows(_only(_jsonl(lines))) == [
+        ("ai_host", "Review the diff against main."),
+        ("ai_host", "The diff looks fine."),
+    ]
+
+
+def test_an_exit_code_of_thousands_of_digits_is_no_crash():
+    """int() of more than 4300 digits raises: the code takes at most 9 digits."""
+    lines = [
+        _meta(),
+        _item(1, _output("Exit code: " + "7" * 5000 + "\nOutput:\nx")),
+        _item(2, _output("Exit code: 3\nOutput:\nno such file", "call_2")),
+    ]
+
+    (chat,) = _parse(_jsonl(lines))
+
+    assert [m.key for m in chat.messages] == [message_key("cx", SESSION, 3)]
+    assert chat.messages[0].speaker_kind == "automated"
+
+
+def test_many_compressed_rollouts_share_one_read_budget():
+    """Each .zst member once had its own 256 MiB cap, so a small zip of many members expanded
+    without bound. Every decompressed byte now counts against the upload."""
+    body = _jsonl(_rollout_lines())
+    packed = _zst(body)
+    members = [(f"sessions/rollout-{n}.jsonl.zst", packed) for n in range(4)]
+    room = 4 * len(packed) + 3 * len(body) + len(body) // 2
+
+    def parse_with(member_count):
+        archive_bytes = _zip(members[:member_count])
+        upload = Upload(
+            io.BytesIO(archive_bytes), len(archive_bytes), budget=ReadBudget(max_bytes=room)
+        )
+        return list(codex.parse(upload))
+
+    assert len(parse_with(3)) == 1
+    with pytest.raises(NotAnExport):
+        parse_with(4)
+
+
+def test_the_lines_of_one_upload_count_against_its_budget():
+    data = _jsonl(_rollout_lines())
+    lines = len([line for line in data.split(b"\n") if line.strip()])
+
+    def parse_with(budget):
+        return list(codex.parse(Upload(io.BytesIO(data), len(data), budget=budget)))
+
+    assert parse_with(ReadBudget(max_records=lines))
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_records=lines - 1))
+
+
+def test_a_rollout_listed_after_its_continuation_still_reads_in_time_order():
+    first = _jsonl([_meta(), _item(1, _message("user", _text_in("Count the seed packets.")))])
+    later = [
+        _meta(),
+        _item(1, _message("user", _text_in("Count the seed packets."))),
+        _item(30, _message("assistant", _text_out("There are forty packets."))),
+    ]
+    data = _zip([("b/rollout-later.jsonl", _jsonl(later)), ("a/rollout-first.jsonl", first)])
+
+    (chat,) = _parse(data)
+
+    times = [m.at for m in chat.messages]
+    assert times == sorted(times)
+    assert _rows(chat) == [
+        ("person", "Count the seed packets."),
+        ("ai_host", "There are forty packets."),
     ]

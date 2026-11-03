@@ -2,7 +2,9 @@
 cut rules and archive caps."""
 
 import io
+import lzma
 import random
+import re
 import string
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -15,18 +17,25 @@ from grove.ingest import (
     NotAnExport,
     ParsedChat,
     ParsedMessage,
+    ReadBudget,
+    Upload,
     archive,
     chat_locator,
     clean_text,
+    in_time_order,
     message_key,
     one_episode,
+    providers,
     register,
     silence_windows,
+    spec_for,
     utc_from_epoch,
     utc_from_iso,
 )
 from grove.screening import Message, Screener, ScreeningConfig
-from tests.ingest.conftest import upload_of
+from tests.ingest.conftest import make_screener, upload_of
+
+ONE_WORD_KEY = re.compile(r"[a-z]{1,8}[0-9a-f]{32}")
 
 T0 = datetime(2026, 9, 1, 9, 0, tzinfo=UTC)
 
@@ -36,7 +45,8 @@ def test_message_keys_are_opaque_fingerprints():
     assert key == message_key("cc", "session-1", "record-1")
     assert key != message_key("cc", "session-1", "record-2")
     assert key != message_key("cx", "session-1", "record-1")
-    assert key.startswith("cc-") and len(key) == len("cc-") + 32
+    # One word: the prefix glued to the hex, so no rename form can match the prefix alone.
+    assert ONE_WORD_KEY.fullmatch(key) and key.startswith("cc") and len(key) == len("cc") + 32
     # Parts are joined with a separator, so moving a boundary changes the key.
     assert message_key("cc", "ab", "c") != message_key("cc", "a", "bc")
     # A name in an id never shows in the key.
@@ -72,6 +82,68 @@ def test_screening_never_changes_a_key_or_a_locator():
     assert screened.locator == locator
     assert [m.key for m in screened.messages] == [m.key for m in messages]
     assert dict(screened.counts) == {}
+
+
+@pytest.mark.parametrize("provider", ["claude_code", "codex", "chatgpt", "claude_ai"])
+def test_a_key_prefix_as_a_rename_form_or_a_denylist_term_changes_no_key(provider):
+    """A person's rename map can hold a form such as "CC" (a nickname) or "Cai" (a surname), and
+    a denylist a term such as "GPT". The prefix is glued to the hex, so it is no whole word."""
+    prefix = spec_for(provider).key_prefix
+    keys = [message_key(prefix, "chat-1", index) for index in range(50)]
+    locator = chat_locator(prefix, "chat-1")
+    assert ONE_WORD_KEY.fullmatch(locator)
+    messages = [Message(key=key, sender=None, text="ok") for key in keys]
+    for screener in (
+        make_screener(rename={prefix: "Person D"}),
+        make_screener(rename={prefix.upper(): "Person D"}),
+        make_screener(rename={prefix.capitalize(): "Person C"}),
+        make_screener(denylist=[prefix]),
+        make_screener(denylist=[prefix.upper()]),
+    ):
+        screened = screener.screen_source(locator, messages)
+        assert screened.locator == locator
+        assert not screened.dropped_whole
+        assert [m.key for m in screened.messages] == keys
+
+
+def test_every_registered_prefix_is_one_a_screener_keeps():
+    for provider in providers():
+        prefix = spec_for(provider).key_prefix
+        assert ONE_WORD_KEY.fullmatch(message_key(prefix, "x")), provider
+
+
+def test_register_refuses_a_prefix_whose_keys_screening_changes():
+    # "dapi" followed by 32 hex is a known secret format, so the credential step masks the key.
+    with pytest.raises(ValueError, match="screening changes"):
+        register(
+            ConnectorSpec(
+                provider="zz_secret_shape",
+                connector_type="past_ai_conversations",
+                parser_version="zz.v1",
+                batch_rule="session_delta.v1",
+                key_prefix="dapi",
+                parse=lambda upload: iter(()),
+            )
+        )
+    assert "zz_secret_shape" not in providers()
+
+
+def test_messages_merged_from_two_files_go_in_their_own_time_order():
+    def at(minutes):
+        return T0 + timedelta(minutes=minutes)
+
+    def made(index, when):
+        key = message_key("zz", index)
+        return ParsedMessage(key=key, text=f"m{index}", at=when, speaker_kind="person")
+
+    # File order: a later file's messages first, then the earlier file's, one with no time.
+    merged = [made(1, at(10)), made(2, at(20)), made(3, at(0)), made(4, None), made(5, at(30))]
+    ordered = in_time_order(merged)
+    assert [m.text for m in ordered] == ["m3", "m4", "m1", "m2", "m5"]
+    # Equal times keep their order, and an ordered list stays as it is.
+    same = [made(6, at(5)), made(7, at(5))]
+    assert in_time_order(same) == same
+    assert in_time_order(ordered) == ordered
 
 
 def test_clean_text_makes_text_the_store_can_hold():
@@ -201,6 +273,58 @@ def test_a_broken_zip_is_no_export():
         list(archive.zip_members(upload_of(b"PK\x03\x04broken"), suffixes=(".json",)))
 
 
+def _corrupt_member(method: int) -> bytes:
+    """A zip whose one member's compressed bytes are damaged in the middle."""
+    buffer = io.BytesIO()
+    body = "".join(f"line {index} of a session\n" for index in range(4000)).encode()
+    with zipfile.ZipFile(buffer, "w", method) as handle:
+        handle.writestr("s.jsonl", body)
+    data = bytearray(buffer.getvalue())
+    middle = len(data) // 3
+    data[middle : middle + 55] = bytes(range(200, 255))
+    return bytes(data)
+
+
+@pytest.mark.parametrize("method", [zipfile.ZIP_DEFLATED, zipfile.ZIP_LZMA, zipfile.ZIP_BZIP2])
+def test_damaged_compressed_bytes_are_no_export(method):
+    """zlib.error and lzma.LZMAError are no OSError: they must still give NotAnExport (400)."""
+    with pytest.raises(NotAnExport) as caught:
+        list(archive.zip_members(upload_of(_corrupt_member(method)), suffixes=(".jsonl",)))
+    assert "s.jsonl" not in str(caught.value)
+    assert lzma.LZMAError is not OSError
+
+
+def test_the_bytes_of_all_members_count_against_one_upload_budget():
+    data = _zip({"a.json": b"x" * 5000, "b.json": b"y" * 5000})
+    upload = Upload(io.BytesIO(data), len(data), budget=ReadBudget(max_bytes=8000))
+    with pytest.raises(NotAnExport):
+        list(archive.zip_members(upload, suffixes=(".json",)))
+    upload = Upload(io.BytesIO(data), len(data), budget=ReadBudget(max_bytes=10_000))
+    assert len(list(archive.zip_members(upload, suffixes=(".json",)))) == 2
+
+
+def test_zstd_output_counts_against_the_upload_budget():
+    """Each member has its own cap, but many members cannot each take it: the upload's budget
+    counts every decompressed byte."""
+    big = zstandard.ZstdCompressor().compress(b"z" * 100_000)
+    budget = ReadBudget(max_bytes=250_000)
+    archive.zstd_decompress(big, budget=budget)
+    archive.zstd_decompress(big, budget=budget)
+    with pytest.raises(NotAnExport):
+        archive.zstd_decompress(big, budget=budget)
+
+
+def test_the_default_budget_holds_the_caps_of_one_upload():
+    budget = ReadBudget()
+    assert budget.bytes_left == archive.MAX_TOTAL_BYTES == 768 * 1024 * 1024
+    assert budget.records_left == 1_000_000
+    assert Upload(io.BytesIO(b""), 0).budget.bytes_left == archive.MAX_TOTAL_BYTES
+    # Each upload has its own budget.
+    assert Upload(io.BytesIO(b""), 0).budget is not Upload(io.BytesIO(b""), 0).budget
+    # A parsed value takes about 64 bytes: the document cap keeps them under a GiB.
+    assert archive.MAX_DOCUMENT_VALUES * 64 < 1024**3
+
+
 def test_zstd_reads_frames_and_caps_the_output():
     compressor = zstandard.ZstdCompressor()
     data = compressor.compress(b"line one\n") + compressor.compress(b"line two\n")
@@ -218,6 +342,28 @@ def test_json_lines_number_every_line_and_skip_a_cut_one():
     assert list(archive.json_lines(data)) == [(1, {"a": 1}), (3, {"b": 2})]
 
 
+def test_json_lines_count_against_the_record_budget():
+    data = b"{}\n" * 10
+    assert len(list(archive.json_lines(data, budget=ReadBudget(max_records=10)))) == 10
+    with pytest.raises(NotAnExport):
+        list(archive.json_lines(data, budget=ReadBudget(max_records=9)))
+
+
+def test_a_line_of_too_many_values_is_skipped_unparsed():
+    data = b'{"a": 1}\n[' + b"[]," * 50 + b'[]]\n{"b": 2}\n'
+    lines = list(archive.json_lines(data, max_line_values=50))
+    assert lines == [(1, {"a": 1}), (3, {"b": 2})]
+    assert len(list(archive.json_lines(data, max_line_values=200))) == 3
+
+
+def test_a_document_of_too_many_values_is_refused_unparsed():
+    document = b"[" + b"[]," * 99 + b"[]]"
+    assert archive.value_bound(document) >= 100
+    assert len(archive.json_document(document, max_values=300)) == 100
+    with pytest.raises(NotAnExport):
+        archive.json_document(document, max_values=150)
+
+
 def test_json_document_refuses_what_is_not_json():
     assert archive.json_document(b"\xef\xbb\xbf[1]") == [1]
     with pytest.raises(NotAnExport):
@@ -231,3 +377,12 @@ def test_upload_read_all_caps_the_size():
     assert upload.read_all(5) == b"12345"
     with pytest.raises(NotAnExport):
         upload.read_all(4)
+
+
+def test_a_member_that_reads_past_its_cap_is_refused():
+    """A zip header can understate a member's size, so the cap counts the bytes read."""
+    with pytest.raises(NotAnExport):
+        archive._read_capped(io.BytesIO(b"x" * 5000), 4000, archive._Budget(10**6))
+    assert archive._read_capped(io.BytesIO(b"x" * 4000), 4000, archive._Budget(10**6)) == (
+        b"x" * 4000
+    )

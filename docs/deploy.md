@@ -12,7 +12,7 @@ runs the compose project `grove` from `deploy/compose.yml`.
 | Service | What it is | Network | Runs as |
 |---|---|---|---|
 | `neo4j` | Neo4j Community, the pin of `docker-compose.dev.yml`. Heap 1 GB, page cache 512 MB, Cypher 25 by default. Data in the volume `grove-neo4j-data`. | `store` (internal) | the image's user |
-| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body; only `/v1/sources/upload` takes up to 256 MiB, with no request buffering (uploads, below). Read-only root file system; `/tmp` is a tmpfs of 640 MiB. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
+| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body; only `/v1/sources/upload` takes up to 256 MiB, with no request buffering (uploads, below). Read-only root file system; `/tmp` is a tmpfs of 320 MiB. A memory limit of 4 GB, with no swap past it. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
 | `runner` | OpenCode 1.18.32, checked against its release checksum, with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`. A placeholder process runs until the `runner` lane lands its loop. | `runner` (internal) | uid 10002 `grove-runner` |
 
 An internal network has no route out. So the store reaches nothing but the API, and the runner
@@ -176,7 +176,13 @@ the code's default. `proxy_request_buffering off` streams the body to the API, s
 copy of it on disk. The read and send timeouts are 600 s, as a large export takes minutes to parse
 and screen. Every other path keeps the 10 MB limit. To change the cap, change
 `GROVE_UPLOAD_MAX_BYTES` and the nginx limit together. The API spools a body past 8 MiB to `/tmp`,
-a tmpfs of 640 MiB: room for the two uploads that can run at once, each at the cap.
+a tmpfs of 320 MiB: room for the one upload that runs at a time, at the cap. A second upload
+while one runs answers 429 `rate_limited` with `retry_after_seconds`.
+
+**Memory.** One upload at the caps of `grove.ingest` holds about 2.5 GiB: the body, its decoded
+text and the parsed values (`docs/ingest.md`, limits). compose gives the api `mem_limit: 4g` with
+no swap past it, the tmpfs inside it. If an upload passes the limit, the kernel stops the api and
+docker starts it again (`restart: unless-stopped`); neo4j and the box keep their memory.
 
 **Upload-only tokens.** A script that uploads without the session cookie uses an upload-only token
 for one world (`docs/ingest.md`). The operator mints it inside the running `api` container. compose

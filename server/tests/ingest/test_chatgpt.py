@@ -8,13 +8,14 @@ must never reach a message: reasoning, custom instructions, tool output, file co
 import copy
 import io
 import json
+import re
 import zipfile
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
-from grove.ingest import NotAnExport, chat_locator, message_key, spec_for
+from grove.ingest import NotAnExport, archive, chat_locator, message_key, spec_for
 from grove.ingest.parsers import chatgpt
 from grove.ingest.take_in import take_in
 from grove.screening import Message, Screener, ScreeningConfig
@@ -714,7 +715,7 @@ def test_keys_are_stable_unique_prefixed_and_survive_screening():
     for chat in first:
         keys = [m.key for m in chat.messages]
         assert len(set(keys)) == len(keys)
-        assert all(key.startswith("gpt-") for key in keys)
+        assert all(re.fullmatch(r"gpt[0-9a-f]{32}", key) for key in keys)
         locator = chat_locator("gpt", chat.chat_id)
         screened = screener.screen_source(
             locator,
@@ -855,7 +856,7 @@ def test_take_in_stores_each_chat_once_and_a_reimport_changes_nothing(
     for row in rows:
         assert row["speaker_kind"] in {"person", "ai_host", "automated"}
         assert row["modality"] in {"text", "voice"}
-        assert row["key"].startswith("gpt-")
+        assert re.fullmatch(r"gpt[0-9a-f]{32}", row["key"])
     assert {row["modality"] for row in rows} == {"text", "voice"}
     assert all(marker not in row["text"] for row in rows for marker in MARKERS)
 
@@ -930,3 +931,31 @@ def test_take_in_renames_a_name(driver, seeded_world, test_clock):
     assert rows[0]["text"] == "Ask Friend A about the tram pass."
     assert rows[0]["speaker_kind"] == "person"
     assert all("quillon" not in row["text"].lower() for row in rows)
+
+
+def test_a_system_message_with_text_and_no_hidden_flag_is_dropped():
+    """The role alone drops it: a system message is the program's instruction (D5), whatever its
+    metadata says."""
+    chat = Conversation("c0a1b2c3-0000-4000-8000-00000000e101")
+    chat.add(message("s-plain", "system", [SYSTEM], seconds=1))
+    chat.add(message("u-1", "user", ["Plan the Sintra day."], seconds=2))
+    chat.add(message("a-1", "assistant", ["Sintra first, then Cascais."], seconds=3))
+
+    (parsed,) = parse(as_json(chat.export()))
+
+    assert [(m.speaker_kind, m.text) for m in parsed.messages] == [
+        ("person", "Plan the Sintra day."),
+        ("ai_host", "Sintra first, then Cascais."),
+    ]
+    assert all(SYSTEM not in m.text for m in parsed.messages)
+
+
+def test_a_document_past_the_value_cap_is_refused_before_it_is_parsed(monkeypatch):
+    data = as_json(lisbon().export())
+    monkeypatch.setattr(archive, "MAX_DOCUMENT_VALUES", archive.value_bound(data) - 1)
+    with pytest.raises(NotAnExport):
+        parse(data)
+    with pytest.raises(NotAnExport):
+        parse(export_zip(data))
+    monkeypatch.setattr(archive, "MAX_DOCUMENT_VALUES", archive.value_bound(data))
+    assert parse(data)
