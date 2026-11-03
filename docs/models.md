@@ -40,6 +40,8 @@ Probed live on 2026-11-02 with synthetic text.
 | `transcription` | Voice Transcribe | continues |
 | `verification` | Spark, low | waits |
 | `second_opinion` | Glimmer, medium | waits |
+| `word_judge` (the first judge of a proposed word, D8) | Spark, low | waits |
+| `second_opinion_fallback` (the correlated second judge when Glimmer cannot be reached) | Spark, low | waits |
 | `consolidation` | Spark, high | waits |
 | `explain_break` | Spark, low | waits |
 | `update_pass` (the Learner's gateway calls) | Spark, low | waits |
@@ -107,7 +109,7 @@ The rows in `model_calls` do not hold the true cost of this route. A short sessi
 |---|---|
 | The job table has no row for load-bearing verification. D15 keeps those claims running at the ceiling and defers only the low-stakes ones; `verification` waits today. Add the job when the lane exists. | `truth-clock` |
 | Who mints a run token, and how the runner holds `GROVE_GATEWAY_SECRET`. A pass needs a `token_cap`: the ceiling stops new calls, and the cap bounds one run. A pass that gets `budget_reached` leaves its requests queued. | `runner` |
-| The judge's verdicts: A.1 has this layer record them in `judgments`, and no writer exists yet. | `truth-clock` |
+| The judge's verdicts: `grove.writer.judgments.record_judgments` stores them (S20), and `grove.models.judge.judge_word` records the word judges through it (`docs/store-map.md`, O12). The verify judge must record through it too. | `truth-clock` |
 | `transcribe` takes WAV only and no contact names or language bias: the forms probed for those fields were refused, and other encodings are not probed. | `ingest-a` |
 | `brain fetch` must send through `AllowlistTransport`, not call `EgressPolicy.check` and then use another client: the transport is what checks each redirect hop. | `cleanup` |
 | A process kill between an answer and its record loses that row, and so does a store failure at that moment. | `runner`, `deploy-a` |

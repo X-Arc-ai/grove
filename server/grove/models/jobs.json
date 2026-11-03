@@ -33,6 +33,8 @@
     "backfill_extraction": {"family": "spark", "effort": "minimal", "at_ceiling": "defer"},
     "verification": {"family": "spark", "effort": "low", "at_ceiling": "defer"},
     "second_opinion": {"family": "glimmer", "effort": "medium", "at_ceiling": "defer"},
+    "word_judge": {"family": "spark", "effort": "low", "at_ceiling": "defer"},
+    "second_opinion_fallback": {"family": "spark", "effort": "low", "at_ceiling": "defer"},
     "consolidation": {"family": "spark", "effort": "high", "at_ceiling": "defer"},
     "explain_break": {"family": "spark", "effort": "low", "at_ceiling": "defer"},
     "update_pass": {"family": "spark", "effort": "low", "at_ceiling": "defer"},
