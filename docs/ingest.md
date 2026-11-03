@@ -1,0 +1,129 @@
+# Ingest: connectors, uploads and the take-in pipeline
+
+Spec: A.4 (connectors), D2 (sources and episodes), D5 (speaker and source types), D10 (batches,
+order and time), D13 (coverage), D14 (screening). This file is the contract for every lane that
+adds a connector. Code: `server/grove/ingest/` and `server/grove/writer/ingest.py`.
+
+## The pipeline
+
+```
+upload bytes -> parser (ConnectorSpec.parse) -> chats
+  per chat: delta (keys not stored yet) -> Screener.screen_source -> episode cut (ConnectorSpec.cut)
+           -> write_chat_delta: source + screening receipt + episodes + connector watermark, one transaction
+after all chats: record_read (coverage: times, outcome, failed count)
+```
+
+`grove.ingest.take_in.take_in(driver, world_id, provider, upload, *, screener) -> TakeInResult`.
+
+- A file that is not an export of the provider raises `NotAnExport` before anything is written
+  (no connector row either).
+- Screening runs in code before the sources table (D14, decision 6). It finishes before the
+  write transaction opens (SC1).
+- One chat's delta commits whole, under the connector row's lock. If another upload stored any of
+  the delta's keys first, the writer raises `DeltaMoved` and the pipeline reads the delta again
+  (at most 3 tries).
+- A re-import of the same export finds every key stored: it writes no source, no receipt and no
+  episode, and answers `nothing_new`. Only the connector's coverage times move.
+- A delta that screening drops whole writes one empty source (`[]`) with its receipt, but only
+  for a chat with no source yet. So a chat kept out whole is visible in coverage once, and a
+  re-import of a chat with dropped messages stays idempotent.
+- Screening is deterministic, so a later read that drops a message again counts it again in that
+  read's receipt only when the read also stores new messages of the chat.
+
+## The connector interface
+
+```python
+from grove.ingest import (ConnectorSpec, ParsedChat, ParsedMessage, Upload, NotAnExport,
+                          register, message_key, chat_locator, clean_text, clip,
+                          one_episode, silence_windows, utc_from_iso, utc_from_epoch)
+```
+
+A parser module registers one spec on import and is imported by `grove/ingest/parsers/__init__.py`:
+
+```python
+SPEC = register(ConnectorSpec(
+    provider="whatsapp",               # the upload code (?provider=...)
+    connector_type="whatsapp",         # enum connector_type
+    parser_version="whatsapp.v1",      # stored on each source
+    batch_rule="silence_90m.v1",       # stored on the connector row
+    key_prefix="wa",                   # 1 to 8 lowercase letters, one per provider
+    parse=parse,                       # Upload -> Iterator[ParsedChat]
+    cut=silence_windows(90),           # default one_episode
+    cut_rule="silence_90m.v1",         # stored on each episode
+))
+```
+
+| Name | Rule |
+|---|---|
+| `ParsedMessage(key, text, at, speaker_kind, modality="text", sender=None)` | `key` from `message_key`; `text` through `clean_text` and not blank; `at` the message's own aware time or None, never the upload's time; `speaker_kind` and `modality` from the source's metadata (closed enums). `sender` is a display sender the source names (it is screened); leave it None when `speaker_kind` says all, because a one-word sender with a number in the text reads as a service to the one-time code rule. |
+| `ParsedChat(chat_id, messages, started_at=None, ended_at=None)` | One chat in its own order. `chat_id` is the source's own id; it is only hashed. `started_at`/`ended_at` are fallbacks when no message has a time. Keys are unique within a chat. |
+| `message_key(prefix, *ids)` | `<prefix>-<32 hex>`: a fingerprint of the source's own ids for one message (A.4's message key). Deterministic, so a re-import and an overlapping later export repeat the key. No name can ride in it (store-map open point, spec line 2505), and screening leaves it unchanged (tested over 3000 digit-heavy ids). |
+| `chat_locator(prefix, chat_id)` | The source's `external_locator`: one per chat, opaque. |
+| `clean_text(value)` | Lone surrogates become U+FFFD, NUL is dropped, line ends are LF. The store and the model layer refuse lone surrogates. |
+| `Upload(stream, size)` | `head()`, `read_all(limit)`. The file name is never passed: the parser knows the format by its bytes. |
+| `grove.ingest.archive` | `is_zip`, `zip_members(upload, suffixes=...)` (in memory, never extracted, with caps on the bytes actually read), `zstd_decompress`, `json_document`, `json_lines` (1-based line numbers; a cut line is skipped). |
+| `NotAnExport` | A generic message, never a value from the file. |
+| Cut rules | `one_episode` (one session or the part added since the last read), `silence_windows(minutes)` (a window closes after that much silence; a message with no time joins the window it follows). |
+
+A stored source's content is the screener's JSON array; each row holds `key`, `sender`, `text`,
+`at`, and, from these connectors, `speaker_kind` and `modality`. An evidence locator into it is
+`key:<message key>` (S38): `past_ai_conversations` allows `key` and `line`; use `key`.
+
+## Connectors of this build
+
+| provider | connector type | key | locator from | episode |
+|---|---|---|---|---|
+| `claude_code` | past_ai_conversations | `cc`: session id, record uuid, speaker kind | session id | one session or its new part |
+| `codex` | past_ai_conversations | `cx`: rollout id, line number | rollout (session) id | one session or its new part |
+| `chatgpt` | past_ai_conversations | `gpt`: conversation id, message id | conversation id | one conversation or its new part |
+| `claude_ai` | past_ai_conversations | `cai`: conversation uuid, message uuid, speaker kind | conversation uuid | one conversation or its new part |
+
+What each keeps (A.4, the engine's filter carried over, D5): the person's messages
+(`person`); the fact that something was attached, never its bytes or extracted text; the
+assistant's text (`ai_host`: in the spec the AI host is the assistant the person talks to);
+one-line digests of tool calls (`ai_host`); one-line digests of failed tool results
+(`automated`). Dropped: thinking and reasoning, successful tool output, system and developer
+messages, and text a program injected in the person's slot. A session a program ran (Claude
+Code `entrypoint` `sdk-*`; Codex `exec`, SDK or MCP) has no `person` message: its prompts are
+`automated`.
+
+## Connector rows and coverage (D13)
+
+One `:Connector` per world, type and provider (`provider` is a ruling column), made under the
+world lock. `auth_reference` is `upload`.
+
+| Column | Set by | Meaning |
+|---|---|---|
+| `watermark` | take-in | `at:<ISO time>` of the newest message read |
+| `read_count` | take-in | episodes added |
+| `oldest_unprocessed_item` | take-in (min), `ingest-b` (clears) | start of the oldest episode no pass has taken |
+| `last_attempted_read`, `last_successful_read`, `last_outcome`, `failed_count` | take-in | the last read; outcome `took_in`, `nothing_new`, `kept_out` or `failed` |
+| `held_nothing_count`, `extracted_count`, `items_taken_in_over_7_days` | `ingest-b` | what the update agent made of the episodes |
+
+An episode with no `run_id` is unprocessed: that is the handoff to the update agent.
+
+## The upload route
+
+`POST /v1/sources/upload?provider=<code>`, the raw file as the body.
+
+- Auth: the session cookie, or `Authorization: Bearer gut_...`, an upload-only token for one
+  world. The token works on this route only.
+- Content types: `application/zip`, `application/json`, `application/x-ndjson`,
+  `application/jsonl`, `application/zstd`, `application/octet-stream`. Form types are refused,
+  so a cross-site form cannot post here.
+- Limit: `GROVE_UPLOAD_MAX_BYTES`, 256 MiB by default; nginx has a location with the same limit
+  and no request buffering (`docs/deploy.md`).
+- A screening configuration that does not load (production with `GROVE_RENAME_MAP` or
+  `GROVE_DENYLIST` unset, or a file missing) answers 503 `unavailable` and nothing is read.
+- The answer: `{state, provider, connector_id, chats, chats_new, sources_added, episodes_added,
+  messages_read, messages_kept, failed_chats, screened: {class: count}}`.
+
+`GET /v1/sources/connectors` (session only) lists the world's connector rows with their coverage.
+
+## Upload-only tokens
+
+`python -m grove.ingest token mint --world <world id> [--minutes N]` prints `{id, token,
+world_id, expires_at}` once: the raw token appears nowhere else. The row stores its sha256 only.
+Life: 60 minutes by default, at most 24 hours. `token revoke --id <id>`; `token list --world
+<id>` (ids and times, never a hash). On the box the command runs inside the api container
+(`docs/deploy.md`).
