@@ -26,6 +26,7 @@ from grove.store.history_reads import changes_between
 from grove.store.primitives import MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY
 from grove.store.query import WorldQuery
 from grove.writer.testing import plant_link, plant_node
+from grove.writer.worlds import create_world
 from tests.writer import helpers
 from tests.writer.helpers import (
     apply,
@@ -53,8 +54,7 @@ NOV_4 = datetime(2026, 11, 4, 9, 0, tzinfo=UTC)
 NOV_5 = datetime(2026, 11, 5, 9, 0, tzinfo=UTC)
 HOUR = timedelta(hours=1)
 RECHECK = "2026-12-01T00:00:00+00:00"
-# The writer's fixtures: a seeded world and a chat source to cite.
-seeded = helpers.seeded
+# The writer's chat source to cite (seeded is below, under the frozen clock).
 chat = helpers.chat
 # Above every sequence the writer allocates in a test world: a planted entry sorts last, as an
 # entry written after every batch of the test does.
@@ -67,6 +67,14 @@ def frozen():
     test_clock.set(OCT_20 + HOUR)
     with clock.using(test_clock):
         yield test_clock
+
+
+@pytest.fixture
+def seeded(driver, world, frozen):
+    """The writer's seeded world (tests.writer.helpers.seeded), seeded under the frozen clock. The
+    seed's own entries are then recorded on 20 October, with the test's first batch: seeded at the
+    real time, they would fall in any span a test reads near today's date."""
+    return {"world_id": world, **create_world(driver, world, owner_user_id="u_t_owner")}
 
 
 def end_link(link: str, end_class: str, stop: Any, ev_id: str | None = None) -> dict[str, Any]:
