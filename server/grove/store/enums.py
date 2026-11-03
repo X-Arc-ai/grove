@@ -24,6 +24,10 @@ ENUMS: dict[str, tuple[str, ...]] = {
         "report_happened",
         "report_state",
         "none",
+        # S46: the evidence is itself the record of an act (a receipt, a ticket, a booking
+        # confirmation, a boarding pass, a signed document), so code may type it confirmed for
+        # what it shows (spec lines 1060, 1086, 1170).
+        "artifact",
     ),
     # Line 1124.
     "derivation": ("observed", "inferred", "rolled_up"),
@@ -51,6 +55,10 @@ ENUMS: dict[str, tuple[str, ...]] = {
     ),
     # Line 945.
     "disposition": ("confirmed", "moved", "retired", "deferred"),
+    # S47, line 957: the bands of the agreement score, which line 957 states as conditions only.
+    "verification_band": ("confirm", "contradiction", "against", "zero_signal", "stale_support"),
+    # S48, B.3: what a relayed request carries from the AI host or the person's views.
+    "relay": ("remember", "answer", "correction"),
     # Line 1575.
     "temporal_class": ("state", "permanent", "event"),
     # No list: S3 fixes this one. Line 1140 shows only before.
@@ -107,6 +115,10 @@ ENUMS: dict[str, tuple[str, ...]] = {
         "ai_host",
         "person_in_views",
         "scripted",
+        # S46: the D5 table's reminders and to-dos (line 1083) and identity sources (a contact
+        # card, a profile, a sign-in, line 1099), which A.4 does not list.
+        "reminders",
+        "identity",
     ),
     # Lines 2391, 3101. took_in is a read that found items. denied and failed are the two cases of
     # "could not read" (line 2391), so the row keeps the reason as its code.

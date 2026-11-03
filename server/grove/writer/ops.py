@@ -52,6 +52,7 @@ OPS: dict[str, OpSpec] = {
             "recheck_by",
             "recheck_how",
             "distinct_from",
+            "confirmed_by_call",
         ),
         "+",
     ),
@@ -82,7 +83,7 @@ OPS: dict[str, OpSpec] = {
     "create_link": OpSpec(
         _callers("UCKPH"),
         ("op_id", "from", "meaning", "to", "became_true", "evidence_refs", "reason"),
-        ("temp_id", "recheck_by", "recheck_how", "original_phrase"),
+        ("temp_id", "recheck_by", "recheck_how", "original_phrase", "confirmed_by_call"),
         ">",
     ),
     "end_link": OpSpec(
@@ -104,7 +105,19 @@ OPS: dict[str, OpSpec] = {
         ("reason",),
         "-",
     ),
+    # D4: the only operation that moves last confirmed. B.2 lists U, C, K, P and H; H only inside
+    # an answer or a correction in the person's own words, which the handler checks.
+    "verify": OpSpec(
+        _callers("UCKPH"),
+        ("op_id", "claim", "pieces", "disposition", "reason"),
+        ("second_judge", "recheck_by", "recheck_how", "override_reason"),
+        "v",
+    ),
 }
+MAX_PIECES = 50
+_PIECE_KEYS = frozenset({"ev_id", "evidence_id", "judgment_id", "answer"})
+# An answer option the person chose is its own verdict (D4); every other verdict is a judgment.
+PERSON_ANSWERS = ("supports", "contradicts")
 
 UPDATE_FIELDS = (
     "title",
@@ -141,7 +154,7 @@ _PROVENANCE_KEYS = ("episode_id", "source_id", "locator", "message_key", "source
 _REF_KEYS = frozenset({"ev_id", "evidence_id", "polarity"})
 _DISTINCT_KEYS = frozenset({"item", "reason"})
 # Fields that take an item or link id, and so also a temp id of this batch.
-REF_FIELDS = ("item", "link", "target", "from", "to")
+REF_FIELDS = ("item", "link", "target", "from", "to", "claim")
 
 # Keys no caller may send, wherever they sit (not inside properties, which are the item's data).
 _FORBIDDEN: dict[str, tuple[str, str]] = {
@@ -159,6 +172,8 @@ _FORBIDDEN: dict[str, tuple[str, str]] = {
             "agree",
             "disagree",
             "ratio",
+            "capability",
+            "admitted",
         )
     },
     "verdict": ("unrecorded_verdict", "caller_verdict"),
@@ -336,6 +351,41 @@ def _update_fields(fields: Any) -> None:
             _recheck_how(value)
 
 
+def _pieces(value: Any) -> None:
+    if not isinstance(value, list) or not 1 <= len(value) <= MAX_PIECES:
+        raise Refused(
+            "invalid_arguments", "type", f"pieces is a list of 1 to {MAX_PIECES} objects", {}
+        )
+    for piece in value:
+        if not isinstance(piece, dict):
+            raise Refused("invalid_arguments", "type", "a piece is an object", {})
+        _forbidden(piece, _FORBIDDEN, "in a piece")
+        extra = set(piece) - _PIECE_KEYS
+        if extra:
+            raise Refused(
+                "invalid_arguments",
+                "unknown_field",
+                f"a piece has no field {sorted(extra)[0]!r}",
+                {"field": sorted(extra)[0], "valid": sorted(_PIECE_KEYS)},
+            )
+        if ("ev_id" in piece) == ("evidence_id" in piece):
+            raise Refused(
+                "invalid_arguments", "evidence_ref", "a piece names ev_id or evidence_id", {}
+            )
+        _text(piece.get("ev_id", piece.get("evidence_id")), "ev_id")
+        if ("judgment_id" in piece) == ("answer" in piece):
+            raise Refused(
+                "unrecorded_verdict",
+                "judgment_required",
+                "a piece cites the judgment that judged it, or the person's chosen answer",
+                {},
+            )
+        if "judgment_id" in piece:
+            _text(piece["judgment_id"], "judgment_id")
+        else:
+            _enum(piece["answer"], "answer", PERSON_ANSWERS)
+
+
 def _check_fields(name: str, op: dict[str, Any]) -> None:
     if name in ("create_item", "create_link"):
         if op.get("became_true") is None:
@@ -382,6 +432,15 @@ def _check_fields(name: str, op: dict[str, Any]) -> None:
         raise Refused("invalid_arguments", "temp_id", f"a temp id starts with {TEMP_PREFIX!r}", {})
     if name == "update_item":
         _update_fields(op["fields"])
+    if name == "verify":
+        _pieces(op.get("pieces"))
+        _enum(op.get("disposition"), "disposition", ENUMS["disposition"])
+        if "second_judge" in op:
+            _string_list(op["second_judge"], "second_judge")
+        if op.get("override_reason") is not None:
+            _text(op["override_reason"], "override_reason")
+    if op.get("confirmed_by_call") is not None:
+        _text(op["confirmed_by_call"], "confirmed_by_call")
     if name == "attach_evidence" and ("ev_id" in op) == ("evidence_id" in op):
         raise Refused(
             "invalid_arguments", "missing_field", "attach_evidence names ev_id or evidence_id", {}
@@ -508,6 +567,12 @@ def check_observation(observation: Any) -> None:
 
 def cited_ev_ids(op: dict[str, Any]) -> list[str]:
     cited = [ref["ev_id"] for ref in op.get("evidence_refs") or [] if "ev_id" in ref]
+    if op.get("op") == "verify" and isinstance(op.get("pieces"), list):
+        cited.extend(
+            piece["ev_id"]
+            for piece in op["pieces"]
+            if isinstance(piece, dict) and isinstance(piece.get("ev_id"), str)
+        )
     if op.get("op") == "attach_evidence" and isinstance(op.get("ev_id"), str):
         cited.append(op["ev_id"])
     return cited
