@@ -32,6 +32,7 @@ from tests.writer.helpers import (
     T0,
     Caller,
     apply,
+    at_minute,
     count_rows,
     create_item,
     create_link,
@@ -1195,3 +1196,205 @@ def test_a_field_fit_verdict_of_one_kinds_property_never_counts_for_another_kind
     refusals = refused(driver, world_id, [op, item], [observation(chat, "e1", 1)])
     assert ("unrecorded_verdict", "judgment_subject") in [(r.code, r.rule) for r in refusals]
     assert task
+
+
+# Regressions of the reviewer of c19dbd9 ------------------------------------------------------
+
+
+def _item_ref(driver, world_id: str, title: str) -> dict[str, Any]:
+    return read(
+        driver, world_id, "MATCH (i:Item {title: $t}) RETURN i.id AS id, i.version AS v", t=title
+    )[0]
+
+
+def _set_properties(driver, world_id, title, src, ev_id, at, properties) -> None:
+    item = _item_ref(driver, world_id, title)
+    op = {
+        "op": "update_item",
+        "op_id": new_op_id(),
+        "item": item["id"],
+        "version": item["v"],
+        "fields": {"properties": properties},
+        "evidence_refs": supports(ev_id),
+        "reason": "the steward changed",
+    }
+    apply(driver, world_id, [op], [observation(src, ev_id, 1, at=at)], caller=LEARNER)
+
+
+def test_a_late_fact_on_one_property_earns_no_other_property_name(driver, seeded, chat):
+    """Blocker 1: a late fact (history only) about `steward` writes `steward` alone. `owner`, which
+    the as-of properties also hold, gains no use and no episode, and is never promoted."""
+    world_id = seeded["world_id"]
+    kind_id = plan_kind(driver, world_id)
+    owner = mint_owner(driver, world_id, chat)
+    ids = judged(driver, world_id, name="steward", word_type="property_name", neighbour=owner["id"])
+    ids += fits(
+        driver, world_id, "property_name", "steward", "temporal_class", "permanent", kind_id
+    )
+    op = property_proposal(
+        "steward", ids, [{"word": "owner", "distinction": "the owner holds it, a steward runs it"}]
+    )
+    op["worked_example"] = {"ev_id": "e5"}
+    item = plan_item("e5", "Clear the ditch", owner="the ditch crew", steward="the parish")
+    apply(driver, world_id, [op, item], [observation(chat, "e5", 5)], caller=LEARNER)
+    before = prop_row(driver, world_id, "owner")
+    steward = prop_row(driver, world_id, "steward")
+
+    first = make_source(driver, world_id, "whatsapp", ["invented: the vestry runs it now"])
+    _set_properties(
+        driver, world_id, "Clear the ditch", first, "s1", at_minute(20), {"steward": "the vestry"}
+    )
+    for n in (2, 3):
+        src = make_source(driver, world_id, "whatsapp", [f"invented late chat {n}"])
+        _set_properties(
+            driver, world_id, "Clear the ditch", src, f"s{n}", at_minute(10), {"steward": f"v{n}"}
+        )
+    after = prop_row(driver, world_id, "owner")
+    key = ("status", "distinct_episodes", "uses")
+    assert [after[name] for name in key] == [before[name] for name in key]
+    assert before["status"] == "provisional"
+    earned = prop_row(driver, world_id, "steward")
+    assert earned["distinct_episodes"] == steward["distinct_episodes"] + 3
+    assert earned["status"] == "canonical"
+
+
+def test_a_word_minted_earlier_in_the_batch_is_no_neighbour(driver, seeded, chat):
+    """Blocker 2 in the writer: two first property names of a kind mint in one batch with no
+    neighbour each, and a proposal cannot name a word of the same batch as its neighbour."""
+    world_id = seeded["world_id"]
+    kind_id = plan_kind(driver, world_id)
+    owner = fits(driver, world_id, "property_name", "owner", "temporal_class", "permanent", kind_id)
+    budget = fits(
+        driver, world_id, "property_name", "budget note", "temporal_class", "permanent", kind_id
+    )
+    ops = [
+        property_proposal("owner", owner, []),
+        property_proposal("budget note", budget, []),
+        plan_item("e1", owner="the orchard group", **{"budget note": "small"}),
+    ]
+    apply(driver, world_id, ops, [observation(chat, "e1", 1)], caller=LEARNER)
+    assert prop_row(driver, world_id, "budget note")["status"] == "provisional"
+
+    holder = prop_row(driver, world_id, "owner")
+    ids = judged(
+        driver, world_id, name="steward", word_type="property_name", neighbour=holder["id"]
+    )
+    ids += fits(
+        driver, world_id, "property_name", "steward", "temporal_class", "permanent", kind_id
+    )
+    steward = property_proposal(
+        "steward",
+        ids,
+        [
+            {"word": "owner", "distinction": "the owner holds it, a steward runs it"},
+            {"word": "budget note", "distinction": "a person, not a sum"},
+        ],
+    )
+    deputy = property_proposal(
+        "deputy",
+        [],
+        [
+            {"word": "steward", "distinction": "the deputy stands in"},
+            {"word": "owner", "distinction": "the deputy holds nothing"},
+        ],
+    )
+    refusals = refused(
+        driver,
+        world_id,
+        [steward, deputy, plan_item("e1", "Clear the ditch", steward="the parish")],
+        [observation(chat, "e1", 2)],
+    )
+    assert ("invalid_arguments", "neighbour_unknown", "steward") in [
+        (r.code, r.rule, r.details.get("word")) for r in refusals
+    ]
+
+
+def test_a_state_property_name_on_a_kind_that_is_not_a_record_is_refused_at_the_mint(
+    driver, seeded, chat
+):
+    """Blocker 3 in the writer: declared or settled, a state property name of a plan could sit on
+    no plan, so the mint is refused, not the first item that uses it."""
+    world_id = seeded["world_id"]
+    state = propose(
+        "e1",
+        [],
+        word_type="property_name",
+        kind="plan",
+        name="mood",
+        description="How the plan feels now.",
+        neighbours=[],
+        declared={"value_type": "text", "temporal_class": "state", "default_horizon": 30},
+    )
+    refusals = refused(
+        driver, world_id, [state, plan_item("e1", mood="calm")], [observation(chat, "e1", 1)]
+    )
+    assert [(r.code, r.rule) for r in refusals][0] == (
+        "state_property_on_item",
+        "state_property_on_item",
+    )
+    assert not read(driver, world_id, "MATCH (p:PropertyName) RETURN p")
+
+
+def test_an_update_may_restate_a_value_equal_to_its_own_title(driver, seeded, chat):
+    """Reviewer minor: the item that holds a value is never the item the value names, so create and
+    update read the same."""
+    world_id = seeded["world_id"]
+    mint_owner(driver, world_id, chat)
+    title = "Fence the far paddock"
+    apply(
+        driver,
+        world_id,
+        [plan_item("e2", title, owner=title)],
+        [observation(chat, "e2", 2)],
+        caller=LEARNER,
+    )
+    item = _item_ref(driver, world_id, title)
+    op = {
+        "op": "update_item",
+        "op_id": new_op_id(),
+        "item": item["id"],
+        "version": item["v"],
+        "fields": {"properties": {"owner": title}},
+        "evidence_refs": supports("e3"),
+        "reason": "restated",
+    }
+    apply(driver, world_id, [op], [observation(chat, "e3", 3)], caller=LEARNER)
+
+
+def test_a_capability_minted_with_a_word_has_its_change_entry_and_its_inverse(driver, seeded, chat):
+    """Reviewer minor: the capability row is a registry row the proposal wrote, so a rebuild from
+    history restores it and the change log row names it."""
+    world_id = seeded["world_id"]
+    capability = {"connector_type": "calendar", "capability": "confirms"}
+    ids = judged(
+        driver,
+        world_id,
+        fields={
+            "temporal_class": ("permanent", "fits"),
+            "proposed_capability": (capability, "fits"),
+        },
+    )
+    ops = [
+        *people("e1"),
+        propose("e1", ids, proposed_capability=capability),
+        create_link("$ilse", GODPARENT, "$teo", "e1"),
+    ]
+    receipt = apply(driver, world_id, ops, [observation(chat, "e1", 1)], caller=LEARNER)
+    row = meaning_row(driver, world_id, GODPARENT)
+    cap = read(driver, world_id, "MATCH (c:Capability {registry_id: $id}) RETURN c", id=row["id"])
+    cap_id = cap[0]["c"]["id"]
+    text = render_receipt(driver, world_id, receipt)
+    assert f'o mint meaning "{GODPARENT}" (provisional)' in text
+    assert f'o capability calendar confirms for meaning "{GODPARENT}"' in text
+    entries = read(
+        driver,
+        world_id,
+        "MATCH (e:ChangeEntry {entity_id: $id}) RETURN e.entity_type AS t, e.field AS f",
+        id=cap_id,
+    )
+    assert entries == [{"t": "registry_row", "f": "row"}]
+    change = read(driver, world_id, "MATCH (c:OntologyChange {operation: 'propose'}) RETURN c")
+    after = json.loads(change[0]["c"]["rows_after"])
+    assert sorted(entry["table"] for entry in after) == ["capabilities", "meanings"]
+    inverse = json.loads(change[0]["c"]["inverse_operation"])
+    assert inverse["with"] == [{"table": "capabilities", "id": cap_id}]

@@ -13,7 +13,7 @@ from grove.clock import TestClock
 from grove.models.errors import ProviderError
 from grove.models.judge import FALLBACK_JOB, FIRST_JOB, SECOND_JOB, judge_word
 from grove.models.layer import ModelLayer
-from grove.ontology import plan_words, ride_on_generic
+from grove.ontology import fit_links, plan_words
 from grove.store.query import WorldQuery
 from grove.writer import apply_batch
 from grove.writer.ontology import check_proposal
@@ -258,16 +258,20 @@ def test_past_the_valve_a_phrase_rides_on_the_generic_meaning_with_its_phrase_ke
     assert plan.generic == (names[3],)
 
     registry = Registry.load(WorldQuery(driver, world_id))
-    links = [create_link("$ilse", name, "$teo", "e1", recheck_by=RECHECK) for name in names]
-    ops = [*plan.ops, *ride_on_generic(registry, links, plan.generic)]
+    # Reviewer blocker 4: each phrase was proposed permanent, so its link carries no re-check by;
+    # the generic meaning is a state, and fit_links gives the ridden link its horizon.
+    links = [create_link("$ilse", name, "$teo", "e1") for name in names]
+    ops = [*plan.ops, *fit_links(plan, links, now=clock.now(world_id))]
     apply_batch(driver, world_id, LEARNER, batch_for(ops, chat))
     generic = next(row for row in registry.meanings.values() if row.get("generic"))
     kept = read(
         driver,
         world_id,
-        "MATCH (:Item)-[l:LINK {meaning: $m}]->(:Item) RETURN l.original_phrase AS phrase",
+        "MATCH (:Item)-[l:LINK {meaning: $m}]->(:Item) "
+        "RETURN l.original_phrase AS phrase, l.recheck_by AS recheck_by",
         m=generic["id"],
     )
+    assert kept[0]["recheck_by"] == NINE + timedelta(days=generic["default_horizon"])
     texts = read(
         driver,
         world_id,
@@ -319,3 +323,123 @@ def test_a_proposal_the_judges_cannot_take_is_held_and_the_plan_goes_on(driver, 
     plan = plan_words(make_layer(router), driver, world_id, [errand, proposal()])
     assert plan.held == (("kind", "errand", "judge_failed"),)
     assert [op["name"] for op in plan.ops] == [GODPARENT]
+
+
+# Regressions of the reviewer of c19dbd9 (blockers 2 to 4) ----------------------------------------
+
+
+def property_proposal(name: str, **over) -> dict:
+    op = {
+        "op_id": new_op_id(),
+        "word_type": "property_name",
+        "kind": "plan",
+        "name": name,
+        "description": f"The plan's {name}.",
+        "reason": f"No property says the plan's {name}.",
+        "worked_example": {"ev_id": "e1"},
+        "neighbours": [],
+        "declared": {"value_type": "text", "temporal_class": "permanent"},
+        "example": "The orchard group holds the plan; the budget is small.",
+    }
+    op.update(over)
+    return op
+
+
+def fields_only(verdict: str) -> tuple:
+    return reply(chat_doc(json.dumps({"fields": {"temporal_class": {"verdict": verdict}}})))
+
+
+def orchard_plan(**properties) -> dict:
+    return create_item(
+        "plan",
+        "Replant the orchard",
+        "e1",
+        status="proposed",
+        recheck_by=RECHECK,
+        properties=properties,
+    )
+
+
+def test_two_new_property_names_of_one_kind_plan_and_commit_in_one_batch(
+    driver, seeded, chat, make_layer
+):
+    """Blocker 2: a word the batch mints is no neighbour of a later proposal, in the plan and in
+    the writer alike, so the second property name of a new kind needs no neighbour either."""
+    world_id = seeded["world_id"]
+    router = Router([], [fields_only("fits")])
+    proposals = [property_proposal("owner"), property_proposal("budget note")]
+    plan = plan_words(make_layer(router), driver, world_id, proposals)
+    assert [op["name"] for op in plan.ops] == ["owner", "budget note"] and plan.held == ()
+    item = orchard_plan(owner="the orchard group", **{"budget note": "small"})
+    apply_batch(
+        driver,
+        world_id,
+        LEARNER,
+        {"evidence": [observation(chat, "e1", 1)], "ops": [*plan.ops, item]},
+    )
+    rows = read(
+        driver,
+        world_id,
+        "MATCH (p:PropertyName) RETURN p.name AS name, p.status AS status ORDER BY name",
+    )
+    assert rows == [
+        {"name": "budget note", "status": "provisional"},
+        {"name": "owner", "status": "provisional"},
+    ]
+
+
+def test_a_disputed_property_of_a_kind_that_is_not_a_record_is_held_not_planned(
+    driver, seeded, make_layer
+):
+    """Blocker 3a: the safer value of a disputed permanent property is state, and a state property
+    sits only on a record, so the word would fit no plan: the plan holds it."""
+    world_id = seeded["world_id"]
+    router = Router([], [fields_only("does_not_fit")])
+    plan = plan_words(make_layer(router), driver, world_id, [property_proposal("owner")])
+    assert plan.ops == () and plan.words == ()
+    assert plan.held == (("property_name", "owner", "state_property_on_item"),)
+
+
+def test_a_disputed_meaning_settles_as_state_and_its_link_gets_a_recheck(
+    driver, seeded, chat, make_layer
+):
+    """Blocker 3b: the plan says how the word settles, and fit_links gives a link of a word that
+    settled as a state the safer horizon, so the batch commits with no hand-made re-check."""
+    world_id = seeded["world_id"]
+    router = Router(
+        [first("different")], [reply(chat_doc(json.dumps(second("different", "does_not_fit"))))]
+    )
+    plan = plan_words(make_layer(router), driver, world_id, [proposal()])
+    assert [(w.outcome, w.temporal_class, w.default_horizon, w.disputed) for w in plan.words] == [
+        ("mint", "state", 30, ("temporal_class",))
+    ]
+    links = fit_links(
+        plan, [create_link("$ilse", GODPARENT, "$teo", "e1")], now=clock.now(world_id)
+    )
+    apply_batch(driver, world_id, LEARNER, batch_for([*plan.ops, *links], chat))
+    row = meaning(driver, world_id, GODPARENT)
+    assert row["temporal_class"] == "state"
+    link = read(driver, world_id, "MATCH ()-[l:LINK]->() RETURN l.recheck_by AS r")
+    assert link == [{"r": NINE + timedelta(days=30)}]
+
+
+def test_an_alias_of_a_state_meaning_reads_its_horizon_and_a_given_recheck_is_kept(
+    driver, seeded, chat, make_layer
+):
+    world_id = seeded["world_id"]
+    router = Router([first("same")], [reply(chat_doc(json.dumps(second("same"))))])
+    plan = plan_words(make_layer(router), driver, world_id, [proposal("is pals with")])
+    assert [(w.outcome, w.temporal_class, w.default_horizon) for w in plan.words] == [
+        ("alias", "state", 180)
+    ]
+    sent = [
+        create_link("$ilse", "is pals with", "$teo", "e1"),
+        create_link("$teo", "is pals with", "$ilse", "e1", recheck_by=RECHECK),
+    ]
+    links = fit_links(plan, sent, now=clock.now(world_id))
+    assert [link["recheck_by"] for link in links] == [
+        (NINE + timedelta(days=180)).isoformat(),
+        RECHECK,
+    ]
+    apply_batch(driver, world_id, LEARNER, batch_for([*plan.ops, *links], chat))
+    assert meaning(driver, world_id, "is pals with") is None

@@ -179,11 +179,6 @@ _CREATED = (
     "MATCH (e:ChangeEntry {change_set_id: $change_set, field: 'row'}) "
     "WHERE e.entity_type IN ['item', 'link'] RETURN e.entity_type AS type, e.entity_id AS id"
 )
-_PROPERTY_ENTRIES = (
-    "MATCH (e:ChangeEntry {change_set_id: $change_set, entity_type: 'item'}) "
-    "WHERE e.field IN ['row', 'properties'] "
-    "RETURN e.entity_id AS id, e.field AS field, e.old_value_id AS old, e.new_value_id AS new"
-)
 
 
 # Judgment subjects ---------------------------------------------------------------------------
@@ -509,11 +504,18 @@ def _words_of(registry: "Registry", word_type: str, kind_id: str | None) -> list
 
 
 def _neighbours(
-    registry: "Registry", word_type: str, value: Any, kind_id: str | None
+    registry: "Registry",
+    word_type: str,
+    value: Any,
+    kind_id: str | None,
+    fresh: frozenset[str] = frozenset(),
 ) -> tuple[Neighbour, ...]:
     """The two closest existing words, each with what it cannot say (line 1594). A registry with
-    fewer than two words of the type asks for as many as it holds."""
-    wanted = min(2, len(_words_of(registry, word_type, kind_id)))
+    fewer than two words of the type asks for as many as it holds. A word minted earlier in the
+    same batch (`fresh`) is no neighbour: no judge saw it, and the planner's registry, read before
+    the batch, never holds it, so the planner and the writer ask for the same count."""
+    words = [row for row in _words_of(registry, word_type, kind_id) if row["id"] not in fresh]
+    wanted = min(2, len(words))
     if not isinstance(value, list) or len(value) != wanted:
         raise _bad(
             "neighbours_required",
@@ -536,7 +538,11 @@ def _neighbours(
         resolved = resolve_word(
             registry, word_type, ref, kind_id=kind_id if word_type == "property_name" else None
         )
-        if resolved.outcome != RESOLVED or resolved.target is None:
+        if (
+            resolved.outcome != RESOLVED
+            or resolved.target is None
+            or resolved.target["id"] in fresh
+        ):
             raise _bad(
                 "neighbour_unknown",
                 f"neighbour {ref!r} is not one existing {word_type}",
@@ -590,10 +596,13 @@ def check_name(registry: "Registry", word_type: str, name: str, kind_id: str | N
     return name
 
 
-def check_proposal(registry: "Registry", proposal: dict[str, Any]) -> CheckedProposal:
+def check_proposal(
+    registry: "Registry", proposal: dict[str, Any], *, fresh: frozenset[str] = frozenset()
+) -> CheckedProposal:
     """Every check of a proposal that needs no judgment: the name (reuse first), the declared
     fields, the neighbours and the texts. Raises Refused. The planner calls this before it spends
-    a judge call, so a proposal the writer would refuse rides on the generic meaning instead."""
+    a judge call, so a proposal the writer would refuse rides on the generic meaning instead.
+    `fresh` holds the ids of the words the batch minted before this proposal."""
     word_type = _enum(proposal.get("word_type"), "word_type", WORD_TYPES)
     kind_id = None
     if word_type == "property_name":
@@ -619,10 +628,11 @@ def check_proposal(registry: "Registry", proposal: dict[str, Any]) -> CheckedPro
     else:
         columns, disputable = _declared_property(declared)
         columns["kind"] = kind_id
+        _usable_on_kind(registry, word_type, kind_id, columns)
     capability = _capability(proposal.get("proposed_capability"))
     if capability is not None:
         disputable = (*disputable, "proposed_capability")
-    neighbours = _neighbours(registry, word_type, proposal.get("neighbours"), kind_id)
+    neighbours = _neighbours(registry, word_type, proposal.get("neighbours"), kind_id, fresh)
     values = {
         "temporal_class": columns.get("temporal_class"),
         "carries_consequences": columns.get("carries_consequences"),
@@ -642,6 +652,52 @@ def check_proposal(registry: "Registry", proposal: dict[str, Any]) -> CheckedPro
         {name_: values[name_] for name_ in disputable},
         reversed_,
     )
+
+
+def _usable_on_kind(
+    registry: "Registry", word_type: str, kind_id: str | None, columns: dict[str, Any]
+) -> None:
+    """A state property sits only on a record (D1, D4). A property name of state on any other kind
+    could sit on no item of its kind, so it is refused, as declared or as settled by a dispute."""
+    if word_type != "property_name" or columns.get("temporal_class") != "state":
+        return
+    kind = registry.kind(str(kind_id))
+    if kind.get("lifecycle_class") != "record":
+        raise Refused(
+            "state_property_on_item",
+            "state_property_on_item",
+            "a state property sits only on a record: write a link of a state meaning or a "
+            "measured-figure record instead",
+            {"kind": kind_id, "lifecycle_class": kind.get("lifecycle_class")},
+        )
+
+
+def verdict_outcome(checked: "CheckedProposal", same_word: tuple[str, ...] | list[str]) -> str:
+    """O4: an alias only when the word has a neighbour and every same-word verdict is same."""
+    if checked.neighbours and same_word and all(verdict == SAME for verdict in same_word):
+        return OUTCOME_ALIAS
+    return OUTCOME_MINT
+
+
+def disputed_of(checked: "CheckedProposal", fit: dict[str, list[str]]) -> frozenset[str]:
+    """O5: a disputable field is disputed when no judgment fits it or one says it does not fit."""
+    return frozenset(
+        name for name in checked.disputable if not fit.get(name) or DOES_NOT_FIT in fit[name]
+    )
+
+
+def settle(
+    registry: "Registry", checked: "CheckedProposal", outcome: str, disputed: frozenset[str]
+) -> dict[str, Any]:
+    """What the word stores after its judgments: an alias reads as its neighbour; a mint keeps its
+    declared columns with the safer value of each disputed field. Raises Refused when the settled
+    word would be unusable. The writer and the planner both call this, so a plan never holds an
+    operation that the writer must decline for its judgments."""
+    if outcome == OUTCOME_ALIAS:
+        return dict(checked.neighbours[0].row)
+    columns = safer(checked.word_type, checked.columns, set(disputed))
+    _usable_on_kind(registry, checked.word_type, checked.kind_id, columns)
+    return columns
 
 
 def safer(word_type: str, columns: dict[str, Any], disputed: set[str]) -> dict[str, Any]:
@@ -680,6 +736,16 @@ class OntologyState:
 
     mints: int = 0
     words: list[_Word] = field(default_factory=list)
+    # For each item, the property names this batch wrote (see note_written).
+    written: dict[str, set[str]] = field(default_factory=dict)
+
+
+def note_written(run: Any, item_id: str, names: set[str]) -> None:
+    """O8: create_item and update_item note each property name they wrote: every key of a new item,
+    and each key an update sent with a value that differs from the properties it merged onto (the
+    head, or the as-of value for a late fact). Only these are uses of a property name."""
+    if names:
+        _state(run).written.setdefault(item_id, set()).update(names)
 
 
 # Judgments -----------------------------------------------------------------------------------
@@ -832,7 +898,6 @@ def judge_verdicts(run: Any, checked: CheckedProposal, judgment_ids: list[str]) 
                 "a cited judgment did not judge this proposal",
                 {"judgment_id": row["id"]},
             )
-    outcome = OUTCOME_MINT
     if checked.neighbours:
         calls = {row["model_call_id"] for row in same_word}
         models = {row["model"] for row in same_word}
@@ -845,12 +910,8 @@ def judge_verdicts(run: Any, checked: CheckedProposal, judgment_ids: list[str]) 
                 "judge of the same model",
                 {},
             )
-        if all(row["verdict"] == SAME for row in same_word):
-            outcome = OUTCOME_ALIAS
-    disputed = {
-        name for name in checked.disputable if not fit.get(name) or DOES_NOT_FIT in fit[name]
-    }
-    return Verdicts(outcome, frozenset(disputed), tuple(dict.fromkeys(judgment_ids)))
+    outcome = verdict_outcome(checked, [row["verdict"] for row in same_word])
+    return Verdicts(outcome, disputed_of(checked, fit), tuple(dict.fromkeys(judgment_ids)))
 
 
 # Writes --------------------------------------------------------------------------------------
@@ -1006,12 +1067,14 @@ def _add_to_registry(run: Any, word_type: str, row: dict[str, Any]) -> None:
 
 
 def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
-    checked = check_proposal(run.registry, op)
+    state = _state(run)
+    fresh = frozenset(word.row_id for word in state.words if word.outcome == OUTCOME_MINT)
+    checked = check_proposal(run.registry, op, fresh=fresh)
     run.summaries[index] = f"{checked.word_type} {checked.name!r}"
     message_key = _message_key(run, op.get("worked_example"))
     verdicts = judge_verdicts(run, checked, list(op.get("judgment_ids") or []))
-    state = _state(run)
     reason_id = None
+    extra: list[tuple[str, dict[str, Any]]] = []
     if verdicts.outcome == OUTCOME_ALIAS:
         neighbour = checked.neighbours[0].row
         _alias_direction(run, checked, neighbour)
@@ -1038,6 +1101,7 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
         _add_to_registry(run, "alias", alias)
         table, row, target_id = "aliases", alias, neighbour["id"]
     else:
+        settle(run.registry, checked, verdicts.outcome, verdicts.disputed)
         state.mints += 1
         if state.mints > MINT_VALVE:
             raise _bad(
@@ -1053,33 +1117,40 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
         table, target_id = TABLES[checked.word_type], row["id"]
         capability = checked.capability
         if capability is not None and "proposed_capability" not in verdicts.disputed:
-            run.tx.run(
-                _ADD_CAPABILITY,
-                row={
-                    "id": run.new_id(),
-                    "connector_type": capability["connector_type"],
-                    "registry_id": row["id"],
-                    "capability": capability["capability"],
-                    "origin": "minted_with_a_word",
-                    "reason": reason_id,
-                    "version": 1,
-                    "touched_at": run.at,
-                },
-            )
-    run.entry(
-        entity_type=_ENTITY,
-        entity_id=row["id"],
-        field="row",
-        new=row_json(table, row, run.stamp.world_id),
-        world_time=run.at,
-        reason_id=reason_id,
-    )
+            capability_row = {
+                "id": run.new_id(),
+                "connector_type": capability["connector_type"],
+                "registry_id": row["id"],
+                "capability": capability["capability"],
+                "origin": "minted_with_a_word",
+                "reason": reason_id,
+                "version": 1,
+                "touched_at": run.at,
+            }
+            run.tx.run(_ADD_CAPABILITY, row=capability_row)
+            extra.append(("capabilities", capability_row))
+    after = [row_json(table, row, run.stamp.world_id)]
+    inverse: dict[str, Any] = {"operation": "retire", "table": table, "id": row["id"]}
+    for extra_table, extra_row in [(table, row), *extra]:
+        # O10: every registry row the proposal wrote has its change entry, so a rebuild from
+        # history restores it; the change log row holds each one and its inverse names it.
+        run.entry(
+            entity_type=_ENTITY,
+            entity_id=extra_row["id"],
+            field="row",
+            new=row_json(extra_table, extra_row, run.stamp.world_id),
+            world_time=run.at,
+            reason_id=reason_id,
+        )
+    for extra_table, extra_row in extra:
+        after.append(row_json(extra_table, extra_row, run.stamp.world_id))
+        inverse.setdefault("with", []).append({"table": extra_table, "id": extra_row["id"]})
     change_id = _change(
         run,
         operation="propose",
         before=[],
-        after=[row_json(table, row, run.stamp.world_id)],
-        inverse={"operation": "retire", "table": table, "id": row["id"]},
+        after=after,
+        inverse=inverse,
         reason_id=reason_id,
         judgment_ids=verdicts.judgment_ids,
     )
@@ -1284,26 +1355,8 @@ def _worked_examples(run: Any, ops: list[Any]) -> None:
 
 
 def _written_properties(run: Any) -> dict[str, set[str]]:
-    """For each item, the property names this batch wrote: every key of an item it created, and
-    each key whose value an update set or changed. Only these are uses of a property name (O8)."""
-    rows = run.tx.run(_PROPERTY_ENTRIES, change_set=run.stamp.change_set_id)
-    values = _values(
-        run, [value for row in rows for value in (row.get("old"), row.get("new")) if value]
-    )
-    written: dict[str, set[str]] = {}
-    for row in rows:
-        new = _decoded(values.get(row.get("new")))
-        if row["field"] == "row":
-            stored = (new or {}).get("row") if isinstance(new, dict) else None
-            properties = _decoded((stored or {}).get("properties")) or {}
-            keys = set(properties) if isinstance(properties, dict) else set()
-        else:
-            old = _decoded(values.get(row.get("old"))) or {}
-            new = new if isinstance(new, dict) else {}
-            old = old if isinstance(old, dict) else {}
-            keys = {key for key, value in new.items() if old.get(key) != value}
-        written.setdefault(row["id"], set()).update(keys)
-    return written
+    """For each item, the property names this batch wrote (note_written)."""
+    return _state(run).written
 
 
 def _usage(run: Any) -> None:
@@ -1395,20 +1448,23 @@ _ITEM_ALIAS_BY_VALUE = (
 )
 
 
-def value_names_item(tx: Any, value: Any) -> str | None:
+def value_names_item(tx: Any, value: Any, own_id: str | None = None) -> str | None:
     """O14: the id of an existing item that a text property value names exactly, by its id, its
     title or one of its usable aliases, or None. A relationship stored as text can be neither
-    walked nor corrected as a relationship, so the writer asks for a link instead."""
+    walked nor corrected as a relationship, so the writer asks for a link instead. The item that
+    holds the value (`own_id`) is never the one it names: create and update read the same."""
     if not isinstance(value, str) or reads_blank(value):
         return None
     normalised = normalise_phrase(value)
     if not normalised:
         return None
     for row in tx.run(_ITEM_BY_VALUE, value=value, lower=value.lower()):
+        if row["id"] == own_id:
+            continue
         if row["id"] == value or normalise_phrase(row.get("title") or "") == normalised:
             return row["id"]
     for row in tx.run(_ITEM_ALIAS_BY_VALUE, normalised=normalised):
-        if usable(row):
+        if usable(row) and row["id"] != own_id:
             return row["id"]
     return None
 
@@ -1427,14 +1483,18 @@ __all__ = [
     "check_name",
     "check_proposal",
     "count_usage",
+    "disputed_of",
     "field_fit_value",
     "finish",
     "judge_verdicts",
+    "note_written",
     "pair_subject",
     "promote_word",
     "propose_word",
     "safer",
     "same_word_subject",
+    "settle",
+    "verdict_outcome",
     "names_primitive",
     "same_word_value",
     "value_names_item",

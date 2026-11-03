@@ -214,8 +214,9 @@ what an earlier one did.
 The judges run outside the writer: `grove.models.judge.judge_word` calls Spark (job `word_judge`)
 and Glimmer (job `second_opinion`), with a correlated Spark judge (`second_opinion_fallback`) when
 Glimmer cannot be reached, and records each verdict with `grove.writer.judgments.record_judgments`.
-`grove.ontology.plan_words` runs them in order, after reuse first and the valve, and
-`ride_on_generic` puts every phrase it could not propose on the generic meaning, phrase kept.
+`grove.ontology.plan_words` runs them in order, after reuse first and the valve, and settles each
+word as the writer will. `fit_links` puts every phrase it could not propose on the generic meaning,
+phrase kept, and gives a link of a meaning that settled as a state its re-check by.
 
 `accounts.py` is not a B.2 operation: it holds sign-in's writes (S20, S40), users, sessions, email
 codes and the person's own item. Only `server/grove/api/auth.py` calls it. `docs/signin.md` has the
