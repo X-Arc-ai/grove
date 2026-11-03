@@ -16,6 +16,7 @@ from grove.store.asof import replay
 from grove.store.current import TERMINAL_ROLES, has_ended
 from grove.store.normalise import reads_blank
 from grove.store.primitives import KIND_BELIEF, PRIMITIVE_MEANING_IDS
+from grove.writer import ontology
 from grove.writer.clocks import (
     Clock,
     clock_columns,
@@ -107,6 +108,7 @@ class _Run:
         # Rows that existed already and that an operation of this batch cited again.
         self.cited_evidence: list[dict[str, Any]] = []
         self.recompute: dict[str, str] = {}
+        self.ontology = ontology.OntologyState()
 
     @property
     def at(self) -> datetime:
@@ -372,15 +374,32 @@ def _spelled_once(sent: dict[str, tuple[str, Any]], name: str, key: str, value: 
     sent.setdefault(name, (key, value))
 
 
-def _check_properties(run: _Run, kind: dict[str, Any], properties: dict[str, Any]) -> dict:
+def _check_properties(
+    run: _Run,
+    kind: dict[str, Any],
+    properties: dict[str, Any],
+    *,
+    sent_names: set[str] | None = None,
+    own_id: str | None = None,
+) -> dict:
     """The properties under their declared names. A state property sits only on a record, and a
-    record holds at most one (D1, D4)."""
+    record holds at most one (D1, D4). A value that names an item is refused (O14); on an update
+    only the values it sends (`sent_names`) are checked, so a stored value never blocks it."""
     named: dict[str, Any] = {}
     sent: dict[str, tuple[str, Any]] = {}
     state: list[str] = []
     for name, value in properties.items():
         declared = _declared_property(run, kind, name)
         _spelled_once(sent, declared["name"], name, value)
+        checked = sent_names is None or declared["name"] in sent_names
+        item_id = ontology.value_names_item(run.tx, value, own_id) if checked else None
+        if item_id is not None:
+            raise Refused(
+                "invalid_arguments",
+                "value_names_item",
+                f"the value of {declared['name']!r} names an item: write a link to it instead",
+                {"property": declared["name"], "item": item_id},
+            )
         named[declared["name"]] = value
         if declared.get("temporal_class") == "state" and declared["name"] not in state:
             state.append(declared["name"])
@@ -653,7 +672,14 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         reason_id=reason_id,
         evidence_id=provenance,
     )
-    _write_evidence(run, plans, "item", item_id, reason_id)
+    created = _write_evidence(run, plans, "item", item_id, reason_id)
+    ontology.note_written(
+        run,
+        item_id,
+        kind["id"],
+        {name for name, value in (properties or {}).items() if value is not None},
+        created,
+    )
     _record_pairs(run, item_id, pairs, provenance)
     if overridden:
         write_override_row(run.tx, run.stamp.request_id, op["op_id"], overridden, run.at)
@@ -680,6 +706,7 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     required = {"title", *_required_fields(kind)}
 
     changes: list[tuple[str, Any, Any, dict[str, Any]]] = []
+    written: set[str] = set()
     for name, value in fields.items():
         old: Any = item.get(name)
         if name == "properties":
@@ -692,6 +719,7 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             else:
                 merged = json.loads(item.get("properties") or "{}")
             old = json.loads(item.get("properties") or "{}") or None
+            base = dict(merged)
             sent: dict[str, tuple[str, Any]] = {}
             for key, part in value.items():
                 name_of = _declared_property(run, kind, key)["name"]
@@ -700,7 +728,18 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
                     merged.pop(name_of, None)
                 else:
                     merged[name_of] = part
-            merged = _check_properties(run, kind, merged)
+            merged = _check_properties(
+                run,
+                kind,
+                merged,
+                sent_names={name for name, (_, part) in sent.items() if part is not None},
+                own_id=item_id,
+            )
+            written = {
+                name
+                for name, (_, part) in sent.items()
+                if part is not None and base.get(name) != part
+            }
             new = merged or None
             columns = {"properties": _json(new), "property_values": _property_values(new)}
         elif name in ("title", "summary", "body"):
@@ -759,7 +798,9 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             _bump(run, _BUMP_ITEM, item_id)
     else:
         reason_id = run.text(op["reason"])
-    _write_evidence(run, plans, "item", item_id, reason_id)
+    created = _write_evidence(run, plans, "item", item_id, reason_id)
+    if any(name == "properties" for name, *_ in changes):
+        ontology.note_written(run, item_id, item["kind"], written, created)
     run.touch(item_id, index)
 
 
@@ -1456,6 +1497,8 @@ _HANDLERS = {
     "end_link": _end_link,
     "attach_evidence": _attach_evidence,
     "end_evidence": _end_evidence,
+    "propose_word": ontology.propose_word,
+    "promote_word": ontology.promote_word,
 }
 
 
@@ -1604,10 +1647,12 @@ def _finish(run: _Run, ops: list[Any]) -> None:
                     {"alternative": "reported done"},
                 ),
             )
+    ontology.finish(run, ops)
     _refuse_dependents(run, ops)
     if not run.refused:
         for target_id, target_type in run.recompute.items():
             _recompute(run, target_id, target_type)
+        ontology.count_usage(run)
 
 
 def apply_ops(
