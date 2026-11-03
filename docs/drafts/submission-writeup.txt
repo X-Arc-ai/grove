@@ -1,0 +1,13 @@
+DRAFT FOR ANAS. Snapshot: 2026-11-03. Refresh before submission.
+
+14 pull requests merged into develop by this checkpoint. Three more feature pull requests remain open. These counts describe repository progress, not a complete release.
+
+Grove builds a dated, sourced model of a person's world that an AI assistant can use. The event implementation includes a Neo4j store, a validating writer with receipts, a durable queue, source screening, sign-in, OAuth transport, initial graph views, a model-call layer, runner infrastructure, and an ontology floor with two recorded judgments.
+
+Spark, Voice Transcribe, and Glimmer have live synthetic probe evidence. Glimmer runs on Modal. The runner demonstrated an OpenCode tool call through the internal gateway. These component results do not establish the complete public experience.
+
+The public host currently serves revision 9a5cb23ba2935a66f0091e72ccc7e38c54695722. Its health response reports the service and store as healthy. The merged baseline is 57da012f05eecfd0641773e12e4f3a0912bff5cb. Public upload, extraction, recall, and a saved receipt visible in the browser still need end-to-end acceptance. The public MCP tool set is empty at this baseline, and the runner deployment remains pending.
+
+The source of each event contribution is recorded in HACKATHON.md with its PR and date. The export guides, graph visualizer, worker renderer, and associated simulation assets predate the event. Earlier Grove research motivated this design. It is not an evaluation of this implementation. No historical benchmark score is claimed for this build.
+
+Before this draft becomes a submission: complete the approved feature scope, record the public judge path and film with invented data, refresh the event history, verify the exact release candidate, and obtain the release owner's approval. The time evaluation, completed public demonstration, final video link, and public repository link remain acceptance gates. Do not substitute component test counts for these results.
