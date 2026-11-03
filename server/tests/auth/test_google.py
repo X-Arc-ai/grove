@@ -145,7 +145,7 @@ def test_the_callback_goes_to_the_next_path_it_was_given(client, accounts, googl
         "/a\\b",
         "/line\nbreak",
         "/tab\t",
-        "/" + "x" * 512,
+        "/" + "x" * 2048,
         "",
     ],
 )
@@ -156,6 +156,18 @@ def test_an_open_redirect_next_is_refused(bad_next, client, accounts, google):
     response = client.get(GOOGLE_CALLBACK, params={"code": "c", "state": query["state"]})
     assert response.status_code == 303
     assert response.headers["location"] == "/"
+
+
+def test_a_next_of_2048_characters_comes_back_whole(client, accounts, google):
+    """The consent page's /authorize path and query, as long as the cap allows."""
+    head = "/authorize?client_id=a&state="
+    long_next = head + "s" * (2048 - len(head))
+    address = accounts.address()
+    query = google_start(client, long_next)
+    google.claims = google.good_claims(address, query["nonce"])
+    response = client.get(GOOGLE_CALLBACK, params={"code": "c", "state": query["state"]})
+    assert response.status_code == 303
+    assert response.headers["location"] == long_next
 
 
 def test_a_next_changed_in_the_cookie_is_refused_too(client, accounts, google):
