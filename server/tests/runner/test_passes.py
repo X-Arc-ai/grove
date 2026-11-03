@@ -72,10 +72,12 @@ def test_a_queued_store_is_granted_to_a_learner_pass(driver, seeded, auth, froze
 
 def test_one_pass_at_a_time_per_world(driver, seeded, auth, frozen):
     one = replace(FAST, learner_requests=1)
-    queue_store(driver, seeded)
+    first = queue_store(driver, seeded)
     second = queue_store(driver, seeded, "Remember: Tomas Reyes joins the Elm Street fair.")
     start_pass(driver, auth, seeded, settings=one)
-    assert request_state(driver, seeded, second).status == "queued"
+    # Both rows hold the frozen time, so either may be claimed first: one waits.
+    states = sorted(request_state(driver, seeded, key).status for key in (first, second))
+    assert states == ["applying", "queued"]
     with pytest.raises(PassBusy):
         start_pass(driver, auth, seeded, settings=one)
     assert all(row["world_id"] != seeded for row in due_work(driver, settings=one))

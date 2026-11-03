@@ -323,10 +323,11 @@ def test_nginx_gives_registration_its_own_zone_that_one_address_cannot_fill_the_
     assert MAX_REGISTRATIONS_PER_WINDOW == 1000
 
 
-def test_nginx_has_six_locations_and_no_rule_that_can_answer_for_the_api():
+def test_nginx_has_seven_locations_and_no_rule_that_can_answer_for_the_api():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     assert re.findall(r"^[ \t]*location\b.*$", https, re.MULTILINE) == [
         "    location / {",
+        "    location /v1/internal/ {",
         "    location /v1/auth/email/ {",
         "    location = /register {",
         "    location = /authorize {",
@@ -343,7 +344,12 @@ def test_nginx_has_six_locations_and_no_rule_that_can_answer_for_the_api():
         "if (",
         "deny ",
     ):
-        assert word not in https, word
+        assert word not in https.replace(_INTERNAL_BLOCK, ""), word
+    # The one block nginx answers itself: the internal routes, which are not the public API.
+    assert https.count(_INTERNAL_BLOCK) == 1
+
+
+_INTERNAL_BLOCK = "    location /v1/internal/ {\n        return 404;\n    }\n"
 
 
 def test_nginx_passes_what_the_api_and_a_stream_need():
