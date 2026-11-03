@@ -102,7 +102,8 @@
   function verifyEmail(code){
     code=String(code||'').trim();
     if(!live){if(/^[0-9]{6}$/.test(code))finishSignIn('email');else{ui.error=SIGNIN_COPY.code;render(true);}return Promise.resolve();}
-    return live.emailVerify(ui.email,code).then(function(res){if(res.ok)finishSignIn('email',res.body);else{ui.error=SIGNIN_COPY.code;render(true);}},function(){ui.error=SIGNIN_COPY.offline;render(true);});
+    // A sign-in that the consent page asked for goes back to it (live.js checks the next).
+    return live.emailVerify(ui.email,code).then(function(res){if(res.ok){if(!live.returnToNext())finishSignIn('email',res.body);}else{ui.error=SIGNIN_COPY.code;render(true);}},function(){ui.error=SIGNIN_COPY.offline;render(true);});
   }
   // Live mode, on load, the way back from a Google sign-in that did not finish: the query leaves the
   // address, and the error waits for the card (a session check that succeeds drops it).
@@ -127,6 +128,8 @@
   function checkSession(){
     return live.session().then(function(res){
       if(res.ok&&res.body&&res.body.signed_in){
+        // Signed in already on a sign-in page the consent page sent here: straight back to it.
+        if(live.returnToNext())return;
         var resumed=arrive(res.body),waiting=ui.authStage==='checking';
         if(!api.getState().auth){finishSignIn(res.body.method||'google',res.body);return;}
         signinError='';if(waiting)ui.authStage=null;if(waiting||resumed)render(true);if(resumed&&window.reloadGrove)window.reloadGrove();

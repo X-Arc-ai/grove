@@ -22,7 +22,9 @@ agent only reads and proposes, through the `brain` CLI, and the writer decides (
 | Pass token `p1.` | one OpenCode run | its environment (`GROVE_PASS_TOKEN`) | the `brain` routes of one world, as one agent, with `grove.read` and `grove.propose`. It expires with the pass's time cap, and the API refuses it once the run record has ended. |
 | Gateway run token `g1.` | one OpenCode run | its provider key (`GROVE_RUN_TOKEN`, read by `runner/opencode.json`) | model calls of one world, one run and one job, up to the pass's token cap. |
 
-The API mints both pass tokens with `GROVE_GATEWAY_SECRET`; the pass token's key is derived from
+The runner reaches the API on the runner network (`http://api:8000`), and nginx answers 404 for
+`/v1/internal/`, so no request from outside the box reaches these routes. The API mints both pass
+tokens with `GROVE_GATEWAY_SECRET`; the pass token's key is derived from
 it under its own label, so neither token passes as the other. OpenCode's environment is built
 from nothing (`grove.runner.loop.opencode_env`): it never holds the runner token.
 
