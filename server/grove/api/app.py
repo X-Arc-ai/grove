@@ -14,7 +14,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 
-from grove.api import health, wellknown
+from grove.api import health, uploads, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import ApiSettings, load_api_settings
@@ -91,15 +91,17 @@ def create_app(
     async def no_store(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        """The views and sign-in answer with the person's own data: no cache keeps a copy."""
+        """The views, sign-in and sources answer with the person's own data: no cache keeps a
+        copy."""
         response = await call_next(request)
-        if request.url.path.startswith((PREFIX, AUTH_PREFIX)):
+        if request.url.path.startswith((PREFIX, AUTH_PREFIX, uploads.PREFIX)):
             response.headers["Cache-Control"] = "no-store"
         return response
 
     app.include_router(health.router)
     app.include_router(wellknown.router)
     app.include_router(router)
+    app.include_router(uploads.router)
     app.include_router(auth_router)
     folder = os.environ.get(WEB_DIST_ENV)
     if folder:
