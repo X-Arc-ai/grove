@@ -55,6 +55,11 @@ from nothing (`grove.runner.loop.opencode_env`): it never holds the runner token
    Connector's job is queued on Appendix C's trigger: 10 changed items since its last pass, or a
    contradiction detected since then.
 
+The interactive lane comes first (spec 2327, 3008) while one pass runs per world: when a request
+is due and a Curator or Connector pass of the world runs, the due list says so (`preempt`), the
+runner stops that pass (outcome `preempted`), its job goes back to the queue at once with no
+attempt spent, and the Learner starts on a later poll.
+
 A runner that is killed with no time to end its passes leaves its requests `applying` until their
 leases pass; then they are due again. A stop signal (the nightly backup stops the service) ends
 each running pass as `stopped`.

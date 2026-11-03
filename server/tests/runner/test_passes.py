@@ -277,3 +277,30 @@ def test_a_world_at_its_budget_ceiling_starts_no_pass_and_its_request_stays_queu
     assert state.status == "queued" and state.attempts == 0
     frozen.advance(days=1)
     assert {"world_id": seeded, "agent": "learner"} in due_work(driver, settings=FAST)
+
+
+def test_a_request_behind_a_maintenance_pass_preempts_it(driver, seeded, auth, frozen):
+    """The interactive lane first (spec 2327, 3008) while one pass runs per world."""
+    from grove.writer import runs
+
+    job_id = runs.enqueue_job(
+        driver, seeded, agent="curator", trigger="after_update", input_references=["x"], priority=20
+    )
+    curator = start_pass(driver, auth, seeded, settings=FAST)
+    assert curator.agent == "curator"
+    queue_store(driver, seeded)
+    rows = [row for row in due_work(driver, settings=FAST) if row["world_id"] == seeded]
+    assert rows == [{"world_id": seeded, "agent": "learner", "preempt": curator.run_id}]
+    with pytest.raises(PassBusy):
+        start_pass(driver, auth, seeded, agent="learner", settings=FAST)
+    end_pass(driver, seeded, curator.run_id, outcome="preempted")
+    job = WorldQuery(driver, seeded).read("MATCH (j:Job {id: $id}) RETURN j", id=job_id)[0]["j"]
+    assert job["state"] == "queued" and job["attempts"] == 0 and job["run_after"] == frozen.now()
+    assert start_pass(driver, auth, seeded, settings=FAST).agent == "learner"
+
+
+def test_a_learner_pass_is_never_preempted(driver, seeded, auth, frozen):
+    queue_store(driver, seeded)
+    queue_store(driver, seeded, "Remember: Tomas Reyes joins the Elm Street fair.")
+    start_pass(driver, auth, seeded, settings=replace(FAST, learner_requests=1))
+    assert all(row["world_id"] != seeded for row in due_work(driver, settings=FAST))
