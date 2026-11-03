@@ -80,7 +80,9 @@ def automated_source(driver, w: str, lines: list[str]) -> dict[str, str]:
         external_locator="carrier-notice-4471.txt",
         content="\n".join(lines),
         parser_version="test-1",
-        speakers={BOOKING_KEY: {"kind": "automated", "sender": "carrier-notice"}},
+        speakers={
+            BOOKING_KEY: {"kind": "automated", "sender": "carrier-notice", "locator": "line:1"}
+        },
     )
     episode_id = record_episode(
         driver,

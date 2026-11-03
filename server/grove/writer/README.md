@@ -193,7 +193,9 @@ link into or out of it, a link that carries consequences, a state link on the pe
 A confirmation needs the band `confirm`, and a load-bearing one an agreeing second judge from
 another model or recorded as a correlated stand-in. Each verify appends one `:Verification` row,
 and `confirmed_against` names it. Last confirmed moves to the time the newest admitted piece speaks
-for, never the commit time. The AI host verifies only with the person's own words in an answer or
+for, never the commit time, and a piece dated after now is refused (`future_evidence`). Load-bearing is
+read again at the end of the batch, so a consequence link that a later operation adds needs the
+second judge too. The AI host verifies only with the person's own words in an answer or
 a correction (S48). `moved` needs the claim changed earlier in the batch, and `retired` needs it
 ended with the end class `retired` and its consequence links ended. A confirmation at create
 (`confirmed_by_call`) needs a confirming creating row read in this pass, an extraction call of

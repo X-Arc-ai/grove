@@ -379,6 +379,15 @@ def _pieces(run: "_Run", op: dict[str, Any], subject: str, caller_kind: str | No
             columns = apply._existing_evidence(run, raw["evidence_id"])
             evidence_id = raw["evidence_id"]
         source, connector, connector_type = _source_and_connector(run, columns["source_id"])
+        if columns["source_time"] > run.at:
+            # Evidence speaks for its own time, and a time after now has not happened yet: it
+            # would set last confirmed in the future and outweigh every real confirmation.
+            raise Refused(
+                "invalid_arguments",
+                "future_evidence",
+                "a piece of evidence dated after now cannot confirm, contradict or defer a claim",
+                {"piece": index},
+            )
         judgment = None
         if "judgment_id" in raw:
             if raw["judgment_id"] in seen:
@@ -671,6 +680,10 @@ def verify_op(run: "_Run", index: int, op: dict[str, Any]) -> None:
         }
     )
     run.tx.run("CREATE (v:Verification) SET v += $row", row=row)
+    if disposition == "confirmed" and not bearing:
+        # A later operation of this batch can add a consequence link: the batch ends with the
+        # claim load-bearing, so the end of the batch checks condition 4 again.
+        run.late_bearing.append(LateBearing(index, claim_type, claim_id, verification_id, pieces))
     columns: dict[str, Any] = {}
     if disposition == "confirmed":
         for name, old, new in (
@@ -736,6 +749,34 @@ def _piece_json(piece: Piece) -> dict[str, Any]:
         "capability_row": piece.capability_row or None,
         "admitted": piece.admitted,
     }
+
+
+@dataclass
+class LateBearing:
+    index: int
+    claim_type: str
+    claim_id: str
+    verification_id: str
+    pieces: list
+
+
+def check_late_bearing(run: "_Run", pending: LateBearing) -> None:
+    """Condition 4 at the end of the batch, for a confirmation made while the claim was a leaf."""
+    from grove.writer import apply
+
+    read = apply._one(
+        run,
+        apply._READ_ITEM if pending.claim_type == "item" else apply._READ_LINK,
+        pending.claim_type,
+        pending.claim_id,
+        lock=False,
+    )
+    if not load_bearing(run, pending.claim_type, read):
+        return
+    _second_judge_gate(pending.pieces)
+    run.tx.run(
+        "MATCH (v:Verification {id: $id}) SET v.loadbearing = true", id=pending.verification_id
+    )
 
 
 # The confirmation at create ---------------------------------------------------------------------
@@ -814,6 +855,7 @@ def confirm_at_create(run: "_Run", pending: CreateConfirm) -> None:
         if (
             columns["derivation"] == "observed"
             and columns["source_type"] == "confirmed"
+            and plan.source_time <= run.at
             and received is not None
             and call["at"] is not None
             and received <= call["at"]

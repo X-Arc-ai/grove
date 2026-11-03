@@ -56,6 +56,14 @@ _ANSWER_RELAYS = frozenset({"answer", "correction"})
 def _check_verbatim(
     caller: Caller, request_id: str, relay: str | None, verbatim: bool | None, message: Any
 ) -> None:
+    if relay in _ANSWER_RELAYS and caller.kind not in ("person", "ai_host"):
+        # Only the person, or the AI host relaying the person, answers or corrects (D5, S48).
+        raise _refused(
+            "scope_denied",
+            "relay_caller",
+            "an answer or a correction comes from the person or the AI host only",
+            request_id,
+        )
     if caller.kind != "ai_host" or relay not in _ANSWER_RELAYS:
         return
     if verbatim is not True or not isinstance(message, str) or not message.strip():
