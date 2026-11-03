@@ -101,8 +101,9 @@ def source(
         source_ids=[source_id],
         first_message_key=f"d5-first-{next(_keys)}",
         last_message_key=f"d5-last-{next(_keys)}",
-        start_time=NOW - timedelta(days=60),
-        end_time=NOW,
+        # Wide, so these tests date rows freely; a row may not be dated outside its episode.
+        start_time=NOW - timedelta(days=3650),
+        end_time=NOW + timedelta(days=3650),
         cut_rule="chat_window_90m",
     )
     return {"connector_id": connector_id, "source_id": source_id, "episode_id": episode_id}

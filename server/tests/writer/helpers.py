@@ -64,8 +64,21 @@ def chat(driver, seeded):
     return make_source(driver, seeded["world_id"], "whatsapp", CHAT_LINES)
 
 
+# The episode window of a test source: wide, so a test may date its rows freely. A row may not be
+# dated outside its episode (S46); a test of that rule passes its own window.
+EPISODE_FROM = datetime(2000, 1, 1, tzinfo=UTC)
+EPISODE_TO = datetime(2100, 1, 1, tzinfo=UTC)
+
+
 def make_source(
-    driver, world_id: str, connector_type: str, lines: list[str], **connector: Any
+    driver,
+    world_id: str,
+    connector_type: str,
+    lines: list[str],
+    *,
+    episode_start: datetime = EPISODE_FROM,
+    episode_end: datetime = EPISODE_TO,
+    **connector: Any,
 ) -> dict[str, str]:
     connector_id = record_connector(driver, world_id, connector_type, **connector)
     source_id = record_source(
@@ -83,8 +96,8 @@ def make_source(
         source_ids=[source_id],
         first_message_key=f"k-first-{next(_counter)}",
         last_message_key=f"k-last-{next(_counter)}",
-        start_time=T0,
-        end_time=at_minute(len(lines)),
+        start_time=episode_start,
+        end_time=episode_end,
         cut_rule="chat_window_90m",
     )
     return {"connector_id": connector_id, "source_id": source_id, "episode_id": episode_id}

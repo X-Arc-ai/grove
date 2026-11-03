@@ -177,6 +177,17 @@ def dated_after_read(
     return received is not None and source_time > received
 
 
+def outside_episode(connector_type: str, episode: dict[str, Any], source_time: datetime) -> bool:
+    """True for a row dated outside its episode's window (start_time to end_time), outside the
+    calendar and reminders, whose entries are dated ahead of any read."""
+    if connector_type in DATED_AHEAD:
+        return False
+    start, end = episode.get("start_time"), episode.get("end_time")
+    if start is None or end is None:
+        return False
+    return source_time < start or source_time > end
+
+
 def resolve_observation(
     tx: WorldTx, observation: dict[str, Any], *, now: datetime | None = None
 ) -> dict[str, Any]:
@@ -240,6 +251,16 @@ def resolve_observation(
             "invalid_arguments",
             "future_evidence",
             "a row is dated after its source was read, or after now",
+            {"ev_id": observation["ev_id"]},
+        )
+    if outside_episode(connector_type, episode, source_time):
+        # The episode's window is code-held (the connector cut it from the messages' own times):
+        # a row dated outside it names a time its messages never had (D4: evidence is dated by
+        # its own timestamp, never by the read).
+        raise Refused(
+            "invalid_arguments",
+            "outside_episode",
+            "a row is dated outside the window of the episode it cites",
             {"ev_id": observation["ev_id"]},
         )
     statement_class = observation["statement_class"]

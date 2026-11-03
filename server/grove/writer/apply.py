@@ -293,11 +293,16 @@ def _plans(run: _Run, refs: list[dict[str, Any]]) -> list[_Plan]:
     return plans
 
 
-def _world_time(plans: list[_Plan]) -> datetime | None:
-    """The time an operation speaks for: the newest source time among its supporting rows."""
+def _world_time(plans: list[_Plan], now: datetime | None = None) -> datetime | None:
+    """The time an operation speaks for: the newest source time among its supporting rows, and
+    never later than the batch. A calendar entry or a reminder may be dated ahead: what it says
+    of a later day is a scheduled field, never a clock of this operation (D4)."""
     supporting = [plan.source_time for plan in plans if plan.polarity == "supports"]
     times = supporting or [plan.source_time for plan in plans]
-    return max(times) if times else None
+    if not times:
+        return None
+    newest = max(times)
+    return min(newest, now) if now is not None else newest
 
 
 def _first_supporting(plans: list[_Plan]) -> str | None:
@@ -643,7 +648,7 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     if op.get("properties"):
         properties = _check_properties(run, kind, op["properties"])
     plans = _plans(run, op["evidence_refs"])
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     provenance = _first_supporting(plans)
     values = {**op, "properties": _json(properties)}
     for name in _required_fields(kind):
@@ -735,7 +740,7 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         _not_a_record(kind, "only search terms may change")
     plans = _plans(run, op["evidence_refs"])
     _settle(run, plans, item_id)
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     required = {"title", *_required_fields(kind)}
 
     changes: list[tuple[str, Any, Any, dict[str, Any]]] = []
@@ -957,7 +962,7 @@ def _change_status(run: _Run, index: int, op: dict[str, Any]) -> None:
     status, role = run.registry.resolve_status(kind, op["status"])
     plans = _plans(run, op["evidence_refs"])
     _settle(run, plans, item_id)
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     stop = None
     if role in TERMINAL_ROLES:
         if op.get("stopped_being_true") is not None:
@@ -1058,7 +1063,7 @@ def _end_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         raise Refused("end_before_start", "end_before_start", "it ended before it began", {})
     plans = _plans(run, op["evidence_refs"])
     _settle(run, plans, item_id)
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
     _end_entry(run, "item", item_id, None, op["end_class"], world_time, reason_id, evidence_id)
@@ -1100,7 +1105,7 @@ def _reopen_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     # The world time comes from the evidence, never from the moment of processing (D4). With no
     # evidence it is unknown: the entries carry none and the status since is left unset, so a
     # later status change from older evidence still moves the head (D1).
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
     run.entry(
@@ -1255,7 +1260,7 @@ def _create_link(run: _Run, index: int, op: dict[str, Any]) -> None:
             {"field": "original_phrase"},
         )
     plans = _plans(run, op["evidence_refs"])
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     provenance = _first_supporting(plans)
     key = f"{run.stamp.world_id}|{from_id}|{meaning['id']}|{to_id}"
 
@@ -1370,7 +1375,7 @@ def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
         raise Refused("end_before_start", "end_before_start", "it ended before it began", {})
     plans = _plans(run, op.get("evidence_refs") or [])
     _settle(run, plans, link_id)
-    world_time = _world_time(plans) or sort_key(stop) or run.at
+    world_time = _world_time(plans, run.at) or sort_key(stop) or run.at
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
     _end_entry(run, "link", link_id, None, op["end_class"], world_time, reason_id, evidence_id)
