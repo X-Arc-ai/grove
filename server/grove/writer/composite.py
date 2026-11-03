@@ -26,6 +26,7 @@ from grove.store.primitives import (
     PRIMITIVE_MEANING_IDS,
 )
 from grove.writer import apply as ap
+from grove.writer import ontology
 from grove.writer.clocks import (
     UNKNOWN,
     Clock,
@@ -47,7 +48,6 @@ MARKERS = frozenset({"reopened", "merged_into", "restated", "no_head_update"})
 _CLOCK_FIELDS = ("became_true", "stopped_being_true")
 _INSTANT_FIELDS = frozenset({"status_since", "recheck_by", "last_confirmed"})
 _JSON_FIELDS = frozenset({"recheck_how"})
-_REGISTRY_LABELS = ("Alias", "Kind", "Meaning", "PropertyName", "Capability")
 _FORGOTTEN_REASON = "a value this change set holds was forgotten"
 
 # A lock that changes nothing on the row: a correction leaves the record byte-identical, and the
@@ -617,7 +617,7 @@ def _alias_names(
                 reason_id=reason_id,
             )
     for alias in (found["a"] for found in run.tx.run(_ITEM_ALIASES, id=absorbed["id"])):
-        _lock_registry(run, "Alias", alias["id"])
+        ontology.lock_registry(run, "Alias", alias["id"])
         if run.tx.run(_ALIAS_ON, phrase=alias["normalised_phrase"], target=survivor_id):
             field, old, new = "status", alias.get("status"), "retired"
         else:
@@ -631,8 +631,8 @@ def _alias_names(
             world_time=None,
             reason_id=reason_id,
         )
-        _set_registry(run, "Alias", alias["id"], {field: new})
-        _bump_registry(run, "Alias", alias["id"])
+        ontology.set_registry(run, "Alias", alias["id"], {field: new})
+        ontology.bump_registry(run, "Alias", alias["id"])
 
 
 def _merge(run: ap._Run, index: int, op: dict[str, Any]) -> None:
@@ -707,32 +707,6 @@ def _decode(text: Any) -> Any:
         return json.loads(text)
     except (TypeError, ValueError):
         return text
-
-
-def _registry_label(run: ap._Run, row_id: str) -> str:
-    for label in _REGISTRY_LABELS:
-        if run.tx.run(f"MATCH (n:{label} {{id: $id}}) RETURN n.id AS id", id=row_id):
-            return label
-    raise Refused("not_found", "registry_row_not_found", f"no registry row {row_id}", {})
-
-
-def _lock_registry(run: ap._Run, label: str, row_id: str) -> dict[str, Any]:
-    rows = run.tx.run(
-        f"MATCH (n:{label} {{id: $id}}) SET n.touched_at = $at RETURN n", id=row_id, at=run.at
-    )
-    if not rows:
-        raise Refused("not_found", "registry_row_not_found", f"no registry row {row_id}", {})
-    return rows[0]["n"]
-
-
-def _set_registry(run: ap._Run, label: str, row_id: str, columns: dict[str, Any]) -> None:
-    run.tx.run(f"MATCH (n:{label} {{id: $id}}) SET n += $columns", id=row_id, columns=columns)
-
-
-def _bump_registry(run: ap._Run, label: str, row_id: str) -> None:
-    run.tx.run(
-        f"MATCH (n:{label} {{id: $id}}) SET n.version = coalesce(n.version, 0) + 1", id=row_id
-    )
 
 
 def _conflict(message: str, **details: Any) -> Refused:
@@ -817,7 +791,7 @@ class _Undo:
             elif entity_type == "evidence":
                 ap._bump(self.run, _BUMP_EVIDENCE, entity_id)
             else:
-                _bump_registry(self.run, label, entity_id)
+                ontology.bump_registry(self.run, label, entity_id)
 
     # one entry ---------------------------------------------------------------------------------
 
@@ -912,12 +886,12 @@ class _Undo:
             self.bump("evidence", entity_id)
             run.recompute[row["target_id"]] = "link" if row["target_type"] == "link" else "item"
         else:
-            label = _registry_label(run, entity_id)
-            row = _lock_registry(run, label, entity_id)
+            label = ontology.registry_label(run, entity_id)
+            row = ontology.lock_registry(run, label, entity_id)
             if row.get("status") == "retired":
                 return
             self.entry(entry, field="status", old=row.get("status"), new="retired", world_time=None)
-            _set_registry(run, label, entity_id, {"status": "retired"})
+            ontology.set_registry(run, label, entity_id, {"status": "retired"})
             self.bump(entity_type, entity_id, label)
 
     def field(self, entry: dict[str, Any], values: dict[str, Any]) -> None:
@@ -933,8 +907,8 @@ class _Undo:
         elif entity_type == "evidence":
             row = ap._one(run, ap._LOCK_EVIDENCE, "evidence", entity_id, lock=True)
         else:
-            label = _registry_label(run, entity_id)
-            row = _lock_registry(run, label, entity_id)
+            label = ontology.registry_label(run, entity_id)
+            row = ontology.lock_registry(run, label, entity_id)
         if not _same(field, row, expected):
             raise _conflict(
                 "the row no longer holds the value this change set wrote",
@@ -971,7 +945,7 @@ class _Undo:
         elif entity_type == "evidence":
             run.tx.run(_SET_EVIDENCE, id=entity_id, columns=columns)
         else:
-            _set_registry(run, label, entity_id, columns)
+            ontology.set_registry(run, label, entity_id, columns)
         self.bump(entity_type, entity_id, label)
 
 
@@ -1024,6 +998,7 @@ def _undo(run: ap._Run, index: int, op: dict[str, Any]) -> None:
     for entry in reversed(entries):
         undo.invert(entry, values)
     undo.finish()
+    ontology.mark_undone(run, entries, change_set)
 
 
 HANDLERS = {

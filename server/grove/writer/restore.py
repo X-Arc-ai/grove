@@ -36,6 +36,8 @@ from grove.store.d3_fingerprint import (
 from grove.store.query import CYPHER_PREFIX
 from grove.store.replay import (
     FORGOTTEN_MARKER,
+    MEASURE_TABLES,
+    MEASURES,
     Projection,
     ReplayRefused,
     read_history,
@@ -172,7 +174,11 @@ def take_snapshot(driver: Driver, world_id: str) -> dict[str, Any]:
                 for row in found
             ]
             rows[name] = sorted(exported, key=lambda row: json.dumps(row, sort_keys=True))
-        return rows, live_parts(reader)
+        measures = {
+            row_id: {key: _tag(value) for key, value in sorted(held.items())}
+            for row_id, held in sorted(_measures(reader.read).items())
+        }
+        return rows, {**live_parts(reader), "measures": measures}
 
     rows, parts = read_once(driver, world_id, work, timeout=_TIMEOUT)
     return {
@@ -181,6 +187,8 @@ def take_snapshot(driver: Driver, world_id: str) -> dict[str, Any]:
         "rows": rows,
         "fingerprint": fingerprint(parts["projection"], parts["history"], parts["tables"]),
         "projection": parts["projection"],
+        # The D8 measures of the word rows, which no change entry holds (S47).
+        "measures": parts["measures"],
     }
 
 
@@ -245,8 +253,29 @@ def load_snapshot(driver: Driver, world_id: str, snapshot: Mapping[str, Any]) ->
 # The rebuild -----------------------------------------------------------------------------------
 
 
-def _write_projection(tx: WorldTx, projection: Projection) -> None:
+def _measures(read: Any) -> dict[str, dict[str, Any]]:
+    """The D8 measures each word row holds now, by id (S47: no entry holds them). `read` is a
+    WorldTx's run or a OneRead's read."""
+    kept: dict[str, dict[str, Any]] = {}
+    for name in MEASURE_TABLES:
+        for row in read(f"MATCH (n:{table(name).label}) RETURN n"):
+            held = {key: row["n"][key] for key in MEASURES if row["n"].get(key) is not None}
+            if held:
+                kept[row["n"]["id"]] = held
+    return kept
+
+
+def _write_projection(
+    tx: WorldTx, projection: Projection, measures: Mapping[str, Mapping[str, Any]] | None = None
+) -> None:
+    """Writes the rebuilt rows. A word row keeps its D8 measures: those of the row it replaces,
+    or `measures` (the snapshot's) when given. A row the rebuild leaves out loses them with it."""
     nodes = [t for t in PROJECTION_TABLES if t.element == "node"]
+    if measures is None:
+        measures = _measures(tx.run)
+    for name in MEASURE_TABLES:
+        for row_id, row in projection.rows[name].items():
+            row.update(measures.get(row_id, {}))
     for held in nodes:
         # An item takes its links with it.
         tx.run(f"MATCH (n:{held.label}) DETACH DELETE n")
@@ -267,17 +296,20 @@ def _write_projection(tx: WorldTx, projection: Projection) -> None:
             raise RuntimeError("a rebuilt link lost an end item")
 
 
-def rebuild_in_place(driver: Driver, world_id: str) -> Projection:
+def rebuild_in_place(
+    driver: Driver, world_id: str, measures: Mapping[str, Mapping[str, Any]] | None = None
+) -> Projection:
     """Replaces the world's projection rows with the rebuild of its change entries, in one
     transaction under the world's lock. Nothing is appended to the history. A refused entry
     raises ReplayRefused and nothing is written. The primitive rows of world '' are never
-    touched."""
+    touched. The D8 measures of the word rows, which no entry holds, are kept from the rows
+    replaced, or taken from `measures` (S47)."""
 
     def work(tx: WorldTx) -> Projection:
         tx.lock_world()
         entries, values = read_history(tx)
         projection = rebuild(entries, values)
-        _write_projection(tx, projection)
+        _write_projection(tx, projection, measures)
         return projection
 
     return WorldWriter(driver, world_id, timeout=_TIMEOUT).transaction(work)
@@ -501,7 +533,11 @@ def restore(
             found=whole,
         )
     load_snapshot(driver, world_id, snapshot)
-    rebuild_in_place(driver, world_id)
+    measures = {
+        row_id: {key: _untag(value) for key, value in held.items()}
+        for row_id, held in (snapshot.get("measures") or {}).items()
+    }
+    rebuild_in_place(driver, world_id, measures)
     forgotten = replay_ledger(driver, world_id, ledger)
     _keep_ledger(driver, world_id, ledger)
 
