@@ -249,8 +249,8 @@ _ADD_RECEIPT = "CREATE (r:ScreeningReceipt) SET r += $row"
 
 
 def _world_of(tx: WorldTx) -> str:
-    # WorldTx has no public accessor, and the world id is bound by the layer: never a parameter.
-    return tx._world_id
+    # The world id is bound by the layer and never passed as a parameter.
+    return tx.world_id
 
 
 def _check_id(name: str, value: object) -> str:

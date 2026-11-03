@@ -1,4 +1,4 @@
-"""OAuth's writes (S20, S41): clients, a person's consent, codes and tokens.
+"""OAuth's writes (S20, S45): clients, a person's consent, codes and tokens.
 
 The only writer of :OAuthClient, :OAuthGrant, :AuthCode and :OAuthToken. Every function takes the
 driver first and runs one write transaction. Times come from the caller (`at`), never from a clock
