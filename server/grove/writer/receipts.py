@@ -3,7 +3,8 @@ read transaction. A stored receipt holds ids and codes only; titles, meaning nam
 read fresh when it is rendered, so no copy of free text sits in it.
 
 Grammar: `+` item created, `>` link created, `*` field changed, `x` ended, `^` reopened,
-`=` evidence attached (or a known link restated), `-` evidence ended.
+`=` evidence attached (or a known link restated), `-` evidence ended, `u` change set undone. A
+merge prints `* item <a> merged into <b>`, and a spent record `x record <r> (spent; lesson in <b>)`.
 """
 
 import json
@@ -62,6 +63,9 @@ class ReceiptLine:
     world_time: str | None = None
     already_known: bool = False
     stored_ended: bool = False
+    # The other item a line names: the survivor of a merge, the lesson of a spent record, or the
+    # change set an undo reverts.
+    target_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value not in (None, False)}
@@ -138,7 +142,7 @@ def read_receipt(
         for entry in entries
         if entry.get("new_value_id")
         and (
-            entry["field"] in ("end_class", "end_reason")
+            entry["field"] in ("end_class", "end_reason", "merged_into", "lesson_in")
             or (entry["entity_type"] == "link" and entry["field"] == "row")
         )
     ]
@@ -160,9 +164,19 @@ def read_receipt(
             )
         }
 
+    lessons = {
+        entry["entity_id"]: values.get(entry.get("new_value_id"))
+        for entry in entries
+        if entry["field"] == "lesson_in"
+    }
     lines: list[ReceiptLine] = []
+    undone: set[str] = set()
     for entry in entries:
-        line = _line(entry, values, evidence, touched)
+        inverse_of = entry.get("inverse_of")
+        if inverse_of and inverse_of not in undone:
+            undone.add(inverse_of)
+            lines.append(ReceiptLine("u", "change_set", inverse_of, target_id=inverse_of))
+        line = _line(entry, values, evidence, touched, lessons)
         if line is not None:
             lines.append(line)
     return Receipt("saved", commit_id, change_set_id, request_id, tuple(lines))
@@ -173,6 +187,7 @@ def _line(
     values: dict[str, Any],
     evidence: dict[str, dict[str, Any]],
     touched: dict[str, set[str]],
+    lessons: dict[str, Any] | None = None,
 ) -> ReceiptLine | None:
     entity_type, entity_id, name = entry["entity_type"], entry["entity_id"], entry["field"]
     value_id = entry.get("new_value_id")
@@ -181,8 +196,15 @@ def _line(
             return ReceiptLine("+", "item", entity_id)
         if name == "reopened":
             return ReceiptLine("^", "item", entity_id)
+        if name == "merged_into" and values.get(value_id):
+            return ReceiptLine(
+                "*", "item", entity_id, field="merged_into", target_id=values[value_id]
+            )
         if name == "end_class" and values.get(value_id):
-            return ReceiptLine("x", "item", entity_id, end_class=values[value_id])
+            lesson = (lessons or {}).get(entity_id) if values[value_id] == "spent" else None
+            return ReceiptLine(
+                "x", "item", entity_id, end_class=values[value_id], target_id=lesson
+            )
         if name in VISIBLE_FIELDS:
             history_only = bool(entry.get("history_only"))
             when = entry.get("world_time")
@@ -224,7 +246,7 @@ def _line(
                 polarity=row["polarity"],
                 source_type=row["source_type"],
             )
-        if name == "end_reason":
+        if name == "end_reason" and values.get(value_id):
             return ReceiptLine("-", "evidence", entity_id, end_reason=values.get(value_id))
     return None
 
@@ -312,6 +334,10 @@ def _render_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
         if line.stored_ended:
             text += f" (stored ended: {_LINK_END_WORDS.get(line.end_class or '', line.end_class)})"
         return text
+    if line.symbol == "u":
+        return f"u change set {short_id(line.entity_id)} undone"
+    if line.symbol == "*" and line.field == "merged_into":
+        return f"* item {entity} merged into {short_id(line.target_id or '')}"
     if line.symbol == "*":
         value = _shown(found["values"].get(line.value_id))
         text = f"* item {entity}: {line.field}={value}"
@@ -323,6 +349,8 @@ def _render_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
     if line.symbol == "x" and line.entity_type == "link":
         words = _LINK_END_WORDS.get(line.end_class or "", line.end_class)
         return f"x {_link_text(line.entity_id, found)} ({words})"
+    if line.symbol == "x" and line.end_class == "spent" and line.target_id:
+        return f"x record {entity} (spent; lesson in {short_id(line.target_id)})"
     if line.symbol == "x":
         return f"x item {entity} ({_ITEM_END_WORDS.get(line.end_class or '', line.end_class)})"
     if line.symbol == "^":

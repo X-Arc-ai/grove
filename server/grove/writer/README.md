@@ -174,13 +174,54 @@ what an earlier one did.
 | `end_link` | U C K P W | **op_id**, **link** (not of a primitive meaning), **end_class**, **stopped_being_true**, **reason**, evidence_refs | `x link 2f07ab11: ... (<end class>)` |
 | `attach_evidence` | U C K P W | **op_id**, **target** (item, link or belief id), **ev_id** or **evidence_id**, **polarity**, judgment_ids | `= item 77d2aa01 evidence e88f0a1b (supports, said)` |
 | `end_evidence` | C K P | **op_id**, **evidence**, **end_reason** (`correction`, `forget`, `merge`) | `- evidence e88f0a1b (correction)` |
+| `correct` | U C K P | **op_id**, **target** (the record), **successor** (an item id or a temp id of this batch), **evidence_refs**, **reason**, no_head_update_reason | `> link 5c21aa90: 9a1e0c33 -[corrected by]-> 31cdee01`, with the head's own lines |
+| `refute` | U C K P | **op_id**, **target** (item or link), **evidence_refs**, **reason**, version | `x item 44b0aa12 (refuted)` |
+| `supersede` | U K P | **op_id**, **target**, **successor**, **evidence_refs**, **reason**, stopped_being_true, version | `x item 44b0aa12 (superseded)` and the `superseded by` link |
+| `merge` | C K P | **op_id**, **survivor**, **absorbed**, **reason**, evidence_refs | `* item a3b7c1d2 merged into b7e8f9a0`, the re-pointed links |
+| `undo` | P W | **op_id**, **change_set**, **reason** | `u change set 18422aa0 undone`, then the inverse lines |
+| `retire_record` | K | **op_id**, **record**, **lesson** (the belief or head that holds its lesson), **reason**, version | `x record 9a1e0c33 (spent; lesson in b7e8f9a0)` |
 
 `accounts.py` is not a B.2 operation: it holds sign-in's writes (S20, S40), users, sessions, email
 codes and the person's own item. Only `server/grove/api/auth.py` calls it. `docs/signin.md` has the
 flows.
 
-The other B.2 operations belong to later lanes: correct, refute, supersede, merge,
-`retire_record` and undo (`writer-b`); verify and the confirmation at create (`truth-clock`);
+D3's composite operations live in `composite.py` (`writer-b`). Each moves lineage, the head and the
+links in the batch's one transaction, and nothing is deleted:
+
+- `correct` adds a "corrected by" link from the record to the item that carries the newer truth.
+  The record's row is not written at all: it stays byte for byte as it was, `touched_at` and
+  `version` included. The head's update rides in the same batch as its own operations
+  (`update_item`, `change_status`, `create_link`, ...), or `no_head_update_reason` says why there is
+  none (rule `head_update_required`). The successor may be minted earlier in the batch.
+- `refute` ends an item or a link as `refuted`, with no world end time: it was never true. The
+  evidence must rank at or above the claim (planned < said < reported_done < confirmed; an inferred
+  row or claim below planned), rule `refute_rank`; the person's own word passes (D9).
+- `supersede` ends the old item as `superseded`, with a stop clock (sent, or `before` the evidence
+  time), and adds "superseded by" to its successor.
+- `merge` needs one lifecycle class (rule `merge_lifecycle`) and every active link of the absorbed
+  item fitting the survivor (`endpoint_kind_mismatch`, rule `merge_link_fit`). The absorbed item
+  ends as superseded by the survivor (its successor link starts at its own start, so it reads
+  overtaken at every time); each of its active links ends (`superseded`, no stop clock) and is
+  created again on the survivor with the same clocks, provenance and evidence rows, or adds its
+  evidence to the survivor's link with the same key; its title becomes an item alias of the
+  survivor, and its own item aliases move to the survivor.
+- `undo` appends the inverse of one change set, newest entry first, each entry with `inverse_of`:
+  a field goes back to its old value, a late value gets a late inverse at its own world time, a
+  created item or link ends as `refuted`, a created evidence row ends (`correction`), an ended one
+  is active again, a created registry row is `retired`. It is refused when a row the change set
+  moved has moved since (`version_conflict`, rule `undo_conflict`), when the change set was undone
+  already (`already_undone`), when it is the starter set (`not_undoable`), or when a value it holds
+  was forgotten (`value_forgotten`). An undo can itself be undone.
+- `retire_record` ends a record on the record axis only: `end_class` `spent` and `lesson_in` (the
+  new item column), both entries with no world time, and no stop clock. `current()` stops returning
+  it; history and world-axis as-of reads keep it, and its evidence rows stay active.
+
+A "corrected by" or "superseded by" link starts at the operation's evidence time, never after now
+(rule `successor_in_future`, S45). No operation edits a successor link by hand: `create_link`,
+`end_link` and `refute` refuse a primitive meaning; only an undo ends one. A belief is refused by
+these operations (rule `belief_transition`): the beliefs lane moves beliefs by D9's state machine.
+
+The other B.2 operations belong to later lanes: verify and the confirmation at create (`truth-clock`);
 beliefs and contradictions (`beliefs`); proposals and marks (`walk`); questions, holds and
 mentions (`cleanup`, `ingest-b`); ontology operations (`ontology`); forget (`forget`).
 
@@ -362,7 +403,7 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | `end_item` and `end_link` need a valid end class and a world end time; `reopen_item` needs a reason; `end_evidence` needs a valid end reason | `invalid_arguments` (rules `missing_field`, `enum`) | `test_contract_d2.py` |
 | `attach_evidence` needs a target that exists, and is unique on message key, target and polarity | `not_found` (rule `target_not_found`) | `test_contract_d2.py` |
 | An item, a link or an evidence row ends once | `invalid_arguments` (rule `already_ended`) | `test_contract_d2.py` |
-| Only a terminal status carries `stopped_being_true`, and a change that goes to history only cannot carry it (the writer has no place to store it, so it refuses and never drops it) | `invalid_arguments` (rules `stopped_needs_terminal`, `stopped_on_history_only`) | `test_contract_d2.py` |
+| Only a terminal status carries `stopped_being_true`; a late terminal status that goes to history only keeps its end time as a history-only entry at its own world time | `invalid_arguments` (rule `stopped_needs_terminal`) | `test_contract_d2.py` |
 | Only a link of the generic meaning keeps an original phrase | `invalid_arguments` (rule `original_phrase`) | `test_contract_d2.py` |
 | A stale version is refused | `version_conflict` | `test_contract_d2.py` |
 | One invalid operation rolls back the whole batch; a dependent of an operation refused at the end of the batch is named too; a failed commit raises and returns no receipt; an unknown commit outcome or an unreadable receipt is never a retryable "nothing written" | (none) | `test_atomicity.py` |
@@ -396,4 +437,11 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | Two spellings of one property in one create or update with different values are refused, so no value is lost | `invalid_arguments` (rule `property_named_twice`) | `test_resolver.py` |
 | An unmapped or ambiguous link phrase rides on the generic meaning with its phrase kept, never on a meaning that carries consequences | (none) | `test_resolver.py` |
 | The candidate band is every item of the kind at 0.3 or more, best first; an ended item is flagged and kept; a distinct pair is left out | (none) | `test_resolver.py`, `test_neardup_labelled.py` |
+| A correction leaves the record byte-identical and moves the head in the same commit; with no head update it states why; the successor may be minted in the batch; a successor link never starts after now; an ended record is not corrected | `invalid_arguments` (rules `head_update_required`, `successor_in_future`), `ended_target` | `test_contract_d3.py` |
+| A refutation ends an item or a link as never true, with evidence at the claim's rank unless the person says it; a successor link is not refuted by hand | `invalid_arguments` (rule `refute_rank`), `unknown_meaning` (rule `primitive_meaning`) | `test_contract_d3.py` |
+| A supersession ends the old item with a stop clock and keeps the lineage | `invalid_arguments` (rule `already_ended`) | `test_contract_d3.py` |
+| A merge re-points the links with the same clocks and turns names into aliases; a merge then an undo restores both items, their links and their aliases; one lifecycle class, links fitting the survivor | `invalid_arguments` (rule `merge_lifecycle`), `endpoint_kind_mismatch` (rule `merge_link_fit`) | `test_contract_d3.py` |
+| An undo of an automatic change takes one call and keeps both change sets; it conflicts when the row moved since; a late value's undo restores the as-of read; an undone creation is refuted; only the person or the writer undoes; the starter set is not undone | `version_conflict` (rule `undo_conflict`), `invalid_arguments` (rules `already_undone`, `not_undoable`), `scope_denied` | `test_contract_d3.py` |
+| A spent record leaves `current()`, keeps its evidence and its history, and reads true on the world axis; only the consolidation agent retires, and only a record | `invalid_arguments` (rule `not_a_record`), `scope_denied` | `test_contract_d3.py` |
+| A clock entry holds the value id of its words | (none) | `test_contract_d3.py` |
 | Labelled pairs: reworded titles at 0.8, 0.86 and 1.0 are refused, pairs at 0.72 and 0.3 come back as candidates, and revision N after N-1 passes only with `distinct_from` and is logged with `override_used`; `distinct_from` clears only the item it names; a title that differs only by an invisible format character meets the gate | `near_duplicate` | `test_neardup_labelled.py` |

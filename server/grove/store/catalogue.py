@@ -227,6 +227,11 @@ ITEMS = Table(
         _col("speaker", "enum:speaker_kind", note="of the evidence that sets the source type"),
         _col("modality", "enum:modality"),
         *_provenance(),
+        _ruling(
+            "lesson_in",
+            "id",
+            "S45, line 829: the belief or head that holds a spent record's lesson",
+        ),
         _col("version", "int"),
         _col("touched at", "instant"),
     ),
