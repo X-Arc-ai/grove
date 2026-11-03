@@ -13,14 +13,17 @@ One fetch_document call takes at most FETCH_TIMEOUT_SECONDS in all: the lookup, 
 headers and the body. The work runs in a daemon thread, because neither getaddrinfo nor a per-read
 timeout gives a total limit, and the caller is a thread of the API's pool that /token and /mcp need
 too. The caller waits for at most the limit, then stops the worker. At most
-MAX_CONCURRENT_DOCUMENT_FETCHES workers run in the process: over that the call refuses at once, so
-no request queues on a slow host.
+MAX_CONCURRENT_DOCUMENT_FETCHES workers run in the process, and one person holds at most one of
+them: over that the call refuses at once with DocumentBusy, so no request queues on a slow host. A
+worker keeps its slot and its person's turn until it ends, also after the caller has left.
 
-A document's copy is the client row (register_client with registration_type metadata_document). It
-serves for an hour; after that the next request fetches it again, and when that fetch fails a copy
-fetched in the last 24 hours still serves. A URL with no row takes a slot of the registration window
-before it is stored, and a refetch takes none. The resolver and the transport are injectable: tests
-use a fake resolver and httpx.MockTransport, never the network.
+A document's copy is the client row (register_client with registration_type metadata_document). With
+no row, document_client fetches, checks and stores nothing: only an Approve stores the row
+(store_document_client, after the decision's csrf check), so a consent page, a Deny and a forged
+decision leave no row, and a document spends no slot of the window of POST /register. A row serves
+for an hour; after that the next request fetches it again and refreshes it, and when that fetch
+fails a copy fetched in the last 24 hours still serves. The resolver and the transport are
+injectable: tests use a fake resolver and httpx.MockTransport, never the network.
 """
 
 import ipaddress
@@ -29,7 +32,7 @@ import threading
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any
 from urllib.parse import unquote, urlsplit
 
 import httpx
@@ -61,22 +64,23 @@ _ISATAP_ID = 0x00005EFE
 _ISATAP_MASK = 0xFDFFFFFF
 
 _fetch_slots = threading.BoundedSemaphore(MAX_CONCURRENT_DOCUMENT_FETCHES)
+# The people whose worker lives, at most one entry per slot. The lock also covers the slot, so a
+# person gets the turn and a slot together or neither.
+_fetching_people: set[str] = set()
+_fetching_lock = threading.Lock()
 
 Resolver = Callable[[str, int], Sequence[str]]
 Address = ipaddress.IPv4Address | ipaddress.IPv6Address
 
 
-class RegistrationSlots(Protocol):
-    """The window of POST /register, which new document rows share (grove.api.auth.CodeWindow)."""
-
-    def take(self) -> int | None: ...
-
-    def give_back(self) -> None: ...
-
-
 class DocumentRefused(Exception):
     """The document could not be fetched, or it does not describe a client Grove accepts. The
     message names the rule, never a byte of the answer."""
+
+
+class DocumentBusy(DocumentRefused):
+    """The fetch did not start: this person's last fetch still runs, or every slot is in use. It
+    says nothing about the document, and no request reached its host."""
 
 
 @dataclass(frozen=True)
@@ -352,14 +356,29 @@ def _read_document(
     raise DocumentRefused("the metadata document's host cannot be reached")
 
 
+def _take_fetch(slots: threading.BoundedSemaphore, user_id: str) -> None:
+    """The person's one fetch and a slot of the process, or DocumentBusy with neither taken."""
+    with _fetching_lock:
+        if user_id in _fetching_people:
+            raise DocumentBusy("this person's last metadata document fetch still runs")
+        if not slots.acquire(blocking=False):
+            raise DocumentBusy("too many metadata documents are being fetched")
+        _fetching_people.add(user_id)
+
+
+def _give_back_fetch(slots: threading.BoundedSemaphore, user_id: str) -> None:
+    with _fetching_lock:
+        _fetching_people.discard(user_id)
+        slots.release()
+
+
 def _read_within_limit(
-    target: _Target, *, resolver: Resolver, transport: httpx.BaseTransport | None
+    target: _Target, *, user_id: str, resolver: Resolver, transport: httpx.BaseTransport | None
 ) -> bytes:
     """Runs _read_document in a worker and waits for at most FETCH_TIMEOUT_SECONDS. The worker
-    holds a slot until it ends, also after the caller has left."""
+    holds a slot and the person's turn until it ends, also after the caller has left."""
     slots = _fetch_slots
-    if not slots.acquire(blocking=False):
-        raise DocumentRefused("too many metadata documents are being fetched")
+    _take_fetch(slots, user_id)
     limit = FETCH_TIMEOUT_SECONDS
     abort = _Abort()
     outcome: list[bytes | Exception] = []
@@ -378,14 +397,14 @@ def _read_within_limit(
         except Exception as failed:
             outcome.append(failed)
         finally:
-            slots.release()
+            _give_back_fetch(slots, user_id)
 
     worker = threading.Thread(target=work, name="grove-document-fetch", daemon=True)
     try:
         worker.start()
     except RuntimeError:
-        slots.release()
-        raise DocumentRefused("too many metadata documents are being fetched") from None
+        _give_back_fetch(slots, user_id)
+        raise DocumentBusy("too many metadata documents are being fetched") from None
     worker.join(limit)
     if not outcome:
         abort.fire()
@@ -396,11 +415,15 @@ def _read_within_limit(
 
 
 def fetch_document(
-    url: str, *, resolver: Resolver = system_resolver, transport: httpx.BaseTransport | None = None
+    url: str,
+    *,
+    user_id: str,
+    resolver: Resolver = system_resolver,
+    transport: httpx.BaseTransport | None = None,
 ) -> ClientDocument:
-    """Fetch and check the document at url under the rules above."""
+    """Fetch and check the document at url under the rules above, for the person who asks."""
     target = _target(url)
-    raw = _read_within_limit(target, resolver=resolver, transport=transport)
+    raw = _read_within_limit(target, user_id=user_id, resolver=resolver, transport=transport)
     try:
         data = loads_strict(raw)
     except ValueError:
@@ -413,14 +436,15 @@ def document_client(
     client_id: str,
     *,
     now: datetime,
-    window: RegistrationSlots,
+    user_id: str,
     resolver: Resolver = system_resolver,
     transport: httpx.BaseTransport | None = None,
 ) -> ClientRow | None:
-    """The client row of a document client_id: the cached copy while it is fresh, else a new fetch
-    stored through register_client. None when the fetch fails and no copy of the last 24 hours is
-    left, when the id belongs to a client of another type, or when the URL has no row and the
-    registration window is full."""
+    """The client of a document client_id: the row while it is fresh, else a new fetch. A row that
+    exists is refreshed by that fetch. With no row nothing is written, and the answer is the client
+    the document describes, with stored False. None when the fetch fails and no copy of the last 24
+    hours is left, or when the id belongs to a client of another type. DocumentBusy when the fetch
+    did not start and no copy of the last 24 hours is left."""
     row = find_client(driver, client_id)
     if row is not None and row.registration_type != METADATA_DOCUMENT:
         return None
@@ -428,27 +452,42 @@ def document_client(
     if row is not None and fetched is not None and fetched > now - METADATA_DOCUMENT_CACHE:
         return row
     try:
-        document = fetch_document(client_id, resolver=resolver, transport=transport)
-    except DocumentRefused:
-        stale_ok = fetched is not None and fetched > now - METADATA_DOCUMENT_STALE_LIMIT
-        return row if row is not None and stale_ok else None
-    is_new = row is None
-    if is_new and window.take() is not None:
-        return None
-    try:
-        register_client(
-            driver,
-            client_id=document.client_id,
-            host=document.client_name,
-            redirect_uris=list(document.redirect_uris),
-            registration_type=METADATA_DOCUMENT,
-            auth_method=PUBLIC_CLIENT,
-            secret_hash=None,
-            at=now,
+        document = fetch_document(
+            client_id, user_id=user_id, resolver=resolver, transport=transport
         )
-    except Exception:
-        # A registration that stored nothing spends no slot.
-        if is_new:
-            window.give_back()
-        raise
+    except DocumentRefused as refused:
+        stale_ok = fetched is not None and fetched > now - METADATA_DOCUMENT_STALE_LIMIT
+        if row is not None and stale_ok:
+            return row
+        if isinstance(refused, DocumentBusy):
+            raise
+        return None
+    found = ClientRow(
+        client_id=document.client_id,
+        host=document.client_name,
+        registration_type=METADATA_DOCUMENT,
+        redirect_uris=document.redirect_uris,
+        auth_method=PUBLIC_CLIENT,
+        secret_hash=None,
+        registered_at=None,
+        fetched_at=now,
+        stored=False,
+    )
+    if row is None:
+        return found
+    store_document_client(driver, found, at=now)
     return find_client(driver, client_id)
+
+
+def store_document_client(driver: Driver, client: ClientRow, *, at: datetime) -> None:
+    """Writes what a fetch found: the row of a person's first Approve, or a refresh of a row."""
+    register_client(
+        driver,
+        client_id=client.client_id,
+        host=client.host,
+        redirect_uris=list(client.redirect_uris),
+        registration_type=METADATA_DOCUMENT,
+        auth_method=PUBLIC_CLIENT,
+        secret_hash=None,
+        at=at,
+    )

@@ -1,28 +1,32 @@
 """Client ID Metadata Documents: the fetch rules against a fake resolver and httpx.MockTransport
-(the network never; a loopback socket for the real read), the total limit and the slots of a fetch,
-and the copy in the store that serves for an hour and, when a fetch fails, for 24 hours."""
+(the network never; a loopback socket for the real read), the total limit, the slots and the
+person's one fetch, and the row: none before an Approve, and a copy that serves for an hour and,
+when a fetch fails, for 24 hours."""
 
 import socket
 import threading
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
 import pytest
 
 from grove import clock
-from grove.api.auth import CodeWindow
+from grove.ids import new_id
 from grove.oauth import metadata_document
 from grove.oauth.metadata_document import (
     MAX_CONCURRENT_DOCUMENT_FETCHES,
     MAX_DOCUMENT_BYTES,
+    DocumentBusy,
     DocumentRefused,
     document_client,
     fetch_document,
     global_address,
     is_document_client_id,
+    store_document_client,
     system_resolver,
 )
 from grove.oauth.store import find_client
@@ -69,13 +73,19 @@ class FakeHost:
         return httpx.MockTransport(self.handle)
 
     def fetch(self, url: str):
-        return fetch_document(url, resolver=self.resolve, transport=self.transport)
+        return fetch_document(
+            url, user_id=new_id(), resolver=self.resolve, transport=self.transport
+        )
 
-    def client(self, driver, url: str, now, window: CodeWindow | None = None):
-        """The store's copy through document_client, fetched from this host when it must be."""
+    def client(self, driver, url: str, now):
+        """The client through document_client, fetched from this host when it must be."""
         options = {"resolver": self.resolve, "transport": self.transport}
-        window = window or CodeWindow(limit=10, seconds=3600.0)
-        return document_client(driver, url, now=now, window=window, **options)
+        return document_client(driver, url, now=now, user_id=new_id(), **options)
+
+    def stored(self, driver, url: str, now):
+        """The row of a new document, as an Approve stores it."""
+        store_document_client(driver, self.client(driver, url, now), at=now)
+        return find_client(driver, url)
 
 
 def serving(body: bytes, status: int = 200, headers: dict | None = None):
@@ -248,7 +258,11 @@ def test_a_host_that_getaddrinfo_cannot_encode_does_not_resolve(url):
     with pytest.raises(UnicodeError):
         system_resolver(url.split("/")[2], 443)
     with pytest.raises(DocumentRefused, match="does not resolve"):
-        fetch_document(url, transport=httpx.MockTransport(lambda request: httpx.Response(200)))
+        fetch_document(
+            url,
+            user_id=new_id(),
+            transport=httpx.MockTransport(lambda request: httpx.Response(200)),
+        )
 
 
 def test_a_redirect_is_refused_and_never_followed():
@@ -330,13 +344,18 @@ def test_a_document_may_say_none_as_its_method_and_its_name_is_cleaned():
 
 
 @pytest.fixture
-def small_limit(monkeypatch):
-    """A small total limit, and slots that belong to this test: a held worker of another test takes
-    none of them."""
-    monkeypatch.setattr(metadata_document, "FETCH_TIMEOUT_SECONDS", SMALL_LIMIT)
+def own_slots(monkeypatch):
+    """Slots that belong to this test: a held worker of another test takes none of them."""
     slots = threading.BoundedSemaphore(MAX_CONCURRENT_DOCUMENT_FETCHES)
     monkeypatch.setattr(metadata_document, "_fetch_slots", slots, raising=False)
     return slots
+
+
+@pytest.fixture
+def small_limit(monkeypatch, own_slots):
+    """A small total limit, and slots of this test."""
+    monkeypatch.setattr(metadata_document, "FETCH_TIMEOUT_SECONDS", SMALL_LIMIT)
+    return own_slots
 
 
 class HeldTransport(httpx.BaseTransport):
@@ -344,11 +363,13 @@ class HeldTransport(httpx.BaseTransport):
 
     def __init__(self, after: Callable[[httpx.Request], httpx.Response]) -> None:
         self.release = threading.Event()
+        self.started = threading.Event()
         self.after = after
         self.requests: list[httpx.Request] = []
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        self.started.set()
         self.release.wait(SLOW_HOST_SECONDS)
         return self.after(request)
 
@@ -356,7 +377,7 @@ class HeldTransport(httpx.BaseTransport):
 def _timed_refusal(url: str, **options) -> float:
     start = clock.monotonic()
     with pytest.raises(DocumentRefused):
-        fetch_document(url, **options)
+        fetch_document(url, **{"user_id": new_id(), **options})
     return clock.monotonic() - start
 
 
@@ -617,7 +638,7 @@ def _held_workers(url: str, count: int) -> tuple[HeldTransport, list[threading.T
 
     def one() -> None:
         with pytest.raises(DocumentRefused):
-            fetch_document(url, resolver=_public, transport=held)
+            fetch_document(url, user_id=new_id(), resolver=_public, transport=held)
 
     callers = [threading.Thread(target=one) for _ in range(count)]
     for caller in callers:
@@ -636,8 +657,8 @@ def test_with_every_worker_held_the_next_call_refuses_at_once_and_a_slot_comes_b
         # Every caller has left at the limit, and every worker still holds its slot.
         seen = len(held.requests)
         start = clock.monotonic()
-        with pytest.raises(DocumentRefused, match="too many"):
-            fetch_document(url, resolver=_public, transport=held)
+        with pytest.raises(DocumentBusy, match="too many"):
+            fetch_document(url, user_id=new_id(), resolver=_public, transport=held)
         assert clock.monotonic() - start < SMALL_LIMIT / 2, "a busy refusal waits for nothing"
         assert len(held.requests) == seen, "a busy refusal reaches no host"
     finally:
@@ -645,24 +666,161 @@ def test_with_every_worker_held_the_next_call_refuses_at_once_and_a_slot_comes_b
 
     assert _wait_for_every_slot(small_limit, WITHIN_LIMIT) < WITHIN_LIMIT
     fine = httpx.MockTransport(lambda request: httpx.Response(200, content=document(url)))
-    assert fetch_document(url, resolver=_public, transport=fine).client_id == url
+    assert fetch_document(url, user_id=new_id(), resolver=_public, transport=fine).client_id == url
 
 
-def test_a_refused_url_takes_no_slot(small_limit):
+def test_a_refused_url_takes_no_slot_and_no_turn(small_limit):
+    person = new_id()
     for _ in range(MAX_CONCURRENT_DOCUMENT_FETCHES + 1):
-        with pytest.raises(DocumentRefused, match="user part"):
-            fetch_document("https://user@lumen.example/desk.json")
+        with pytest.raises(DocumentRefused, match="user part") as refused:
+            fetch_document("https://user@lumen.example/desk.json", user_id=person)
+        assert not isinstance(refused.value, DocumentBusy)
     assert small_limit.acquire(blocking=False)
     small_limit.release()
 
 
-def test_a_busy_refusal_is_a_failed_fetch_for_the_copy_in_the_store(
+# One fetch for one person ----------------------------------------------------------------------
+
+
+def _answering(url: str) -> httpx.MockTransport:
+    return httpx.MockTransport(lambda request: httpx.Response(200, content=document(url)))
+
+
+def test_a_second_fetch_by_one_person_is_refused_at_once_and_another_person_is_not(own_slots):
+    url = doc_url()
+    person = new_id()
+    held = HeldTransport(lambda request: httpx.Response(200, content=document(url)))
+    answers: list = []
+
+    def first() -> None:
+        answers.append(fetch_document(url, user_id=person, resolver=_public, transport=held))
+
+    caller = threading.Thread(target=first)
+    caller.start()
+    try:
+        assert held.started.wait(WITHIN_LIMIT)
+        start = clock.monotonic()
+        with pytest.raises(DocumentBusy):
+            fetch_document(url, user_id=person, resolver=_public, transport=held)
+        assert clock.monotonic() - start < SMALL_LIMIT / 2, "a busy refusal waits for nothing"
+        assert len(held.requests) == 1, "a busy refusal reaches no host"
+        found = fetch_document(url, user_id=new_id(), resolver=_public, transport=_answering(url))
+        assert found.client_id == url
+    finally:
+        held.release.set()
+        caller.join()
+    assert [answer.client_id for answer in answers] == [url], "the first fetch is not disturbed"
+    again = fetch_document(url, user_id=person, resolver=_public, transport=_answering(url))
+    assert again.client_id == url
+
+
+def test_the_turn_stays_with_the_worker_after_the_caller_stopped_waiting(small_limit):
+    url = doc_url()
+    person = new_id()
+    held = HeldTransport(lambda request: httpx.Response(200, content=document(url)))
+    fine = _answering(url)
+    try:
+        assert _timed_refusal(url, user_id=person, resolver=_public, transport=held) < WITHIN_LIMIT
+        assert len(held.requests) == 1
+        # The caller has left at the limit, and its worker still lives.
+        with pytest.raises(DocumentBusy):
+            fetch_document(url, user_id=person, resolver=_public, transport=fine)
+        assert len(held.requests) == 1
+        other = fetch_document(url, user_id=new_id(), resolver=_public, transport=fine)
+        assert other.client_id == url
+    finally:
+        held.release.set()
+    assert _wait_for_every_slot(small_limit, WITHIN_LIMIT) < WITHIN_LIMIT
+    assert fetch_document(url, user_id=person, resolver=_public, transport=fine).client_id == url
+
+
+def test_one_person_holds_one_slot_and_the_limit_of_four_stays(small_limit):
+    url = doc_url()
+    person = new_id()
+    held = HeldTransport(lambda request: httpx.Response(200, content=document(url)))
+
+    def holds(user_id: str) -> threading.Thread:
+        def one() -> None:
+            with pytest.raises(DocumentRefused):
+                fetch_document(url, user_id=user_id, resolver=_public, transport=held)
+
+        caller = threading.Thread(target=one)
+        caller.start()
+        return caller
+
+    callers = [holds(person)]
+    try:
+        for caller in callers:
+            caller.join()
+        for _ in range(MAX_CONCURRENT_DOCUMENT_FETCHES + 2):
+            with pytest.raises(DocumentBusy):
+                fetch_document(url, user_id=person, resolver=_public, transport=held)
+        others = MAX_CONCURRENT_DOCUMENT_FETCHES - 1
+        callers = [holds(new_id()) for _ in range(others)]
+        for caller in callers:
+            caller.join()
+        assert len(held.requests) == MAX_CONCURRENT_DOCUMENT_FETCHES
+        with pytest.raises(DocumentBusy, match="too many"):
+            fetch_document(url, user_id=new_id(), resolver=_public, transport=held)
+    finally:
+        held.release.set()
+    assert _wait_for_every_slot(small_limit, WITHIN_LIMIT) < WITHIN_LIMIT
+
+
+def test_a_person_refused_for_want_of_a_slot_keeps_no_turn(small_limit):
+    url = doc_url()
+    person = new_id()
+    held, callers = _held_workers(url, MAX_CONCURRENT_DOCUMENT_FETCHES)
+    try:
+        for caller in callers:
+            caller.join()
+        with pytest.raises(DocumentBusy, match="too many"):
+            fetch_document(url, user_id=person, resolver=_public, transport=held)
+    finally:
+        held.release.set()
+    assert _wait_for_every_slot(small_limit, WITHIN_LIMIT) < WITHIN_LIMIT
+    fine = _answering(url)
+    assert fetch_document(url, user_id=person, resolver=_public, transport=fine).client_id == url
+
+
+def test_a_failed_fetch_gives_the_turn_back(small_limit):
+    url = doc_url()
+    person = new_id()
+    for _ in range(3):
+        with pytest.raises(DocumentRefused) as refused:
+            fetch_document(url, user_id=person, resolver=lambda host, port: ["10.0.0.7"])
+        assert not isinstance(refused.value, DocumentBusy)
+
+
+def test_a_worker_that_cannot_start_gives_the_turn_and_the_slot_back(small_limit, monkeypatch):
+    url = doc_url()
+    person = new_id()
+
+    class NoThread:
+        def __init__(self, **options) -> None:
+            pass
+
+        def start(self) -> None:
+            raise RuntimeError("can't start new thread")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(
+            metadata_document, "threading", SimpleNamespace(Thread=NoThread, Lock=threading.Lock)
+        )
+        with pytest.raises(DocumentBusy):
+            fetch_document(url, user_id=person, resolver=_public, transport=_answering(url))
+    assert _wait_for_every_slot(small_limit, SMALL_LIMIT) < SMALL_LIMIT
+    found = fetch_document(url, user_id=person, resolver=_public, transport=_answering(url))
+    assert found.client_id == url
+
+
+def test_a_busy_refusal_serves_a_copy_and_with_no_copy_reaches_the_caller(
     driver, migrated, hosts_plant, small_limit
 ):
     url = hosts_plant.track_client(doc_url())
     new_url = hosts_plant.track_client(doc_url())
     now = clock.now()
-    assert FakeHost(answer=serving(document(url))).client(driver, url, now)
+    assert FakeHost(answer=serving(document(url))).stored(driver, url, now)
     held, callers = _held_workers(url, MAX_CONCURRENT_DOCUMENT_FETCHES)
     try:
         for caller in callers:
@@ -670,55 +828,72 @@ def test_a_busy_refusal_is_a_failed_fetch_for_the_copy_in_the_store(
         busy = FakeHost(answer=serving(document(url)))
         kept = busy.client(driver, url, now + timedelta(hours=2))
         assert kept is not None and kept.fetched_at == now and busy.requests == []
-        assert busy.client(driver, new_url, now) is None and busy.requests == []
+        with pytest.raises(DocumentBusy):
+            busy.client(driver, new_url, now)
+        with pytest.raises(DocumentBusy):
+            busy.client(driver, url, now + timedelta(hours=24, minutes=1))
+        assert busy.requests == [] and find_client(driver, new_url) is None
     finally:
         held.release.set()
     assert _wait_for_every_slot(small_limit, WITHIN_LIMIT) < WITHIN_LIMIT
 
 
-# The cap on document rows ----------------------------------------------------------------------
+# No row before an Approve ----------------------------------------------------------------------
 
 
-def test_a_new_row_takes_a_slot_of_the_window_and_a_full_window_refuses_it(
-    driver, migrated, hosts_plant
-):
-    first = hosts_plant.track_client(doc_url())
-    second = hosts_plant.track_client(doc_url())
-    window = CodeWindow(limit=1, seconds=3600.0)
-    now = clock.now()
-    assert FakeHost(answer=serving(document(first))).client(driver, first, now, window)
-    host = FakeHost(answer=serving(document(second)))
-    assert host.client(driver, second, now, window) is None
-    assert find_client(driver, second) is None
-    assert window.take() is not None, "the window stays full"
-
-
-def test_a_refetch_of_a_known_row_takes_no_slot(driver, migrated, hosts_plant):
-    url = hosts_plant.track_client(doc_url())
-    window = CodeWindow(limit=1, seconds=3600.0)
-    now = clock.now()
-    host = FakeHost(answer=serving(document(url)))
-    assert host.client(driver, url, now, window)
-    later = now + timedelta(hours=2)
-    refreshed = host.client(driver, url, later, window)
-    assert refreshed is not None and refreshed.fetched_at == later and len(host.requests) == 2
-
-
-def test_a_failed_fetch_and_a_failed_store_spend_no_slot(
+def test_a_new_document_is_fetched_and_checked_and_nothing_is_stored(
     driver, migrated, hosts_plant, monkeypatch
 ):
     url = hosts_plant.track_client(doc_url())
-    window = CodeWindow(limit=1, seconds=3600.0)
+    host = FakeHost(answer=serving(document(url)))
+
+    def no_write(*args, **kwargs):
+        raise AssertionError("a new document wrote a row")
+
+    monkeypatch.setattr(metadata_document, "register_client", no_write)
     now = clock.now()
-    assert FakeHost(answer=serving(b"", 503)).client(driver, url, now, window) is None
+    found = host.client(driver, url, now)
+    assert found.stored is False
+    assert found.client_id == url and found.registration_type == "metadata_document"
+    assert found.host == "Lumen Desk" and found.redirect_uris == (LOOPBACK_REDIRECT,)
+    assert found.auth_method == "none" and found.secret_hash is None
+    assert found.registered_at is None and found.fetched_at == now
+    assert find_client(driver, url) is None
+    # With no row there is no copy, so the next request fetches again.
+    assert host.client(driver, url, now) == found and len(host.requests) == 2
+
+
+def test_a_refetch_of_a_known_row_refreshes_it(driver, migrated, hosts_plant):
+    url = hosts_plant.track_client(doc_url())
+    now = clock.now()
+    host = FakeHost(answer=serving(document(url)))
+    first = host.stored(driver, url, now)
+    assert first.stored is True and first.fetched_at == now
+    later = now + timedelta(hours=2)
+    refreshed = host.client(driver, url, later)
+    assert refreshed.stored is True and refreshed.registered_at == first.registered_at
+    assert refreshed.fetched_at == later and len(host.requests) == 2
+    assert find_client(driver, url) == refreshed
+
+
+def test_a_failed_fetch_stores_nothing_and_a_failed_refresh_reaches_the_caller(
+    driver, migrated, hosts_plant, monkeypatch
+):
+    url = hosts_plant.track_client(doc_url())
+    now = clock.now()
+    assert FakeHost(answer=serving(b"", 503)).client(driver, url, now) is None
+    assert find_client(driver, url) is None
+
+    host = FakeHost(answer=serving(document(url)))
+    row = host.stored(driver, url, now)
 
     def broken(*args, **kwargs):
         raise RuntimeError("the store is down")
 
     monkeypatch.setattr(metadata_document, "register_client", broken)
     with pytest.raises(RuntimeError):
-        FakeHost(answer=serving(document(url))).client(driver, url, now, window)
-    assert window.take() is None, "the slot is still free"
+        host.client(driver, url, now + timedelta(hours=2))
+    assert find_client(driver, url) == row
 
 
 # The copy in the store -------------------------------------------------------------------------
@@ -728,7 +903,7 @@ def test_the_copy_serves_for_an_hour_then_a_new_fetch_refreshes_it(driver, migra
     url = hosts_plant.track_client(doc_url())
     host = FakeHost(answer=serving(document(url)))
     now = clock.now()
-    first = host.client(driver, url, now)
+    first = host.stored(driver, url, now)
     assert first is not None and first.registration_type == "metadata_document"
     assert first.host == "Lumen Desk" and first.redirect_uris == (LOOPBACK_REDIRECT,)
     assert first.auth_method == "none" and first.secret_hash is None
@@ -753,7 +928,7 @@ def test_a_failed_fetch_keeps_a_copy_of_the_last_24_hours_and_no_older(
     url = hosts_plant.track_client(doc_url())
     host = FakeHost(answer=serving(document(url)))
     now = clock.now()
-    assert host.client(driver, url, now)
+    assert host.stored(driver, url, now)
     host.answer = serving(b"", 503)
     two_hours = now + timedelta(hours=2)
     kept = host.client(driver, url, two_hours)

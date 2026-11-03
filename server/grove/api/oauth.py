@@ -9,8 +9,10 @@ Registration is open, so a registered redirect URI proves nothing about its owne
 redirect would make Grove an open redirector (RFC 9700 section 4.11.2). So every refusal at these
 two routes before the csrf check is a 400 HTML page on Grove, with no Location, and no state goes
 anywhere. The only two redirects to a client are Approve and Deny, after a valid csrf. With no
-session, a document client_id goes to sign-in with no fetch and no row, and a decision is a 401 page
-before any other check.
+session, a document client_id goes to sign-in with no fetch, and a decision is a 401 page before any
+other check. A document's row is written only on Approve, after the csrf check: a consent page, a
+Deny and every refused decision leave no row, for any caller, and spend no slot of the window, which
+serves POST /register alone.
 
 The consent page is web/dist/consent.html, read from GROVE_WEB_DIST at request time. With no built
 page, an answer that needs it is a typed 503.
@@ -43,6 +45,7 @@ from grove.ids import new_id
 from grove.oauth import (
     ACCESS_TOKEN_LIFETIME,
     CODE_LIFETIME,
+    MAX_GRANTS_PER_WORLD,
     MAX_REGISTRATIONS_PER_WINDOW,
     REFRESH_TOKEN_LIFETIME,
     REGISTRATION_WINDOW_SECONDS,
@@ -59,9 +62,11 @@ from grove.oauth.consent import (
     same_csrf,
 )
 from grove.oauth.metadata_document import (
+    DocumentBusy,
     Resolver,
     document_client,
     is_document_client_id,
+    store_document_client,
     system_resolver,
 )
 from grove.oauth.pkce import S256, valid_pkce_value, verifier_matches
@@ -88,7 +93,7 @@ from grove.oauth.secrets import (
     new_secret,
     token_hash,
 )
-from grove.oauth.store import ClientRow, GrantRow, find_client, list_grants
+from grove.oauth.store import ClientRow, GrantRow, find_client, list_grants, world_grants
 from grove.store.connection import Driver
 from grove.store.query import PlatformQuery, WorldQuery
 from grove.strict_json import loads_strict
@@ -128,6 +133,7 @@ MAX_FORM_BYTES = 16 * 1024
 MAX_FORM_FIELDS = 64
 MAX_STATE_LENGTH = 1024
 BASIC_CHALLENGE = 'Basic realm="grove"'
+BUSY_RETRY_SECONDS = 5
 
 # RFC 6749 section 4.1.2.1 and 5.2, RFC 8707 section 2, RFC 7009 section 2.2.1.
 INVALID_REQUEST = "invalid_request"
@@ -171,6 +177,11 @@ _EXPIRED = (
 )
 _NO_DECISION = ("This answer is not valid", "Choose Approve or Deny on the page.")
 _UNREADABLE = ("This answer cannot be read", "The form did not arrive as Grove sent it.")
+_BUSY = ("Grove is busy", "Grove cannot read this app's description now. Try again in a moment.")
+_TOO_MANY_APPS = (
+    "You have too many connected apps",
+    "Disconnect an app in Grove, then connect this one again.",
+)
 
 router = APIRouter()
 
@@ -179,7 +190,7 @@ router = APIRouter()
 class OAuthDeps:
     """What create_app hands these routes. The resolver and the transport of the metadata
     document fetch are the system's unless a test passes fakes; the registration window is the
-    cap across the server, in process."""
+    cap of POST /register across the server, in process."""
 
     resolver: Resolver = system_resolver
     transport: httpx.BaseTransport | None = None
@@ -335,6 +346,12 @@ def _page(status: int, title: str, message: str) -> HTMLResponse:
     return _html(status, f"{title}: Grove", error_fragment(title, message))
 
 
+def _busy_page() -> HTMLResponse:
+    page = _page(503, *_BUSY)
+    page.headers["Retry-After"] = str(BUSY_RETRY_SECONDS)
+    return page
+
+
 def _redirect(uri: str, params: dict[str, str]) -> RedirectResponse:
     return RedirectResponse(with_params(uri, params), status_code=302, headers=_REDIRECT_HEADERS)
 
@@ -389,17 +406,18 @@ class AuthorizeRequest:
         }
 
 
-def _client(request: Request, client_id: str) -> ClientRow | None:
-    """A dynamic client from the store, or a metadata document's client, fetched when its copy is
-    not fresh."""
+def _client(request: Request, client_id: str, user_id: str | None) -> ClientRow | None:
+    """A dynamic client from the store, or a metadata document's client, fetched for this person
+    when its copy is not fresh. Both routes send a stranger away before a document gets here."""
     driver = _driver(request)
     if is_document_client_id(client_id):
+        assert user_id is not None
         deps = _deps(request)
         return document_client(
             driver,
             client_id,
             now=clock.now(),
-            window=deps.window,
+            user_id=user_id,
             resolver=deps.resolver,
             transport=deps.transport,
         )
@@ -419,8 +437,10 @@ def _state(pairs: Pairs) -> str | None:
     return state
 
 
-def _validate(request: Request, pairs: Pairs) -> AuthorizeRequest:
-    """The checks of /authorize, in the design's order. Each refusal is a PageRefusal."""
+def _validate(request: Request, pairs: Pairs, user_id: str | None) -> AuthorizeRequest:
+    """The checks of /authorize, in the design's order, for the person who asks (None for a
+    stranger, who never names a document here). Each refusal is a PageRefusal, and a document fetch
+    that did not start and has no copy to serve is DocumentBusy."""
     try:
         client_id = _one(pairs, "client_id")
         given = _one(pairs, "redirect_uri")
@@ -428,7 +448,7 @@ def _validate(request: Request, pairs: Pairs) -> AuthorizeRequest:
         raise PageRefusal(_TWICE) from None
     if client_id is None:
         raise PageRefusal(_NO_CLIENT)
-    client = _client(request, client_id)
+    client = _client(request, client_id, user_id)
     if client is None:
         raise PageRefusal(_UNKNOWN_CLIENT)
     if given is not None:
@@ -510,11 +530,13 @@ def _names_a_document(pairs: Pairs) -> bool:
 def authorize(request: Request) -> Response:
     pairs = request.query_params.multi_items()
     signed_in = _signed_in(request)
-    # The fetch and the row of a document are for a person who signed in, never for a stranger.
+    # The fetch of a document is for a person who signed in, never for a stranger.
     if signed_in is None and _names_a_document(pairs):
         return _to_signin(request)
     try:
-        asked = _validate(request, pairs)
+        asked = _validate(request, pairs, signed_in[1].user_id if signed_in else None)
+    except DocumentBusy:
+        return _busy_page()
     except PageRefusal as refused:
         return _page(400, refused.title, refused.message)
     if signed_in is None:
@@ -539,11 +561,13 @@ def _decide(request: Request, pairs: Pairs) -> Response:
     signed_in = _signed_in(request)
     if signed_in is None:
         return _page(401, *_SIGNED_OUT)
+    token, session = signed_in
     try:
-        asked = _validate(request, pairs)
+        asked = _validate(request, pairs, session.user_id)
+    except DocumentBusy:
+        return _busy_page()
     except PageRefusal as refused:
         return _page(400, refused.title, refused.message)
-    token, session = signed_in
     try:
         csrf = _one(pairs, "csrf")
         decision = _one(pairs, "decision")
@@ -559,7 +583,12 @@ def _decide(request: Request, pairs: Pairs) -> Response:
     if decision != APPROVE:
         return _page(400, *_NO_DECISION)
     driver = _driver(request)
+    grants = world_grants(driver, session.world_id, asked.client.client_id)
+    if not grants.has_client and grants.count >= MAX_GRANTS_PER_WORLD:
+        return _page(400, *_TOO_MANY_APPS)
     now = clock.now()
+    if not asked.client.stored:
+        store_document_client(driver, asked.client, at=now)
     try:
         grant_id = grant_consent(
             driver,

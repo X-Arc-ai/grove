@@ -111,7 +111,7 @@ def test_nginx_passes_everything_to_the_api_and_reads_no_user_agent():
         assert "$http_user_agent" not in text
         assert "deny " not in text
     assert "location / {" in https
-    assert https.count("proxy_pass http://127.0.0.1:8000;") == 5
+    assert https.count("proxy_pass http://127.0.0.1:8000;") == 6
     assert "root /var/www/grove-acme;" in http
     assert "return 301 https://$host$request_uri;" in http
 
@@ -255,11 +255,11 @@ def _location(https: str, head: str) -> str:
     return block[: block.index("}") + 1]
 
 
-def test_nginx_limits_the_email_code_path_and_the_three_oauth_paths_only():
+def test_nginx_limits_the_email_code_path_and_the_four_oauth_paths_only():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     zone = "limit_req_zone $binary_remote_addr zone=grove_email:1m rate=10r/m;"
     assert https.index(zone) < https.index("server {")
-    assert https.count("limit_req ") == 4
+    assert https.count("limit_req ") == 5
     block = _location(https, "location /v1/auth/email/ {")
     for line in (
         "limit_req zone=grove_email burst=10 nodelay;",
@@ -273,7 +273,7 @@ def test_nginx_limits_tokens_and_the_authorization_request_per_address():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     zone = "limit_req_zone $binary_remote_addr zone=grove_oauth:1m rate=30r/m;"
     assert https.index(zone) < https.index("server {")
-    for path in ("/token", "/authorize"):
+    for path in ("/token", "/authorize", "/authorize/decision"):
         block = _location(https, f"location = {path} {{")
         for line in (
             "limit_req zone=grove_oauth burst=20 nodelay;",
@@ -282,8 +282,17 @@ def test_nginx_limits_tokens_and_the_authorization_request_per_address():
         ):
             assert line in block, (path, line)
     # The other OAuth paths go through location / with no limit of nginx.
-    for path in ("/authorize/decision", "/revoke", "/.well-known/"):
+    for path in ("/revoke", "/.well-known/"):
         assert f"location = {path}" not in https and f"location {path}" not in https
+
+
+def test_nginx_limits_the_decision_as_it_limits_the_token_path():
+    """Each decision can reach a document fetch, so a session cannot send them with no limit."""
+    https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
+    decision = _location(https, "location = /authorize/decision {")
+    token = _location(https, "location = /token {")
+    assert decision.replace("/authorize/decision", "/token") == token
+    assert "zone=grove_oauth" in decision
 
 
 def test_nginx_gives_registration_its_own_zone_that_one_address_cannot_fill_the_cap_with():
@@ -303,13 +312,14 @@ def test_nginx_gives_registration_its_own_zone_that_one_address_cannot_fill_the_
     assert MAX_REGISTRATIONS_PER_WINDOW == 1000
 
 
-def test_nginx_has_five_locations_and_no_rule_that_can_answer_for_the_api():
+def test_nginx_has_six_locations_and_no_rule_that_can_answer_for_the_api():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     assert re.findall(r"^[ \t]*location\b.*$", https, re.MULTILINE) == [
         "    location / {",
         "    location /v1/auth/email/ {",
         "    location = /register {",
         "    location = /authorize {",
+        "    location = /authorize/decision {",
         "    location = /token {",
     ]
     for word in (
