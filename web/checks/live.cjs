@@ -1194,6 +1194,42 @@ function legendRows(elements){
     assert.deepStrictEqual(next.pg.errors,[]);
   }
 
+  // 6ad. The way back to the consent page: /signin?next=<the /authorize path and query>. Only a
+  //      next that starts with /authorize? passes, on the sign-in page, at most 2048 characters.
+  {
+    const next='/authorize?response_type=code&client_id=c-1&redirect_uri=http%3A%2F%2F127.0.0.1%3A43117%2Fcallback&state=s-1&scope=grove.read+grove.write';
+    const at=n=>({search:'?next='+encodeURIComponent(n)});
+    const outWorld=()=>Object.assign(liveWorld(),{session:false});
+    // Google carries the next to the server, encoded once.
+    const g=signinPage(outWorld(),{},at(next));await settle();
+    assert.equal(g.p.ui.authStage,'signin');g.p.chooseSignIn('google');
+    assert.deepStrictEqual(g.pg.assigned,['/v1/auth/google/start?next='+encodeURIComponent(next)],'Google starts with the next');
+    // An email-code sign-in goes back to it, and signs in nothing on this page on the way.
+    const e=signinPage(outWorld(),{},at(next));await settle();
+    await e.p.startEmail('robin.vale@example.org');await e.p.verifyEmail('246810');
+    assert.deepStrictEqual(e.pg.assigned,[next],'The email code returns to the consent page');assert.equal(e.S.getState().auth,null);
+    // A wrong code stays on the card.
+    const w=signinPage(outWorld(),{},at(next));await settle();
+    await w.p.startEmail('robin.vale@example.org');await w.p.verifyEmail('000000');
+    assert.deepStrictEqual(w.pg.assigned,[],'A wrong code goes nowhere');assert.equal(w.p.ui.authStage,'code');
+    // A page that is signed in already goes straight back.
+    const s=signinPage(liveWorld(),{},at(next));await settle();
+    assert.deepStrictEqual(s.pg.assigned,[next],'A signed-in sign-in page returns to the consent page');
+    // Any other next is ignored: Google keeps its default, and the email code signs in here.
+    for(const bad of ['/','/v1/views/graph','//evil.example/authorize?x=1','https://evil.example/authorize?x=1','/authorize','/authorizex?a=1','/authorize?a=\\b','/authorize?a= b','/authorize?a='+'x'.repeat(2048)]){
+      const b=signinPage(outWorld(),{},at(bad));await settle();
+      b.p.chooseSignIn('google');assert.deepStrictEqual(b.pg.assigned,['/v1/auth/google/start?next=/'],'Ignored next: '+bad.slice(0,40));
+      const m=signinPage(outWorld(),{},at(bad));await settle();await m.p.startEmail('robin.vale@example.org');await m.p.verifyEmail('246810');
+      assert.deepStrictEqual(m.pg.assigned,[],'No return for: '+bad.slice(0,40));assert.equal(m.S.getState().auth.provider,'email','The email code signs in here: '+bad.slice(0,40));
+    }
+    // The longest next the server keeps passes whole; off the sign-in page a next is ignored.
+    const longest='/authorize?state='+'s'.repeat(2048-'/authorize?state='.length);
+    const l=signinPage(outWorld(),{},at(longest));await settle();l.p.chooseSignIn('google');
+    assert.deepStrictEqual(l.pg.assigned,['/v1/auth/google/start?next='+encodeURIComponent(longest)],'A next of 2048 characters passes');
+    const home=signinPage(outWorld(),{},Object.assign(at(next),{pathname:'/'}));await settle();home.p.chooseSignIn('google');
+    assert.deepStrictEqual(home.pg.assigned,['/v1/auth/google/start?next=/'],'Off the sign-in page, a next is ignored');
+  }
+
   // 7. The production page: live scripts first, and no fixture anywhere in the built file.
   const index=read('index.html');
   assert(!/src="[^"]*fixture|fixture\.js/.test(index),'index.html loads no fixture');assert(index.includes('<title>Grove</title>'));
@@ -1212,5 +1248,5 @@ function legendRows(elements){
   const encoded=[...new Set([...dist.matchAll(/url\((data:font\/woff2;base64,[^)]*%(?:41|61)[^)]*)\)/g)].map(m=>m[1]))];
   assert.equal(encoded.length,fontFiles.length,'Every vendored font is embedded, encoded');
   for(const uri of encoded){const bytes=Buffer.from(await (await fetch(uri)).arrayBuffer());assert(fontBytes.some(b=>b.equals(bytes)),'An encoded font decodes to its vendored bytes');}
-  console.log('PASS: the Google error on the card, the limit on codes, the address after a sign-in, the account binding and resume; one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, search results, the selection pill and hidden kinds that end with the session, a retry after a failed save that keeps the drawn places, a rejected node read after the end that draws nothing, a late 401 that keeps the code step, a next session whose poll works, logout only when the server confirms it (network down too), offline text at each sign-in step, the look of starter and unknown kinds from the style tokens of the page, new leaves at their seed offset, no new home in a drawn hub disc or the identity disc, even after a hub grows, no local questions from store titles, no example identity in live mode, and a session check that fails with anything but a 401 and keeps the local state with the offline text, a session end that leaves no tour, address, code, confirmation, guide, host step, error or moved camera and nothing in the memory of the map, a legend click that only hides and shows, fixture mode that keeps the relayout and URL settings of the sim, a live first visit that no URL setting changes, and a built page with no fixture');
+  console.log('PASS: the way back to the consent page after Google, the email code or a session in hand, and no other next; the Google error on the card, the limit on codes, the address after a sign-in, the account binding and resume; one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, search results, the selection pill and hidden kinds that end with the session, a retry after a failed save that keeps the drawn places, a rejected node read after the end that draws nothing, a late 401 that keeps the code step, a next session whose poll works, logout only when the server confirms it (network down too), offline text at each sign-in step, the look of starter and unknown kinds from the style tokens of the page, new leaves at their seed offset, no new home in a drawn hub disc or the identity disc, even after a hub grows, no local questions from store titles, no example identity in live mode, and a session check that fails with anything but a 401 and keeps the local state with the offline text, a session end that leaves no tour, address, code, confirmation, guide, host step, error or moved camera and nothing in the memory of the map, a legend click that only hides and shows, fixture mode that keeps the relayout and URL settings of the sim, a live first visit that no URL setting changes, and a built page with no fixture');
 })().catch(e=>{console.error(e);process.exitCode=1;});

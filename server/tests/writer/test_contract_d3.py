@@ -285,7 +285,7 @@ def test_correction_with_a_new_head_minted_in_the_batch(driver, seeded, chat):
 
 
 def test_a_successor_link_never_takes_effect_in_the_future(driver, seeded, chat):
-    """S45: a successor link with a future start would overtake its item before the newer truth
+    """S46: a successor link with a future start would overtake its item before the newer truth
     existed, so the writer refuses it."""
     w = seeded["world_id"]
     record, head = record_and_head(driver, w, chat)
@@ -687,7 +687,7 @@ def test_a_planned_trip_with_an_unknown_start_reads_planned(driver, seeded):
 
 
 def test_clock_value_keeps_the_words_id_for_a_rebuild(driver, seeded, chat):
-    """S46: a clock entry holds the value id of its words, so a rebuild restores the column."""
+    """S47: a clock entry holds the value id of its words, so a rebuild restores the column."""
     w = seeded["world_id"]
     task = make_task(driver, w, chat, 1)
     ev = observation(chat, "e9", 9)
