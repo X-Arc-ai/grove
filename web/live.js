@@ -23,6 +23,30 @@
   // The server's pages the views name: the address after a sign-in, and the sign-in card's link.
   var PAGES = { home: '/', signin: '/signin', privacy: '/privacy' };
 
+  // The way back after a sign-in that the consent page asked for: /signin?next=<path>. Only the
+  // consent page's own path passes, in printable ASCII with no backslash, and at most as long as
+  // the server keeps for Google (2048). Any other next is ignored and the sign-in goes on as usual.
+  var NEXT_PREFIX = '/authorize?', MAX_NEXT = 2048;
+  function returnPath() {
+    var loc = window.location || {}, next = null;
+    if (loc.pathname !== PAGES.signin) return null;
+    try { next = new URLSearchParams(loc.search || '').get('next'); } catch (_) { return null; }
+    if (typeof next !== 'string' || next.length > MAX_NEXT || next.indexOf(NEXT_PREFIX) !== 0) return null;
+    if (!/^[\x21-\x7e]+$/.test(next) || next.indexOf('\\') !== -1) return null;
+    return next;
+  }
+  // Leaves for the consent page when there is a next; says whether it did.
+  function returnToNext() {
+    var next = returnPath();
+    if (!next) return false;
+    window.location.assign(next);
+    return true;
+  }
+  function googleStartPath() {
+    var next = returnPath();
+    return next ? ENDPOINTS.googleStart.split('?')[0] + '?next=' + encodeURIComponent(next) : ENDPOINTS.googleStart;
+  }
+
   // Grove's starter kinds draw with the sim's visual types. The data keeps the real kind
   // name (legend, search, panel); only size, tier, hub role and ring colour are borrowed.
   // person, task, event, observation and decision are sim types already; any other kind
@@ -117,8 +141,11 @@
     savePositions: savePositions,
     // GET the session: 200 {signed_in, self_item_id, has_items, account, method} when signed in, 401 otherwise.
     session: function () { return request('GET', ENDPOINTS.session).then(signedIn); },
-    // Google signs in on its own pages and comes back to the start of the app.
-    googleSignIn: function () { window.location.assign(ENDPOINTS.googleStart); },
+    // Google signs in on its own pages and comes back to the start of the app, or to the consent
+    // page that sent the person to sign in.
+    googleSignIn: function () { window.location.assign(googleStartPath()); },
+    returnPath: returnPath,
+    returnToNext: returnToNext,
     emailStart: function (email) { return postAuth(ENDPOINTS.emailStart, { email: String(email || '').trim() }); },
     emailVerify: function (email, code) {
       return postAuth(ENDPOINTS.emailVerify, { email: String(email || '').trim(), code: String(code || '').trim() }).then(newSession);

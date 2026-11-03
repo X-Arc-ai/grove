@@ -166,9 +166,11 @@ Only a row `enqueue_request` wrote has a `source_id`, and only such a row can be
 
 `resolve_link_phrase` gives a resolved phrase its meaning and keeps no phrase. An unmapped or ambiguous phrase rides on the one usable generic meaning (`generic` true, no consequences) with its phrase kept and its candidates returned, never on a meaning that carries consequences (line 1596). With no such row, or with two, it returns none, and the mint path is `ontology`'s. `lexical_candidates` (layer 3 of D10's ladder, line 2010) returns every item of the kind at trigram similarity `CANDIDATE_THRESHOLD` 0.3 or more (Appendix C) over the title and the item aliases, best first, with scores rounded to 3 places. An ended item comes back flagged by `has_ended` and is never dropped, because a late fact needs its ended item. With `exclude_distinct_from`, that item and its `:DistinctPair` partners are left out (line 2012). The writer's near-duplicate gate keeps its rule: items with no end class, at `DEFAULT_THRESHOLD` 0.8, one starting value until `ingest-b` calibrates it. Both score with one helper, `title_scores`, so one pair never gets two scores. Appendix C's resolution at 0.8 also asks for a shared neighbour, which the gate does not read yet.
 
-**S45. Composite operations and successor links** (spec lines 812, 818 to 829, 832, 3168 to 3172, 3175). `server/grove/writer/composite.py` holds correct, refute, supersede, merge, undo and `retire_record`; the README of the writer has their fields and rules. A "corrected by" or "superseded by" link is written only there, and it starts at the operation's world time (the newest source time of its evidence) at precision `instant`, or `unknown` with no evidence. A start after now is refused (rule `successor_in_future`), so `standings` may read any active successor link as overtaking: none can exist before the newer truth did. A merge's own "superseded by" link starts at the absorbed item's start, because the two were always one. Refuted means never true: a refuted item or link stores no stop clock. `spent` and `lesson_in` (an item column, the belief or head that holds a spent record's lesson) are written with no world time: they live on the record axis only. A merge ends each re-pointed link as `superseded` with no stop clock (the claim goes on, on the survivor) and creates it again on the survivor with the same id-free columns: clocks, `recorded`, `last_confirmed`, provenance and original phrase, plus copies of its active evidence rows. The absorbed title becomes an `:Alias` with `target_type` `item`, `origin` `merged_from`, written as a `registry_row` entry. An undo writes the inverse of each entry with `inverse_of`, and an undone creation ends as `refuted` (items, links), `correction` (evidence) or `retired` (registry rows).
+**S45. Consent is a grant per host and world** (spec lines 3036, 3038, 3148, and S5, S20, S32). A person's consent to a host is one `:OAuthGrant` row (`oauth_grants`) per (client, world), because a Client ID Metadata Document is one URL for every person who uses that host, so one client row cannot hold one person's consent. B.1's `world_id`, `scopes granted`, `granted at` and `revoked at` of `oauth_clients` stay absent on the client row, and so does `user_id`: the grant holds them. This replaces the part of S5 that puts `world_id` on `:OAuthClient`. A new consent from the same world finds the grant, sets its scopes and time, and clears `revoked_at`. Tokens, codes and client secrets are stored as sha256 hex hashes only (`token_hash`, `code_hash`, `client_secret_hash`). A token carries the `world_id` and `grant_id` of its grant, and `family_id`, the id of the code that began its chain. A code is used once, and a second use revokes every token of its family and sets the code's `reused_at`. The issue of the first pair locks that code before the grant and refuses a code with `reused_at`, so a second use that comes between the first use and its issue still leaves no live token. A refresh rotates: the old token gets `used_at` and `revoked_at`, and the new pair keeps the family and the grant; a second use of a rotated refresh token revokes the whole family. A revoke of the grant revokes every token of the grant in the same transaction. Each of these checks runs after a direct SET on the row it reads (the first form under "What A.5 asks, what Neo4j gives"), so two redeems of one code give one winner. A family revoke, at a reused code, a reused refresh token or `POST /revoke` of a refresh token, locks the family's grant row first and reads the family in a statement of its own; `issue_tokens` and `rotate_refresh` hold that lock when they add a pair, so a pair that a rotation adds at the same time is revoked too. A document client's row is written only at an Approve, after the csrf check and just before its grant; a fetch of a URL with no row writes nothing, so a consent page, a Deny and a refused decision leave no row, and a fetch that finds a row refreshes it. A client that no grant names is deleted by a later write of a client (a registration, that Approve, or the refresh of a row), at most 100 per write for the two types together: a dynamic client once it is 7 days old, and a `metadata_document` client once its `fetched_at` is older than `METADATA_DOCUMENT_STALE_LIMIT` (24 hours), when its copy can no longer serve without a new fetch. A world holds at most `MAX_GRANTS_PER_WORLD` (100) grant rows, counted with revoked ones, because a grant keeps its client row. An Approve reads that count before any write and refuses a client that has no grant in the world when the count is at the cap. It is a soft cap: approvals at one time can pass it by a few. `server/grove/writer/oauth.py` is the only writer of these rows (S20). Migration `0010_oauth.cypher` names this ruling S41, its number before the `writer-a2` lane took S41 to S44; an applied migration is never edited.
 
-**S46. What the history holds, and what a rebuild derives** (spec lines 802, 812, 922). Every change to a projection row is a change entry, and the field names are the columns, with these exceptions. `row` holds `{"table", "row"}`; the markers `reopened`, `merged_into`, `restated` and `no_head_update` change no column. A clock entry holds the clock as JSON, with `words_id` when its words column holds a value id. A late terminal status keeps its stop clock as a history-only `stopped_being_true` entry, and a world-axis read drops a replayed stop clock while the replayed status role is live and no end class holds, as the head does in `_clear_stop`. `version` is derived: 1 for the row's creation, plus 1 for each further group of the row's entries that share one `(change_set_id, reason)` and hold an entry that is not history-only and not `restated`. Every writer path bumps a row once per operation and gives each operation its own reason value id, so the group is the operation, and every new operation must keep that. `touched_at` also moves on a lock that changes nothing, so a rebuild sets it to the recorded time of the row's last entry and D3's fingerprint leaves it out. `active_key`, `property_values` and the derived source fields (`claim_fields` over the active supporting rows) are derived too.
+**S46. Composite operations and successor links** (spec lines 812, 818 to 829, 832, 3168 to 3172, 3175). `server/grove/writer/composite.py` holds correct, refute, supersede, merge, undo and `retire_record`; the README of the writer has their fields and rules. A "corrected by" or "superseded by" link is written only there, and it starts at the operation's world time (the newest source time of its evidence) at precision `instant`, or `unknown` with no evidence. A start after now is refused (rule `successor_in_future`), so `standings` may read any active successor link as overtaking: none can exist before the newer truth did. A merge's own "superseded by" link starts at the absorbed item's start, because the two were always one. Refuted means never true: a refuted item or link stores no stop clock. `spent` and `lesson_in` (an item column, the belief or head that holds a spent record's lesson) are written with no world time: they live on the record axis only. A merge ends each re-pointed link as `superseded` with no stop clock (the claim goes on, on the survivor) and creates it again on the survivor with the same id-free columns: clocks, `recorded`, `last_confirmed`, provenance and original phrase, plus copies of its active evidence rows. The absorbed title becomes an `:Alias` with `target_type` `item`, `origin` `merged_from`, written as a `registry_row` entry. An undo writes the inverse of each entry with `inverse_of`, and an undone creation ends as `refuted` (items, links), `correction` (evidence) or `retired` (registry rows).
+
+**S47. What the history holds, and what a rebuild derives** (spec lines 802, 812, 922). Every change to a projection row is a change entry, and the field names are the columns, with these exceptions. `row` holds `{"table", "row"}`; the markers `reopened`, `merged_into`, `restated` and `no_head_update` change no column. A clock entry holds the clock as JSON, with `words_id` when its words column holds a value id. A late terminal status keeps its stop clock as a history-only `stopped_being_true` entry, and a world-axis read drops a replayed stop clock while the replayed status role is live and no end class holds, as the head does in `_clear_stop`. `version` is derived: 1 for the row's creation, plus 1 for each further group of the row's entries that share one `(change_set_id, reason)` and hold an entry that is not history-only and not `restated`. Every writer path bumps a row once per operation and gives each operation its own reason value id, so the group is the operation, and every new operation must keep that. `touched_at` also moves on a lock that changes nothing, so a rebuild sets it to the recorded time of the row's last entry and D3's fingerprint leaves it out. `active_key`, `property_values` and the derived source fields (`claim_fields` over the active supporting rows) are derived too.
 
 ## Open points for later lanes
 
@@ -196,7 +198,12 @@ Only a row `enqueue_request` wrote has a `source_id`, and only such a row can be
 | The runner still reaches the host's sshd and nginx through the gateway of its internal network. A host firewall rule for its bridge goes with the egress allowlist. | none; a build fact | `runner`, `models` |
 | `/etc/grove/runner.env` holds no token yet, and `deploy/runner-placeholder.sh` runs in place of the loop. The backup stops the runner; the loop must leave a killed pass's requests queued. | none; a build fact | `runner` |
 | The secret files of `docs/deploy.md` are on the box, except `modal.env`, which is still owed. Closed for Google's client file by `signin`: the API reads it at `GROVE_GOOGLE_OAUTH_FILE` at first use, and no file or a bad file sends the person to the card with the Google error (`docs/signin.md`). | none; a build fact | `models` |
-| `/mcp` and the metadata in `server/grove/api/wellknown.py` are placeholders. uvicorn runs without `--proxy-headers`, so a redirect it makes names `http`. | none; a build fact | `hosts-a` |
+| `/mcp` and the metadata in `server/grove/api/wellknown.py` are placeholders. uvicorn runs without `--proxy-headers`, so a redirect it makes names `http`. Closed by `hosts-a`: the OAuth authorization server (`server/grove/api/oauth.py`), the full metadata of RFC 8414 and RFC 9728 in `server/grove/api/wellknown.py`, and the MCP transport at `/mcp` (`server/grove/api/mcp.py`) replaced them, on the rows of S45. Every absolute URL they give comes from `GROVE_PUBLIC_BASE_URL`, never from the request. The redirect fact is closed too: `create_app` sets `redirect_slashes=False`, so the app makes no redirect from a path. `/mcp/` has the handler of `/mcp`, and every other trailing slash is the typed 404. | none; a build fact | `hosts-a` |
+| A batch at `/mcp` has no limit on its members inside the 1 MiB cap on the body. | none; a build fact | `hosts-b` |
+| A batch at `/mcp` loses the results of its earlier members when a tool raises an error other than `ApiError`: the whole POST is a 500. | none; a build fact | `hosts-b` |
+| Two tools with one name fail at request time, on every POST to `/mcp`, and not when the app starts. | none; a build fact | `hosts-b` |
+| `ToolContext` gives a handler the raw driver. `hosts-b` must scope every read to `ToolContext.world_id` and prove it for the real tools. | none; a build fact | `hosts-b` |
+| The consent page says "until you disconnect it in Grove". That needs the Connections view on `/v1/views/connections`. | none; a build fact | `views-b` |
 | The verdicts of a judge call: A.1 has the model-call layer record them in `judgments`, and no writer exists yet. | 996, 3121 | `truth-clock` |
 | The job table has no row for load-bearing verification: `verification` waits at the ceiling, and D15 defers only the low-stakes claims. | 2659 | `truth-clock` |
 | A run token needs a minter, a `token_cap` per pass and a holder for `GROVE_GATEWAY_SECRET`. A pass that gets `budget_reached` leaves its requests queued. | 2659 | `runner` |
@@ -237,8 +244,8 @@ A point that a later lane resolves leaves the table above and is listed here wit
 
 | Point | Spec lines | Resolved by |
 |---|---|---|
-| A late terminal status that goes to history only stored no stop clock, and `change_status` refused one there. | 3160 | `writer-b`: S46, the stop clock is a history-only entry, and a world-axis read drops it under a later live status |
-| A "corrected by" or "superseded by" link with a future start would overtake its item at once. | 832 | `writer-b`: S45, a successor link never starts after now |
+| A late terminal status that goes to history only stored no stop clock, and `change_status` refused one there. | 3160 | `writer-b`: S47, the stop clock is a history-only entry, and a world-axis read drops it under a later live status |
+| A "corrected by" or "superseded by" link with a future start would overtake its item at once. | 832 | `writer-b`: S46, a successor link never starts after now |
 
 ## Added by later lanes
 
@@ -247,6 +254,7 @@ These are not in this slice. Each owner lane adds its rows here and in the catal
 | Rows | Owner lane |
 |---|---|
 | Map positions per item: the table `map_positions` (`:MapPosition`), under "Tables of later lanes" below. `server/grove/writer/positions.py` is its only writer, and `docs/views.md` has the endpoint that fills it. | `views-a` |
+| A person's consent to a host, per host and world: the table `oauth_grants` (`:OAuthGrant`), under "Tables of later lanes" below (S45). `server/grove/writer/oauth.py` is its only writer. | `hosts-a` |
 | My Grove guidance | `views-b` |
 | Pending exports | `views-b` |
 | Eval scripts and their results | `evals` |
@@ -430,7 +438,7 @@ B.1's (world_id, became true) is two indexes, one per bound: a range index leave
 | modality | `modality` | `enum:modality` | b1 |  |
 | provenance | `provenance_evidence_id` | `id` | b1 | the creating evidence id |
 | provenance | `provenance_reason` | `value_id` | b1 | the reason |
-| (none) | `lesson_in` | `id` | ruling | S45, line 829: the belief or head that holds a spent record's lesson |
+| (none) | `lesson_in` | `id` | ruling | S46, line 829: the belief or head that holds a spent record's lesson |
 | version | `version` | `int` | b1 |  |
 | touched at | `touched_at` | `instant` | b1 |  |
 
@@ -1516,19 +1524,23 @@ Keys: `oauth_clients_client_id_unique` (client_id).
 
 Indexes: none.
 
-A B.1 table read through the platform query layer: a client exists before any world consents to it. It restores with the snapshot tables (S21).
+A B.1 table read through the platform query layer: a client exists before any world consents to it. It restores with the snapshot tables (S21). A person's consent is an oauth_grants row (S45). Only server/grove/writer/oauth.py writes it.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
 | client id | `client_id` | `locator` | b1 | S32: a UUIDv7 from dynamic registration, or the URL of a Client ID Metadata Document (lines 3036, 3148) |
-| world_id | `world_id` | `id` | b1 | absent until consent (S5) |
-| (none) | `user_id` | `id` | ruling | S5: absent until consent |
-| host | `host` | `config` | b1 | a host's registration metadata (line 2561) |
+| world_id | `world_id` | `id` | b1 | S45: always absent; the oauth_grants row holds it |
+| (none) | `user_id` | `id` | ruling | S45: always absent; the oauth_grants row holds it |
+| host | `host` | `config` | b1 | the client's self-declared client_name, control characters removed, at most 100 characters; a host's registration metadata (line 2561) |
 | registration type | `registration_type` | `enum:registration_type` | b1 |  |
-| redirect URIs | `redirect_uris` | `config` | b1 | a host's registration metadata (line 2561) |
-| scopes granted | `scopes_granted` | `code` | b1 | a list of scope codes |
-| granted at | `granted_at` | `instant` | b1 |  |
-| revoked at | `revoked_at` | `instant` | b1 |  |
+| redirect URIs | `redirect_uris` | `config` | b1 | a list of URIs; a host's registration metadata (line 2561) |
+| scopes granted | `scopes_granted` | `code` | b1 | S45: always absent; the oauth_grants row holds it |
+| granted at | `granted_at` | `instant` | b1 | S45: always absent; the oauth_grants row holds it |
+| revoked at | `revoked_at` | `instant` | b1 | S45: always absent; the oauth_grants row holds it |
+| (none) | `token_endpoint_auth_method` | `code` | ruling | none, client_secret_post or client_secret_basic; a metadata document client is none |
+| (none) | `client_secret_hash` | `code` | ruling | the sha256 hex of the client secret; absent for a public client (S45) |
+| (none) | `registered_at` | `instant` | ruling | when the row was made |
+| (none) | `fetched_at` | `instant` | ruling | a metadata document client's last fetch |
 
 ## Platform rows
 
@@ -1593,22 +1605,26 @@ The signin lane owns any further column.
 
 Keys: `oauth_tokens_id_unique` (id); `oauth_tokens_token_hash_unique` (token_hash).
 
-Indexes: `oauth_tokens_client_id_idx` (client_id); `oauth_tokens_user_id_idx` (user_id).
+Indexes: `oauth_tokens_client_id_idx` (client_id); `oauth_tokens_user_id_idx` (user_id); `oauth_tokens_family_id_idx` (family_id).
 
-The hosts-a lane owns any further column.
+The hosts-a lane owns any further column. Only server/grove/writer/oauth.py writes it.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
 | (none) | `id` | `id` | convention |  |
 | (none) | `client_id` | `locator` | convention | an oauth_clients client id (S32) |
 | (none) | `user_id` | `id` | convention |  |
-| (none) | `world_id` | `id` | convention | S5: tokens are bound to one world (line 3038) |
-| (none) | `token_hash` | `code` | convention |  |
+| (none) | `world_id` | `id` | convention | S5: tokens are bound to one world (line 3038), the grant's world |
+| (none) | `token_hash` | `code` | convention | S45: the sha256 hex of the token; the token itself is not kept |
 | (none) | `token_type` | `code` | convention | access or refresh |
 | (none) | `scopes` | `code` | convention | a list of scope codes |
 | (none) | `created_at` | `instant` | convention |  |
 | (none) | `expires_at` | `instant` | convention |  |
 | (none) | `revoked_at` | `instant` | convention |  |
+| (none) | `family_id` | `id` | convention | the id of the code the chain began with; every refresh of that chain keeps it |
+| (none) | `grant_id` | `id` | convention | an oauth_grants id |
+| (none) | `resource` | `config` | convention | the canonical <base>/mcp |
+| (none) | `used_at` | `instant` | convention | a refresh token that was rotated |
 
 ### authorization_codes
 
@@ -1618,7 +1634,7 @@ Keys: `authorization_codes_id_unique` (id); `authorization_codes_code_hash_uniqu
 
 Indexes: none.
 
-The hosts-a lane owns any further column.
+The hosts-a lane owns any further column. Only server/grove/writer/oauth.py writes it.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -1626,13 +1642,17 @@ The hosts-a lane owns any further column.
 | (none) | `client_id` | `locator` | convention | an oauth_clients client id (S32) |
 | (none) | `user_id` | `id` | convention |  |
 | (none) | `world_id` | `id` | convention |  |
-| (none) | `code_hash` | `code` | convention |  |
+| (none) | `code_hash` | `code` | convention | S45: the sha256 hex of the code; the code itself is not kept |
 | (none) | `code_challenge` | `code` | convention | PKCE S256 |
 | (none) | `redirect_uri` | `config` | convention |  |
 | (none) | `scopes` | `code` | convention | a list of scope codes |
 | (none) | `created_at` | `instant` | convention |  |
 | (none) | `expires_at` | `instant` | convention |  |
 | (none) | `used_at` | `instant` | convention |  |
+| (none) | `grant_id` | `id` | convention | an oauth_grants id |
+| (none) | `resource` | `config` | convention | the canonical <base>/mcp; absent when the request named none |
+| (none) | `redirect_given` | `bool` | convention | the authorize request named redirect_uri |
+| (none) | `reused_at` | `instant` | convention | S45: the first redeem after the code was used; its family gets no more tokens |
 
 ### email_codes
 
@@ -1709,6 +1729,26 @@ Where the map drew an item first. Insert-only: a position is never moved, so an 
 | (none) | `x` | `float` | convention | the map's own units; finite, at most 1e7 either way |
 | (none) | `y` | `float` | convention | the map's own units; finite, at most 1e7 either way |
 | (none) | `placed_at` | `instant` | convention | from the clock provider, when the map first placed it |
+
+### oauth_grants
+
+`:OAuthGrant`, node. Scope platform. Restore group platform. Owner hosts-a.
+
+Keys: `oauth_grants_id_unique` (id); `oauth_grants_client_id_world_id_unique` (client_id, world_id).
+
+Indexes: `oauth_grants_world_id_idx` (world_id).
+
+S45: a person's consent to a host, one row per (client, world). A new consent to the same host from the same world finds the row, sets its scopes and time and clears revoked_at. A revoke sets revoked_at and revokes every token of the grant in the same transaction. Only server/grove/writer/oauth.py writes it. A platform row: it restores as it was (S21).
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| (none) | `id` | `id` | convention | UUIDv7 text from new_id() (S4) |
+| (none) | `client_id` | `locator` | convention | an oauth_clients client id (S32) |
+| (none) | `world_id` | `id` | convention | the world the person let the host reach |
+| (none) | `user_id` | `id` | convention | the person who consented last |
+| (none) | `scopes_granted` | `code` | convention | a list of scope codes |
+| (none) | `granted_at` | `instant` | convention | the last consent |
+| (none) | `revoked_at` | `instant` | convention | absent while the grant is live |
 
 ## Full-text indexes
 

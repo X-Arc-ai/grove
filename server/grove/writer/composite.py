@@ -6,11 +6,11 @@ undo appends the inverse of a change set as a new change set.
 
 Successor links are :LINK rows of the primitive meanings "corrected by" and "superseded by". Only
 this module writes them (create_link and end_link refuse a primitive meaning). A successor link
-takes effect at the operation's world time, never later than now (S45), so no successor overtakes
+takes effect at the operation's world time, never later than now (S46), so no successor overtakes
 its item before the newer truth existed.
 
 Every entry one operation writes shares the operation's reason value id, and each row it changes
-gets one version bump: a rebuild from the history counts versions that way (S46).
+gets one version bump: a rebuild from the history counts versions that way (S47).
 """
 
 import json
@@ -42,7 +42,7 @@ from grove.writer.receipts import short_id
 from grove.writer.source_types import ORDER, RANK
 
 SUCCESSOR_MEANINGS = (MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY)
-# Entry fields that mark an event and hold no column (D3, S46).
+# Entry fields that mark an event and hold no column (D3, S47).
 MARKERS = frozenset({"reopened", "merged_into", "restated", "no_head_update"})
 _CLOCK_FIELDS = ("became_true", "stopped_being_true")
 _INSTANT_FIELDS = frozenset({"status_since", "recheck_by", "last_confirmed"})
@@ -125,7 +125,7 @@ def _evidence_id(plans: list[ap._Plan]) -> str | None:
 
 
 def _successor_clock(run: ap._Run, world_time: datetime | None) -> Clock:
-    """S45: a successor link takes effect at the newest time its evidence speaks for."""
+    """S46: a successor link takes effect at the newest time its evidence speaks for."""
     if world_time is None:
         return UNKNOWN
     if world_time > run.at:
@@ -765,7 +765,7 @@ def _same(field: str, current: dict[str, Any], expected: Any) -> bool:
 
 
 def _columns(field: str, value: Any) -> dict[str, Any]:
-    """The columns that hold `value` for `field`, as the writer stores them (S46)."""
+    """The columns that hold `value` for `field`, as the writer stores them (S47)."""
     if field in _CLOCK_FIELDS:
         words = value.get("words_id") if isinstance(value, dict) else None
         return {**clock_columns(field, _clock_json(value)), f"{field}_words": words}
@@ -859,7 +859,7 @@ class _Undo:
             world_time=entry.get("world_time"),
             history_only=True,
         )
-        # A history-only inverse moves no row, so it bumps nothing (S46).
+        # A history-only inverse moves no row, so it bumps nothing (S47).
 
     def creation(self, entry: dict[str, Any]) -> None:
         run = self.run

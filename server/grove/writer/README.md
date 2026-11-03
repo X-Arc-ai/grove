@@ -217,7 +217,7 @@ links in the batch's one transaction, and nothing is deleted:
   it; history and world-axis as-of reads keep it, and its evidence rows stay active.
 
 A "corrected by" or "superseded by" link starts at the operation's evidence time, never after now
-(rule `successor_in_future`, S45). No operation edits a successor link by hand: `create_link`,
+(rule `successor_in_future`, S46). No operation edits a successor link by hand: `create_link`,
 `end_link` and `refute` refuse a primitive meaning; only an undo ends one. A belief is refused by
 these operations (rule `belief_transition`): the beliefs lane moves beliefs by D9's state machine.
 

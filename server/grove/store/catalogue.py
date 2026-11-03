@@ -230,7 +230,7 @@ ITEMS = Table(
         _ruling(
             "lesson_in",
             "id",
-            "S45, line 829: the belief or head that holds a spent record's lesson",
+            "S46, line 829: the belief or head that holds a spent record's lesson",
         ),
         _col("version", "int"),
         _col("touched at", "instant"),
@@ -1533,19 +1533,41 @@ OAUTH_CLIENTS = Table(
             note="S32: a UUIDv7 from dynamic registration, or the URL of a Client ID Metadata "
             "Document (lines 3036, 3148)",
         ),
-        _col("world_id", "id", note="absent until consent (S5)"),
-        _ruling("user_id", "id", "S5: absent until consent"),
-        _col("host", "config", note="a host's registration metadata (line 2561)"),
+        _col("world_id", "id", note="S45: always absent; the oauth_grants row holds it"),
+        _ruling("user_id", "id", "S45: always absent; the oauth_grants row holds it"),
+        _col(
+            "host",
+            "config",
+            note="the client's self-declared client_name, control characters removed, at most "
+            "100 characters; a host's registration metadata (line 2561)",
+        ),
         _col("registration type", "enum:registration_type"),
-        _col("redirect URIs", "config", note="a host's registration metadata (line 2561)"),
-        _col("scopes granted", "code", note="a list of scope codes"),
-        _col("granted at", "instant"),
-        _col("revoked at", "instant"),
+        _col(
+            "redirect URIs",
+            "config",
+            note="a list of URIs; a host's registration metadata (line 2561)",
+        ),
+        _col("scopes granted", "code", note="S45: always absent; the oauth_grants row holds it"),
+        _col("granted at", "instant", note="S45: always absent; the oauth_grants row holds it"),
+        _col("revoked at", "instant", note="S45: always absent; the oauth_grants row holds it"),
+        _ruling(
+            "token_endpoint_auth_method",
+            "code",
+            "none, client_secret_post or client_secret_basic; a metadata document client is none",
+        ),
+        _ruling(
+            "client_secret_hash",
+            "code",
+            "the sha256 hex of the client secret; absent for a public client (S45)",
+        ),
+        _ruling("registered_at", "instant", "when the row was made"),
+        _ruling("fetched_at", "instant", "a metadata document client's last fetch"),
     ),
     uniques=_keys("oauth_clients", ("client_id",)),
     notes=(
         "A B.1 table read through the platform query layer: a client exists before any world "
-        "consents to it. It restores with the snapshot tables (S21)."
+        "consents to it. It restores with the snapshot tables (S21). A person's consent is an "
+        "oauth_grants row (S45). Only server/grove/writer/oauth.py writes it."
     ),
 )
 
@@ -1636,17 +1658,25 @@ OAUTH_TOKENS = _platform(
         _p("id", "id"),
         _p("client_id", "locator", "an oauth_clients client id (S32)"),
         _p("user_id", "id"),
-        _p("world_id", "id", "S5: tokens are bound to one world (line 3038)"),
-        _p("token_hash", "code"),
+        _p("world_id", "id", "S5: tokens are bound to one world (line 3038), the grant's world"),
+        _p("token_hash", "code", "S45: the sha256 hex of the token; the token itself is not kept"),
         _p("token_type", "code", "access or refresh"),
         _p("scopes", "code", "a list of scope codes"),
         _p("created_at", "instant"),
         _p("expires_at", "instant"),
         _p("revoked_at", "instant"),
+        _p(
+            "family_id",
+            "id",
+            "the id of the code the chain began with; every refresh of that chain keeps it",
+        ),
+        _p("grant_id", "id", "an oauth_grants id"),
+        _p("resource", "config", "the canonical <base>/mcp"),
+        _p("used_at", "instant", "a refresh token that was rotated"),
     ),
     _keys("oauth_tokens", ("id",), ("token_hash",)),
-    _ranges("oauth_tokens", ("client_id",), ("user_id",)),
-    "The hosts-a lane owns any further column.",
+    _ranges("oauth_tokens", ("client_id",), ("user_id",), ("family_id",)),
+    "The hosts-a lane owns any further column. Only server/grove/writer/oauth.py writes it.",
 )
 
 AUTHORIZATION_CODES = _platform(
@@ -1658,16 +1688,24 @@ AUTHORIZATION_CODES = _platform(
         _p("client_id", "locator", "an oauth_clients client id (S32)"),
         _p("user_id", "id"),
         _p("world_id", "id"),
-        _p("code_hash", "code"),
+        _p("code_hash", "code", "S45: the sha256 hex of the code; the code itself is not kept"),
         _p("code_challenge", "code", "PKCE S256"),
         _p("redirect_uri", "config"),
         _p("scopes", "code", "a list of scope codes"),
         _p("created_at", "instant"),
         _p("expires_at", "instant"),
         _p("used_at", "instant"),
+        _p("grant_id", "id", "an oauth_grants id"),
+        _p("resource", "config", "the canonical <base>/mcp; absent when the request named none"),
+        _p("redirect_given", "bool", "the authorize request named redirect_uri"),
+        _p(
+            "reused_at",
+            "instant",
+            "S45: the first redeem after the code was used; its family gets no more tokens",
+        ),
     ),
     _keys("authorization_codes", ("id",), ("code_hash",)),
-    notes="The hosts-a lane owns any further column.",
+    notes="The hosts-a lane owns any further column. Only server/grove/writer/oauth.py writes it.",
 )
 
 EMAIL_CODES = _platform(
@@ -1747,7 +1785,34 @@ MAP_POSITIONS = Table(
     ),
 )
 
-LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS,)
+OAUTH_GRANTS = Table(
+    name="oauth_grants",
+    label="OAuthGrant",
+    element="node",
+    scope="platform",
+    group="platform",
+    owner="hosts-a",
+    columns=(
+        _convention("id", "id", "UUIDv7 text from new_id() (S4)"),
+        _convention("client_id", "locator", "an oauth_clients client id (S32)"),
+        _convention("world_id", "id", "the world the person let the host reach"),
+        _convention("user_id", "id", "the person who consented last"),
+        _convention("scopes_granted", "code", "a list of scope codes"),
+        _convention("granted_at", "instant", "the last consent"),
+        _convention("revoked_at", "instant", "absent while the grant is live"),
+    ),
+    uniques=_keys("oauth_grants", ("id",), ("client_id", "world_id")),
+    indexes=_ranges("oauth_grants", ("world_id",)),
+    notes=(
+        "S45: a person's consent to a host, one row per (client, world). A new consent to the "
+        "same host from the same world finds the row, sets its scopes and time and clears "
+        "revoked_at. A revoke sets revoked_at and revokes every token of the grant in the same "
+        "transaction. Only server/grove/writer/oauth.py writes it. A platform row: it restores "
+        "as it was (S21)."
+    ),
+)
+
+LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS)
 
 # B.1's five groups, in B.1 order.
 B1_GROUPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
