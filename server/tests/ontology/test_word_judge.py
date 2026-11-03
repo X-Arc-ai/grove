@@ -288,3 +288,34 @@ def test_the_judge_takes_a_checked_proposal_and_records_nothing_without_a_call(
     with pytest.raises(ProviderError):
         judge_word(make_layer(router), driver, world_id, checked, example="a line")
     assert read(driver, world_id, "MATCH (j:Judgment) RETURN j") == []
+
+
+def test_one_word_proposed_twice_in_a_plan_is_judged_once(driver, seeded, chat, make_layer):
+    """Probe PJ1: the second proposal of a name writes with the first, so the batch commits."""
+    world_id = seeded["world_id"]
+    router = Router([first("different")], [reply(chat_doc(json.dumps(second("different"))))])
+    plan = plan_words(make_layer(router), driver, world_id, [proposal(), proposal()])
+    assert len(plan.ops) == 1 and plan.reused == (GODPARENT,)
+    assert len(router.spark.requests) == 1
+    ops = [*plan.ops, create_link("$ilse", GODPARENT, "$teo", "e1")]
+    apply_batch(driver, world_id, LEARNER, batch_for(ops, chat))
+    assert meaning(driver, world_id, GODPARENT)["status"] == "provisional"
+
+
+def test_a_proposal_the_judges_cannot_take_is_held_and_the_plan_goes_on(driver, seeded, make_layer):
+    """Probe PJ2: a field value too long for a subject is the proposal's fault, not the plan's."""
+    world_id = seeded["world_id"]
+    vocabulary = [{"status": f"stage {n} " + "x" * 60, "role": "open"} for n in range(80)]
+    errand = proposal(
+        "errand",
+        word_type="kind",
+        neighbours=[
+            {"word": "task", "distinction": "a task has no place"},
+            {"word": "plan", "distinction": "a plan is larger"},
+        ],
+        declared={"lifecycle_class": "work_with_state", "status_vocabulary": vocabulary},
+    )
+    router = Router([first("different")], [reply(chat_doc(json.dumps(second("different"))))])
+    plan = plan_words(make_layer(router), driver, world_id, [errand, proposal()])
+    assert plan.held == (("kind", "errand", "judge_failed"),)
+    assert [op["name"] for op in plan.ops] == [GODPARENT]

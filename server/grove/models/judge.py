@@ -195,7 +195,7 @@ def judge_word(
             driver,
             world_id,
             json.dumps(
-                field_fit_value(checked.word_type, checked.name, name, value),
+                field_fit_value(checked.word_type, checked.name, name, value, checked.kind_id),
                 sort_keys=True,
                 ensure_ascii=False,
             ),

@@ -179,9 +179,10 @@ _CREATED = (
     "MATCH (e:ChangeEntry {change_set_id: $change_set, field: 'row'}) "
     "WHERE e.entity_type IN ['item', 'link'] RETURN e.entity_type AS type, e.entity_id AS id"
 )
-_UPDATED_PROPERTIES = (
-    "MATCH (e:ChangeEntry {change_set_id: $change_set, entity_type: 'item', field: 'properties'}) "
-    "RETURN DISTINCT e.entity_id AS id"
+_PROPERTY_ENTRIES = (
+    "MATCH (e:ChangeEntry {change_set_id: $change_set, entity_type: 'item'}) "
+    "WHERE e.field IN ['row', 'properties'] "
+    "RETURN e.entity_id AS id, e.field AS field, e.old_value_id AS old, e.new_value_id AS new"
 )
 
 
@@ -206,10 +207,19 @@ def same_word_subject(value_ref: str, word_type: str, neighbour_id: str) -> str:
     return pair_subject(value_ref, f"{word_type}:{neighbour_id}")
 
 
-def field_fit_value(word_type: str, name: str, field_name: str, value: Any) -> dict[str, Any]:
-    """What the history value of a field-fit subject holds (O3): the word, the field and the value
-    declared for it, so a verdict on one declared value never counts for another."""
-    return {"field": field_name, "name": name, "value": value, "word_type": word_type}
+def field_fit_value(
+    word_type: str, name: str, field_name: str, value: Any, kind_id: str | None = None
+) -> dict[str, Any]:
+    """What the history value of a field-fit subject holds (O3): the word, the kind of a property
+    name, the field and the value declared for it, so a verdict on one declared value, or on a
+    property name of another kind, never counts."""
+    return {
+        "field": field_name,
+        "kind": kind_id,
+        "name": name,
+        "value": value,
+        "word_type": word_type,
+    }
 
 
 # The pure checks: the writer and the planner share them -------------------------------------
@@ -293,6 +303,15 @@ def _primitive_names() -> set[str]:
     names = {normalise_phrase(str(row["name"])) for row in PRIMITIVE_MEANINGS.values()}
     names.add(normalise_phrase(str(PRIMITIVE_KIND_BELIEF["name"])))
     return names
+
+
+def names_primitive(phrase: str) -> bool:
+    """A phrase that is a primitive name, or one after a leading "is" or "are": the resolver drops
+    the copula (S44), so "is superseded by" must not become a world word beside the primitive."""
+    normalised = normalise_phrase(phrase)
+    names = _primitive_names()
+    first, _, rest = normalised.partition(" ")
+    return normalised in names or (first in ("is", "are") and rest in names)
 
 
 def _check_keys(word_type: str, declared: Any) -> dict[str, Any]:
@@ -512,7 +531,7 @@ def _neighbours(
             _text(entry["distinction"], "neighbours.distinction", rule="distinction_required"),
             "neighbours.distinction",
         )
-        if ref in PRIMITIVE_IDS or normalise_phrase(ref) in _primitive_names():
+        if ref in PRIMITIVE_IDS or names_primitive(ref):
             raise _bad("neighbour_unknown", "a primitive word is never a neighbour", {"word": ref})
         resolved = resolve_word(
             registry, word_type, ref, kind_id=kind_id if word_type == "property_name" else None
@@ -542,7 +561,7 @@ def check_name(registry: "Registry", word_type: str, name: str, kind_id: str | N
             "the name is empty once case, spacing and punctuation fall away",
             {"field": "name"},
         )
-    if normalised in _primitive_names():
+    if names_primitive(name):
         raise _bad("primitive_word", "a primitive word is fixed in code", {"field": "name"})
     resolved = resolve_word(
         registry, word_type, name, kind_id=kind_id if word_type == "property_name" else None
@@ -741,7 +760,8 @@ def _subject_field(
     decoded = _decoded(values.get(value_id) if value_id else None)
     if (
         isinstance(decoded, dict)
-        and set(decoded) == {"field", "name", "value", "word_type"}
+        and set(decoded) == {"field", "kind", "name", "value", "word_type"}
+        and decoded["kind"] == checked.kind_id
         and decoded["field"] in checked.field_values
         and decoded["word_type"] == checked.word_type
         and isinstance(decoded["name"], str)
@@ -1080,7 +1100,7 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
 
 
 def _find_word(run: Any, word_type: str, ref: str, kind_id: str | None) -> dict[str, Any]:
-    if ref in PRIMITIVE_IDS or normalise_phrase(ref) in _primitive_names():
+    if ref in PRIMITIVE_IDS or names_primitive(ref):
         raise _bad("primitive_word", "a primitive word is fixed in code", {"word": ref})
     rows = _words_of(run.registry, word_type, kind_id)
     by_id = {row["id"]: row for row in rows}
@@ -1263,30 +1283,63 @@ def _worked_examples(run: Any, ops: list[Any]) -> None:
         )
 
 
+def _written_properties(run: Any) -> dict[str, set[str]]:
+    """For each item, the property names this batch wrote: every key of an item it created, and
+    each key whose value an update set or changed. Only these are uses of a property name (O8)."""
+    rows = run.tx.run(_PROPERTY_ENTRIES, change_set=run.stamp.change_set_id)
+    values = _values(
+        run, [value for row in rows for value in (row.get("old"), row.get("new")) if value]
+    )
+    written: dict[str, set[str]] = {}
+    for row in rows:
+        new = _decoded(values.get(row.get("new")))
+        if row["field"] == "row":
+            stored = (new or {}).get("row") if isinstance(new, dict) else None
+            properties = _decoded((stored or {}).get("properties")) or {}
+            keys = set(properties) if isinstance(properties, dict) else set()
+        else:
+            old = _decoded(values.get(row.get("old"))) or {}
+            new = new if isinstance(new, dict) else {}
+            old = old if isinstance(old, dict) else {}
+            keys = {key for key, value in new.items() if old.get(key) != value}
+        written.setdefault(row["id"], set()).update(keys)
+    return written
+
+
 def _usage(run: Any) -> None:
     """O8: the counts of every word that a new evidence row of this batch reached, and the
-    promotion of a provisional word at the earning bar."""
+    promotion of a provisional word at the earning bar. A kind or a meaning is used by every item
+    or link of it; a property name only where the batch wrote that property."""
     fresh = [row for row in run.created_evidence if row.get("polarity") == "supports"]
     created = run.tx.run(_CREATED, change_set=run.stamp.change_set_id)
-    updated = run.tx.run(_UPDATED_PROPERTIES, change_set=run.stamp.change_set_id)
+    written = _written_properties(run)
     targets = {(row["target_type"], row["target_id"]) for row in fresh}
     new_targets = {(row["type"], row["id"]) for row in created}
-    property_targets = {("item", row["id"]) for row in updated}
+    property_targets = {("item", item_id) for item_id in written}
     words = _target_words(run, targets | new_targets | property_targets)
 
+    def counts(target: tuple[str, str], word: tuple[str, str]) -> bool:
+        if word[0] != "property_name":
+            return True
+        row = _word_row(run, word)
+        return (
+            target[0] == "item"
+            and row is not None
+            and row.get("name") in written.get(target[1], set())
+        )
+
     uses: dict[tuple[str, str], int] = {}
-    for target in new_targets:
+    for target in new_targets | property_targets:
         for word in words[target]:
-            uses[word] = uses.get(word, 0) + 1
-    for target in property_targets - new_targets:
-        for word in words[target]:
-            if word[0] == "property_name":
+            if counts(target, word) and (word[0] == "property_name" or target in new_targets):
                 uses[word] = uses.get(word, 0) + 1
 
     episodes: dict[tuple[str, str], set[str]] = {}
     for row in fresh:
-        for word in words[(row["target_type"], row["target_id"])]:
-            episodes.setdefault(word, set()).add(row["episode_id"])
+        target = (row["target_type"], row["target_id"])
+        for word in words[target]:
+            if counts(target, word):
+                episodes.setdefault(word, set()).add(row["episode_id"])
     fresh_ids = [row["id"] for row in fresh]
     new_episodes: dict[tuple[str, str], int] = {}
     prior_cache: dict[str, set[tuple[str, str]]] = {}
@@ -1382,6 +1435,7 @@ __all__ = [
     "propose_word",
     "safer",
     "same_word_subject",
+    "names_primitive",
     "same_word_value",
     "value_names_item",
 ]

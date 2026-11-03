@@ -19,12 +19,14 @@ operation, so a plan that went stale is refused there, never applied wrong.
 from dataclasses import dataclass
 from typing import Any
 
+from grove.models.errors import InvalidOutput, ModelRefused
 from grove.models.judge import judge_word
 from grove.models.layer import ModelLayer
 from grove.store.connection import Driver
 from grove.store.normalise import normalise_phrase
 from grove.store.query import WorldQuery
 from grove.writer.errors import Refused
+from grove.writer.judgments import JudgmentRefused
 from grove.writer.ontology import MINT_VALVE, SAME, check_proposal
 from grove.writer.registry import Registry
 from grove.writer.resolver import generic_meaning
@@ -33,6 +35,10 @@ from grove.writer.resolver import generic_meaning
 # it before the operation goes to the writer, which reads the evidence from the store.
 EXAMPLE = "example"
 VALVE_RULE = "mint_valve"
+JUDGE_RULE = "judge_failed"
+# A proposal the judges could not judge: its own fault, so the plan goes on. A budget stop or a
+# run cap is the pass's, and propagates so the requests stay queued.
+_PROPOSAL_FAULTS = (JudgmentRefused, InvalidOutput, ModelRefused)
 
 
 @dataclass(frozen=True)
@@ -62,10 +68,17 @@ def plan_words(
     held: list[tuple[str, str, str]] = []
     reused: list[str] = []
     mints = 0
+    seen: set[tuple[str, str, str]] = set()
     for proposal in proposals:
         fields = {key: value for key, value in proposal.items() if key != EXAMPLE}
         name = str(fields.get("name") or "")
         word_type = str(fields.get("word_type") or "")
+        key = (word_type, str(fields.get("kind") or ""), normalise_phrase(name))
+        if key in seen:
+            # One word per plan: a second proposal of it writes with the first.
+            reused.append(name)
+            continue
+        seen.add(key)
         try:
             checked = check_proposal(registry, fields)
         except Refused as refused:
@@ -82,14 +95,21 @@ def plan_words(
             else:
                 held.append((word_type, name, VALVE_RULE))
             continue
-        judged = judge_word(
-            layer,
-            driver,
-            world_id,
-            checked,
-            example=str(proposal.get(EXAMPLE) or ""),
-            run_id=run_id,
-        )
+        try:
+            judged = judge_word(
+                layer,
+                driver,
+                world_id,
+                checked,
+                example=str(proposal.get(EXAMPLE) or ""),
+                run_id=run_id,
+            )
+        except _PROPOSAL_FAULTS:
+            if word_type == "meaning":
+                generic.append(name)
+            else:
+                held.append((word_type, name, JUDGE_RULE))
+            continue
         if not (
             judged.same_word and len(judged.same_word) >= 2 and set(judged.same_word) == {SAME}
         ):
