@@ -125,6 +125,23 @@ def _round(value: float | None) -> float | None:
     return None if value is None else round(value, 6)
 
 
+# Connector types whose entries are dated ahead by nature: a calendar entry or a reminder for a
+# later day. Such a row is planned, so it is never admitted and never weighs (D5).
+_DATED_AHEAD = frozenset({"calendar", "reminders"})
+
+
+def after_its_read(
+    columns: dict[str, Any], source: dict[str, Any], connector_type: str, now: datetime
+) -> bool:
+    """True when a row is dated after now, or, outside the calendar and reminders, after the
+    moment its source was read (`sources.received_at`, the fetch time)."""
+    spoken_for = columns["source_time"]
+    if spoken_for > now:
+        return True
+    received = source.get("received_at")
+    return connector_type not in _DATED_AHEAD and received is not None and spoken_for > received
+
+
 # Reads inside the batch -----------------------------------------------------------------------
 
 
@@ -379,13 +396,14 @@ def _pieces(run: "_Run", op: dict[str, Any], subject: str, caller_kind: str | No
             columns = apply._existing_evidence(run, raw["evidence_id"])
             evidence_id = raw["evidence_id"]
         source, connector, connector_type = _source_and_connector(run, columns["source_id"])
-        if columns["source_time"] > run.at:
-            # Evidence speaks for its own time, and a time after now has not happened yet: it
-            # would set last confirmed in the future and outweigh every real confirmation.
+        if after_its_read(columns, source, connector_type, run.at):
+            # Evidence speaks for its own time, and a source cannot speak for a time after Grove
+            # read it, nor after now: such a date would escape the staleness limit, set last
+            # confirmed to a time the source never spoke for, and outweigh every real check.
             raise Refused(
                 "invalid_arguments",
                 "future_evidence",
-                "a piece of evidence dated after now cannot confirm, contradict or defer a claim",
+                "a piece is dated after its source was read, or after now",
                 {"piece": index},
             )
         judgment = None
@@ -850,12 +868,12 @@ def confirm_at_create(run: "_Run", pending: CreateConfirm) -> None:
         if plan.polarity != "supports":
             continue
         columns = plan.columns
-        source, _, _ = _source_and_connector(run, columns["source_id"])
+        source, _, connector_type = _source_and_connector(run, columns["source_id"])
         received = source.get("received_at")
         if (
             columns["derivation"] == "observed"
             and columns["source_type"] == "confirmed"
-            and plan.source_time <= run.at
+            and not after_its_read(columns, source, connector_type, run.at)
             and received is not None
             and call["at"] is not None
             and received <= call["at"]

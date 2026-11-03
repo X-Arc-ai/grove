@@ -351,6 +351,8 @@ def test_a_verify_reads_today_against_the_page_and_then_the_lapsed_horizon(
 ):
     hall = said_hall(driver, w, talk)
     frozen.set(VERIFY_AT)
+    # The lane fetches the page now and stores the fetch first; the piece speaks for no later.
+    pages = make_source(driver, w, "web_pages", PAGE_LINES)
     fetched = page_piece(pages, "p1", 1, T + timedelta(minutes=30))
     verify = {
         "op": "verify",
