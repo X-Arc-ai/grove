@@ -49,3 +49,13 @@ def test_submission_document_links_resolve():
                 continue
             target = target.split("#", 1)[0]
             assert (document.parent / target).is_file(), (document.name, target)
+
+
+def test_event_record_credits_every_vendored_font_family():
+    css = (ROOT / "web/vendor/fonts.css").read_text()
+    families = set(re.findall(r"font-family:\s*'([^']+)'", css))
+    assert families, "The provenance check must read the actual vendored font declarations"
+    record = (ROOT / "HACKATHON.md").read_text()
+    credits = record.split("## Pre-event material", 1)[1].split("## Prior work", 1)[0]
+    for family in families:
+        assert family in credits, f"Missing pre-event font credit: {family}"

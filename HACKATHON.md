@@ -32,7 +32,7 @@ these PRs. A merged PR establishes repository inclusion, not public deployment o
 
 ## Pre-event material
 
-The pre-event Grove simulation supplied the export-guide screens, graph visualizer, worker
+The pre-event Grove material, the simulation of the views (the sim), supplied the export-guide screens, graph visualizer, worker
 renderer, and their associated presentation assets. Their import is recorded in
 [PR #4](https://github.com/X-Arc-ai/grove/pull/4) and
 [the import commit](https://github.com/X-Arc-ai/grove/commit/9478035eeb6783b53958ede3dd343a38ffd05f2b).
@@ -40,7 +40,7 @@ The imported code is not claimed as event work. Later changes are visible in sub
 
 - Graph and shell: `web/native-app.js`, `web/style.css`, `web/index.html`.
 - Worker renderer and styles: `web/agents.js`, `web/agents.css`.
-- Public font CSS: `web/vendor/fonts.css`.
+- The vendored public font CSS for Inter and JetBrains Mono: `web/vendor/fonts.css`.
 - Export-guide screens from the same simulation.
 
 This attribution records provenance; the import PR's date does not change the material's age.
