@@ -78,9 +78,13 @@ _ADD_SESSION = "CREATE (s:Session) SET s = $row"
 _REVOKE_SESSION = (
     "MATCH (s:Session {token_hash: $token_hash}) WHERE s.revoked_at IS NULL SET s.revoked_at = $at"
 )
-# Each write below locks the rows, so two calls for one address run one after the other.
+# Each write below locks the rows, so two calls for one address run one after the other. The lock
+# reads no column, as in tx.py: `SET c.attempts = c.attempts` read the count before it waited and
+# wrote that stale value back after, so a start at the limit erased a wrong try that committed
+# during the wait, and the limit of tries on a code did not hold.
 _LOCK_CODES = (
-    "MATCH (c:EmailCode {email_hash: $email_hash}) SET c.attempts = c.attempts "
+    "MATCH (c:EmailCode {email_hash: $email_hash}) "
+    "SET c.lock_marker = true REMOVE c.lock_marker "
     "RETURN c.created_at AS created_at"
 )
 _END_EARLIER_CODES = (
