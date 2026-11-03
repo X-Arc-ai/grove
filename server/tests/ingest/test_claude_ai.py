@@ -7,13 +7,14 @@ must never reach a message: thinking, tool results, extracted file contents.
 
 import io
 import json
+import re
 import zipfile
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
 
-from grove.ingest import NotAnExport, chat_locator, message_key, spec_for
+from grove.ingest import NotAnExport, archive, chat_locator, message_key, spec_for
 from grove.ingest.parsers import claude_ai
 from grove.ingest.take_in import take_in
 from grove.screening import Message, Screener, ScreeningConfig
@@ -482,7 +483,7 @@ def test_keys_are_stable_unique_prefixed_and_survive_screening():
     for chat in first:
         keys = [m.key for m in chat.messages]
         assert len(set(keys)) == len(keys)
-        assert all(key.startswith("cai-") for key in keys)
+        assert all(re.fullmatch(r"cai[0-9a-f]{32}", key) for key in keys)
         locator = chat_locator("cai", chat.chat_id)
         screened = screener.screen_source(
             locator,
@@ -616,7 +617,7 @@ def test_take_in_stores_each_chat_once_and_a_reimport_changes_nothing(
     for row in rows:
         assert row["speaker_kind"] in {"person", "ai_host", "automated"}
         assert row["modality"] == "text"
-        assert row["key"].startswith("cai-")
+        assert re.fullmatch(r"cai[0-9a-f]{32}", row["key"])
     assert {row["speaker_kind"] for row in rows} == {"person", "ai_host", "automated"}
     assert all(marker not in row["text"] for row in rows for marker in MARKERS)
 
@@ -693,3 +694,28 @@ def test_take_in_renames_a_name(driver, seeded_world, test_clock):
     assert rows[0]["text"] == "Ask Friend A which tea to buy."
     assert rows[0]["speaker_kind"] == "person"
     assert all("quillon" not in row["text"].lower() for row in rows)
+
+
+def test_a_document_past_the_value_cap_is_refused_before_it_is_parsed(monkeypatch):
+    data = as_json(named_chat())
+    monkeypatch.setattr(archive, "MAX_DOCUMENT_VALUES", archive.value_bound(data) - 1)
+    with pytest.raises(NotAnExport):
+        parse(data)
+    monkeypatch.setattr(archive, "MAX_DOCUMENT_VALUES", archive.value_bound(data))
+    assert parse(data)
+
+
+def test_take_in_stores_when_the_rename_map_holds_the_key_prefix(driver, seeded_world, test_clock):
+    """ "Cai" as a surname in the rename map once changed every key ("cai-...") and locator, and
+    every chat failed closed. The key is one word now."""
+    screener = make_screener(rename={"Cai": "Person C"})
+    data = as_json(named_chat())
+
+    result = take_in(driver, seeded_world, "claude_ai", upload_of(data), screener=screener)
+
+    assert result.state == "taken_in"
+    assert result.failed_chats == 0 and result.sources_added == 1
+    rows = stored_rows(driver, seeded_world)
+    assert [row["speaker_kind"] for row in rows] == ["person", "ai_host"]
+    again = take_in(driver, seeded_world, "claude_ai", upload_of(data), screener=screener)
+    assert again.state == "nothing_new"

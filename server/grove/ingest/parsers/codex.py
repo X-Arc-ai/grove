@@ -10,12 +10,16 @@ What stays (D5, D14): the person's own words and the fact of an image, the assis
 text, a one-line digest of each tool call and of each failed tool output. Reasoning, successful
 tool output, developer and system messages and the instruction blocks Codex puts in the person's
 slot are dropped. Event lines repeat the response items, so they are dropped too.
+
+Who wrote the person's slot comes from the session meta: a program (exec, the SDK, MCP) makes
+it automated, and a subagent session (a source that is an object, such as {"subagent": ...})
+makes it the AI host's, since the parent agent wrote that prompt.
 """
 
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -29,6 +33,7 @@ from grove.ingest.connector import (
     Upload,
     clean_text,
     clip,
+    in_time_order,
     message_key,
     register,
     utc_from_iso,
@@ -72,7 +77,8 @@ _INJECTED_PREFIXES = (
 _PROGRAM_ORIGINATORS = ("codex_exec", "codex_sdk")
 _PROGRAM_SOURCES = frozenset(("exec", "mcp"))
 _FAILED_PREFIXES = ("error", "failed", "aborted")
-_EXIT_CODE = re.compile(r"\A\s*Exit code:\s*(-?\d+)")
+# At most 9 digits: int() of a longer run is slow, and past 4300 digits it raises.
+_EXIT_CODE = re.compile(r"\A\s*Exit code:\s*(-?\d{1,9})(?!\d)")
 _PATCH_FILE = re.compile(r"^\*\*\* (?:Update|Add|Delete) File: (.+)$", re.MULTILINE)
 _TOOL_DIGEST = 120
 _ERROR_DIGEST = 200
@@ -239,14 +245,19 @@ def _item_message(item: dict[str, Any], slot: str) -> tuple[str, str] | None:
     return None
 
 
+# The person's slot before the session meta says who wrote it: _Chat.add sets it.
+_SLOT = "slot"
+
+
 @dataclass
 class _Rollout:
-    """One rollout file: its chat id, who ran it, and its response items with line numbers."""
+    """One rollout file: its chat id, who wrote the person's slot, and the messages of its
+    response items with line numbers. A message from the person's slot holds _SLOT."""
 
     chat_id: str
-    program_run: bool
+    slot: str
     times: list[datetime]
-    items: list[tuple[int, datetime | None, dict[str, Any]]]
+    items: list[tuple[int, datetime | None, tuple[str, str]]]
 
 
 def _first_line(data: bytes) -> bytes:
@@ -256,12 +267,18 @@ def _first_line(data: bytes) -> bytes:
     return b""
 
 
-def _program_run(meta: dict[str, Any]) -> bool:
+def _slot_speaker(meta: dict[str, Any]) -> str:
+    """Who wrote the text in the person's slot of this session (D5)."""
     originator = meta.get("originator")
     source = meta.get("source")
-    return (isinstance(originator, str) and originator.startswith(_PROGRAM_ORIGINATORS)) or (
+    if source is not None and not isinstance(source, str):
+        # A subagent session: its source is an object, and the parent agent wrote the prompt.
+        return AI_HOST
+    if (isinstance(originator, str) and originator.startswith(_PROGRAM_ORIGINATORS)) or (
         isinstance(source, str) and source in _PROGRAM_SOURCES
-    )
+    ):
+        return AUTOMATED
+    return PERSON
 
 
 def _is_wrapped(value: object) -> bool:
@@ -283,31 +300,41 @@ def _is_old_meta(value: object) -> bool:
     )
 
 
-def _rollout(data: bytes) -> _Rollout | None:
-    """The rollout in one decompressed file, or None when the file is not a Codex rollout."""
-    lines = list(archive.json_lines(data))
-    meta: dict[str, Any] | None = None
+def _rollout(data: bytes, upload: Upload) -> _Rollout | None:
+    """The rollout in one decompressed file, or None when the file is not a Codex rollout. One
+    pass over the lines: only the messages are kept, never the raw items."""
+    wrapped_meta: dict[str, Any] | None = None
     times: list[datetime] = []
-    items: list[tuple[int, datetime | None, dict[str, Any]]] = []
-    if any(_is_wrapped(value) for _, value in lines):
-        for number, value in lines:
-            if not _is_wrapped(value):
-                continue
+    wrapped_items: list[tuple[int, datetime | None, tuple[str, str]]] = []
+    wrapped = False
+    first: object = None
+    old_items: list[tuple[int, datetime | None, tuple[str, str]]] = []
+    for index, (number, value) in enumerate(archive.json_lines(data, budget=upload.budget)):
+        if index == 0:
+            first = value
+        if _is_wrapped(value):
+            wrapped = True
             at = utc_from_iso(value.get("timestamp"))
             if at is not None:
                 times.append(at)
             payload = value["payload"]
-            if value["type"] == "session_meta" and meta is None:
-                meta = payload
+            if value["type"] == "session_meta" and wrapped_meta is None:
+                wrapped_meta = payload
             elif value["type"] == "response_item":
-                items.append((number, at, payload))
-    elif lines and _is_old_meta(lines[0][1]):
-        meta = lines[0][1]
-        items = [
-            (number, None, value)
-            for number, value in lines[1:]
-            if isinstance(value, dict) and value.get("type") in _ITEM_TYPES
-        ]
+                found = _item_message(payload, _SLOT)
+                if found is not None:
+                    wrapped_items.append((number, at, found))
+        elif not wrapped and index > 0 and isinstance(value, dict):
+            if value.get("type") in _ITEM_TYPES:
+                found = _item_message(value, _SLOT)
+                if found is not None:
+                    old_items.append((number, None, found))
+    if wrapped:
+        meta = wrapped_meta
+        items = wrapped_items
+    elif isinstance(first, dict) and _is_old_meta(first):
+        meta = first
+        items = old_items
     else:
         return None
     meta = meta or {}
@@ -317,7 +344,7 @@ def _rollout(data: bytes) -> _Rollout | None:
     chat_id = meta.get("id")
     if not isinstance(chat_id, str) or not chat_id:
         chat_id = "first-line-" + hashlib.sha256(_first_line(data)).hexdigest()
-    return _Rollout(chat_id=chat_id, program_run=_program_run(meta), times=times, items=items)
+    return _Rollout(chat_id=chat_id, slot=_slot_speaker(meta), times=times, items=items)
 
 
 @dataclass
@@ -329,46 +356,46 @@ class _Chat:
 
     def add(self, rollout: _Rollout) -> None:
         self.times.extend(rollout.times)
-        # A program ran this session: no person typed the text in the person's slot (D5).
-        slot = AUTOMATED if rollout.program_run else PERSON
-        for number, at, item in rollout.items:
-            found = _item_message(item, slot)
-            if found is None:
-                continue
+        for number, at, (speaker, text) in rollout.items:
             key = message_key(KEY_PREFIX, self.chat_id, number)
             if key in self.keys:
                 # The same rollout twice in one upload.
                 continue
             self.keys.add(key)
-            speaker, text = found
+            # A program or a parent agent may have written the person's slot (D5).
+            speaker = rollout.slot if speaker == _SLOT else speaker
             self.messages.append(ParsedMessage(key=key, text=text, at=at, speaker_kind=speaker))
 
     def parsed(self) -> ParsedChat:
+        # Rollouts of one session join one chat in archive order: sort by time.
         return ParsedChat(
             chat_id=self.chat_id,
-            messages=tuple(self.messages),
+            messages=tuple(in_time_order(self.messages)),
             started_at=min(self.times) if self.times else None,
             ended_at=max(self.times) if self.times else None,
         )
 
 
-def _decompressed(data: bytes) -> bytes:
-    return archive.zstd_decompress(data) if archive.is_zstd(data[:4]) else data
+def _decompressed(data: bytes, upload: Upload) -> bytes:
+    if not archive.is_zstd(data[:4]):
+        return data
+    # The upload's budget, so many compressed members cannot each take the member cap.
+    return archive.zstd_decompress(data, budget=upload.budget)
 
 
-def _files(upload: Upload) -> Iterable[bytes]:
+def _files(upload: Upload) -> Iterator[bytes]:
     if archive.is_zip(upload):
-        return (
-            _decompressed(member.data) for member in archive.zip_members(upload, suffixes=_SUFFIXES)
-        )
-    return [_decompressed(upload.read_all(archive.MAX_MEMBER_BYTES))]
+        for member in archive.zip_members(upload, suffixes=_SUFFIXES):
+            yield _decompressed(member.data, upload)
+        return
+    yield _decompressed(upload.read_all(archive.MAX_MEMBER_BYTES), upload)
 
 
 def parse(upload: Upload) -> Iterator[ParsedChat]:
     chats: dict[str, _Chat] = {}
     recognised = False
     for data in _files(upload):
-        rollout = _rollout(data)
+        rollout = _rollout(data, upload)
         if rollout is None:
             continue
         recognised = True

@@ -8,12 +8,14 @@ proves they are absent from every message text.
 import io
 import json
 import random
+import re
+import signal
 import zipfile
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from grove.ingest import NotAnExport, ParsedChat, chat_locator, message_key
+from grove.ingest import NotAnExport, ParsedChat, ReadBudget, Upload, chat_locator, message_key
 from grove.ingest.parsers import claude_code
 from grove.ingest.take_in import NOTHING_NEW, TAKEN_IN, take_in
 from grove.screening import Message, Screener, ScreeningConfig
@@ -484,7 +486,7 @@ def test_keys_are_deterministic_unique_and_prefixed():
 
     assert first == second
     assert len(set(first)) == len(first)
-    assert all(key.startswith("cc-") for key in first)
+    assert all(re.fullmatch(r"cc[0-9a-f]{32}", key) for key in first)
     assert first == [
         message_key("cc", SESSION, _uuid(number), speaker) for speaker, _, _, number in EXPECTED
     ]
@@ -716,3 +718,117 @@ def test_take_in_screens_invented_names(driver, seeded_world, test_clock):
         ("person", "Person A wants the tomato bed moved."),
         ("ai_host", "I moved the tomato bed."),
     ]
+
+
+def test_a_subagent_file_listed_first_still_reads_in_time_order():
+    """The archive's file order says nothing about time (D10): the subagent's file comes first
+    here, and its messages still sit between the parent's."""
+    main = _jsonl(
+        [
+            _user(1, 0, "Plan the greenhouse heater."),
+            _assistant(2, 1, [_text("I will ask a helper to measure first.")]),
+            _assistant(3, 60, [_text("The heater plan is done.")]),
+        ]
+    )
+    subagent = _jsonl(
+        [
+            _user(50, 10, "Measure the greenhouse.", isSidechain=True, agentId="a1"),
+            _assistant(51, 20, [_text("It is four metres long.")], isSidechain=True, agentId="a1"),
+        ]
+    )
+    data = _zip(
+        [
+            (f"projects/garden/{SESSION}/subagents/agent-a1.jsonl", subagent),
+            (f"projects/garden/{SESSION}.jsonl", main),
+        ]
+    )
+
+    (chat,) = _parse(data)
+
+    assert _rows(chat) == [
+        ("person", "Plan the greenhouse heater."),
+        ("ai_host", "I will ask a helper to measure first."),
+        ("ai_host", "Measure the greenhouse."),
+        ("ai_host", "It is four metres long."),
+        ("ai_host", "The heater plan is done."),
+    ]
+    times = [message.at for message in chat.messages]
+    assert times == sorted(times)
+
+
+def _within_seconds(seconds, work):
+    """work(), or a TimeoutError after `seconds`: an alarm, since no test may read the clock."""
+
+    def stop(signum, frame):
+        raise TimeoutError("the work took too long")
+
+    previous = signal.signal(signal.SIGALRM, stop)
+    signal.alarm(seconds)
+    try:
+        return work()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_unclosed_tags_in_the_person_slot_cost_linear_time():
+    """A lazy <tag>.*?</tag> regex scans to the end of the text from each unclosed opener, so a
+    crafted line of a few hundred KB held an upload slot for minutes. The filter is one pass."""
+    text = (
+        "<system-reminder>" * 15_000
+        + "<command-name>" * 15_000
+        + "<bash-input>" * 15_000
+        + "Keep the seed list."
+    )
+
+    (message,) = _within_seconds(5, lambda: _only(_jsonl([_user(1, 0, text)])).messages)
+
+    # No closer, so nothing is cut: the text is the person's as written.
+    assert message.text == text
+    assert message.speaker_kind == "person"
+
+
+def test_the_linear_filter_cuts_what_the_spans_hold():
+    text = (
+        "<system-reminder>a</system-reminder>keep <system-reminder>b</system-reminder>this"
+        "<system-reminder>open"
+    )
+    assert claude_code._person_text(text) == "keep this<system-reminder>open"
+    call = "<command-name>plan</command-name><command-args>a b</command-args>then more"
+    assert claude_code._person_text(call) == "/plan a b\n\nthen more"
+    assert claude_code._person_text("<bash-input> ls -la </bash-input>") == "! ls -la"
+
+
+def test_the_records_of_one_upload_count_against_its_budget():
+    records = [_user(n, n, f"Note {n} on the herb bed.") for n in range(1, 11)]
+    data = _jsonl(records)
+
+    def parse_with(budget):
+        return list(claude_code.parse(Upload(io.BytesIO(data), len(data), budget=budget)))
+
+    assert len(parse_with(ReadBudget(max_records=10))[0].messages) == 10
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_records=9))
+
+
+def test_take_in_stores_when_the_rename_map_holds_the_key_prefix(driver, seeded_world, test_clock):
+    """ "CC" as a nickname in the rename map once changed every key ("cc-..."), and every chat
+    failed closed. The key is one word now."""
+    records = [
+        _user(1, 0, "CC wants the tomato bed moved."),
+        _assistant(2, 1, [_text("I moved the tomato bed.")]),
+    ]
+    screener = make_screener(rename={"CC": "Person D"})
+    upload = _jsonl(records)
+
+    result = take_in(driver, seeded_world, "claude_code", upload_of(upload), screener=screener)
+
+    assert result.state == TAKEN_IN
+    assert result.failed_chats == 0 and result.sources_added == 1
+    (content,) = _stored(driver, seeded_world)
+    assert [(row["speaker_kind"], row["text"]) for row in content] == [
+        ("person", "Person D wants the tomato bed moved."),
+        ("ai_host", "I moved the tomato bed."),
+    ]
+    again = take_in(driver, seeded_world, "claude_code", upload_of(upload), screener=screener)
+    assert again.state == NOTHING_NEW

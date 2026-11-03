@@ -81,9 +81,14 @@ services:
       - "127.0.0.1:8000:8000"
     networks: [store, runner, egress]
     read_only: true
-    # An upload past 8 MiB spools to /tmp, and two run at once, each up to 256 MiB. The size holds
-    # both, and keeps a runaway write from taking half the box's memory, the tmpfs default.
-    tmpfs: ["/tmp:size=640m"]
+    # An upload past 8 MiB spools to /tmp, one at a time, up to 256 MiB. The size holds it, and
+    # keeps a runaway write from taking half the box's memory, the tmpfs default.
+    tmpfs: ["/tmp:size=320m"]
+    # One upload at its caps holds about 2.5 GiB (grove.api.uploads). The limit, with the tmpfs in
+    # it, keeps the worst case inside this container: the kernel stops the api, docker starts it
+    # again, and neo4j and the box keep their memory. No swap past the limit.
+    mem_limit: 4g
+    memswap_limit: 4g
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     depends_on:

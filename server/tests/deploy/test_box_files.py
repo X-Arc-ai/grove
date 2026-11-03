@@ -523,3 +523,18 @@ def test_every_other_path_keeps_the_10m_limit_and_request_buffering():
     assert _size_bytes("10m") == 10 * 1024 * 1024
     assert "proxy_request_buffering" not in server_level
     assert "proxy_send_timeout" not in server_level
+
+
+def test_the_api_has_a_memory_limit_with_no_swap_that_holds_one_upload():
+    """One upload at the caps of grove.ingest holds about 2.5 GiB. The limit keeps a worst case
+    inside the api container, and leaves the store and the 8 GB box their memory."""
+    api = SERVICES["api"]
+    assert api["mem_limit"] == "4g"
+    assert api["memswap_limit"] == api["mem_limit"]
+    assert MAX_PARALLEL_UPLOADS == 1
+    neo4j = SERVICES["neo4j"]["environment"]
+    store = _size_bytes(neo4j["NEO4J_server_memory_heap_max__size"]) + _size_bytes(
+        neo4j["NEO4J_server_memory_pagecache_size"]
+    )
+    assert store + _size_bytes(api["mem_limit"]) <= 6 * 1024**3
+    assert api["restart"] == "unless-stopped"

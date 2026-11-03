@@ -295,3 +295,27 @@ def test_mint_refuses_an_unknown_world_and_a_bad_life(driver, seeded, test_clock
         with pytest.raises(ValueError):
             mint_upload_token(driver, world_id, minutes=minutes)
     assert _tokens(driver, world_id) == []
+
+
+def test_a_token_stops_granting_when_its_world_changes_owner(driver, seeded, test_clock):
+    """The token names the owner at mint time. A world handed to another user must not take
+    uploads on the old owner's token."""
+    world_id, owner = seeded
+    minted = mint_upload_token(driver, world_id, minutes=30)
+    platform = PlatformQuery(driver)
+    assert find_upload_grant(platform, minted.token, test_clock.now()) is not None
+    with driver.session() as session:
+        session.run(
+            "MATCH (w:World {id: $world}) SET w.owner_user_id = $other",
+            world=world_id,
+            other="u_other_owner",
+        ).consume()
+    try:
+        assert find_upload_grant(platform, minted.token, test_clock.now()) is None
+    finally:
+        with driver.session() as session:
+            session.run(
+                "MATCH (w:World {id: $world}) SET w.owner_user_id = $owner",
+                world=world_id,
+                owner=owner,
+            ).consume()

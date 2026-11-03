@@ -53,10 +53,11 @@ MAX_BYTES_VAR = "GROVE_UPLOAD_MAX_BYTES"
 DEFAULT_MAX_BYTES = 256 * 1024 * 1024
 # Past this size the spool moves to a temporary file, so a large export does not sit in memory.
 SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
-MAX_PARALLEL_UPLOADS = 2
+MAX_PARALLEL_UPLOADS = 1
 RETRY_AFTER_SECONDS = 30
 
-# Parsing a large export holds memory and a worker thread: two at once is the box's budget.
+# Parsing a large export can hold about 2.5 GiB at the caps of grove.ingest (the body, its text
+# and the parsed values), and the api container has 4 GiB (deploy/compose.yml): one at a time.
 UPLOAD_SLOTS = threading.BoundedSemaphore(MAX_PARALLEL_UPLOADS)
 
 _CONNECTORS = (

@@ -57,13 +57,36 @@ SPEC = register(ConnectorSpec(
 |---|---|
 | `ParsedMessage(key, text, at, speaker_kind, modality="text", sender=None)` | `key` from `message_key`; `text` through `clean_text` and not blank; `at` the message's own aware time or None, never the upload's time; `speaker_kind` and `modality` from the source's metadata (closed enums). `sender` is a display sender the source names (it is screened); leave it None when `speaker_kind` says all, because a one-word sender with a number in the text reads as a service to the one-time code rule. |
 | `ParsedChat(chat_id, messages, started_at=None, ended_at=None)` | One chat in its own order. `chat_id` is the source's own id; it is only hashed. `started_at`/`ended_at` are fallbacks when no message has a time. Keys are unique within a chat. |
-| `message_key(prefix, *ids)` | `<prefix>-<32 hex>`: a fingerprint of the source's own ids for one message (A.4's message key). Deterministic, so a re-import and an overlapping later export repeat the key. No name can ride in it (store-map open point, spec line 2505), and screening leaves it unchanged (tested over 3000 digit-heavy ids). |
-| `chat_locator(prefix, chat_id)` | The source's `external_locator`: one per chat, opaque. |
+| `message_key(prefix, *ids)` | `<prefix><32 hex>`, one word: a fingerprint of the source's own ids for one message (A.4's message key). Deterministic, so a re-import and an overlapping later export repeat the key. No name can ride in it (store-map open point, spec line 2505). A rename form or a denylist term matches whole words only, so with no separator none can match the prefix: a rename map that holds "CC" or "Cai" changes no key. |
+| `chat_locator(prefix, chat_id)` | The source's `external_locator`: one per chat, opaque, the same one-word form. |
+| `register(spec)` | Refuses a key prefix whose keys or locators screening would change (with the detectors alone, and with the prefix as a rename form and as a denylist term): "dapi" glued to 32 hex reads as a secret, for example. The pipeline fails such a chat closed (`KeyChanged`). |
+| `in_time_order(messages)` | The messages of a chat merged from more than one file, in their own time order (D10); a message with no time stays after the one it follows. Every parser of this build calls it. |
 | `clean_text(value)` | Lone surrogates become U+FFFD, NUL is dropped, line ends are LF. The store and the model layer refuse lone surrogates. |
-| `Upload(stream, size)` | `head()`, `read_all(limit)`. The file name is never passed: the parser knows the format by its bytes. |
-| `grove.ingest.archive` | `is_zip`, `zip_members(upload, suffixes=...)` (in memory, never extracted, with caps on the bytes actually read), `zstd_decompress`, `json_document`, `json_lines` (1-based line numbers; a cut line is skipped). |
+| `Upload(stream, size)` | `head()`, `read_all(limit)`, `budget` (a `ReadBudget`, below). The file name is never passed: the parser knows the format by its bytes. |
+| `grove.ingest.archive` | `is_zip`, `zip_members(upload, suffixes=...)` (in memory, one member at a time, never extracted, with caps on the bytes actually read), `zstd_decompress(data, budget=upload.budget)`, `json_document`, `json_lines(data, budget=upload.budget)` (one line at a time, 1-based line numbers; a cut line is skipped). Pass `upload.budget` on every call. |
 | `NotAnExport` | A generic message, never a value from the file. |
 | Cut rules | `one_episode` (one session or the part added since the last read), `silence_windows(minutes)` (a window closes after that much silence; a message with no time joins the window it follows). |
+
+## Limits of one upload
+
+A small crafted file must not take the API's memory, so every reader counts what one upload
+expands to, whatever its size on the wire. Past a limit the upload answers 400 `invalid_arguments`
+(`NotAnExport`) and nothing is written. An export past them goes in parts: a re-import is
+idempotent.
+
+| Limit | Value | Counts |
+|---|---|---|
+| `GROVE_UPLOAD_MAX_BYTES` | 256 MiB | the body (the API and nginx) |
+| `archive.MAX_MEMBER_BYTES` | 256 MiB | one zip member, one zstd stream, one non-zip body read |
+| `MAX_READ_BYTES` | 768 MiB | every byte read out of zip members and zstd streams, over the upload |
+| `MAX_RECORDS` | 1,000,000 | JSON lines that are not blank, over the upload |
+| `archive.MAX_DOCUMENT_VALUES` | 12,000,000 | values of one JSON document, counted before it is parsed (each follows a comma or opens a container) |
+| `archive.MAX_LINE_VALUES` | 1,000,000 | values of one JSON line; a line past it is skipped unparsed, as a cut line is |
+| `MAX_PARALLEL_UPLOADS` | 1 | uploads at once; the next answers 429 with `retry_after_seconds` |
+
+At these caps one upload holds about 2.5 GiB at most (the body, its decoded text, the parsed
+values); the api container has 4 GiB (`docs/deploy.md`). A parser reads one file or document at
+a time and keeps only the messages it makes, never every raw line.
 
 A stored source's content is the screener's JSON array; each row holds `key`, `sender`, `text`,
 `at`, and, from these connectors, `speaker_kind` and `modality`. An evidence locator into it is
@@ -85,7 +108,8 @@ one-line digests of tool calls (`ai_host`); one-line digests of failed tool resu
 (`automated`). Dropped: thinking and reasoning, successful tool output, system and developer
 messages, and text a program injected in the person's slot. A session a program ran (Claude
 Code `entrypoint` `sdk-*`; Codex `exec`, SDK or MCP) has no `person` message: its prompts are
-`automated`.
+`automated`. A subagent's prompt is the parent agent's text, so `ai_host`: Claude Code
+`isSidechain`, and a Codex session whose `source` is an object (`{"subagent": ...}`).
 
 ## Connector rows and coverage (D13)
 
