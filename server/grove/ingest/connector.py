@@ -16,6 +16,7 @@ Rules every parser keeps:
 """
 
 import hashlib
+import re
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -32,6 +33,8 @@ _CODE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012
 _PREFIX_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz")
 _KEY_HEX = 32
 _SEPARATOR = "\x1f"
+# A UTF-16 half with no partner: JSON can spell one, UTF-8 cannot hold it.
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 class NotAnExport(ValueError):
@@ -83,12 +86,8 @@ def clean_text(value: object) -> str:
     ends are LF. Anything that is not text gives the empty string."""
     if not isinstance(value, str):
         return ""
-    text = value.encode("utf-8", "replace").decode("utf-8") if _has_surrogate(value) else value
+    text = _SURROGATE.sub("\ufffd", value)
     return text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _has_surrogate(value: str) -> bool:
-    return any("\ud800" <= char <= "\udfff" for char in value)
 
 
 def clip(value: str, limit: int) -> str:
