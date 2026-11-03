@@ -972,3 +972,139 @@ def test_the_smoke_asks_for_every_page(box):
     assert box.run("deploy.sh", SHA).returncode == 0
     box.index(f"{BASE}/signin")
     box.index(f"{BASE}/privacy")
+
+
+# ---- uploads and the screening files ----------------------------------------------------------
+
+SCREENING_FILES = ("rename.json", "denylist.txt")
+UPLOADS_503 = "uploads answer 503 until both screening files are placed"
+# Synthetic content: invented names only.
+SCREENING_TEXT = {
+    "rename.json": '{"Invented Person": "Person A"}\n',
+    "denylist.txt": "Invented Codename\n",
+}
+OPEN_MODES = [0o644, 0o640, 0o620, 0o610, 0o604, 0o602, 0o601]
+
+
+def _place(box, name: str, mode: int = 0o600):
+    folder = box.etc / "screening"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    path = folder / name
+    path.write_text(SCREENING_TEXT[name])
+    path.chmod(mode)
+    return path
+
+
+def _mode(path) -> int:
+    return path.lstat().st_mode & 0o777
+
+
+def _uploads_lines(done) -> list[str]:
+    return [line for line in (done.stdout + done.stderr).splitlines() if UPLOADS_503 in line]
+
+
+def _chowns(box) -> list[str]:
+    return [call for call in box.calls() if call.startswith("chown")]
+
+
+def _chown_at(box, path) -> int:
+    """The position of the chown of exactly this path: the folder's path starts its files' paths."""
+    return box.calls().index(f"chown 10001:10001 {path}")
+
+
+def test_a_deploy_with_no_screening_files_serves_and_says_uploads_answer_503(box):
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    (line,) = _uploads_lines(done)
+    assert line.endswith(f"{UPLOADS_503}; absent: rename.json denylist.txt")
+    # The file names only: no path of the box.
+    assert "/" not in line
+    folder = box.etc / "screening"
+    assert folder.is_dir() and _mode(folder) == 0o500
+    assert _chown_at(box, folder) < box.index("up --detach --wait neo4j")
+    box.index("up --detach --wait --remove-orphans api runner")
+    assert f"deploy {SHA} ref=develop previous=none: served, smoke ok" in box.log_text("deploy.log")
+
+
+def test_one_absent_screening_file_still_serves_and_names_only_that_file(box):
+    placed = _place(box, "rename.json")
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    (line,) = _uploads_lines(done)
+    assert line.endswith(f"{UPLOADS_503}; absent: denylist.txt")
+    assert _chown_at(box, placed) < _chown_at(box, box.etc / "screening")
+    assert _mode(placed) == 0o400
+
+
+def test_a_deploy_hands_the_screening_files_to_the_api_user_at_400(box):
+    paths = [_place(box, name) for name in SCREENING_FILES]
+    folder = box.etc / "screening"
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    assert not _uploads_lines(done)
+    for path in paths:
+        assert _mode(path) == 0o400, path.name
+        # The fake chown records the call; an unprivileged test cannot change an owner.
+        assert _chown_at(box, path) < _chown_at(box, folder)
+    assert _mode(folder) == 0o500
+    assert _chown_at(box, folder) < box.index("up --detach --wait neo4j")
+    shown = done.stdout + done.stderr
+    for text in SCREENING_TEXT.values():
+        assert text.strip() not in shown
+
+    # The next deploy finds them at 400, which is as private as 600, and goes on.
+    box.env["FAKE_LOG"] = str(box.root / "calls-2.log")
+    again = box.run("deploy.sh", SHA)
+    assert again.returncode == 0, again.stderr
+    assert not _uploads_lines(again)
+    assert [_mode(path) for path in paths] == [0o400, 0o400]
+
+
+@pytest.mark.parametrize("name", SCREENING_FILES)
+def test_a_screening_file_open_to_others_stops_the_deploy_before_any_chown(box, name):
+    for other in SCREENING_FILES:
+        _place(box, other, 0o644 if other == name else 0o600)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert f"the screening file {name} is open to group or others: place it at 600" in done.stderr
+    # Not one chown, and the mode is as the person placed it: the deploy hides nothing.
+    assert not _chowns(box)
+    assert _mode(box.etc / "screening" / name) == 0o644
+    assert not [call for call in box.calls() if call.startswith("docker")]
+
+
+@pytest.mark.parametrize("mode", OPEN_MODES[1:], ids=oct)
+def test_every_group_or_other_bit_on_a_screening_file_stops_the_deploy(box, mode):
+    _place(box, "denylist.txt", mode)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "the screening file denylist.txt is open to group or others" in done.stderr
+    assert not _chowns(box)
+
+
+@pytest.mark.parametrize("target_exists", [True, False])
+def test_a_screening_file_that_is_a_link_stops_the_deploy(box, target_exists):
+    """chown and chmod follow a link, so a link could hand any file of the box to the API."""
+    target = box.root / "elsewhere.txt"
+    if target_exists:
+        target.write_text("Invented Codename\n")
+        target.chmod(0o600)
+    (box.etc / "screening").mkdir(mode=0o700)
+    (box.etc / "screening" / "denylist.txt").symlink_to(target)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "the screening file denylist.txt is not a plain file" in done.stderr
+    assert not _chowns(box)
+    if target_exists:
+        assert _mode(target) == 0o600
+
+
+def test_a_screening_folder_that_is_a_link_stops_the_deploy(box):
+    elsewhere = box.root / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (box.etc / "screening").symlink_to(elsewhere)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "the screening folder is not a plain folder" in done.stderr
+    assert not _chowns(box)
+    assert _mode(elsewhere) == 0o700
