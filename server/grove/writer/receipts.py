@@ -311,8 +311,8 @@ _WORD_TYPES = {"Kind": "kind", "Meaning": "meaning", "PropertyName": "property n
 
 
 def _registry_words(query: WorldQuery, receipt: Receipt) -> dict[str, dict[str, Any]]:
-    """The registry rows an `o` line names, read fresh: a word's type and name, or an alias's
-    phrase and its target's type and name."""
+    """The registry rows an `o` line names, read fresh: a word's type and name, an alias's phrase
+    and its target's type and name, or a capability minted with a word and that word."""
     ids = sorted({line.entity_id for line in receipt.lines if line.symbol == "o"})
     if not ids:
         return {}
@@ -333,7 +333,16 @@ def _registry_words(query: WorldQuery, receipt: Receipt) -> dict[str, dict[str, 
             "target_type": row["target_type"],
             "target_id": row["target_id"],
         }
-    targets = sorted(row["target_id"] for row in found.values() if row["type"] == "alias")
+    for row in query.read(
+        "MATCH (c:Capability) WHERE c.id IN $ids RETURN c.id AS id, "
+        "c.connector_type AS connector_type, c.capability AS capability, "
+        "c.registry_id AS target_id",
+        ids=ids,
+    ):
+        found[row["id"]] = {"type": "capability", **row}
+    targets = sorted(
+        row["target_id"] for row in found.values() if row["type"] in ("alias", "capability")
+    )
     if targets:
         for label, word_type in _WORD_TYPES.items():
             for row in query.read(
@@ -355,6 +364,9 @@ def _ontology_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
     word = found["words"].get(line.entity_id) or {}
     if word.get("type") == "alias":
         return f'o alias "{word["phrase"]}" for {_word_text(word["target_id"], found)}'
+    if word.get("type") == "capability":
+        target = _word_text(word["target_id"], found)
+        return f"o capability {word['connector_type']} {word['capability']} for {target}"
     if line.field == "status":
         status = _shown(found["values"].get(line.value_id))
         return f"o promote {_word_text(line.entity_id, found)} ({status})"

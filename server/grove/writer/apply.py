@@ -380,6 +380,7 @@ def _check_properties(
     properties: dict[str, Any],
     *,
     sent_names: set[str] | None = None,
+    own_id: str | None = None,
 ) -> dict:
     """The properties under their declared names. A state property sits only on a record, and a
     record holds at most one (D1, D4). A value that names an item is refused (O14); on an update
@@ -391,7 +392,7 @@ def _check_properties(
         declared = _declared_property(run, kind, name)
         _spelled_once(sent, declared["name"], name, value)
         checked = sent_names is None or declared["name"] in sent_names
-        item_id = ontology.value_names_item(run.tx, value) if checked else None
+        item_id = ontology.value_names_item(run.tx, value, own_id) if checked else None
         if item_id is not None:
             raise Refused(
                 "invalid_arguments",
@@ -671,6 +672,7 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         reason_id=reason_id,
         evidence_id=provenance,
     )
+    ontology.note_written(run, item_id, set(properties or {}))
     _write_evidence(run, plans, "item", item_id, reason_id)
     _record_pairs(run, item_id, pairs, provenance)
     if overridden:
@@ -698,6 +700,7 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     required = {"title", *_required_fields(kind)}
 
     changes: list[tuple[str, Any, Any, dict[str, Any]]] = []
+    written: set[str] = set()
     for name, value in fields.items():
         old: Any = item.get(name)
         if name == "properties":
@@ -710,6 +713,7 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             else:
                 merged = json.loads(item.get("properties") or "{}")
             old = json.loads(item.get("properties") or "{}") or None
+            base = dict(merged)
             sent: dict[str, tuple[str, Any]] = {}
             for key, part in value.items():
                 name_of = _declared_property(run, kind, key)["name"]
@@ -723,7 +727,13 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
                 kind,
                 merged,
                 sent_names={name for name, (_, part) in sent.items() if part is not None},
+                own_id=item_id,
             )
+            written = {
+                name
+                for name, (_, part) in sent.items()
+                if part is not None and base.get(name) != part
+            }
             new = merged or None
             columns = {"properties": _json(new), "property_values": _property_values(new)}
         elif name in ("title", "summary", "body"):
@@ -778,6 +788,8 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             if not history_only:
                 run.tx.run(_SET_ITEM, id=item_id, columns=columns)
                 moved = True
+            if name == "properties":
+                ontology.note_written(run, item_id, written)
         if moved:
             _bump(run, _BUMP_ITEM, item_id)
     else:
