@@ -1,10 +1,11 @@
 """Build Grove's pages into self-contained HTML files in web/dist: the views (index.html), the
-public homepage (home.html) and the privacy page (privacy.html).
+public homepage (home.html), the privacy page (privacy.html) and the consent page (consent.html).
 
 Standard library only; runs under the Mac's /usr/bin/python3 (3.9) and under 3.12.
 The views load no fixture. The checks inject a synthetic one into the unbundled sources
 (window.GROVE_FIXTURE); the bundle compiles that hook out, so it always runs live.
 The privacy page's table comes from docs/data-flow.md, so the page cannot say less than that file.
+The consent page is a template: the API fills its two marks at each /authorize (grove.oauth.consent).
 """
 from pathlib import Path
 import base64
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parent
 FIXTURE_HOOK = "window.GROVE_FIXTURE"
 DATA_FLOW = ROOT.parent / "docs" / "data-flow.md"
 TABLE_MARK = "<!-- data-flow-table -->"
+CONSENT_MARKS = ("<!--grove:title-->", "<!--grove:consent-->")
 
 
 def asset_url(raw, base):
@@ -103,7 +105,10 @@ def bundle(name):
     return html
 
 
-pages = {name: bundle(name) for name in ("index.html", "home.html", "privacy.html")}
+pages = {name: bundle(name) for name in ("index.html", "home.html", "privacy.html", "consent.html")}
+for mark in CONSENT_MARKS:
+    if pages["consent.html"].count(mark) != 1:
+        raise SystemExit("build.py: consent.html must hold the mark " + mark + " exactly once")
 if pages["privacy.html"].count(TABLE_MARK) != 1:
     raise SystemExit("build.py: privacy.html must hold the data-flow mark exactly once")
 pages["privacy.html"] = pages["privacy.html"].replace(TABLE_MARK, data_flow_table())

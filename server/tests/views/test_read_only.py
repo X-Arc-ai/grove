@@ -111,10 +111,11 @@ def test_the_views_package_never_imports_the_writer():
         assert not any(name.startswith("grove.writer") for name in imports_of(path)), path.name
 
 
-def test_the_api_reaches_the_writer_only_for_positions_and_sign_in():
+def test_the_api_reaches_the_writer_only_for_positions_sign_in_and_oauth():
     allowed = {
         "views.py": {"grove.writer.positions"},
         "auth.py": {"grove.writer.accounts", "grove.writer.errors"},
+        "oauth.py": {"grove.writer.oauth"},
     }
     files = sorted((SERVER / "grove" / "api").glob("*.py"))
     assert files
