@@ -55,15 +55,16 @@ def _instant(value: Any, name: str) -> datetime:
 
 
 _SPEAKER_KINDS = frozenset(ENUMS["speaker_kind"])
-_SPEAKER_KEYS = frozenset({"kind", "sender", "original_author"})
+_SPEAKER_KEYS = frozenset({"kind", "sender", "original_author", "locator"})
 _META_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
 
 def speakers_json(speakers: Any) -> str | None:
     """The speakers the connector's code read from a source's own metadata (S46): message key to
-    {kind, sender, original_author}. `sender` is a code the connector chose (never an address),
-    and `original_author` an item id. Only code that parses a source sets these, so the writer
-    lets them win over a caller's classification (D5: metadata first)."""
+    {kind, locator, sender, original_author}. `locator` is where that message sits in the source,
+    so no row can borrow the key for another place. `sender` is a code the connector chose (never
+    an address), and `original_author` an item id. Only code that parses a source sets these, so
+    the writer lets them win over a caller's classification (D5: metadata first)."""
     if speakers is None:
         return None
     if not isinstance(speakers, Mapping):
@@ -78,7 +79,11 @@ def speakers_json(speakers: Any) -> str | None:
             )
         if entry.get("kind") not in _SPEAKER_KINDS:
             raise InvalidRecord("invalid_arguments", "enum", "a speaker kind is a speaker_kind")
-        for name in ("sender", "original_author"):
+        if not isinstance(entry.get("locator"), str) or not entry["locator"].strip():
+            raise InvalidRecord(
+                "invalid_arguments", "type", "a speaker names the locator of its message"
+            )
+        for name in ("sender", "original_author", "locator"):
             value = entry.get(name)
             if value is not None and (
                 not isinstance(value, str) or _META_CODE.fullmatch(value) is None

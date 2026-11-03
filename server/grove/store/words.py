@@ -391,6 +391,10 @@ def _premise_types(query: WorldQuery, rows: Sequence[Mapping[str, Any]]) -> list
 def _state(query: WorldQuery, claim_type: str, row: Mapping[str, Any], at: datetime) -> str:
     if claim_type == "link":
         return link_standing(row, at=at).state
+    if not row.get("kind"):
+        # Every item the writer makes has a kind; a row with none (a planted or damaged row) has
+        # no lifecycle to read, so its state is unknown and the item page still renders.
+        return UNKNOWN
     found = standings(query, [row["id"]]).get(row["id"])
     return found.state if found is not None else UNKNOWN
 

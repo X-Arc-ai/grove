@@ -773,7 +773,7 @@ def test_a_connector_stores_the_speakers_it_read_from_the_metadata(driver, world
     in the same row; the writer lets them win over a caller's classification."""
     test_clock.set(WORLD_TIME, world)
     connector_id = record_connector(driver, world, "whatsapp")
-    speakers = {"mk-1": {"kind": "automated", "sender": "carrier-notice"}}
+    speakers = {"mk-1": {"kind": "automated", "sender": "carrier-notice", "locator": "line:1"}}
     add_screened_source(
         WorldWriter(driver, world),
         small_source(),
@@ -788,7 +788,8 @@ def test_a_connector_stores_the_speakers_it_read_from_the_metadata(driver, world
 @pytest.mark.parametrize(
     "speakers",
     [
-        {"mk-1": {"kind": "a robot"}},
+        {"mk-1": {"kind": "a robot", "locator": "line:1"}},
+        {"mk-1": {"kind": "automated", "sender": "carrier-notice"}},
         {"mk-1": {"kind": "automated", "sender": "someone@example.test"}},
         {"mk-1": {"kind": "person", "name": "Rowan"}},
         ["mk-1"],

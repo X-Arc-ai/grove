@@ -33,10 +33,12 @@ class RowFacts:
 
     `automated`: the source's metadata names an automated sender for this message.
     `logged`: a calendar entry dated before the read, on a day the person keeps as a log.
+    `whole`: the row cites its whole source (the locator `whole`), so the source is the document.
     `relay`: the relay of the request that stored this source (remember, answer, correction).
     `verbatim`: that request carried the person's own words and the host message id."""
 
     modality: str = "text"
+    whole: bool = False
     automated: bool = False
     logged: bool = False
     relay: str | None = None
@@ -58,10 +60,10 @@ def derive_row_source_type(
         return "confirmed"
     if connector_type in _ALWAYS_CONFIRMED:
         return "confirmed"
-    if statement_class == ARTIFACT_CLASS and (
-        connector_type in _ARTIFACT_CONNECTORS or facts.modality == "image"
-    ):
-        # A document or a picture that is itself the record of an act (line 1087, 1170).
+    if statement_class == ARTIFACT_CLASS and connector_type in _ARTIFACT_CONNECTORS and facts.whole:
+        # A document or a picture that is itself the record of an act (line 1087, 1170): the
+        # whole stored file, never a line of a chat or a note, and never on the caller's word
+        # about its modality.
         return "confirmed"
     if connector_type == "person_in_views":
         return "confirmed" if facts.relay in _ANSWER_RELAYS else reported

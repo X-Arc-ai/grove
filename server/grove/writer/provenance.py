@@ -213,6 +213,15 @@ def resolve_observation(tx: WorldTx, observation: dict[str, Any]) -> dict[str, A
     # Speaker and modality come from metadata first (D5): the connector's code stored them on the
     # source, and they win over the caller's classification.
     meta = _speaker_meta(source, observation["message_key"])
+    if meta and meta.get("locator") != observation["locator"]:
+        # The metadata names where its message sits in the source; a row that borrows the key
+        # for another place would take another message's speaker (S46).
+        raise Refused(
+            "invalid_arguments",
+            "message_key_locator",
+            "the message key names another place in the source than this locator",
+            {"ev_id": observation["ev_id"]},
+        )
     speaker_kind = meta.get("kind") or observation["speaker_kind"]
     original_author = meta.get("original_author") or observation.get("original_author")
     sender = meta.get("sender")
@@ -259,6 +268,7 @@ def resolve_observation(tx: WorldTx, observation: dict[str, Any]) -> dict[str, A
     if derivation == "observed":
         facts = RowFacts(
             modality=observation["modality"],
+            whole=observation["locator"] == "whole",
             automated=meta.get("kind") == "automated",
             logged=(
                 connector_type == "calendar"

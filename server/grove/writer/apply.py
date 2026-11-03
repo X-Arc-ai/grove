@@ -38,7 +38,9 @@ from grove.writer.source_types import claim_fields
 from grove.writer.tx import WorldTx
 from grove.writer.verify import (
     CreateConfirm,
+    LateBearing,
     can_confirm,
+    check_late_bearing,
     confirm_at_create,
     plan_horizon,
     scheduled_latest,
@@ -108,6 +110,7 @@ class _Run:
         self.changed_claims: set[str] = set()
         self.retired_claims: set[str] = set()
         self.create_confirms: list[CreateConfirm] = []
+        self.late_bearing: list[LateBearing] = []
         # Bounded periods whose became-true time this batch made known (D5 rule 2).
         self.period_starts: dict[str, int] = {}
         self.stamp = stamp
@@ -1674,6 +1677,13 @@ def _finish(run: _Run, ops: list[Any]) -> None:
             confirm_at_create(run, pending)
         except Refused as refused:
             run.refuse(pending.index, ops[pending.index], refused)
+    for late in run.late_bearing:
+        if late.index in run.refused:
+            continue
+        try:
+            check_late_bearing(run, late)
+        except Refused as refused:
+            run.refuse(late.index, ops[late.index], refused)
     for item_id, index in run.period_starts.items():
         if index not in run.refused and not _confirmed_in_batch(run, item_id):
             run.refuse(

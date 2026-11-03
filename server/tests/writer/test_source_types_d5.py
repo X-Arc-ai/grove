@@ -337,7 +337,10 @@ def test_moving_the_clock_past_a_plans_date_changes_no_claims_type_or_state(driv
 
 @pytest.mark.parametrize(
     ("meta", "caller_speaker"),
-    [(None, "ai_host"), ({"kind": "automated", "sender": "venue-bot"}, "person")],
+    [
+        (None, "ai_host"),
+        ({"kind": "automated", "sender": "venue-bot", "locator": "line:2"}, "person"),
+    ],
 )
 def test_a_decision_whose_speaker_is_not_the_decider_is_refused(driver, w, meta, caller_speaker):
     speakers = {"m-2": meta} if meta else None
@@ -366,7 +369,7 @@ def test_a_forwarded_messages_speaker_is_its_original_author(driver, w, talk):
         w,
         "whatsapp",
         ["Forwarded: the hall is ours for the 12th"],
-        speakers={"m-f": {"kind": "forwarded", "original_author": rowan}},
+        speakers={"m-f": {"kind": "forwarded", "original_author": rowan, "locator": "line:1"}},
     )
     # The caller's own classification says person; the metadata wins.
     forwarded = line(chat, "f1", 1, message_key="m-f", statement_class="report_state")
@@ -383,7 +386,7 @@ def test_a_forwarded_message_without_its_original_author_is_refused(driver, w, t
         w,
         "whatsapp",
         ["Forwarded: the hall is ours"],
-        speakers={"m-f": {"kind": "forwarded"}},
+        speakers={"m-f": {"kind": "forwarded", "locator": "line:1"}},
     )
     by_meta = line(chat, "f2", 1, message_key="m-f")
     op = create_item("event", "Okonkwo Hall is held for the 12th", "f2")
@@ -626,7 +629,7 @@ def test_a_booking_confirmation_yields_a_confirmed_booking_and_a_planned_trip(dr
         w,
         "whatsapp",
         ["Velmora Air: booking VA212 confirmed for Ilse Varga, flight on 12 July"],
-        speakers={"m-b": {"kind": "automated", "sender": "velmora-air"}},
+        speakers={"m-b": {"kind": "automated", "sender": "velmora-air", "locator": "line:1"}},
     )
     booked = line(
         mail,
@@ -693,7 +696,7 @@ def test_a_delivery_notification_has_an_automated_speaker(driver, w):
         w,
         "whatsapp",
         ["Parcel desk: the table linen for Okonkwo Hall was delivered"],
-        speakers={"m-d": {"kind": "automated", "sender": "parcel-desk"}},
+        speakers={"m-d": {"kind": "automated", "sender": "parcel-desk", "locator": "line:1"}},
     )
     note = line(notes, "n1", 1, message_key="m-d", statement_class="report_happened")
     row = typed(driver, w, note, "The table linen was delivered")
@@ -710,7 +713,7 @@ def test_a_voice_note_has_modality_voice_and_its_sender_as_speaker(driver, w):
         w,
         "voice_notes",
         ["Rowan: the caterer can do the 12th at Okonkwo Hall"],
-        speakers={"m-v": {"kind": "third_party", "sender": "rowan-okonkwo"}},
+        speakers={"m-v": {"kind": "third_party", "sender": "rowan-okonkwo", "locator": "whole"}},
     )
     note = whole(voice, "v1", message_key="m-v", statement_class="report_state", modality="voice")
     row = typed(driver, w, note, "The caterer can do the 12th")
