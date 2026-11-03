@@ -49,9 +49,12 @@ from tests.writer.test_contract_d3 import (
     CONNECTOR,
     contradicts,
     correct,
+    entries_of,
     merge,
+    record_and_head,
     refute,
     retire,
+    successor_links,
     supersede,
     undo,
 )
@@ -467,9 +470,10 @@ def test_successor_on_read_path_views_node(driver, corrected):
 
 @pytest.fixture
 def every_operation(driver, seeded, chat) -> dict[str, str]:
-    """A world that went through each composite operation: a correction with its head update, a
-    refuted item and a refuted link, a supersession, a merge kept, a merge undone, an undone
-    automatic change, a spent record, a late terminal status and a clock with words."""
+    """A world that went through each composite operation: a correction with its head update and
+    the same correction again with no head update, a refuted item and a refuted link, a
+    supersession, a merge kept, a merge undone, an undone automatic change, a spent record, a
+    late terminal status and a clock with words."""
     w = seeded["world_id"]
 
     def obs(minute: int, **extra: Any) -> dict[str, Any]:
@@ -500,6 +504,13 @@ def every_operation(driver, seeded, chat) -> dict[str, str]:
             correct(record, head, ev(4)),
         ],
         [obs(4)],
+    )
+    # The same correction again from a newer source, with no head update: it restates the link.
+    apply(
+        driver,
+        w,
+        [correct(record, head, ev(19), no_head_update_reason="the head already says it")],
+        [obs(19)],
     )
     false_event = make_item(
         driver, w, chat, 5, kind="event", title="The venue walk-through took place"
@@ -614,6 +625,38 @@ def test_rebuild_matches_live_after_every_d3_operation(driver, every_operation):
     task = projection.items[every_operation["task"]]
     assert task["became_true_words"] == held["items"][every_operation["task"]]["became_true_words"]
     assert projection.items[every_operation["spent"]]["lesson_in"]
+
+
+def test_a_second_correction_with_no_head_update_rebuilds_to_the_live_fingerprint(
+    driver, seeded, chat
+):
+    """S47: a correction that lands on the successor link of an earlier one restates it. The
+    marker for no head update leaves the link's version as it was, live and in the rebuild, so
+    the fingerprints match and the restore is not refused."""
+    w = seeded["world_id"]
+    record, head = record_and_head(driver, w, chat)
+    apply(
+        driver,
+        w,
+        [update_item(head, 1, {"summary": "at the Birch Hall"}, "e9"), correct(record, head, "e9")],
+        [observation(chat, "e9", 9)],
+    )
+    apply(
+        driver,
+        w,
+        [correct(record, head, "e10", no_head_update_reason="the head already says it")],
+        [observation(chat, "e10", 10)],
+    )
+    [link] = successor_links(driver, w, record, MEANING_CORRECTED_BY)
+    assert link["version"] == 1
+    fields = [entry["field"] for entry in entries_of(driver, w, link["id"])]
+    assert fields.count("no_head_update") == 1 and "restated" in fields
+    query = WorldQuery(driver, w)
+    entries, values = read_history(query)
+    projection = rebuild(entries, values)
+    assert projection.links[link["id"]]["version"] == 1
+    live = live_fingerprint(driver, w)
+    assert fingerprint(projection.rows, projection.history, live["tables"]) == live
 
 
 def test_full_restore_after_every_d3_operation(driver, every_operation, chat):

@@ -409,6 +409,29 @@ def test_supersede_ends_the_old_and_keeps_lineage(driver, seeded, chat):
     one(refused(driver, w, [third, supersede(old, "$e", "e10")], [ev2]), "invalid_arguments")
 
 
+def test_supersede_takes_a_decision_of_the_record_class_and_keeps_its_claim(driver, seeded, chat):
+    """S46, spec lines 796 and 822: a replaced decision gets "superseded by", and the starter set
+    makes a decision a record-class kind, so supersede takes a record-class item. Its claim stays
+    as it was; only its ending is written. An overtaken observation is corrected instead (the
+    caller's choice: the code names no kind but the primitive ones)."""
+    w = seeded["world_id"]
+    [kind] = read(
+        driver,
+        w,
+        "MATCH (k:Kind {name: 'decision'}) RETURN k.lifecycle_class AS lifecycle",
+    )
+    assert kind["lifecycle"] == "record"
+    old = make_item(driver, w, chat, 2, kind="decision", title="Launch venue decided: Oak Room")
+    before = props(driver, w, old)
+    ev = observation(chat, "e9", 9)
+    new = create_item("decision", "Birch Hall chosen instead", "e9", temp_id="$d")
+    apply(driver, w, [new, supersede(old, "$d", "e9")], [ev])
+    after = props(driver, w, old)
+    claim = ("title", "summary", "properties", "kind", "became_true_precision", "recorded")
+    assert {key: after.get(key) for key in claim} == {key: before.get(key) for key in claim}
+    assert after["end_class"] == "superseded"
+
+
 # merge, then undo -----------------------------------------------------------------------------
 
 

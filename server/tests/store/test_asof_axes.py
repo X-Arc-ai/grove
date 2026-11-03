@@ -2,8 +2,8 @@
 Grove knows now).
 
 Spec, D3 "How to test it": "A link ended with a past world end time keeps 'what was true on the
-1st' and 'what Grove believed on the 1st' distinct and correct." The record axis half is
-known_as_of (Part C of the writer-b lane). Every name here is invented.
+1st' and 'what Grove believed on the 1st' distinct and correct." The record-axis half is
+grove.store.replay.known_as_of. Every name here is invented.
 
 Rows the writer has no operation for yet (the successor links of correct and supersede, and a
 history-only stop clock of a late terminal status) are planted through grove.writer.testing, as
@@ -25,6 +25,7 @@ from grove.store.current import Successor
 from grove.store.history_reads import changes_between
 from grove.store.primitives import MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY
 from grove.store.query import WorldQuery
+from grove.store.replay import known_as_of
 from grove.writer.testing import plant_link, plant_node
 from grove.writer.worlds import create_world
 from tests.writer import helpers
@@ -200,8 +201,10 @@ def test_past_world_end_keeps_true_then_and_believed_then_apart(driver, seeded, 
     assert (ending["kind"], ending["end_class"]) == ("ended", "ended_in_the_world")
     assert ending["recorded_at"] == NOV_3
     assert ending["stopped_being_true"]["earliest"] == iso(OCT_28)
-    # TODO(writer-b Part C): known_as_of(query, NOV_1) must still hold the link, current: on the
-    # 1st Grove had not recorded its end. That is the record-axis half of this D3 line.
+    # The record-axis half of this D3 line: on the 1st Grove had not recorded the end, so it
+    # still believed the link; once the end was recorded, it no longer did.
+    assert known_as_of(query, NOV_1).links[link].standing.state == "current"
+    assert link not in known_as_of(query, NOV_4).links
 
 
 def test_world_as_of_drops_a_refuted_link_always_and_an_ended_one_after_its_stop(
@@ -239,6 +242,55 @@ def test_world_as_of_drops_a_refuted_link_always_and_an_ended_one_after_its_stop
     # The refuted link is in the store, ended, with its stop clock: the read leaves it out.
     [row] = read(driver, w, "MATCH (:Item)-[l:LINK {id: $id}]->(:Item) RETURN l", id=refuted)
     assert row["l"]["end_class"] == "refuted" and row["l"]["stopped_being_true_earliest"] == NOV_5
+
+
+def test_a_link_ended_at_an_unknown_or_before_time_stood_until_its_place(
+    driver, seeded, chat, frozen
+):
+    """D3: "A link that ended in the world and a link that was never true are different events."
+    S48: a link's ending with no earliest bound is placed as an item's is, at its latest bound,
+    else at the world time of the entry that ended it. A refuted link with the same clock never
+    stood. The record axis places the endings by the same rule."""
+    w = seeded["world_id"]
+    ops = [
+        create_item("organisation", "Okonkwo print studio", "a1", temp_id="$studio"),
+        create_item("organisation", "Velmora arts guild", "a1", temp_id="$guild"),
+        create_item("organisation", "Rowan's print shop", "a1", temp_id="$shop"),
+        create_link("$studio", "part of", "$guild", "a1", became_true=clock_at(OCT_20)),
+        create_link("$studio", "part of", "$shop", "a1", became_true=clock_at(OCT_20)),
+        create_link("$guild", "part of", "$shop", "a1", became_true=clock_at(OCT_20)),
+    ]
+    receipt = apply(driver, w, ops, [observation(chat, "a1", 1, at=OCT_20)])
+    unknown, before, refuted = (created_id(receipt, ">", "link", nth=n) for n in range(3))
+    frozen.set(NOV_3)
+    apply(
+        driver,
+        w,
+        [
+            end_link(unknown, "ended_in_the_world", "unknown", "b1"),
+            end_link(
+                before, "ended_in_the_world", {"precision": "before", "latest": iso(OCT_28)}, "b1"
+            ),
+            end_link(refuted, "refuted", "unknown", "b1"),
+        ],
+        # The message that tells of the endings is of 28 October.
+        [observation(chat, "b1", 2, at=OCT_28)],
+    )
+    query = WorldQuery(driver, w)
+    ours = {unknown, before, refuted}
+
+    for at, held in (
+        (OCT_20 + HOUR, {unknown, before}),
+        (OCT_25, {unknown, before}),
+        (NOV_1, set()),
+        (NOV_4, set()),
+    ):
+        found = world_as_of(query, at)
+        assert ours & set(found.links) == held, at
+        assert all(found.links[link].standing.state == "current" for link in held), at
+    # Before the endings were recorded, Grove believed all three; after, none of them.
+    assert ours <= set(known_as_of(query, NOV_1).links)
+    assert not ours & set(known_as_of(query, NOV_4).links)
 
 
 # The content and the ending of an item --------------------------------------------------------

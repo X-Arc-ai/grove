@@ -57,6 +57,11 @@ _ITEM_ENTRIES = (
     "RETURN e.entity_id AS entity_id, e.sequence AS sequence, e.field AS field, "
     "e.new_value_id AS value_id, e.world_time AS world_time ORDER BY e.sequence"
 )
+_LINK_END_ENTRIES = (
+    "MATCH (e:ChangeEntry {entity_type: 'link', field: 'end_class'}) WHERE e.entity_id IN $ids "
+    "RETURN e.entity_id AS entity_id, e.sequence AS sequence, e.field AS field, "
+    "e.new_value_id AS value_id, e.world_time AS world_time ORDER BY e.sequence"
+)
 _VALUES = "MATCH (v:HistoryValue) WHERE v.id IN $ids RETURN v.id AS id, v.value AS value"
 # The evidence rows active now whose source spoke at or before the time read: what the claim
 # rested on then, as far as Grove knows now.
@@ -177,19 +182,61 @@ def _point(value: datetime | str | None) -> datetime | None:
     return None if value is None else _instant(value)
 
 
-def ending_holds(head: Mapping[str, Any], end_world_time: datetime | None, at: datetime) -> bool:
-    """Whether the head's end class has ended the item by `at` on the world axis.
+def end_instant(head: Mapping[str, Any], end_world_time: datetime | str | None) -> datetime | None:
+    """Where a row's ending sits on the world axis (S48), for items and links alike.
 
     The stop clock places the end: its earliest bound, else its latest (a `before` clock). With
     no bound (no stop clock, or an unknown one) the world time of the entry that set the end class
-    places it. With neither, Grove knows of no time it was still true, so it holds at every time.
-    """
+    places it. None when there is neither: Grove knows of no time the row was still true."""
     stop = _point(head.get("stopped_being_true_earliest")) or _point(
         head.get("stopped_being_true_latest")
     )
-    if stop is None:
-        stop = _point(end_world_time)
+    return stop if stop is not None else _point(end_world_time)
+
+
+def ending_holds(head: Mapping[str, Any], end_world_time: datetime | None, at: datetime) -> bool:
+    """Whether the head's end class has ended the item by `at` on the world axis: the ending
+    placed by `end_instant`, or at every time when it has no place."""
+    stop = end_instant(head, end_world_time)
     return stop is None or stop <= at
+
+
+def placed_link(
+    link: Mapping[str, Any], end_world_time: datetime | str | None
+) -> Mapping[str, Any]:
+    """The link row that `link_standing` reads, on either axis (S48).
+
+    A link that stopped being true in the world (an end class other than refuted, and a stop
+    clock) has its ending placed as an item's is, by `end_instant`: a stop clock with no earliest
+    bound (`before`, or `unknown`) still stood before that place. A refuted link never stood. A
+    link ended with no stop clock (a merge moved its claim onto the survivor's copy) stands at no
+    time on its own. Only the standing reads this row: a result keeps the link's own row."""
+    if not _placeable(link):
+        return link
+    placed = end_instant(link, end_world_time)
+    return link if placed is None else {**link, "stopped_being_true_earliest": placed}
+
+
+def _placeable(link: Mapping[str, Any]) -> bool:
+    """A link ending that `placed_link` places: ended in the world, with a stop clock that has no
+    earliest bound (a link with one `link_standing` places itself)."""
+    return (
+        link.get("end_class") not in (None, NEVER_TRUE)
+        and link.get("stopped_being_true_precision") is not None
+        and link.get("stopped_being_true_earliest") is None
+    )
+
+
+def _set_end_times(
+    entries: Iterable[Mapping[str, Any]], values: Mapping[str, str | None]
+) -> dict[str, datetime | None]:
+    """Per entity, the world time of the entry that last set a non-null end class (entries in
+    sequence order; None when that entry has no world time)."""
+    found: dict[str, datetime | None] = {}
+    for entry in entries:
+        if entry["field"] == "end_class" and _decode(values.get(entry["value_id"])) is not None:
+            found[entry["entity_id"]] = _point(entry["world_time"])
+    return found
 
 
 def _ended_as_of(
@@ -247,13 +294,20 @@ def _replayed(
         if row is None:
             continue
         rows[item_id] = row
-        set_end = [
-            entry
-            for entry in own
-            if entry["field"] == "end_class" and _decode(mine.get(entry["value_id"])) is not None
-        ]
-        ended_at[item_id] = set_end[-1]["world_time"] if set_end else None
+        ended_at[item_id] = _set_end_times(own, mine).get(item_id)
     return rows, ended_at
+
+
+def _link_end_times(
+    query: WorldQuery, links: Iterable[Mapping[str, Any]]
+) -> dict[str, datetime | None]:
+    """`_set_end_times` for the links whose ending `placed_link` places."""
+    ids = sorted(link["id"] for link in links if _placeable(link))
+    if not ids:
+        return {}
+    entries = query.read(_LINK_END_ENTRIES, ids=ids)
+    values = _values(query, (entry["value_id"] for entry in entries if entry["value_id"]))
+    return _set_end_times(entries, values)
 
 
 def _evidence_fields(query: WorldQuery, rows: dict[str, dict[str, Any]], at: datetime) -> set[str]:
@@ -289,7 +343,8 @@ def world_as_of(
     refuted item never (left out), and an item whose create entry's world time is after `at` left
     out. Derived claim fields and the planned origin come from the evidence rows active now whose
     source time is at or before `at`. Successors are the successor links that stand at `at`.
-    Links: the head row, kept when `link_standing` at `at` is current (a refuted link never is).
+    Links: the head row, kept when `link_standing` at `at` is current, with the ending placed by
+    `placed_link` (a refuted link never is).
     A row that did not stand at `at` is left out, except an item with successors then. Every
     instant in a result row is ISO text. With `item_ids`, only those items, and the links with an
     end among them."""
@@ -311,9 +366,10 @@ def world_as_of(
 
     standing_links: dict[str, AsOfRow] = {}
     successors: dict[str, list[Successor]] = {}
+    end_times = _link_end_times(query, links)
     for link in sorted(links, key=lambda row: (str(row.get("recorded") or ""), row["id"])):
         row = _text_instants(link)
-        found = link_standing(row, at=at)
+        found = link_standing(placed_link(row, end_times.get(link["id"])), at=at)
         if found.state != "current":
             continue
         standing_links[link["id"]] = AsOfRow(row, found)

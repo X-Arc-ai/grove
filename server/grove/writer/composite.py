@@ -357,6 +357,8 @@ def _supersede(run: ap._Run, index: int, op: dict[str, Any]) -> None:
     target = ap._lock_item(run, target_id)
     successor = _mark_item(run, successor_id)
     _not_belief(target)
+    # A record-class item is taken: a decision is one, and a replaced decision is superseded (spec
+    # lines 796, 822). An overtaken observation or event is corrected instead (S46).
     ap._check_version(op, target)
     if ap._ended(target):
         raise Refused("invalid_arguments", "already_ended", "the item has already ended", {})
