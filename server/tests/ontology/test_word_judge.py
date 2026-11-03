@@ -622,3 +622,45 @@ def test_a_word_the_judges_set_aside_is_not_judged_again_in_the_same_plan(
         ("property_name", "owner", "state_property_on_item"),
         ("property_name", "owner", "state_property_on_item"),
     )
+
+
+def test_a_meaning_proposal_with_a_kind_key_is_refused_before_any_judge(driver, seeded, make_layer):
+    """The operation's shape check refuses a kind key on a meaning, null too, so the plan sends the
+    phrase to the generic meaning without a judge call."""
+    world_id = seeded["world_id"]
+    router = Router([], [])
+    plan = plan_words(make_layer(router), driver, world_id, [proposal(kind=None)])
+    assert (plan.ops, plan.generic) == ((), (GODPARENT,))
+    assert router.spark.requests == [] and router.glimmer.requests == []
+
+
+def test_fit_links_never_reads_a_planned_row_id_as_a_phrase(driver, seeded, make_layer):
+    world_id = seeded["world_id"]
+    router = Router([first("different")], [reply(chat_doc(json.dumps(second("different"))))])
+    plan = plan_words(
+        make_layer(router), driver, world_id, [proposal(), proposal("is close to", neighbours=[])]
+    )
+    assert plan.generic == ("is close to",)
+    links = [
+        create_link("$ilse", "planned:0", "$teo", "e1"),
+        create_link("$ilse", "generic:0", "$teo", "e1"),
+    ]
+    assert fit_links(plan, links, now=clock.now(world_id)) == links
+
+
+def test_the_plan_reads_the_registry_once(driver, seeded, make_layer, monkeypatch):
+    """The plan's copy starts equal to the registry it records as the base: one read, so a write
+    between two reads can never make them differ."""
+    from grove.ontology import plan as plan_module
+
+    world_id = seeded["world_id"]
+    loads = []
+    real = plan_module.Registry.load
+
+    def counted(source):
+        loads.append(source)
+        return real(source)
+
+    monkeypatch.setattr(plan_module.Registry, "load", staticmethod(counted))
+    plan_words(make_layer(Router([], [])), driver, world_id, [proposal("connected with")])
+    assert len(loads) == 1
