@@ -329,6 +329,14 @@ def evidence(source_type: str | None, derivation: str | None = "observed") -> di
             "not_started",
             "future_start",
         ),
+        # Only the start role asks for a known start: a due date does not.
+        (
+            {**UNKNOWN, **evidence("confirmed")},
+            "record",
+            {"planned_origin": True, "scheduled": {"due": FLIGHT}},
+            "current",
+            "started",
+        ),
         # Outside the scheduled class an unknown start counts as started.
         ({**UNKNOWN, **evidence("said")}, "record", {}, "current", "started"),
         (

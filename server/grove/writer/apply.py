@@ -14,6 +14,7 @@ from typing import Any
 from grove.ids import new_id
 from grove.store.asof import replay
 from grove.store.current import TERMINAL_ROLES, has_ended
+from grove.store.normalise import reads_blank
 from grove.store.primitives import KIND_BELIEF, PRIMITIVE_MEANING_IDS
 from grove.writer.clocks import (
     Clock,
@@ -360,7 +361,8 @@ def _declared_property(run: _Run, kind: dict[str, Any], name: str) -> dict[str, 
 def _spelled_once(sent: dict[str, tuple[str, Any]], name: str, key: str, value: Any) -> None:
     """Two spellings of one property in one operation (an alias, a case form) with different
     values would keep the last and lose the other with no refusal, so the operation is refused."""
-    if name in sent and sent[name][1] != value:
+    # JSON's own text: Python calls 1 and True equal, and JSON does not.
+    if name in sent and _json(sent[name][1]) != _json(value):
         raise Refused(
             "invalid_arguments",
             "property_named_twice",
@@ -380,7 +382,7 @@ def _check_properties(run: _Run, kind: dict[str, Any], properties: dict[str, Any
         declared = _declared_property(run, kind, name)
         _spelled_once(sent, declared["name"], name, value)
         named[declared["name"]] = value
-        if declared.get("temporal_class") == "state":
+        if declared.get("temporal_class") == "state" and declared["name"] not in state:
             state.append(declared["name"])
     if state and kind.get("lifecycle_class") != "record":
         raise Refused(
@@ -410,11 +412,16 @@ def _required_fields(kind: dict[str, Any]) -> list[str]:
     return names
 
 
+def _present(value: Any) -> bool:
+    if isinstance(value, str):
+        return not reads_blank(value)
+    return value not in (None, [])
+
+
 def _has_field(item: dict[str, Any], name: str) -> bool:
-    if item.get(name) not in (None, "", []):
+    if _present(item.get(name)):
         return True
-    properties = json.loads(item.get("properties") or "{}")
-    return properties.get(name) not in (None, "", [])
+    return _present(json.loads(item.get("properties") or "{}").get(name))
 
 
 def _state_property(run: _Run, item: dict[str, Any]) -> bool:
@@ -697,7 +704,7 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             new = merged or None
             columns = {"properties": _json(new), "property_values": _property_values(new)}
         elif name in ("title", "summary", "body"):
-            new = value or None
+            new = value if _present(value) else None
             columns = {name: new}
         elif name == "search_terms":
             new = value or None
