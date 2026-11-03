@@ -506,6 +506,13 @@ def test_full_restore_matches_snapshot_fingerprint(driver, mixed, chat):
     snapshot = json.loads(json.dumps(take_snapshot(driver, world_id)))
     recorded = snapshot["fingerprint"]
     assert recorded == live_fingerprint(driver, world_id)
+    # The recorded sizes are the store's own, read here without the fingerprint's code (R4).
+    for label, name in (("Source", "sources"), ("HistoryValue", "history_values")):
+        (size,) = read(
+            driver, world_id, f"MATCH (n:{label}) RETURN count(n) AS count, max(n.id) AS newest"
+        )
+        assert size["count"] > 0
+        assert recorded["tables"][name] == {"count": size["count"], "newest": size["newest"]}
 
     # Writes after the snapshot, which the restore does not bring back.
     apply(
@@ -641,7 +648,72 @@ def test_restore_refuses_a_mismatch(driver, mixed, tamper):
     assert caught.value.found["fingerprint"] != caught.value.expected["fingerprint"]
 
 
+def _newest_source(snapshot: dict) -> dict:
+    return max(snapshot["rows"]["sources"], key=lambda row: row["properties"]["id"])
+
+
+def lose_a_source(snapshot: dict) -> str:
+    """The dump lost a row of a snapshot-only table: one source fewer."""
+    count = len(snapshot["rows"]["sources"])
+    snapshot["rows"]["sources"].remove(_newest_source(snapshot))
+    return f"sources: {count - 1} rows, the snapshot holds {count}"
+
+
+def swap_a_source_id(snapshot: dict) -> str:
+    """A row of a snapshot-only table has another id, with the count as it was."""
+    _newest_source(snapshot)["properties"]["id"] = "00000000-0000-7000-8000-000000000001"
+    return "sources: the newest id differs"
+
+
+@pytest.mark.parametrize("tamper", [lose_a_source, swap_a_source_id], ids=["lost", "swapped"])
+def test_restore_refuses_a_snapshot_table_that_differs(driver, mixed, tamper):
+    """D3: every snapshot-only table's count, and its newest id, matches after the restore. The
+    rebuild never reads these tables, so only the live read of their sizes can catch a dump that
+    lost or changed one of their rows (R4, round two)."""
+    world_id = mixed["world_id"]
+    snapshot = json.loads(json.dumps(take_snapshot(driver, world_id)))
+    expected = tamper(snapshot)
+    purge_world_rows(driver, world_id)
+
+    with pytest.raises(RestoreMismatch) as caught:
+        restore(driver, world_id, snapshot, [])
+
+    assert caught.value.problems == [expected]
+
+
 # --- the forget ledger --------------------------------------------------------------------------
+
+
+def test_a_ledger_row_that_names_a_row_value_is_refused_and_marks_nothing(driver, mixed):
+    """A create entry's value holds the whole row. A forget of one value that names it would
+    remove the row, and the replay would then refuse the row's evidence and links. So the ledger
+    replay refuses it by name (rule row_value) before it marks any value, also the other values
+    of the same ledger, and the world stays as it was (R4, round two). Which column of a create
+    value a forget reaches is the forget lane's design."""
+    world_id = mixed["world_id"]
+    (created,) = read(
+        driver,
+        world_id,
+        "MATCH (e:ChangeEntry {entity_id: $id, field: 'row'}) "
+        "RETURN e.new_value_id AS id, e.sequence AS sequence",
+        id=mixed["venue"],
+    )
+    (venue,) = read(driver, world_id, "MATCH (i:Item {id: $id}) RETURN i", id=mixed["venue"])
+    reason_id = venue["i"]["provenance_reason"]
+    values = history_values(driver, world_id)
+    held = projection_rows(WorldQuery(driver, world_id))
+    approved = clock.now(world_id)
+    ledger = [
+        {"target_type": "field_value", "internal_ids": [reason_id], "approved_at": approved},
+        {"target_type": "named_value", "internal_ids": [created["id"]], "approved_at": approved},
+    ]
+
+    with pytest.raises(ReplayRefused) as caught:
+        replay_ledger(driver, world_id, ledger)
+
+    assert (caught.value.rule, caught.value.sequence) == ("row_value", created["sequence"])
+    assert history_values(driver, world_id) == values
+    assert projection_rows(WorldQuery(driver, world_id)) == held
 
 
 def test_ledger_replay_changes_values_not_entries(driver, mixed):

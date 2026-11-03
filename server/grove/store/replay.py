@@ -69,7 +69,8 @@ _MARKERS: dict[str, frozenset[str]] = {
 }
 # Markers that never move their row, so they add no version: a known link restated, and the
 # reason a correction gives for no head update, which can land on a link that a correction of an
-# earlier batch made (the writer leaves that link's version as it was).
+# earlier batch made (the writer leaves that link's version as it was). The undo's conflict
+# check leaves out the same set (grove.writer.composite.STILL_MARKERS).
 _NO_VERSION = frozenset({"restated", "no_head_update"})
 # Item fields of the entry vocabulary that a later migration may add to the catalogue.
 _ITEM_FIELDS = frozenset({"lesson_in"})

@@ -77,9 +77,12 @@ _SET_EVIDENCE = "MATCH (e:Evidence {id: $id}) SET e += $columns"
 _BUMP_EVIDENCE = "MATCH (e:Evidence {id: $id}) SET e.version = coalesce(e.version, 0) + 1"
 _ENTRIES_OF_SET = "MATCH (e:ChangeEntry {change_set_id: $id}) RETURN e ORDER BY e.sequence"
 _UNDONE = "MATCH (e:ChangeEntry {inverse_of: $id}) RETURN e.sequence AS sequence LIMIT 1"
+# The markers that leave their row as it was (S47): no version moves with them, so no undo
+# conflicts on them. grove.store.replay._NO_VERSION is the same set (a test holds the two equal).
+STILL_MARKERS = frozenset({"restated", "no_head_update"})
 _LATER_MOVES = (
     "MATCH (e:ChangeEntry) WHERE e.sequence > $after AND e.entity_id IN $ids "
-    "AND e.history_only = false AND e.field <> 'restated' "
+    "AND e.history_only = false AND NOT e.field IN $still "
     "RETURN e.entity_id AS id, e.sequence AS sequence ORDER BY e.sequence LIMIT 1"
 )
 _VALUES = (
@@ -990,10 +993,15 @@ def _undo(run: ap._Run, index: int, op: dict[str, Any]) -> None:
         {
             entry["entity_id"]
             for entry in entries
-            if not entry.get("history_only") and entry["field"] != "restated"
+            if not entry.get("history_only") and entry["field"] not in STILL_MARKERS
         }
     )
-    later = run.tx.run(_LATER_MOVES, after=max(entry["sequence"] for entry in entries), ids=moved)
+    later = run.tx.run(
+        _LATER_MOVES,
+        after=max(entry["sequence"] for entry in entries),
+        ids=moved,
+        still=sorted(STILL_MARKERS),
+    )
     if later:
         raise _conflict(
             "a row this change set moved has changed since: undo the later change first",

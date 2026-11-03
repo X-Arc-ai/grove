@@ -9,9 +9,12 @@ from typing import Any
 
 from grove.store.asof import item_as_of
 from grove.store.current import current_items, standings
+from grove.store.d3_fingerprint import fingerprint, live_fingerprint
 from grove.store.primitives import MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY
 from grove.store.query import WorldQuery
+from grove.store.replay import _NO_VERSION, read_history, rebuild
 from grove.writer import Caller, render_receipt
+from grove.writer.composite import STILL_MARKERS
 from tests.writer.helpers import (
     LEARNER,
     PERSON,
@@ -599,6 +602,46 @@ def test_undo_conflicts_when_the_row_moved_since(driver, seeded, chat):
     apply(driver, w, [update_item(task, 2, {"summary": "for the launch"}, "e10")], evs[1:])
     refusal = one(refused(driver, w, [undo(automatic.change_set_id)], []), "version_conflict")
     assert refusal.rule == "undo_conflict"
+
+
+def test_a_later_correction_with_no_head_update_does_not_block_the_undo_of_the_first(
+    driver, seeded, chat
+):
+    """B.2 line 3173: an undo is refused only when a row it moved has moved since. A correction
+    that lands on the same successor link with no head update restates the link and moves no
+    row (S47), so the first correction stays undoable (R4, round two)."""
+    w = seeded["world_id"]
+    record, head = record_and_head(driver, w, chat)
+    first = apply(
+        driver,
+        w,
+        [update_item(head, 1, {"summary": "at the Birch Hall"}, "e9"), correct(record, head, "e9")],
+        [observation(chat, "e9", 9)],
+    )
+    second = apply(
+        driver,
+        w,
+        [correct(record, head, "e10", no_head_update_reason="the head already says it")],
+        [observation(chat, "e10", 10)],
+    )
+    [link] = successor_links(driver, w, record, MEANING_CORRECTED_BY)
+
+    apply(driver, w, [undo(first.change_set_id)], [])
+
+    [after] = read(driver, w, "MATCH ()-[l:LINK {id: $id}]->() RETURN l", id=link["id"])
+    assert after["l"]["end_class"] == "refuted" and not after["l"].get("active_key")
+    assert item_row(driver, w, head)["summary"] == "at the Oak Room"
+    assert entries_of_set(driver, w, first.change_set_id)
+    assert entries_of_set(driver, w, second.change_set_id)
+    entries, values = read_history(WorldQuery(driver, w))
+    projection = rebuild(entries, values)
+    live = live_fingerprint(driver, w)
+    assert fingerprint(projection.rows, projection.history, live["tables"]) == live
+
+
+def test_the_undo_and_the_rebuild_leave_out_the_same_markers():
+    """S47: the markers that move no row add no version in a rebuild and block no undo."""
+    assert STILL_MARKERS == _NO_VERSION
 
 
 def test_undo_of_a_late_value_restores_the_as_of_read(driver, seeded, chat):
