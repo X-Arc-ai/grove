@@ -443,3 +443,182 @@ def test_an_alias_of_a_state_meaning_reads_its_horizon_and_a_given_recheck_is_ke
     ]
     apply_batch(driver, world_id, LEARNER, batch_for([*plan.ops, *links], chat))
     assert meaning(driver, world_id, "is pals with") is None
+
+
+# Regressions of the R4 delta on d3ca3c4 (the plan's own registry) ---------------------------
+
+
+def test_an_alias_whose_ends_fit_only_reversed_is_not_planned_and_rides_on_generic(
+    driver, seeded, chat, make_layer
+):
+    """Both judges say "possesses" is "owned by", but its declared ends fit that word only the
+    other way round: the plan settles it as the writer will, sends the phrase to the generic
+    meaning, and the batch commits."""
+    world_id = seeded["world_id"]
+    router = Router([first("same")], [reply(chat_doc(json.dumps(second("same"))))])
+    possesses = proposal(
+        "possesses",
+        neighbours=[
+            {"word": "owned by", "distinction": "none found"},
+            {"word": "assigned to", "distinction": "assigned to gives work, not ownership"},
+        ],
+        declared={
+            "from_kinds": {"kinds": ["person"]},
+            "to_kinds": {"kinds": ["plan"]},
+            "direction": "from_to",
+            "cardinality": "many",
+            "carries_consequences": False,
+            "temporal_class": "permanent",
+        },
+    )
+    plan = plan_words(make_layer(router), driver, world_id, [possesses])
+    assert plan.ops == () and plan.generic == ("possesses",)
+    links = fit_links(
+        plan, [create_link("$ilse", "possesses", "$plan", "e1")], now=clock.now(world_id)
+    )
+    assert links[0]["original_phrase"] == "possesses" and links[0]["recheck_by"]
+    apply_batch(
+        driver,
+        world_id,
+        LEARNER,
+        batch_for([orchard_plan() | {"temp_id": "$plan"}, *links], chat),
+    )
+
+
+def test_one_word_in_two_surface_forms_is_planned_once(driver, seeded, chat, make_layer):
+    """The resolver takes "is godparent of" to "godparent of": the plan's registry knows the first
+    once it is planned, so the second is reused, and both phrases write with one word."""
+    world_id = seeded["world_id"]
+    router = Router([first("different")], [reply(chat_doc(json.dumps(second("different"))))])
+    plan = plan_words(
+        make_layer(router),
+        driver,
+        world_id,
+        [proposal("godparent of"), proposal("is godparent of")],
+    )
+    assert [op["name"] for op in plan.ops] == ["godparent of"]
+    assert plan.reused == ("is godparent of",)
+    links = [
+        create_link("$ilse", "godparent of", "$teo", "e1"),
+        create_link("$teo", "is godparent of", "$ilse", "e1"),
+    ]
+    apply_batch(driver, world_id, LEARNER, batch_for([*plan.ops, *links], chat))
+    assert read(driver, world_id, "MATCH (m:Meaning {status: 'provisional'}) RETURN m.name AS n")
+
+
+def test_one_property_name_with_its_kind_spelled_twice_is_planned_once(
+    driver, seeded, chat, make_layer
+):
+    world_id = seeded["world_id"]
+    router = Router([], [fields_only("fits")])
+    plan = plan_words(
+        make_layer(router),
+        driver,
+        world_id,
+        [property_proposal("owner"), property_proposal("owner", kind="Plan")],
+    )
+    assert [op["name"] for op in plan.ops] == ["owner"] and plan.reused == ("owner",)
+    apply_batch(
+        driver,
+        world_id,
+        LEARNER,
+        {
+            "evidence": [observation(chat, "e1", 1)],
+            "ops": [*plan.ops, orchard_plan(owner="the orchard group")],
+        },
+    )
+
+
+def test_fit_links_reads_a_copula_form_of_a_planned_state_word(driver, seeded, chat, make_layer):
+    world_id = seeded["world_id"]
+    router = Router(
+        [first("different")], [reply(chat_doc(json.dumps(second("different", "does_not_fit"))))]
+    )
+    plan = plan_words(make_layer(router), driver, world_id, [proposal("godparent of")])
+    links = fit_links(
+        plan, [create_link("$ilse", "is godparent of", "$teo", "e1")], now=clock.now(world_id)
+    )
+    assert links[0]["recheck_by"] == (NINE + timedelta(days=30)).isoformat()
+    apply_batch(driver, world_id, LEARNER, batch_for([*plan.ops, *links], chat))
+
+
+def test_a_proposal_of_an_existing_word_with_a_stray_field_is_reused_and_its_links_stay(
+    driver, seeded, make_layer
+):
+    """Reuse first runs before every other check, so a malformed proposal of "depends on" never
+    sends the phrase to the generic meaning, and its links keep their meaning."""
+    world_id = seeded["world_id"]
+    router = Router([], [])
+    plan = plan_words(make_layer(router), driver, world_id, [proposal("depends on", kind="task")])
+    assert (plan.ops, plan.generic, plan.reused) == ((), (), ("depends on",))
+    link = create_link("$roof", "depends on", "$hay", "e1")
+    assert fit_links(plan, [link], now=clock.now(world_id)) == [link]
+
+
+def test_a_second_proposal_of_a_held_word_is_held_again_not_reused(driver, seeded, make_layer):
+    world_id = seeded["world_id"]
+    state = {"value_type": "text", "temporal_class": "state", "default_horizon": 30}
+    plan = plan_words(
+        make_layer(Router([], [])),
+        driver,
+        world_id,
+        [property_proposal("mood", declared=state), property_proposal("mood", declared=state)],
+    )
+    assert plan.reused == () and plan.held == (
+        ("property_name", "mood", "state_property_on_item"),
+        ("property_name", "mood", "state_property_on_item"),
+    )
+
+
+def test_a_property_name_of_a_kind_the_plan_mints_waits_for_a_later_batch(
+    driver, seeded, make_layer
+):
+    """Its field-fit subject would bind the planned kind, which the writer gives another id."""
+    world_id = seeded["world_id"]
+    errand = proposal(
+        "errand",
+        word_type="kind",
+        neighbours=[
+            {"word": "task", "distinction": "a task has no place"},
+            {"word": "plan", "distinction": "a plan is larger"},
+        ],
+        declared={
+            "lifecycle_class": "work_with_state",
+            "status_vocabulary": [
+                {"status": "to do", "role": "open"},
+                {"status": "finished", "role": "done"},
+            ],
+        },
+    )
+    router = Router(
+        [first("different")],
+        [reply(chat_doc(json.dumps(second("different", fields=("status_vocabulary",)))))],
+    )
+    plan = plan_words(
+        make_layer(router),
+        driver,
+        world_id,
+        [errand, property_proposal("courier", kind="errand")],
+    )
+    assert [op["name"] for op in plan.ops] == ["errand"]
+    assert plan.held == (("property_name", "courier", "kind_in_this_plan"),)
+
+
+def test_a_word_the_judges_set_aside_is_not_judged_again_in_the_same_plan(
+    driver, seeded, make_layer
+):
+    """The second judge disputes "owner" on a plan, so it would be a state: held. A second proposal
+    of it in the same plan is held for the same rule without another verdict."""
+    world_id = seeded["world_id"]
+    router = Router([], [fields_only("does_not_fit"), fields_only("fits")])
+    plan = plan_words(
+        make_layer(router),
+        driver,
+        world_id,
+        [property_proposal("owner"), property_proposal("owner")],
+    )
+    assert plan.ops == () and len(router.glimmer.requests) == 1
+    assert plan.held == (
+        ("property_name", "owner", "state_property_on_item"),
+        ("property_name", "owner", "state_property_on_item"),
+    )

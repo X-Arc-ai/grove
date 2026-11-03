@@ -128,6 +128,7 @@ WRITER_SET = frozenset(
         "worked_example",
         "nearest_neighbours_at_mint",
         "disputed_fields",
+        "earning_episodes",
         "required_fields",
         "required_links",
         "propagating_fields",
@@ -608,9 +609,12 @@ def check_proposal(
     if word_type == "property_name":
         kind = registry.resolve_kind(_text(proposal.get("kind"), "kind"))
         kind_id = kind["id"]
-    elif proposal.get("kind") is not None:
+    # Reuse first, before any other refusal: a proposal of an existing word is word_exists, so
+    # the plan writes with the word and never sends its phrase to the generic meaning.
+    name = check_name(registry, word_type, proposal.get("name"), kind_id)
+    if word_type != "property_name" and proposal.get("kind") is not None:
         raise _bad("unknown_field", "only a property name names its kind", {"field": "kind"})
-    name = _short(check_name(registry, word_type, proposal.get("name"), kind_id), "name", MAX_NAME)
+    name = _short(name, "name", MAX_NAME)
     description = _short(_text(proposal.get("description"), "description"), "description")
     reason = _short(_text(proposal.get("reason"), "reason"), "reason")
     reversed_ = proposal.get("reversed", False)
@@ -694,7 +698,9 @@ def settle(
     word would be unusable. The writer and the planner both call this, so a plan never holds an
     operation that the writer must decline for its judgments."""
     if outcome == OUTCOME_ALIAS:
-        return dict(checked.neighbours[0].row)
+        neighbour = checked.neighbours[0].row
+        _alias_direction(registry, checked, neighbour)
+        return dict(neighbour)
     columns = safer(checked.word_type, checked.columns, set(disputed))
     _usable_on_kind(registry, checked.word_type, checked.kind_id, columns)
     return columns
@@ -736,16 +742,31 @@ class OntologyState:
 
     mints: int = 0
     words: list[_Word] = field(default_factory=list)
-    # For each item, the property names this batch wrote (see note_written).
-    written: dict[str, set[str]] = field(default_factory=dict)
+    # For each item, each property name id this batch wrote, with the episodes of the supporting
+    # rows that the writing operations created (see note_written).
+    written: dict[str, dict[str, set[str]]] = field(default_factory=dict)
 
 
-def note_written(run: Any, item_id: str, names: set[str]) -> None:
-    """O8: create_item and update_item note each property name they wrote: every key of a new item,
-    and each key an update sent with a value that differs from the properties it merged onto (the
-    head, or the as-of value for a late fact). Only these are uses of a property name."""
-    if names:
-        _state(run).written.setdefault(item_id, set()).update(names)
+def note_written(
+    run: Any, item_id: str, kind_id: str, names: set[str], evidence_ids: list[str]
+) -> None:
+    """O8: create_item and update_item note each property name they wrote (every key of a new item
+    that holds a value, and each key an update sent with a value that differs from the properties
+    it merged onto: the head, or the as-of value for a late fact), with the episodes of the
+    supporting rows that operation created. Only these are uses of a property name, and only
+    those episodes count for it: evidence that another operation attached to the item does not."""
+    if not names:
+        return
+    created = set(evidence_ids)
+    episodes = {
+        row["episode_id"]
+        for row in run.created_evidence
+        if row["id"] in created and row.get("polarity") == "supports" and row.get("episode_id")
+    }
+    item = _state(run).written.setdefault(item_id, {})
+    for row in run.registry.property_names:
+        if row.get("kind") == kind_id and row.get("name") in names:
+            item.setdefault(row["id"], set()).update(episodes)
 
 
 # Judgments -----------------------------------------------------------------------------------
@@ -1014,7 +1035,7 @@ def _registry_row(
     return compact(row)
 
 
-def _end_fits(run: Any, declared: dict[str, Any], allowed: dict[str, Any]) -> bool:
+def _end_fits(registry: "Registry", declared: dict[str, Any], allowed: dict[str, Any]) -> bool:
     """Whether every kind and class the proposal declares at one end fits that end of the
     neighbour. A proposal end of any kind fits only a neighbour end of any kind."""
     if allowed.get("any"):
@@ -1023,15 +1044,14 @@ def _end_fits(run: Any, declared: dict[str, Any], allowed: dict[str, Any]) -> bo
         return False
     kinds, classes = set(allowed.get("kinds") or []), set(allowed.get("classes") or [])
     for kind_id in declared.get("kinds") or []:
-        if (
-            kind_id not in kinds
-            and run.registry.kind(kind_id).get("lifecycle_class") not in classes
-        ):
+        if kind_id not in kinds and registry.kind(kind_id).get("lifecycle_class") not in classes:
             return False
     return all(lifecycle_class in classes for lifecycle_class in declared.get("classes") or [])
 
 
-def _alias_direction(run: Any, checked: CheckedProposal, neighbour: dict[str, Any]) -> None:
+def _alias_direction(
+    registry: "Registry", checked: CheckedProposal, neighbour: dict[str, Any]
+) -> None:
     """O15: an alias made from a mint carries the reading the proposal stated. When the proposal's
     declared ends fit the neighbour only the other way round, the stated reading is wrong, and the
     alias would invert every link written with the phrase: refused."""
@@ -1042,8 +1062,8 @@ def _alias_direction(run: Any, checked: CheckedProposal, neighbour: dict[str, An
         ends.reverse()
     first = json.loads(neighbour.get("from_kinds") or '{"any": true}')
     second = json.loads(neighbour.get("to_kinds") or '{"any": true}')
-    stated = _end_fits(run, ends[0], first) and _end_fits(run, ends[1], second)
-    other = _end_fits(run, ends[1], first) and _end_fits(run, ends[0], second)
+    stated = _end_fits(registry, ends[0], first) and _end_fits(registry, ends[1], second)
+    other = _end_fits(registry, ends[1], first) and _end_fits(registry, ends[0], second)
     if not stated and other:
         raise _bad(
             "alias_direction",
@@ -1055,7 +1075,13 @@ def _alias_direction(run: Any, checked: CheckedProposal, neighbour: dict[str, An
 def _add_to_registry(run: Any, word_type: str, row: dict[str, Any]) -> None:
     """The batch's registry learns the new row at once, so a later operation of this batch writes
     with the word by its name."""
-    registry = run.registry
+    add_to_registry(run.registry, word_type, row)
+
+
+def add_to_registry(registry: "Registry", word_type: str, row: dict[str, Any]) -> None:
+    """A registry learns one row (a word, or an alias as word type `alias`). The plan's own copy
+    of the registry learns each planned word the same way, so it checks later proposals as the
+    writer will."""
     if word_type == "kind":
         registry.kinds[row["id"]] = row
     elif word_type == "meaning":
@@ -1073,11 +1099,12 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
     run.summaries[index] = f"{checked.word_type} {checked.name!r}"
     message_key = _message_key(run, op.get("worked_example"))
     verdicts = judge_verdicts(run, checked, list(op.get("judgment_ids") or []))
+    # The same settlement as the plan's: the alias direction guard, a usable mint.
+    settle(run.registry, checked, verdicts.outcome, verdicts.disputed)
     reason_id = None
     extra: list[tuple[str, dict[str, Any]]] = []
     if verdicts.outcome == OUTCOME_ALIAS:
         neighbour = checked.neighbours[0].row
-        _alias_direction(run, checked, neighbour)
         reason_id = run.text(checked.reason)
         alias = compact(
             {
@@ -1101,7 +1128,6 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
         _add_to_registry(run, "alias", alias)
         table, row, target_id = "aliases", alias, neighbour["id"]
     else:
-        settle(run.registry, checked, verdicts.outcome, verdicts.disputed)
         state.mints += 1
         if state.mints > MINT_VALVE:
             raise _bad(
@@ -1354,49 +1380,63 @@ def _worked_examples(run: Any, ops: list[Any]) -> None:
         )
 
 
-def _written_properties(run: Any) -> dict[str, set[str]]:
-    """For each item, the property names this batch wrote (note_written)."""
-    return _state(run).written
+def _ledger(row: dict[str, Any]) -> set[str]:
+    held = row.get("earning_episodes")
+    try:
+        decoded = json.loads(held) if isinstance(held, str) else []
+    except ValueError:
+        decoded = []
+    return {episode for episode in decoded if isinstance(episode, str)}
 
 
 def _usage(run: Any) -> None:
-    """O8: the counts of every word that a new evidence row of this batch reached, and the
-    promotion of a provisional word at the earning bar. A kind or a meaning is used by every item
-    or link of it; a property name only where the batch wrote that property."""
+    """O8: the counts of every word the batch used, and the promotion of a provisional word at the
+    earning bar. A kind or a meaning is used by every item or link of it that the batch created,
+    and its episodes are those of the new supporting rows on its items and links. A property name
+    is used where an operation of the batch wrote it, and its episodes are only those of the rows
+    that operation created (note_written).
+
+    A provisional word keeps the episodes it counted (`earning_episodes`), so an episode counts
+    once for it whatever the batch did since: a row ended and attached again, a property removed
+    from one item and set on another. A canonical word counts an episode that held no earlier
+    supporting row, active or ended, on a target that uses the word now."""
     fresh = [row for row in run.created_evidence if row.get("polarity") == "supports"]
     created = run.tx.run(_CREATED, change_set=run.stamp.change_set_id)
-    written = _written_properties(run)
     targets = {(row["target_type"], row["target_id"]) for row in fresh}
     new_targets = {(row["type"], row["id"]) for row in created}
-    property_targets = {("item", item_id) for item_id in written}
-    words = _target_words(run, targets | new_targets | property_targets)
-
-    def counts(target: tuple[str, str], word: tuple[str, str]) -> bool:
-        if word[0] != "property_name":
-            return True
-        row = _word_row(run, word)
-        return (
-            target[0] == "item"
-            and row is not None
-            and row.get("name") in written.get(target[1], set())
-        )
+    words = _target_words(run, targets | new_targets)
 
     uses: dict[tuple[str, str], int] = {}
-    for target in new_targets | property_targets:
-        for word in words[target]:
-            if counts(target, word) and (word[0] == "property_name" or target in new_targets):
-                uses[word] = uses.get(word, 0) + 1
-
     episodes: dict[tuple[str, str], set[str]] = {}
-    for row in fresh:
-        target = (row["target_type"], row["target_id"])
+    for target in new_targets:
         for word in words[target]:
-            if counts(target, word):
+            if word[0] != "property_name":
+                uses[word] = uses.get(word, 0) + 1
+    for row in fresh:
+        for word in words[(row["target_type"], row["target_id"])]:
+            if word[0] != "property_name":
                 episodes.setdefault(word, set()).add(row["episode_id"])
+    for names in _state(run).written.values():
+        for word_id, episode_ids in names.items():
+            word = ("property_name", word_id)
+            uses[word] = uses.get(word, 0) + 1
+            episodes.setdefault(word, set()).update(episode_ids)
+
     fresh_ids = [row["id"] for row in fresh]
     new_episodes: dict[tuple[str, str], int] = {}
+    ledgers: dict[tuple[str, str], list[str]] = {}
     prior_cache: dict[str, set[tuple[str, str]]] = {}
     for word, episode_ids in episodes.items():
+        row = _word_row(run, word)
+        if row is None:
+            continue
+        if row.get("status") == _PROVISIONAL:
+            ledger = _ledger(row)
+            gained = episode_ids - ledger
+            new_episodes[word] = len(gained)
+            if gained:
+                ledgers[word] = sorted(ledger | gained)
+            continue
         for episode_id in sorted(episode_ids):
             if episode_id not in prior_cache:
                 prior = {
@@ -1415,12 +1455,14 @@ def _usage(run: Any) -> None:
         row = _word_row(run, word)
         if row is None:
             continue
-        columns = {
+        columns: dict[str, Any] = {
             "uses": int(row.get("uses") or 0) + uses.get(word, 0),
             "distinct_episodes": int(row.get("distinct_episodes") or 0) + new_episodes.get(word, 0),
             "first_used": row.get("first_used") or run.at,
             "last_used": run.at,
         }
+        if word in ledgers:
+            columns["earning_episodes"] = json.dumps(ledgers[word])
         run.tx.run(_SET[word[0]], id=row["id"], columns=columns)
         row.update(columns)
         if row.get("status") == _PROVISIONAL and columns["distinct_episodes"] >= EARNING_BAR:

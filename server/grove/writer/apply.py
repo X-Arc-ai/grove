@@ -672,8 +672,14 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         reason_id=reason_id,
         evidence_id=provenance,
     )
-    ontology.note_written(run, item_id, set(properties or {}))
-    _write_evidence(run, plans, "item", item_id, reason_id)
+    created = _write_evidence(run, plans, "item", item_id, reason_id)
+    ontology.note_written(
+        run,
+        item_id,
+        kind["id"],
+        {name for name, value in (properties or {}).items() if value is not None},
+        created,
+    )
     _record_pairs(run, item_id, pairs, provenance)
     if overridden:
         write_override_row(run.tx, run.stamp.request_id, op["op_id"], overridden, run.at)
@@ -788,13 +794,13 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             if not history_only:
                 run.tx.run(_SET_ITEM, id=item_id, columns=columns)
                 moved = True
-            if name == "properties":
-                ontology.note_written(run, item_id, written)
         if moved:
             _bump(run, _BUMP_ITEM, item_id)
     else:
         reason_id = run.text(op["reason"])
-    _write_evidence(run, plans, "item", item_id, reason_id)
+    created = _write_evidence(run, plans, "item", item_id, reason_id)
+    if any(name == "properties" for name, *_ in changes):
+        ontology.note_written(run, item_id, item["kind"], written, created)
     run.touch(item_id, index)
 
 

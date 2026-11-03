@@ -186,6 +186,11 @@ def _registry_columns(*, version_touched: tuple[Column, ...]) -> tuple[Column, .
             "json_ids",
             "O5, line 1595: the declared fields the second model disputed, for the next pass",
         ),
+        _ruling(
+            "earning_episodes",
+            "json_ids",
+            "O8, line 1603: the episodes a provisional word counted toward the earning bar",
+        ),
     )
 
 
@@ -403,6 +408,11 @@ PROPERTY_NAMES = Table(
             "disputed_fields",
             "json_ids",
             "O5, line 1595: the declared fields the second model disputed, for the next pass",
+        ),
+        _ruling(
+            "earning_episodes",
+            "json_ids",
+            "O8, line 1603: the episodes a provisional word counted toward the earning bar",
         ),
     ),
     uniques=_keys("property_names", ("id",), ("world_id", "kind", "name")),

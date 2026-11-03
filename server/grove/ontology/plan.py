@@ -11,21 +11,25 @@ in order:
 3. Past the valve of three new words per batch, a phrase rides on the generic meaning too: the
    valve bounds the registry, not the spend (line 1597).
 4. Otherwise both judges run, and the operation cites their recorded judgments. The plan settles
-   the word as the writer will (`settle`: an alias, or a mint with the safer value of each
-   disputed field). A word that would settle unusable is held, or rides on the generic meaning.
+   the word as the writer will (`settle`: an alias whose ends fit its neighbour, or a mint with
+   the safer value of each disputed field). A word that would settle unusable is held, or rides
+   on the generic meaning.
 
-The plan reads the registry once, before the batch: a word minted by the batch is no neighbour of
-a later proposal, in the plan and in the writer alike. The writer reads the registry again under
-the world lock and checks every operation, so a plan that went stale is refused there, never
-applied wrong.
+The plan checks every proposal against its own copy of the registry, which learns each planned
+word as the writer's batch registry will (`add_to_registry`): a later proposal of the same word,
+in any form the resolver takes to it (a normal form, a copula, an alias, another spelling of the
+kind), is reused, and a word the plan minted is no neighbour of a later proposal, in the plan and
+in the writer alike. The writer reads the registry again under the world lock and checks every
+operation, so a plan that went stale is refused there, never applied wrong.
 
-`fit_links` then makes the caller's links fit the plan: a phrase sent to the generic meaning is
-rewritten to it with the phrase kept, and a link whose meaning settled as a state (the generic
-meaning, a disputed mint, an alias of a state meaning) gets a re-check by from that meaning's
-horizon when it carries none, because a link of a state meaning is a claim about now (D4).
+`fit_links` then makes the caller's links fit the plan. It resolves each link phrase with the
+resolver against the plan's registry: a phrase that resolves only through a planned word gets a
+re-check by from that word's horizon when it settled as a state (D4: a link of a state meaning is
+a claim about now), and a phrase sent to the generic meaning is rewritten to it with the phrase
+kept. A phrase that resolves to an existing word is the caller's and stays as it is.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -39,21 +43,26 @@ from grove.writer.errors import Refused
 from grove.writer.judgments import JudgmentRefused
 from grove.writer.ontology import (
     MINT_VALVE,
+    OUTCOME_ALIAS,
     OUTCOME_MINT,
     SAFER_HORIZON_DAYS,
+    add_to_registry,
     check_proposal,
     disputed_of,
     settle,
     verdict_outcome,
 )
 from grove.writer.registry import Registry
-from grove.writer.resolver import generic_meaning
+from grove.writer.resolver import NONE, generic_meaning, resolve_word
 
 # A proposal carries the text of its worked example beside the operation's fields; the plan drops
 # it before the operation goes to the writer, which reads the evidence from the store.
 EXAMPLE = "example"
 VALVE_RULE = "mint_valve"
 JUDGE_RULE = "judge_failed"
+# A property name of a kind this plan mints: its field-fit subject would bind the planned kind,
+# which the writer gives another id, so it waits for a batch after the kind exists.
+PLANNED_KIND_RULE = "kind_in_this_plan"
 # A proposal the judges could not judge: its own fault, so the plan goes on. A budget stop or a
 # run cap is the pass's, and propagates so the requests stay queued.
 _PROPOSAL_FAULTS = (JudgmentRefused, InvalidOutput, ModelRefused)
@@ -88,6 +97,17 @@ class WordPlan:
     reused: tuple[str, ...]
     words: tuple[PlannedWord, ...] = ()
     generic_meaning: dict[str, Any] | None = None
+    # The registry as read before the batch, and the plan's copy that learned each planned word:
+    # fit_links resolves link phrases against both.
+    base: Registry | None = field(default=None, compare=False, repr=False)
+    registry: Registry | None = field(default=None, compare=False, repr=False)
+
+
+def _bare(name: str) -> str:
+    """A name's normal form without a leading "is" or "are", as the resolver's copula rule."""
+    normalised = normalise_phrase(name)
+    first, _, rest = normalised.partition(" ")
+    return rest if first in ("is", "are") and rest else normalised
 
 
 def _set_aside(
@@ -108,6 +128,7 @@ def plan_words(
     run_id: str | None = None,
     valve: int = MINT_VALVE,
 ) -> WordPlan:
+    base = Registry.load(WorldQuery(driver, world_id))
     registry = Registry.load(WorldQuery(driver, world_id))
     ops: list[dict[str, Any]] = []
     words: list[PlannedWord] = []
@@ -115,24 +136,29 @@ def plan_words(
     held: list[tuple[str, str, str]] = []
     reused: list[str] = []
     mints = 0
-    seen: set[tuple[str, str, str]] = set()
-    for proposal in proposals:
+    fresh: set[str] = set()
+    # A word the judges set aside stays aside for the rest of the plan: a second proposal of it
+    # is not judged again, so two verdicts on one word never disagree inside one plan.
+    judged_aside: dict[tuple[str, str | None, str], str] = {}
+    for index, proposal in enumerate(proposals):
         fields = {key: value for key, value in proposal.items() if key != EXAMPLE}
         name = str(fields.get("name") or "")
         word_type = str(fields.get("word_type") or "")
-        key = (word_type, str(fields.get("kind") or ""), normalise_phrase(name))
-        if key in seen:
-            # One word per plan: a second proposal of it writes with the first.
-            reused.append(name)
-            continue
-        seen.add(key)
         try:
-            checked = check_proposal(registry, fields)
+            checked = check_proposal(registry, fields, fresh=frozenset(fresh))
         except Refused as refused:
             if refused.rule == "word_exists":
+                # One word per plan: a later proposal of a planned word writes with it.
                 reused.append(name)
             else:
                 _set_aside(word_type, name, refused.rule, generic, held)
+            continue
+        if checked.kind_id in fresh:
+            _set_aside(word_type, name, PLANNED_KIND_RULE, generic, held)
+            continue
+        identity = (word_type, checked.kind_id, _bare(checked.name))
+        if identity in judged_aside:
+            _set_aside(word_type, name, judged_aside[identity], generic, held)
             continue
         if mints >= valve:
             _set_aside(word_type, name, VALVE_RULE, generic, held)
@@ -147,17 +173,19 @@ def plan_words(
                 run_id=run_id,
             )
         except _PROPOSAL_FAULTS:
+            judged_aside[identity] = JUDGE_RULE
             _set_aside(word_type, name, JUDGE_RULE, generic, held)
             continue
         outcome = verdict_outcome(checked, judged.same_word)
         disputed = disputed_of(
-            checked, {field: [verdict] for field, verdict in judged.fields.items()}
+            checked, {name_: [verdict] for name_, verdict in judged.fields.items()}
         )
         try:
             columns = settle(registry, checked, outcome, disputed)
         except Refused as refused:
-            # The judges settled the word unusable (a disputed property of a kind that is not a
-            # record would become a state): the writer would decline the batch for it.
+            # The judges settled the word unusable: a disputed property of a kind that is not a
+            # record would become a state, or an alias's ends fit its neighbour only reversed.
+            judged_aside[identity] = refused.rule
             _set_aside(word_type, name, refused.rule, generic, held)
             continue
         if outcome == OUTCOME_MINT:
@@ -174,7 +202,8 @@ def plan_words(
                 tuple(sorted(disputed)) if outcome == OUTCOME_MINT else (),
             )
         )
-    row = generic_meaning(registry)
+        _learn(registry, checked, outcome, columns, index, fresh)
+    row = generic_meaning(base)
     generic_row = (
         None
         if row is None
@@ -185,8 +214,49 @@ def plan_words(
         }
     )
     return WordPlan(
-        tuple(ops), tuple(generic), tuple(held), tuple(reused), tuple(words), generic_row
+        tuple(ops),
+        tuple(generic),
+        tuple(held),
+        tuple(reused),
+        tuple(words),
+        generic_row,
+        base,
+        registry,
     )
+
+
+def _learn(
+    registry: Registry,
+    checked: Any,
+    outcome: str,
+    columns: dict[str, Any],
+    index: int,
+    fresh: set[str],
+) -> None:
+    """The plan's registry learns a planned word as the writer's batch registry will: a mint as a
+    provisional row of its settled columns, an alias as an alias row onto its neighbour."""
+    if outcome == OUTCOME_ALIAS:
+        add_to_registry(
+            registry,
+            "alias",
+            {
+                "id": f"planned-alias:{index}",
+                "phrase": checked.name,
+                "normalised_phrase": normalise_phrase(checked.name),
+                "target_type": checked.word_type,
+                "target_id": checked.neighbours[0].row["id"],
+                "reversed": checked.reversed,
+                "status": "canonical",
+            },
+        )
+        return
+    row_id = f"planned:{index}"
+    add_to_registry(
+        registry,
+        checked.word_type,
+        {**columns, "id": row_id, "name": checked.name, "status": "provisional"},
+    )
+    fresh.add(row_id)
 
 
 def _recheck_by(now: datetime, temporal_class: Any, horizon: Any) -> str | None:
@@ -196,30 +266,49 @@ def _recheck_by(now: datetime, temporal_class: Any, horizon: Any) -> str | None:
     return (now + timedelta(days=days)).isoformat()
 
 
+def _generic_phrases(plan: WordPlan) -> Registry:
+    """The phrases sent to the generic meaning, as rows the resolver can match."""
+    rows = {
+        f"generic:{index}": {"id": f"generic:{index}", "name": phrase, "status": "provisional"}
+        for index, phrase in enumerate(plan.generic)
+    }
+    return Registry({}, rows, [], [])
+
+
+def _resolves(registry: Registry | None, phrase: str) -> Any:
+    if registry is None:
+        return None
+    try:
+        return resolve_word(registry, "meaning", phrase)
+    except Refused:
+        return None
+
+
 def fit_links(plan: WordPlan, ops: list[dict[str, Any]], *, now: datetime) -> list[dict[str, Any]]:
     """Make the caller's create_link operations fit the plan (see the module text). A link that
     already carries a re-check by keeps it. A world with no single generic meaning leaves a
     generic phrase as it is, and the writer refuses that link."""
-    wanted = {normalise_phrase(phrase) for phrase in plan.generic}
-    settled = {
-        normalise_phrase(word.name): word for word in plan.words if word.word_type == "meaning"
-    }
+    generic_phrases = _generic_phrases(plan)
     rewritten = []
     for op in ops:
         meaning = op.get("meaning") if op.get("op") == "create_link" else None
-        if not isinstance(meaning, str):
+        before = _resolves(plan.base, meaning) if isinstance(meaning, str) else None
+        if before is None or before.outcome != NONE:
+            # Not a link phrase, or one that names an existing word: the caller's, untouched.
             rewritten.append(op)
             continue
-        phrase = normalise_phrase(meaning)
-        recheck = None
-        if phrase in wanted and plan.generic_meaning is not None:
-            generic = plan.generic_meaning
-            op = {**op, "meaning": generic["id"], "original_phrase": meaning}
-            recheck = _recheck_by(now, generic["temporal_class"], generic["default_horizon"])
-        elif phrase in settled:
-            word = settled[phrase]
-            recheck = _recheck_by(now, word.temporal_class, word.default_horizon)
-        if recheck is not None and op.get("recheck_by") is None:
-            op = {**op, "recheck_by": recheck}
+        after = _resolves(plan.registry, meaning)
+        target = None
+        if after is not None and after.target is not None:
+            target = after.target
+        elif plan.generic_meaning is not None and (
+            (found := _resolves(generic_phrases, meaning)) is not None and found.outcome != NONE
+        ):
+            op = {**op, "meaning": plan.generic_meaning["id"], "original_phrase": meaning}
+            target = plan.generic_meaning
+        if target is not None and op.get("recheck_by") is None:
+            recheck = _recheck_by(now, target.get("temporal_class"), target.get("default_horizon"))
+            if recheck is not None:
+                op = {**op, "recheck_by": recheck}
         rewritten.append(op)
     return rewritten
