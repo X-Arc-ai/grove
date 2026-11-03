@@ -8,7 +8,8 @@ what this module returns.
 
 How an entry moves a row is the entry vocabulary of the writer's README. Derived columns are
 never entries: `version` is 1 for the row and 1 more for each further operation that moved the
-row (one change set and one reason, with an entry that is not history only and not `restated`);
+row (one change set and one reason, with an entry that is not history only and not a marker
+that leaves the row as it was: `restated` or `no_head_update`);
 `touched_at` is the recording time of the last entry on the row; a link's `active_key` follows
 its end class; `property_values` follows `properties`; and the claim fields of items and links
 follow their active supporting evidence rows, as the writer computes them.
@@ -26,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any, NoReturn
 
+from grove.store.asof import end_instant, placed_link
 from grove.store.axes import AsOf, AsOfRow
 from grove.store.catalogue import Table
 from grove.store.current import (
@@ -63,10 +65,12 @@ _BOUNDS = ("earliest", "latest")
 _UNKNOWN = "unknown"
 _MARKERS: dict[str, frozenset[str]] = {
     "item": frozenset({"reopened", "merged_into"}),
-    # no_head_update rides in the same operation as its link's row entry, so it adds no version.
     "link": frozenset({"restated", "no_head_update"}),
 }
-_NO_VERSION = "restated"
+# Markers that never move their row, so they add no version: a known link restated, and the
+# reason a correction gives for no head update, which can land on a link that a correction of an
+# earlier batch made (the writer leaves that link's version as it was).
+_NO_VERSION = frozenset({"restated", "no_head_update"})
 # Item fields of the entry vocabulary that a later migration may add to the catalogue.
 _ITEM_FIELDS = frozenset({"lesson_in"})
 _FIXED = frozenset({"id", "world_id", "version", "touched_at"})
@@ -107,13 +111,16 @@ _FORGOTTEN = _Forgotten()
 class Projection:
     """The rebuilt rows, {table: {id: row}}, for every projection table, with the derived columns
     of the entry vocabulary. Instants are aware datetimes in UTC. A belief row's id is its item
-    id. `forgotten` holds the ids whose row a forget replaced."""
+    id. `forgotten` holds the ids whose row a forget replaced. `ended_at` holds, per item or link
+    with an end class, the world time of the entry that set it (None when it had none), which
+    places the ending on the record axis (S48)."""
 
     world_id: str
     rows: dict[str, dict[str, dict[str, Any]]]
     last_sequence: int
     entries: int
     forgotten: frozenset[str] = field(default_factory=frozenset)
+    ended_at: dict[str, datetime | None] = field(default_factory=dict)
 
     @property
     def history(self) -> dict[str, int]:
@@ -196,6 +203,7 @@ class _Replay:
         self.keys: dict[str, str] = {}
         self.active: dict[str, str] = {}
         self.forgotten: set[str] = set()
+        self.ended_at: dict[str, datetime | None] = {}
         # (entity id, field) whose head value a forget replaced: no old value can match it.
         self.blanked: set[tuple[str, str]] = set()
         self.sequence: int | None = None
@@ -266,7 +274,7 @@ class _Replay:
         else:
             self.change(entry, entity_type, entity_id, name)
         self.touched[entity_id] = _instant(entry.get("recorded_at"))
-        if not entry.get("history_only") and name != _NO_VERSION:
+        if not entry.get("history_only") and name not in _NO_VERSION:
             group = (entry.get("change_set_id"), entry.get("reason"))
             self.groups.setdefault(entity_id, set()).add(group)
 
@@ -454,6 +462,11 @@ class _Replay:
             if self.validate and self.active.get(key, entity_id) != entity_id:
                 self.fail("active_key_taken", "another active link holds this key")
         self.put(entity_type, table, row, name, new, entry)
+        if name == "end_class":
+            if new is None:
+                self.ended_at.pop(entity_id, None)
+            else:
+                self.ended_at[entity_id] = at
         if new is _FORGOTTEN:
             self.blanked.add((entity_id, name))
         else:
@@ -611,6 +624,11 @@ def rebuild(
         last_sequence=max(sequences, default=0),
         entries=len(chosen),
         forgotten=frozenset(replay.forgotten),
+        ended_at={
+            entity_id: at
+            for entity_id, at in replay.ended_at.items()
+            if entity_id not in replay.forgotten
+        },
     )
 
 
@@ -650,12 +668,13 @@ def read_history(
 # The record axis -------------------------------------------------------------------------------
 
 
-def _stood(row: dict[str, Any], at: datetime) -> dict[str, Any]:
-    """The row to read a standing from: an ending whose stop clock lies wholly after `at` had not
-    happened yet at `at`. A refuted or spent row, or an ending with no stop clock, stays ended."""
+def _stood(row: dict[str, Any], at: datetime, end_world_time: datetime | None) -> dict[str, Any]:
+    """The row to read a standing from: an ending placed after `at` (by `end_instant`, as on the
+    world axis) had not happened yet at `at`. A refuted or spent row, or an ending with no place,
+    stays ended."""
     if row.get("end_class") in _NEVER_STOOD:
         return row
-    stop = _instant(row.get("stopped_being_true_earliest"))
+    stop = end_instant(row, end_world_time if row.get("end_class") else None)
     if stop is None or stop <= at:
         return row
     shown = {
@@ -674,15 +693,16 @@ def _recorded_order(row: Mapping[str, Any]) -> tuple:
 
 def record_axis(head: Projection, at: datetime) -> AsOf:
     """What Grove believed at record time `at`: `head` is the projection rebuilt to `at`, and each
-    row's standing is read on the world axis at `at`. A link is kept when it stood at `at`; an
-    item when it stood, or when a successor stood over it."""
+    row's standing is read on the world axis at `at`, with each ending placed as `world_as_of`
+    places it. A link is kept when it stood at `at`; an item when it stood, or when a successor
+    stood over it."""
     at = _instant(at)
     if at is None:
         raise ValueError("an as-of time is needed")
     links: dict[str, AsOfRow] = {}
     successors: dict[str, list[Successor]] = {}
     for link in sorted(head.links.values(), key=_recorded_order):
-        held = link_standing(link, at=at)
+        held = link_standing(placed_link(link, head.ended_at.get(link["id"])), at=at)
         if held.state != "current":
             continue
         links[link["id"]] = AsOfRow(link, held)
@@ -711,7 +731,7 @@ def record_axis(head: Projection, at: datetime) -> AsOf:
     items: dict[str, AsOfRow] = {}
     for item_id, item in head.items.items():
         held = standing(
-            _stood(item, at),
+            _stood(item, at, head.ended_at.get(item_id)),
             at=at,
             lifecycle_class=lifecycle.get(item.get("kind")),
             planned_origin=item_id in planned,

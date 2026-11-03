@@ -628,6 +628,46 @@ def test_record_axis_keeps_what_had_not_ended_yet(book, reg):
     assert view.items[head].standing.state == "current"
 
 
+def test_record_axis_places_an_ending_with_no_earliest_bound_as_the_world_axis_does(book, reg):
+    """S48: on the record axis too, an ending with no earliest bound sits at its latest bound,
+    else at the world time of the entry that set the end class. A refuted link never stood, and a
+    link ended with no stop clock (a merge moved its claim) stands at no time on its own."""
+    op = book.op()
+    later = R0 + timedelta(days=2)
+    flat = item(book, op, reg["place"], "Harbour flat")
+    cottage = item(book, op, reg["place"], "Hillside cottage")
+    barn = item(book, op, reg["place"], "Old barn")
+    hull = item(book, op, reg["place"], "Silver hull")
+    before = link(book, op, flat, reg["part of"], cottage)
+    unknown = link(book, op, flat, reg["part of"], barn)
+    refuted = link(book, op, cottage, reg["part of"], barn)
+    moved = link(book, op, flat, reg["part of"], hull)
+    ending = book.op()
+    before_clock = {"precision": "before", "latest": iso(later)}
+    book.add(ending, "link", before, "end_class", "ended_in_the_world", world_time=later)
+    book.add(ending, "link", before, "stopped_being_true", before_clock, world_time=later)
+    book.add(ending, "link", unknown, "end_class", "ended_in_the_world", world_time=later)
+    book.add(ending, "link", unknown, "stopped_being_true", "unknown", world_time=later)
+    book.add(ending, "link", refuted, "end_class", "refuted", world_time=later)
+    book.add(ending, "link", refuted, "stopped_being_true", "unknown", world_time=later)
+    book.add(ending, "link", moved, "end_class", "superseded", world_time=later)
+    book.add(ending, "item", hull, "end_class", "ended_in_the_world", world_time=later)
+    book.add(ending, "item", hull, "stopped_being_true", "unknown", world_time=later)
+    head = book.rebuild()
+    at = recorded(book.minute) + timedelta(hours=1)
+    assert at < later
+
+    view = record_axis(head, at)
+
+    assert view.links[before].standing.state == "current"
+    assert view.links[unknown].standing.state == "current"
+    assert view.items[hull].standing.state == "current"
+    assert not {refuted, moved} & set(view.links)
+    gone = record_axis(head, later + timedelta(hours=1))
+    assert not {before, unknown, refuted, moved} & set(gone.links)
+    assert hull not in gone.items
+
+
 # --- the D3 fingerprint, pure (rule 7) ----------------------------------------------------------
 
 T = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
