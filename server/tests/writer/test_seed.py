@@ -133,9 +133,21 @@ ALIASES = {
     },
 }
 ALIAS_COUNT = 27
-SEEDED_ROWS = 12 + 11 + ALIAS_COUNT
-# One description per kind and meaning, one row JSON per seeded row, one "starter set" reason.
-HISTORY_VALUES = 12 + 11 + SEEDED_ROWS + 1
+# S50: the scheduled times of the starter kinds, by (kind, name): their scheduled roles.
+PROPERTY_NAMES = {
+    ("plan", "scheduled for"): "start",
+    ("task", "due"): "due",
+    ("trip", "starts"): "start",
+    ("trip", "ends"): "end",
+    ("period", "starts"): "start",
+    ("period", "ends"): "end",
+    ("event", "scheduled for"): "start",
+}
+PROPERTY_COUNT = len(PROPERTY_NAMES)
+SEEDED_ROWS = 12 + 11 + ALIAS_COUNT + PROPERTY_COUNT
+# One description per kind, meaning and property name, one row JSON per seeded row, one
+# "starter set" reason.
+HISTORY_VALUES = 12 + 11 + PROPERTY_COUNT + SEEDED_ROWS + 1
 
 # Columns the spec leaves empty when a row is born. Every other column must hold a value.
 EMPTY_AT_BIRTH = {
@@ -256,11 +268,46 @@ def test_an_alias_with_no_reversed_key_is_refused():
         worlds._alias_row({"phrase": "gated on"}, "meaning-id", run)
 
 
+def test_the_starter_property_names_are_scheduled_times(driver, seeded):
+    """S50: each starter property name marks a scheduled time of its kind, so a plan's date and a
+    trip's announced start are properties of the claim, never its clocks (D4, spec line 920)."""
+    world, ids = seeded
+    kind_names = {kind_id: name for name, kind_id in ids["kinds"].items()}
+    rows = nodes(driver, world, "PropertyName")
+    found = {(kind_names[row["kind"]], row["name"]): row for row in rows}
+    assert {key: row["scheduled_role"] for key, row in found.items()} == PROPERTY_NAMES
+    for row in rows:
+        assert row["temporal_class"] == "event"
+        assert row["value_type"] == "time"
+        assert row["status"] == "canonical" and row["origin"] == "starter"
+
+
+def test_a_world_seeded_before_the_property_names_gets_them_once(driver, world, test_clock):
+    """A world at seed version 1 gets the property names at its next create_world, with one
+    change entry each, and nothing else of the seed again."""
+    test_clock.set(AT, world)
+    with clock.using(test_clock):
+        create_world(driver, world, owner_user_id=OWNER)
+    with driver.session(database=DATABASE) as session:
+        session.run("MATCH (p:PropertyName {world_id: $w}) DETACH DELETE p", w=world).consume()
+        session.run("MATCH (w:World {id: $w}) SET w.seed_version = '1'", w=world).consume()
+    kinds_before = count(driver, world, "Kind")
+    entries_before = count(driver, world, "ChangeEntry")
+    with clock.using(test_clock):
+        create_world(driver, world, owner_user_id=OWNER)
+        create_world(driver, world, owner_user_id=OWNER)
+    assert count(driver, world, "PropertyName") == PROPERTY_COUNT
+    assert count(driver, world, "Kind") == kinds_before
+    assert count(driver, world, "ChangeEntry") == entries_before + PROPERTY_COUNT
+    assert world_row(driver, world)["seed_version"] == load_starter_set()["seed_version"]
+
+
 def test_counts_per_label(driver, seeded):
     world, _ = seeded
     assert count(driver, world, "Kind") == 12
     assert count(driver, world, "Meaning") == 11
     assert count(driver, world, "Alias") == ALIAS_COUNT
+    assert count(driver, world, "PropertyName") == PROPERTY_COUNT
     assert count(driver, world, "ChangeEntry") == SEEDED_ROWS
     assert count(driver, world, "HistoryValue") == HISTORY_VALUES
     assert world_row(driver, world) is not None
@@ -436,7 +483,12 @@ def test_every_description_is_a_value_id_that_resolves(driver, seeded):
 
 def test_each_entry_rebuilds_its_row(driver, seeded):
     world, _ = seeded
-    tables = {"Kind": "kinds", "Meaning": "meanings", "Alias": "aliases"}
+    tables = {
+        "Kind": "kinds",
+        "Meaning": "meanings",
+        "Alias": "aliases",
+        "PropertyName": "property_names",
+    }
     live = {
         row["id"]: (table, as_json_row(row))
         for label, table in tables.items()
@@ -454,7 +506,9 @@ def test_each_entry_says_what_s22_asks(driver, seeded):
     world, _ = seeded
     entries = nodes(driver, world, "ChangeEntry")
     registry_ids = {
-        row["id"] for label in ("Kind", "Meaning", "Alias") for row in nodes(driver, world, label)
+        row["id"]
+        for label in ("Kind", "Meaning", "Alias", "PropertyName")
+        for row in nodes(driver, world, label)
     }
     assert {entry["entity_id"] for entry in entries} == registry_ids
     for entry in entries:
@@ -484,6 +538,7 @@ def test_seeded_rows_carry_the_test_clock_and_not_the_system_clock(driver, seede
         "Kind": ("minted_at", "touched_at"),
         "Meaning": ("minted_at", "touched_at"),
         "Alias": ("minted_at", "touched_at", "added_at"),
+        "PropertyName": ("minted_at", "touched_at"),
         "ChangeEntry": ("recorded_at", "world_time"),
     }
     for label, fields in expected.items():
@@ -501,7 +556,9 @@ def test_a_world_with_no_time_on_a_test_clock_is_refused(driver, world, test_clo
 def test_ids_are_uuid7_from_the_clock_and_differ_from_the_primitive_ids(driver, seeded):
     world, ids = seeded
     seeded_ids = [
-        row_id for group in ("kinds", "meanings", "aliases") for row_id in ids[group].values()
+        row_id
+        for group in ("kinds", "meanings", "aliases", "property_names")
+        for row_id in ids[group].values()
     ]
     assert len(seeded_ids) == len(set(seeded_ids)) == SEEDED_ROWS
     assert not set(seeded_ids) & set(PRIMITIVE_IDS)

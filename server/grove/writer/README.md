@@ -174,13 +174,38 @@ what an earlier one did.
 | `end_link` | U C K P W | **op_id**, **link** (not of a primitive meaning), **end_class**, **stopped_being_true**, **reason**, evidence_refs | `x link 2f07ab11: ... (<end class>)` |
 | `attach_evidence` | U C K P W | **op_id**, **target** (item, link or belief id), **ev_id** or **evidence_id**, **polarity**, judgment_ids | `= item 77d2aa01 evidence e88f0a1b (supports, said)` |
 | `end_evidence` | C K P | **op_id**, **evidence**, **end_reason** (`correction`, `forget`, `merge`) | `- evidence e88f0a1b (correction)` |
+| `verify` | U C K P H | **op_id**, **claim** (item or link id), **pieces** (list of `{ev_id or evidence_id, judgment_id or answer}`), **disposition** (`confirmed`, `moved`, `retired`, `deferred`), **reason**, second_judge (judgment ids), recheck_by, recheck_how, override_reason | `v item 44b0aa12: confirmed 10-27 09:15 against a fetched page; re-check by 10-29` |
+
+`create_item` and `create_link` also take `confirmed_by_call`: the id of the extraction call of
+this pass that read a confirming creating row (see "Verify" below).
+
+## Verify
+
+D4's one way to move last confirmed. A piece cites the recorded judgment that judged it
+(`server/grove/writer/judgments.py` writes them; `server/grove/models/judge.py` runs the fixed
+judge prompt), or, for the person in Grove's views, the answer they chose. The writer reads each
+verdict from its row and computes the rest from stored rows: the capability that lets the piece's
+source confirm this claim (`server/grove/store/capabilities.py`, S49), each piece's weight
+(1.0 when newer than the claim's last confirmation, else falling from 1.0 to 0.3 at its
+connector's staleness limit and 0 beyond; always fresh for git and the calendar), `agree`,
+`disagree`, the ratio and the band (S47), and whether the claim is load-bearing (a consequence
+link into or out of it, a link that carries consequences, a state link on the person's own item).
+A confirmation needs the band `confirm`, and a load-bearing one an agreeing second judge from
+another model or recorded as a correlated stand-in. Each verify appends one `:Verification` row,
+and `confirmed_against` names it. Last confirmed moves to the time the newest admitted piece speaks
+for, never the commit time. The AI host verifies only with the person's own words in an answer or
+a correction (S48). `moved` needs the claim changed earlier in the batch, and `retired` needs it
+ended with the end class `retired` and its consequence links ended. A confirmation at create
+(`confirmed_by_call`) needs a confirming creating row read in this pass, an extraction call of
+this run, and a claim that is not load-bearing at the end of the batch.
 
 `accounts.py` is not a B.2 operation: it holds sign-in's writes (S20, S40), users, sessions, email
 codes and the person's own item. Only `server/grove/api/auth.py` calls it. `docs/signin.md` has the
 flows.
 
 The other B.2 operations belong to later lanes: correct, refute, supersede, merge,
-`retire_record` and undo (`writer-b`); verify and the confirmation at create (`truth-clock`);
+`retire_record` and undo (`writer-b`); capability rows from the item page (`views-c`) and
+with a mint (`ontology`);
 beliefs and contradictions (`beliefs`); proposals and marks (`walk`); questions, holds and
 mentions (`cleanup`, `ingest-b`); ontology operations (`ontology`); forget (`forget`).
 
@@ -354,6 +379,11 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | Only verify moves last confirmed | `invalid_arguments` (rule `verify_only`) | `test_contract_d2.py` |
 | A record's claim never changes: an update may touch only its search terms, and a record refuses a status, an end and a reopen | `record_immutable` | `test_contract_d2.py` |
 | A cited verdict must be a recorded judgment; a caller's score, weight, band or load-bearing flag is refused | `unrecorded_verdict`, `caller_score` | `test_contract_d2.py` |
+| Verify reads each verdict from a recorded judgment of this claim and this piece; it computes weight, agreement, ratio, band, capability and load-bearing itself; a confirmation needs the band confirm, a source type of confirmed from an observed row, a capability, and for a load-bearing claim an agreeing second judge | `unrecorded_verdict`, `caller_score`, `not_confirmable`, `judge_not_supports`, `inferred_evidence`, `second_judge_required`, `judges_disagree` | `test_verify.py` |
+| Nothing but verify moves last confirmed: an update, a status change, an end, a reopen, a restatement, attached or ended evidence, a migration, a deferral and the passing of time leave it byte-identical | (none) | `test_clocks_d4.py` |
+| A confirmation at create needs a confirming creating row read in this pass, the extraction call of this run, and a claim that is not load-bearing | `unrecorded_verdict`, `not_confirmable`, `second_judge_required` | `test_clocks_d4.py` |
+| A period's became-true time needs confirming evidence in its batch; a plan with a scheduled time and no re-check by gets the time plus one day | `terminal_needs_confirmation` (rule `period_start_needs_confirmation`) | `test_clocks_d4.py` |
+| A row's source type follows the connector, the statement class, the modality, the source's speaker metadata, the calendar's log setting and the request's relay; a decision needs a person as its speaker; a forwarded row keeps its author; an AI host speaks for the person only in the person's own words | `invalid_arguments` (rules `decider_not_speaker`, `original_author_required`), `verbatim_required` | `test_source_types_d5.py` |
 | A contradicting row on a belief cites two recorded judgments of this belief (subject `belief:<id>`, a judge role, and the cited evidence row when the judgment names one), from two models, that both say it contradicts | `unrecorded_verdict` (rules `judgment_subject`, `judgment_role`, `judgment_evidence`), `second_judge_required`, `judges_disagree`, `judge_not_supports` (rule `judge_not_contradicts`) | `test_contract_d2.py` |
 | A terminal done, also one that goes to history only, needs in its batch an observed confirming row (written or cited again), or a rolled-up row whose premises are active confirming rows of the item's parts (linked by a meaning that rolls up completion), with every part at a terminal role and every done part covered | `terminal_needs_confirmation` | `test_contract_d2.py` |
 | A near-duplicate title (of an item's title or of an alias of the item) needs `distinct_from` with a reason | `near_duplicate`, `invalid_arguments` (rule `distinct_reason`) | `test_contract_d2.py` |

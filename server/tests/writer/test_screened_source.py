@@ -596,9 +596,9 @@ def test_writes_exactly_the_catalogue_properties(driver, world, test_clock):
     receipt = one(driver, world, "ScreeningReceipt")
 
     # content_pointer is the other form of B.1's "content or a pointer to it": the content is
-    # inline, so the pointer is absent.
+    # inline, so the pointer is absent. speakers (S46) is absent when the connector read none.
     source_props = {prop for column in SOURCES.columns for prop in column.props}
-    assert set(source) == source_props - {"content_pointer"}
+    assert set(source) == source_props - {"content_pointer", "speakers"}
     assert set(receipt) == {prop for column in SCREENING_RECEIPTS.columns for prop in column.props}
     for table, row in ((SOURCES, source), (SCREENING_RECEIPTS, receipt)):
         for column in table.columns:
@@ -766,3 +766,43 @@ def test_every_screened_source_is_stored_with_its_receipt(
     assert source["external_locator"] == locator
     assert receipt["source_id"] == source["id"] == result["source_id"]
     assert receipt["counts_per_class"] == counts_json
+
+
+def test_a_connector_stores_the_speakers_it_read_from_the_metadata(driver, world, test_clock):
+    """S46: the speakers of a source come from its own metadata, written by the connector's code
+    in the same row; the writer lets them win over a caller's classification."""
+    test_clock.set(WORLD_TIME, world)
+    connector_id = record_connector(driver, world, "whatsapp")
+    speakers = {"mk-1": {"kind": "automated", "sender": "carrier-notice"}}
+    add_screened_source(
+        WorldWriter(driver, world),
+        small_source(),
+        connector_id=connector_id,
+        parser_version=PARSER,
+        speakers=speakers,
+    )
+    source = one(driver, world, "Source")
+    assert json.loads(source["speakers"]) == speakers
+
+
+@pytest.mark.parametrize(
+    "speakers",
+    [
+        {"mk-1": {"kind": "a robot"}},
+        {"mk-1": {"kind": "automated", "sender": "someone@example.test"}},
+        {"mk-1": {"kind": "person", "name": "Rowan"}},
+        ["mk-1"],
+    ],
+)
+def test_speakers_hold_only_codes_and_a_known_kind(driver, world, test_clock, speakers):
+    test_clock.set(WORLD_TIME, world)
+    connector_id = record_connector(driver, world, "whatsapp")
+    with pytest.raises(InvalidRecord):
+        add_screened_source(
+            WorldWriter(driver, world),
+            small_source(),
+            connector_id=connector_id,
+            parser_version=PARSER,
+            speakers=speakers,
+        )
+    assert not [row for row in world_rows(driver, world) if row["labels"] == ["Source"]]
