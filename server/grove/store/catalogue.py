@@ -181,6 +181,16 @@ def _registry_columns(*, version_touched: tuple[Column, ...]) -> tuple[Column, .
         _col("last used", "instant"),
         _col("primitive", "bool"),
         *version_touched,
+        _ruling(
+            "disputed_fields",
+            "json_ids",
+            "O5, line 1595: the declared fields the second model disputed, for the next pass",
+        ),
+        _ruling(
+            "earning_episodes",
+            "json_ids",
+            "O8, line 1603: the episodes a provisional word counted toward the earning bar",
+        ),
     )
 
 
@@ -333,7 +343,9 @@ MEANINGS = Table(
         *_registry_columns(version_touched=_version_touched(version_in_b1=True)),
         _col("from kinds", "json_ids", note="kind ids, a lifecycle class or any"),
         _col("to kinds", "json_ids", note="kind ids, a lifecycle class or any"),
-        _col("direction", "code", note="line 3241: from the first endpoint to the second"),
+        _col(
+            "direction", "enum:direction", note="line 3241: from the first endpoint to the second"
+        ),
         _col("cardinality and group", "enum:cardinality", "cardinality"),
         _col(
             "cardinality and group",
@@ -369,7 +381,7 @@ PROPERTY_NAMES = Table(
         _WORLD,
         _col("kind", "id", note="a kind id"),
         _col("name", "text_home"),
-        _col("value type", "code"),
+        _col("value type", "enum:value_type"),
         _col("temporal class", "enum:temporal_class"),
         _col("default horizon", "int", note="days; absent when none"),
         _col("description", "value_id"),
@@ -386,6 +398,21 @@ PROPERTY_NAMES = Table(
             "scheduled_role",
             "enum:scheduled_role",
             "S25, lines 832, 2067: marks a property as a scheduled time",
+        ),
+        _ruling(
+            "nearest_neighbours_at_mint",
+            "json_ids",
+            "O1, line 1578: the two neighbours of a minted property name, as on kinds",
+        ),
+        _ruling(
+            "disputed_fields",
+            "json_ids",
+            "O5, line 1595: the declared fields the second model disputed, for the next pass",
+        ),
+        _ruling(
+            "earning_episodes",
+            "json_ids",
+            "O8, line 1603: the episodes a provisional word counted toward the earning bar",
         ),
     ),
     uniques=_keys("property_names", ("id",), ("world_id", "kind", "name")),
@@ -449,6 +476,8 @@ ONTOLOGY_CHANGE_LOG = Table(
         _col("actor", "code"),
         _col("at", "instant"),
         _col("undone by", "id"),
+        # O10: undone by changes after the row is written, so the row carries the S12 pair.
+        *_version_touched(),
     ),
     uniques=_keys("ontology_change_log", ("id",)),
     indexes=_ranges("ontology_change_log", ("world_id", "at")),

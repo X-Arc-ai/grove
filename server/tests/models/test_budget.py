@@ -44,6 +44,8 @@ DEFER_JOBS = (
     "update_pass",
     "verification",
     "second_opinion",
+    "word_judge",
+    "second_opinion_fallback",
     "consolidation",
     "explain_break",
     "cleanup_pass",
