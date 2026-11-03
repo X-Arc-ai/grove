@@ -202,9 +202,7 @@ def _line(
             )
         if name == "end_class" and values.get(value_id):
             lesson = (lessons or {}).get(entity_id) if values[value_id] == "spent" else None
-            return ReceiptLine(
-                "x", "item", entity_id, end_class=values[value_id], target_id=lesson
-            )
+            return ReceiptLine("x", "item", entity_id, end_class=values[value_id], target_id=lesson)
         if name in VISIBLE_FIELDS:
             history_only = bool(entry.get("history_only"))
             when = entry.get("world_time")
