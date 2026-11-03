@@ -392,3 +392,11 @@ def test_a_registry_read_in_the_writer_stays_clean(repo):
 def test_a_judgment_write_in_the_ontology_module_fails(repo):
     repo.plant("server/grove/writer/ontology.py", module(REGISTRY_WRITES["Judgment"]))
     assert_red(repo.lint("writer"), "server/grove/writer/ontology.py:1: writer/registry")
+
+
+def test_a_registry_label_inside_a_label_expression_fails_too(repo):
+    repo.plant(
+        "server/grove/writer/sneaky.py",
+        module("MATCH (n:Item|Meaning {id: $id}) SE~T n.status = 'canonical'"),
+    )
+    assert_red(repo.lint("writer"), "server/grove/writer/sneaky.py:1: writer/registry")

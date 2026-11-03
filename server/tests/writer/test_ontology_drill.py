@@ -210,9 +210,30 @@ def test_an_edited_seed_never_reaches_a_world_that_exists(driver, seeded, monkey
 
 
 def test_the_store_refuses_a_process_that_holds_no_credential(driver):
-    with GraphDatabase.driver(load_settings().neo4j_uri, auth=None) as anonymous:
+    settings = load_settings()
+    if settings.neo4j_auth is None:
+        # CI's service container runs with auth off; the dev store and the box run with it on,
+        # and the next test holds the box to it.
+        pytest.skip("this store runs with auth off, so it cannot show the refusal")
+    with GraphDatabase.driver(settings.neo4j_uri, auth=None) as anonymous:
         with pytest.raises((AuthError, ClientError)):
             anonymous.verify_connectivity()
+
+
+def test_the_box_store_requires_a_credential():
+    compose = yaml.safe_load(COMPOSE.read_text(encoding="utf-8"))
+    store = compose["services"]["neo4j"]
+    files = [
+        entry["path"] if isinstance(entry, dict) else entry for entry in store.get("env_file") or []
+    ]
+    assert any(Path(path).name == "neo4j.env" for path in files)
+    environment = store.get("environment") or {}
+    names = (
+        environment
+        if isinstance(environment, dict)
+        else dict(entry.split("=", 1) for entry in environment if "=" in entry)
+    )
+    assert str(names.get("NEO4J_AUTH", "")).lower() != "none"
 
 
 def test_the_agent_runner_holds_no_store_credential_and_cannot_reach_the_store():

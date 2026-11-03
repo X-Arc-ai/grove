@@ -169,8 +169,10 @@ _ITEM_WORDS = (
     "MATCH (i:Item) WHERE i.id IN $ids RETURN i.id AS id, i.kind AS kind, "
     "i.properties AS properties"
 )
+# Ended rows count too: a row that a correction ended still shows that its episode spoke for the
+# word, so ending a row and attaching another from the same conversation earns nothing (O8).
 _EPISODE_ROWS = (
-    "MATCH (e:Evidence {episode_id: $episode, polarity: 'supports', active: true}) "
+    "MATCH (e:Evidence {episode_id: $episode, polarity: 'supports'}) "
     "WHERE NOT e.id IN $fresh RETURN e.target_type AS target_type, e.target_id AS target_id"
 )
 _CREATED = (
@@ -189,6 +191,13 @@ _UPDATED_PROPERTIES = (
 def pair_subject(first: str, second: str) -> str:
     """S32: a pair is the two references in sorted order, joined by `|`."""
     return "|".join(sorted((first, second)))
+
+
+def same_word_value(word_type: str, name: str, reversed_: bool = False) -> dict[str, Any]:
+    """What the history value of a same-word subject holds (O3, O15): the proposed name, its word
+    type, and whether it reads its nearest neighbour from the other end. A verdict on one reading
+    never counts for the other."""
+    return {"name": name, "reversed": reversed_, "word_type": word_type}
 
 
 def same_word_subject(value_ref: str, word_type: str, neighbour_id: str) -> str:
@@ -228,6 +237,20 @@ class CheckedProposal:
     capability: dict[str, str] | None
     # The declared value of each disputable field, as a field-fit history value holds it.
     field_values: dict[str, Any] = field(default_factory=dict)
+    # O15: the phrase reads its nearest neighbour from the other end (meanings only).
+    reversed: bool = False
+
+
+MAX_NAME = 120
+MAX_TEXT = 2000
+
+
+def _short(text: str, name: str, limit: int = MAX_TEXT) -> str:
+    if len(text) > limit:
+        raise _bad(
+            "too_long", f"{name} is at most {limit} characters", {"field": name, "limit": limit}
+        )
+    return text
 
 
 def _bad(rule: str, message: str, details: dict[str, Any] | None = None) -> Refused:
@@ -485,8 +508,9 @@ def _neighbours(
                 "neighbours_required", "a neighbour is {word, distinction}", {"field": "neighbours"}
             )
         ref = _text(entry["word"], "neighbours.word")
-        distinction = _text(
-            entry["distinction"], "neighbours.distinction", rule="distinction_required"
+        distinction = _short(
+            _text(entry["distinction"], "neighbours.distinction", rule="distinction_required"),
+            "neighbours.distinction",
         )
         if ref in PRIMITIVE_IDS or normalise_phrase(ref) in _primitive_names():
             raise _bad("neighbour_unknown", "a primitive word is never a neighbour", {"word": ref})
@@ -558,9 +582,16 @@ def check_proposal(registry: "Registry", proposal: dict[str, Any]) -> CheckedPro
         kind_id = kind["id"]
     elif proposal.get("kind") is not None:
         raise _bad("unknown_field", "only a property name names its kind", {"field": "kind"})
-    name = check_name(registry, word_type, proposal.get("name"), kind_id)
-    description = _text(proposal.get("description"), "description")
-    reason = _text(proposal.get("reason"), "reason")
+    name = _short(check_name(registry, word_type, proposal.get("name"), kind_id), "name", MAX_NAME)
+    description = _short(_text(proposal.get("description"), "description"), "description")
+    reason = _short(_text(proposal.get("reason"), "reason"), "reason")
+    reversed_ = proposal.get("reversed", False)
+    if not isinstance(reversed_, bool) or (reversed_ and word_type != "meaning"):
+        raise _bad(
+            "type",
+            "reversed is true or false, and only a meaning reads from the other end",
+            {"field": "reversed"},
+        )
     declared = _check_keys(word_type, proposal.get("declared"))
     if word_type == "kind":
         columns, disputable = _declared_kind(declared)
@@ -590,6 +621,7 @@ def check_proposal(registry: "Registry", proposal: dict[str, Any]) -> CheckedPro
         disputable,
         capability,
         {name_: values[name_] for name_ in disputable},
+        reversed_,
     )
 
 
@@ -677,6 +709,13 @@ def _value_id(ref: str) -> str | None:
     return rest if head == "value" and rest else None
 
 
+def _decoded(held: Any) -> Any:
+    try:
+        return json.loads(held) if isinstance(held, str) else None
+    except ValueError:
+        return None
+
+
 def _subject_field(
     checked: CheckedProposal, subject: str, values: dict[str, Any]
 ) -> tuple[str, str | None]:
@@ -687,16 +726,19 @@ def _subject_field(
         neighbour = f"{checked.word_type}:{checked.neighbours[0].row['id']}"
         others = [part for part in parts if part != neighbour]
         value_id = _value_id(others[0]) if len(others) == 1 else None
-        held = values.get(value_id) if value_id else None
-        if isinstance(held, str) and normalise_phrase(held) == normalise_phrase(checked.name):
+        held = _decoded(values.get(value_id) if value_id else None)
+        if (
+            isinstance(held, dict)
+            and set(held) == {"name", "reversed", "word_type"}
+            and held["word_type"] == checked.word_type
+            and held["reversed"] is checked.reversed
+            and isinstance(held["name"], str)
+            and normalise_phrase(held["name"]) == normalise_phrase(checked.name)
+        ):
             return "pair", None
         return "other", None
     value_id = _value_id(subject) if len(parts) == 1 else None
-    held = values.get(value_id) if value_id else None
-    try:
-        decoded = json.loads(held) if isinstance(held, str) else None
-    except ValueError:
-        decoded = None
+    decoded = _decoded(values.get(value_id) if value_id else None)
     if (
         isinstance(decoded, dict)
         and set(decoded) == {"field", "name", "value", "word_type"}
@@ -891,6 +933,44 @@ def _registry_row(
     return compact(row)
 
 
+def _end_fits(run: Any, declared: dict[str, Any], allowed: dict[str, Any]) -> bool:
+    """Whether every kind and class the proposal declares at one end fits that end of the
+    neighbour. A proposal end of any kind fits only a neighbour end of any kind."""
+    if allowed.get("any"):
+        return True
+    if declared.get("any"):
+        return False
+    kinds, classes = set(allowed.get("kinds") or []), set(allowed.get("classes") or [])
+    for kind_id in declared.get("kinds") or []:
+        if (
+            kind_id not in kinds
+            and run.registry.kind(kind_id).get("lifecycle_class") not in classes
+        ):
+            return False
+    return all(lifecycle_class in classes for lifecycle_class in declared.get("classes") or [])
+
+
+def _alias_direction(run: Any, checked: CheckedProposal, neighbour: dict[str, Any]) -> None:
+    """O15: an alias made from a mint carries the reading the proposal stated. When the proposal's
+    declared ends fit the neighbour only the other way round, the stated reading is wrong, and the
+    alias would invert every link written with the phrase: refused."""
+    if checked.word_type != "meaning":
+        return
+    ends = [json.loads(checked.columns["from_kinds"]), json.loads(checked.columns["to_kinds"])]
+    if checked.reversed:
+        ends.reverse()
+    first = json.loads(neighbour.get("from_kinds") or '{"any": true}')
+    second = json.loads(neighbour.get("to_kinds") or '{"any": true}')
+    stated = _end_fits(run, ends[0], first) and _end_fits(run, ends[1], second)
+    other = _end_fits(run, ends[1], first) and _end_fits(run, ends[0], second)
+    if not stated and other:
+        raise _bad(
+            "alias_direction",
+            "the declared ends fit the neighbour only read from the other end: state reversed",
+            {"neighbour": neighbour["id"], "reversed": checked.reversed},
+        )
+
+
 def _add_to_registry(run: Any, word_type: str, row: dict[str, Any]) -> None:
     """The batch's registry learns the new row at once, so a later operation of this batch writes
     with the word by its name."""
@@ -914,6 +994,7 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
     reason_id = None
     if verdicts.outcome == OUTCOME_ALIAS:
         neighbour = checked.neighbours[0].row
+        _alias_direction(run, checked, neighbour)
         reason_id = run.text(checked.reason)
         alias = compact(
             {
@@ -922,7 +1003,7 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
                 "normalised_phrase": normalise_phrase(checked.name),
                 "target_type": checked.word_type,
                 "target_id": neighbour["id"],
-                "reversed": False,
+                "reversed": checked.reversed,
                 "added_at": run.at,
                 "reason": reason_id,
                 "status": _CANONICAL,
@@ -1301,5 +1382,6 @@ __all__ = [
     "propose_word",
     "safer",
     "same_word_subject",
+    "same_word_value",
     "value_names_item",
 ]
