@@ -1398,3 +1398,143 @@ def test_a_capability_minted_with_a_word_has_its_change_entry_and_its_inverse(dr
     assert sorted(entry["table"] for entry in after) == ["capabilities", "meanings"]
     inverse = json.loads(change[0]["c"]["inverse_operation"])
     assert inverse["with"] == [{"table": "capabilities", "id": cap_id}]
+
+
+# Regressions of the R4 delta on d3ca3c4 (the earning ledger) --------------------------------
+
+
+def _mint_steward(driver, world_id, src, ev_id, line, title, **properties) -> None:
+    kind_id = plan_kind(driver, world_id)
+    owner = prop_row(driver, world_id, "owner")
+    ids = judged(driver, world_id, name="steward", word_type="property_name", neighbour=owner["id"])
+    ids += fits(
+        driver, world_id, "property_name", "steward", "temporal_class", "permanent", kind_id
+    )
+    op = property_proposal(
+        "steward", ids, [{"word": "owner", "distinction": "the owner holds it, a steward runs it"}]
+    )
+    op["worked_example"] = {"ev_id": ev_id}
+    item = plan_item(ev_id, title, **properties)
+    apply(driver, world_id, [op, item], [observation(src, ev_id, line)], caller=LEARNER)
+
+
+def test_one_episode_never_earns_a_property_name_by_moving_it_between_items(driver, seeded, chat):
+    """One conversation sets steward on a plan, removes it, and sets it on the next plan, twice.
+    The word keeps the episode it counted, so it stays at one episode, provisional."""
+    world_id = seeded["world_id"]
+    mint_owner(driver, world_id, chat)
+    src = make_source(driver, world_id, "whatsapp", [f"invented line {n}" for n in range(12)])
+    titles = ["Clear the ditch", "Mend the stile", "Prune the pear trees"]
+    _mint_steward(driver, world_id, src, "s1", 1, titles[0], steward="the parish")
+    line = 2
+    for previous, following in zip(titles, titles[1:], strict=False):
+        _set_properties(
+            driver, world_id, previous, src, f"s{line}", at_minute(line), {"steward": None}
+        )
+        line += 1
+        apply(
+            driver,
+            world_id,
+            [plan_item(f"s{line}", following, steward="the parish")],
+            [observation(src, f"s{line}", line)],
+            caller=LEARNER,
+        )
+        line += 1
+    steward = prop_row(driver, world_id, "steward")
+    assert (steward["status"], steward["distinct_episodes"]) == ("provisional", 1)
+    assert len(json.loads(steward["earning_episodes"])) == 1
+    assert not read(driver, world_id, "MATCH (c:OntologyChange {operation: 'promote'}) RETURN c")
+
+
+def test_each_episode_that_writes_a_property_name_counts_once(driver, seeded, chat):
+    """The other direction: an episode that once confirmed a plan, which another episode later gave
+    the property, still counts when it writes the property itself."""
+    world_id = seeded["world_id"]
+    mint_owner(driver, world_id, chat)
+    first = make_source(driver, world_id, "whatsapp", ["invented: the parish runs the ditch"])
+    _mint_steward(driver, world_id, first, "s1", 1, "Clear the ditch", steward="the parish")
+    second = make_source(driver, world_id, "whatsapp", [f"invented two {n}" for n in range(5)])
+    apply(
+        driver,
+        world_id,
+        [plan_item("t1", "Mend the stile")],
+        [observation(second, "t1", 1)],
+        caller=LEARNER,
+    )
+    third = make_source(driver, world_id, "whatsapp", ["invented: the vestry runs the stile"])
+    _set_properties(
+        driver, world_id, "Mend the stile", third, "u1", at_minute(1), {"steward": "vestry"}
+    )
+    apply(
+        driver,
+        world_id,
+        [plan_item("t2", "Prune the pear trees", steward="the orchard group")],
+        [observation(second, "t2", 2)],
+        caller=LEARNER,
+    )
+    steward = prop_row(driver, world_id, "steward")
+    assert (steward["distinct_episodes"], steward["status"]) == (3, "canonical")
+
+
+def test_evidence_attached_in_the_same_batch_is_no_use_of_a_property_name(driver, seeded, chat):
+    """Only the operation that wrote a property speaks for its name: two attachments to the item in
+    the same batch confirm the item, so they count for its kind and not for the property name."""
+    world_id = seeded["world_id"]
+    mint_owner(driver, world_id, chat)
+    before = prop_row(driver, world_id, "owner")
+    item = _item_ref(driver, world_id, "Replant the orchard")
+    sources = {
+        n: make_source(driver, world_id, "whatsapp", [f"invented chat {n}: about the orchard"])
+        for n in (1, 2, 3)
+    }
+    update = {
+        "op": "update_item",
+        "op_id": new_op_id(),
+        "item": item["id"],
+        "version": item["v"],
+        "fields": {"properties": {"owner": "the vestry"}},
+        "evidence_refs": supports("s1"),
+        "reason": "the owner changed",
+    }
+    attaches = [
+        {
+            "op": "attach_evidence",
+            "op_id": new_op_id(),
+            "target": item["id"],
+            "ev_id": f"s{n}",
+            "polarity": "supports",
+        }
+        for n in (2, 3)
+    ]
+    apply(
+        driver,
+        world_id,
+        [update, *attaches],
+        [observation(sources[n], f"s{n}", 1) for n in (1, 2, 3)],
+        caller=LEARNER,
+    )
+    after = prop_row(driver, world_id, "owner")
+    assert (after["status"], after["distinct_episodes"], after["uses"]) == (
+        "provisional",
+        before["distinct_episodes"] + 1,
+        before["uses"] + 1,
+    )
+
+
+def test_a_property_sent_as_null_at_create_is_no_use_of_its_name(driver, seeded, chat):
+    world_id = seeded["world_id"]
+    mint_owner(driver, world_id, chat)
+    before = prop_row(driver, world_id, "owner")
+    src = make_source(driver, world_id, "whatsapp", ["invented: a plan with no owner yet"])
+    apply(
+        driver,
+        world_id,
+        [plan_item("s1", "Fence the far paddock", owner=None)],
+        [observation(src, "s1", 1)],
+        caller=LEARNER,
+    )
+    after = prop_row(driver, world_id, "owner")
+    assert (after["distinct_episodes"], after["uses"]) == (
+        before["distinct_episodes"],
+        before["uses"],
+    )
