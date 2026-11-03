@@ -55,10 +55,24 @@ services:
       GROVE_NEO4J_URI: bolt://neo4j:7687
       GROVE_BUILD_SHA: ${GROVE_BUILD_SHA}
       GROVE_GOOGLE_OAUTH_FILE: /run/grove/google-oauth.json
+      # Screening reads both files at each upload. While one is absent, uploads answer 503 and
+      # every other path serves (docs/deploy.md, uploads and the screening files).
+      GROVE_RENAME_MAP: /run/grove/screening/rename.json
+      GROVE_DENYLIST: /run/grove/screening/denylist.txt
+      # The API's own default, written out so nginx's limit for the upload path can match it.
+      GROVE_UPLOAD_MAX_BYTES: "268435456"
     volumes:
       - type: bind
         source: /etc/grove/google-oauth.json
         target: /run/grove/google-oauth.json
+        read_only: true
+        bind:
+          create_host_path: false
+      # The folder, not the two files: a file mount needs the file, and a deploy must work while
+      # the files are absent. apply.sh makes the folder, so docker never makes one as root.
+      - type: bind
+        source: /etc/grove/screening
+        target: /run/grove/screening
         read_only: true
         bind:
           create_host_path: false
@@ -67,7 +81,9 @@ services:
       - "127.0.0.1:8000:8000"
     networks: [store, runner, egress]
     read_only: true
-    tmpfs: [/tmp]
+    # An upload past 8 MiB spools to /tmp, and two run at once, each up to 256 MiB. The size holds
+    # both, and keeps a runaway write from taking half the box's memory, the tmpfs default.
+    tmpfs: ["/tmp:size=640m"]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     depends_on:

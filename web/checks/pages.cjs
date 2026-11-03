@@ -33,7 +33,7 @@ const htmlRows=[...table.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map(m=>[...m[1].matc
 assert.deepStrictEqual(htmlRows,[mdHead,...mdBody].map(r=>r.map(c=>c.replace(/`/g,''))),'The table is every row of docs/data-flow.md');
 assert(!privacy.includes('data-flow-table'),'The mark is gone');
 assert(table.includes('<code>sources</code>'),'Backticks become code');
-for(const [needle,status] of [['Resend','Runs'],['Google sign-in','Runs'],['Items, links, history, sources','Runs'],['Backups','Runs'],['Calendar','Planned'],['Uploads','Planned'],['Screened text for extraction','Planned'],['Voice notes','Planned'],['Muse Glimmer','Planned'],['Evidence packets','Planned']]){
+for(const [needle,status] of [['Resend','Runs'],['Google sign-in','Runs'],['Items, links, history, sources','Runs'],['Backups','Runs'],['Past AI conversation exports','Runs'],['Calendar','Planned'],['Uploads','Planned'],['Screened text for extraction','Planned'],['Voice notes','Planned'],['Muse Glimmer','Planned'],['Evidence packets','Planned']]){
   const row=mdBody.find(r=>r[0].includes(needle)||r[1].includes(needle));assert(row,'docs/data-flow.md has a row for '+needle);assert.equal(row[3],status,needle+' is '+status);
 }
 assert(mdBody.every(r=>r[3]==='Runs'||r[3]==='Planned'),'Every row is Runs or Planned');

@@ -13,7 +13,8 @@ this file.
 | Items, links, history, sources | Grove's store on the server | Private per person; access by identity. | Runs |
 | Backups of the store | A daily offline dump on the same server, kept 30 days | Stays on the server; no outside party. | Runs |
 | Calendar events, when you connect the calendar | Google Calendar to Grove's server, read-only, in its own consent | Scope `calendar.readonly`, asked only when you connect the calendar. | Planned |
-| Uploads: chats, notes, files, images | Grove's server, where screening in code runs before the `sources` table. There is no local runner. | Stays on the server at this step; no outside party. | Planned |
+| Past AI conversation exports you upload: Claude Code sessions, Codex rollouts, ChatGPT and claude.ai exports | Grove's server, where screening in code runs before the `sources` table. The uploaded file is not kept. There is no local runner. | Stays on the server at this step; no outside party. | Runs |
+| Uploads: WhatsApp chats, voice notes, notes, files and images | Grove's server, where screening in code runs before the `sources` table. There is no local runner. | Stays on the server at this step; no outside party. | Planned |
 | Screened text for extraction, verification, belief revision, audits and read-side sentences | Meta Model API, Spark 1.3, Standard mode | Standard mode content "is not used to train Meta models". Retention for text models is not stated in the developer docs. | Planned |
 | Voice notes | Meta Model API, Voice Transcribe | Meta lists zero data retention. | Planned |
 | Screened text and images for triage, pairwise judgments and the second opinion | Muse Glimmer hosted on Modal | Modal's data terms are not checked yet, so this path carries synthetic data only until they are named here. | Planned |

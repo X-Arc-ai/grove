@@ -29,8 +29,8 @@ server {
     ssl_session_tickets off;
 
     add_header Strict-Transport-Security "max-age=31536000" always;
-    # nginx writes a body to disk before the API sees it, so no path takes a large one. An upload
-    # route adds its own location, with its limit and proxy_request_buffering off, when it exists.
+    # nginx writes a body to disk before the API sees it, so no path takes a large one. The upload
+    # route is the one exception: its own location below, with its limit and no request buffering.
     client_max_body_size 10m;
 
     proxy_http_version 1.1;
@@ -73,6 +73,17 @@ server {
     location = /token {
         limit_req zone=grove_oauth burst=20 nodelay;
         limit_req_status 429;
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    # An export is the raw body, up to the API's GROVE_UPLOAD_MAX_BYTES (256 MiB by default).
+    # nginx streams it to the API and keeps no copy on disk; the API counts the bytes itself and
+    # may take minutes to parse and screen a large one.
+    location = /v1/sources/upload {
+        client_max_body_size 256m;
+        proxy_request_buffering off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
         proxy_pass http://127.0.0.1:8000;
     }
 }
