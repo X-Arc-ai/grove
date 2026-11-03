@@ -160,3 +160,27 @@ def test_an_item_with_no_kind_still_reads_its_clocks(driver, w):
     item = plant_node(driver, w, "Item", title="Unsure", recorded=NOW, became_true_earliest=NOW)
     words = clock_words(WorldQuery(driver, w), item["id"])
     assert words is not None and words["state"] == "unknown"
+
+
+def test_a_callers_automated_speaker_never_raises_a_chat_line(driver, w, talk):
+    """The verifier's neuter N8b stayed green: only the source's own metadata makes a sender
+    automated (S46). A chat report the caller calls automated stays reported done, so it cannot
+    make a task done, and its speaker is still the caller's word."""
+    claimed = line(talk, "r1", 5, statement_class="report_happened", speaker_kind="automated")
+    item = created_id(
+        apply(
+            driver,
+            w,
+            [create_item("event", "The linen was delivered", "r1")],
+            [claimed],
+            caller=LEARNER,
+        )
+    )
+    [row] = evidence_on(driver, w, item)
+    assert (row["speaker_kind"], row["source_type"]) == ("automated", "reported_done")
+    task = open_task(driver, w, talk)
+    again = line(talk, "r2", 6, statement_class="report_happened", speaker_kind="automated")
+    one(
+        refused(driver, w, [change_status(task, "done", "r2")], [again]),
+        "terminal_needs_confirmation",
+    )
