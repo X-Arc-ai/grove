@@ -191,8 +191,7 @@ Only a row `enqueue_request` wrote has a `source_id`, and only such a row can be
 | The value lists of `property_names.value_type` and `meanings.direction`. | 1583, 3241 | `ontology` |
 | The grade rows of controls, and findings raised by agent runs: their run id and their text. | 2198, 2376, 2427 | `evals`, `cleanup` |
 | The newest-id part of the fingerprint for a table with no id, and whether a rebuild keeps `touched_at`. | 812, 922 | `writer-b` |
-| Rows outside the S12 list that change after they are written carry no version: `jobs`, `support_changed.taken_at`, `ontology_change_log.undone_by`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, `run_records`, and the finished times of `audit_runs` and `area_audits`. Each owner adds the pair when it writes the row. `requests` has it (S41). | 3081 | `runner` (`jobs`, `run_records`), `beliefs` (`support_changed`), `ontology` (`ontology_change_log`), `forget` (`history_values`), `models` (`budgets`), `truth-clock` (`horizon_stats`), `walk` (`walk_rotation`), `evals` (`checks`, `audit_runs`), `cleanup` (`area_audits`) |
-| The runner needs a process that holds the driver for `worlds_with_due_requests`: an API route under a service scope, with a credential per world for each pass. A killed pass reads `saving`, and its row stays `applying` until the lease passes. The watchdog that sees a pass die calls `fail_request(retryable=True)` and sets `lease_seconds` to the watchdog time plus a margin. A worker name is unique per pass, because it is what `lease_lost` compares. | 750, 2029 | `runner` |
+| Rows outside the S12 list that change after they are written carry no version: `support_changed.taken_at`, `ontology_change_log.undone_by`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, and the finished times of `audit_runs` and `area_audits`. Each owner adds the pair when it writes the row. `requests` has it (S41); `jobs` and `run_records` have it (`runner`). | 3081 | `beliefs` (`support_changed`), `ontology` (`ontology_change_log`), `forget` (`history_values`), `models` (`budgets`), `truth-clock` (`horizon_stats`), `walk` (`walk_rotation`), `evals` (`checks`, `audit_runs`), `cleanup` (`area_audits`) |
 | The 5 second wait of remember, built from `request_state`. A hash of the host's idempotency key as the request id, prefixed with the OAuth client id (S41). `to_api()` has no receipt text, so a host renders through `render_receipt`. A surfaced failure answers remember with the typed error `unavailable`. `verbatim` requires `host_message_id`, and the schema of remember checks that: the queue only stores the two. | 754, 3195, 3294 | `hosts-b` |
 | The value index must gain the status words, `items.status` and `kinds.status_vocabulary` (S31). Until then, a forget of a status word renames the word in the kind. | 2560, 2561 | `forget` |
 | `why` of a contradiction from `grove.cleanup.v1` (the `grove.extract.v1` form) has no value-id column in `contradictions`. | 2087, 2199, 3133 | `beliefs` |
@@ -200,8 +199,7 @@ Only a row `enqueue_request` wrote has a `source_id`, and only such a row can be
 | `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. Closed by `deploy-a`: `deploy/compose.yml` sets it for `api` and `runner`, and a test checks it. | 354, 991 | `deploy-a` |
 | D3's restore has not run on this store: rebuild the projections from history, replay the forget ledger, compare D3's fingerprint. The daily dump and its load into a scratch store run on the box since `deploy-a`, checked by the dump fingerprint (`docs/deploy.md`). | 806 to 808, 3065 | `writer-b` |
 | An upload route adds its own nginx location, with its body limit and `proxy_request_buffering off`. Every other path takes at most 10 MB (`deploy/nginx/grove-https.conf.template`). | none; a build fact | `ingest-a` |
-| The runner still reaches the host's sshd and nginx through the gateway of its internal network. A host firewall rule for its bridge goes with the egress allowlist. | none; a build fact | `runner`, `models` |
-| `/etc/grove/runner.env` holds no token yet, and `deploy/runner-placeholder.sh` runs in place of the loop. The backup stops the runner; the loop must leave a killed pass's requests queued. | none; a build fact | `runner` |
+| The runner still reaches the host's sshd and nginx through the gateway of its internal network. Its bridge now has the fixed name `grove-runner`; the host firewall rule on that interface goes with the egress allowlist. | none; a build fact | `deploy-b`, `models` |
 | The secret files of `docs/deploy.md` are on the box, except `modal.env`, which is still owed. Closed for Google's client file by `signin`: the API reads it at `GROVE_GOOGLE_OAUTH_FILE` at first use, and no file or a bad file sends the person to the card with the Google error (`docs/signin.md`). | none; a build fact | `models` |
 | `/mcp` and the metadata in `server/grove/api/wellknown.py` are placeholders. uvicorn runs without `--proxy-headers`, so a redirect it makes names `http`. Closed by `hosts-a`: the OAuth authorization server (`server/grove/api/oauth.py`), the full metadata of RFC 8414 and RFC 9728 in `server/grove/api/wellknown.py`, and the MCP transport at `/mcp` (`server/grove/api/mcp.py`) replaced them, on the rows of S45. Every absolute URL they give comes from `GROVE_PUBLIC_BASE_URL`, never from the request. The redirect fact is closed too: `create_app` sets `redirect_slashes=False`, so the app makes no redirect from a path. `/mcp/` has the handler of `/mcp`, and every other trailing slash is the typed 404. | none; a build fact | `hosts-a` |
 | A batch at `/mcp` has no limit on its members inside the 1 MiB cap on the body. | none; a build fact | `hosts-b` |
@@ -209,8 +207,7 @@ Only a row `enqueue_request` wrote has a `source_id`, and only such a row can be
 | Two tools with one name fail at request time, on every POST to `/mcp`, and not when the app starts. | none; a build fact | `hosts-b` |
 | `ToolContext` gives a handler the raw driver. `hosts-b` must scope every read to `ToolContext.world_id` and prove it for the real tools. | none; a build fact | `hosts-b` |
 | The consent page says "until you disconnect it in Grove". That needs the Connections view on `/v1/views/connections`. | none; a build fact | `views-b` |
-| A run token needs a minter, a `token_cap` per pass and a holder for `GROVE_GATEWAY_SECRET`. A pass that gets `budget_reached` leaves its requests queued. | 2659 | `runner` |
-| A call's receipt: `ModelLayer.attach_receipt` takes a `model_call_id`. A gateway row has no id for its caller, so it joins its receipts through its run id and the run's record. | 2659, 3120 | `ingest-b`, `runner` |
+| A call's receipt: `ModelLayer.attach_receipt` takes a `model_call_id`. A gateway row has no id for its caller, so it joins its receipts through its run id and the run's record, whose `receipts` lists the requests the run saved (`runner`). | 2659, 3120 | `ingest-b` |
 | The backfill's calls use the jobs `backfill_triage` and `backfill_extraction`, which stop at the ceiling. `extraction` continues past it. A background poll treats a 429 as a passing failure, so a long stated reset can end and cancel a run: the backfill must set its parallelism under Meta's limits. | 2688 | `ingest-b`, `film-backfill` |
 | Voice Transcribe takes WAV only here, with no contact names and no language bias: the forms probed for those two fields were refused. | 2673 | `ingest-a` |
 | `brain fetch` must send through `AllowlistTransport`, which checks each redirect hop, and not call `EgressPolicy.check` and then use another client. | 2559 | `cleanup` |
@@ -243,7 +240,6 @@ Only a row `enqueue_request` wrote has a `source_id`, and only such a row can be
 | The mint path after `resolve_link_phrase` finds no word (D8 step 5, and the valve of three new words a batch), and what a world with no usable generic meaning, or with two, does: `resolve_link_phrase` returns none then (S44). | 1593, 1596 | `ontology` |
 | The writer lint has no allowance yet for the bookkeeping tables of the model-call layer and the job runner, and must name them. | 772 | `models`, `runner` |
 | `record_connector`, `record_source` and `record_episode` take no `Caller`, so the read-only refusal does not reach them. A layer that exposes them to a token checks its scope first. | 772 | `hosts-b` |
-| The gateway is not a compose service yet: `python -m grove.models.gateway` needs `MODEL_API_KEY`, `GROVE_GATEWAY_SECRET`, `NEO4J_AUTH` and the Glimmer variables (`docs/models.md`), and none of the new ones is on the box. The runner network must reach it. | none; a build fact | `runner`, `deploy-b` |
 | The neo4j driver logs the parameters of every query at DEBUG, and so the screened content of each source write. Production must keep the `neo4j` logger above DEBUG, because logs hold ids, counts and operation names only. | 2534 | `deploy-b` |
 | A connector must give each chat its own `external_locator`, because two chats can otherwise store one locator, and opaque message keys, because a denylisted term in a key is stored and not counted. | 2505 | `ingest-a1` |
 | Each service that screens needs `GROVE_RENAME_MAP` and `GROVE_DENYLIST` in its environment and the two files mounted with mode 600. With `GROVE_ENV=production` an unset variable is a refusal (SC3). | 2505 | `ingest-a1` |
@@ -257,6 +253,10 @@ A point that a later lane resolves leaves the table above and is listed here wit
 | The job table has no row for load-bearing verification. | 2659 | `truth-clock`: the jobs `verification_load_bearing`, `second_opinion_load_bearing` and `second_opinion_correlated` continue at the ceiling (`docs/models.md`) |
 | No starter property name has a `scheduled_role`; the data path for "planned for 12 July". | 832, 920, 1078 | `truth-clock`: S50, and `occurrence` in `server/grove/store/words.py` reads a period's own scheduled start or the scheduled time of a plan linked to it |
 | The source type came from the connector and the statement class only: an automated sender, a decision's speaker, a forwarded row's author, a period's start and the table of what each source can prove were not code. | 1074, 1080, 1112, 1177 | `truth-clock`: S46, S49, S50 |
+| The runner's driver for the due list, a credential per world for each pass, the lease of a killed pass and a worker name per pass: the API holds the driver and answers `/v1/internal/runner/*` under the runner token; each pass gets a pass token of one world; the worker name is the run id; the lease is the time cap plus the margin, and `end_pass` calls `fail_request(retryable=True)` (`docs/runner.md`). | 750, 2029, 2659 | `runner` |
+| `runner.env` holds the runner token, written by `deploy/runner-secrets.sh`; the loop runs in place of the placeholder, and a stop ends its passes as `stopped`, with their requests back in the queue (`docs/runner.md`, `docs/deploy.md`). | 750, 2029, 2659 | `runner` |
+| The API mints each pass's gateway run token with its `token_cap` and holds `GROVE_GATEWAY_SECRET` (`/etc/grove/gateway.env`, shared with the gateway). A pass that meets the ceiling ends `budget` and hands its requests back with a retry (`docs/runner.md`, open point there). | 750, 2029, 2659 | `runner` |
+| The gateway is the compose service `gateway` on the store, runner and egress networks, at `http://gateway:18300/v1` for the runner (`docs/deploy.md`). | 750, 2029, 2659 | `runner` |
 
 ## Added by later lanes
 
@@ -1036,7 +1036,7 @@ Keys: `jobs_id_unique` (id).
 
 Indexes: `jobs_world_id_lane_state_priority_run_after_idx` (world_id, lane, state, priority, run_after).
 
-There is no SKIP LOCKED. A filter in MATCH or WHERE reads with no lock, so two runners that filter on state = queued both claim one job. A claim must check the state after it holds the node's write lock (S1): first a write to another property of the job, then WITH, then the check, then the change; or the check inside a CASE on the right side of SET, with the caller comparing the returned claimed_by. The runner lane adds a two-transaction race test with its claim.
+There is no SKIP LOCKED. A filter in MATCH or WHERE reads with no lock, so two runners that filter on state = queued both claim one job. A claim must check the state after it holds the node's write lock (S1): first a write to another property of the job, then WITH, then the check, then the change; or the check inside a CASE on the right side of SET, with the caller comparing the returned claimed_by. The runner claims a job only under the world lock (`grove.writer.runs`), and `tests/runner/test_runs.py` holds the two-transaction race test.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -1052,6 +1052,8 @@ There is no SKIP LOCKED. A filter in MATCH or WHERE reads with no lock, so two r
 | claimed by | `claimed_by` | `code` | b1 |  |
 | claimed at | `claimed_at` | `instant` | b1 |  |
 | run after | `run_after` | `instant` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 
 ### run_records
 
@@ -1081,6 +1083,8 @@ Full text: `grove_value_index`.
 | started | `started` | `instant` | b1 |  |
 | finished | `finished` | `instant` | b1 |  |
 | scorecard measures before and after | `scorecard_before`, `scorecard_after` | `json_ids` | b1 | consolidation runs only |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 
 ### model_calls
 

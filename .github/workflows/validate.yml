@@ -104,6 +104,27 @@ jobs:
           assert second["applied"] == [], second
           '
 
+      # The R10 permission tests run this exact binary against a scripted local model. The
+      # archive is checked by its pinned digest before anything in it is extracted or run.
+      - name: Install OpenCode for the permission tests
+        run: |
+          url=https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-linux-x64.tar.gz
+          digest=3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b
+          work="$(mktemp -d)"
+          python3 -I -c 'import sys, urllib.request; urllib.request.urlretrieve(sys.argv[1], sys.argv[2])' \
+            "$url" "$work/opencode-linux-x64.tar.gz"
+          (cd "$work" && echo "$digest  opencode-linux-x64.tar.gz" | sha256sum --check --strict)
+          mkdir -p "$HOME/.opencode/bin"
+          tar -xzf "$work/opencode-linux-x64.tar.gz" -C "$HOME/.opencode/bin" opencode
+          # OpenCode never runs with the real HOME: the version check gets a throwaway one.
+          mkdir "$work/home"
+          version="$(env -i PATH=/usr/bin:/bin HOME="$work/home" XDG_CONFIG_HOME="$work/home/.config" \
+            XDG_DATA_HOME="$work/home/.local/share" XDG_STATE_HOME="$work/home/.local/state" \
+            XDG_CACHE_HOME="$work/home/.cache" "$HOME/.opencode/bin/opencode" --version)"
+          echo "OpenCode $version"
+          test "$version" = 1.18.32
+          rm -rf "$work"
+
       - name: Tests
         env:
           GROVE_STORE_EXCLUSIVE: "1"

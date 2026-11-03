@@ -957,6 +957,7 @@ JOBS = Table(
         _col("claimed by", "code"),
         _col("claimed at", "instant"),
         _col("run after", "instant"),
+        *_version_touched(),
     ),
     uniques=_keys("jobs", ("id",)),
     indexes=_ranges("jobs", ("world_id", "lane", "state", "priority", "run_after")),
@@ -965,8 +966,9 @@ JOBS = Table(
         "that filter on state = queued both claim one job. A claim must check the state after "
         "it holds the node's write lock (S1): first a write to another property of the job, "
         "then WITH, then the check, then the change; or the check inside a CASE on the right "
-        "side of SET, with the caller comparing the returned claimed_by. The runner lane adds a "
-        "two-transaction race test with its claim."
+        "side of SET, with the caller comparing the returned claimed_by. The runner claims a job "
+        "only under the world lock (`grove.writer.runs`), and `tests/runner/test_runs.py` holds "
+        "the two-transaction race test."
     ),
 )
 
@@ -1010,6 +1012,7 @@ RUN_RECORDS = Table(
             "scorecard_after",
             note="consolidation runs only",
         ),
+        *_version_touched(),
     ),
     uniques=_keys("run_records", ("id",)),
     indexes=_ranges("run_records", ("world_id", "agent", "started")),
