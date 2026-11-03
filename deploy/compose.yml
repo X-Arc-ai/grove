@@ -50,6 +50,14 @@ services:
         required: false
       - path: /etc/grove/resend.env
         required: false
+      # The API mints the gateway run token and the pass token of each pass. With no gateway
+      # secret or no runner token hash, the runner routes answer 503.
+      - path: /etc/grove/gateway.env
+        required: false
+      - path: /etc/grove/runner-auth.env
+        required: false
+      - path: /etc/grove/glimmer.env
+        required: false
     environment:
       GROVE_ENV: production
       GROVE_NEO4J_URI: bolt://neo4j:7687
@@ -81,6 +89,44 @@ services:
       start_period: 10s
     logging: *logging
 
+  gateway:
+    # The model gateway (docs/models.md): the API's image, its own process. It holds the model keys
+    # and GROVE_GATEWAY_SECRET, and writes each call to model_calls in the store.
+    image: grove-api:${GROVE_BUILD_SHA:?deploy.sh sets GROVE_BUILD_SHA}
+    command: ["python", "-m", "grove.models.gateway"]
+    restart: unless-stopped
+    init: true
+    env_file:
+      - /etc/grove/neo4j.env
+      - path: /etc/grove/gateway.env
+        required: false
+      - path: /etc/grove/model-api.env
+        required: false
+      - path: /etc/grove/glimmer.env
+        required: false
+    environment:
+      GROVE_ENV: production
+      GROVE_NEO4J_URI: bolt://neo4j:7687
+      # Not the default 127.0.0.1, which the runner's container cannot reach. No port is published,
+      # and every call needs a run token signed with GROVE_GATEWAY_SECRET.
+      GROVE_GATEWAY_HOST: 0.0.0.0
+      GROVE_GATEWAY_PORT: "18300"
+    networks: [store, runner, egress]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18300/health', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 10s
+    logging: *logging
+
   runner:
     build:
       context: ..
@@ -89,6 +135,10 @@ services:
     restart: unless-stopped
     init: true
     user: "10002:10002"
+    # A stop ends each running pass: the group gets 10 s after SIGTERM and 5 s after SIGKILL,
+    # then the pass's folder (the person's words) is removed and the pass is ended. Docker's
+    # default 10 s would kill the loop before that.
+    stop_grace_period: 40s
     # The runner token only: no store credential and no model key reach this service.
     env_file:
       - path: /etc/grove/runner.env
@@ -96,14 +146,19 @@ services:
     environment:
       GROVE_ENV: production
       GROVE_API_URL: http://api:8000
+      GROVE_GATEWAY_URL: http://gateway:18300/v1
+      GROVE_RUNNER_CONFIG: /opt/grove/runner
+      GROVE_OPENCODE_BIN: /usr/local/bin/opencode
     volumes:
       - /var/lib/grove-runner:/var/lib/grove-runner
-    # The runner network is internal: the runner reaches the API and nothing else.
+    # The runner network is internal: the runner reaches the API and the gateway and nothing else.
     networks: [runner]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     depends_on:
       api:
+        condition: service_started
+      gateway:
         condition: service_started
     logging: *logging
 
@@ -112,6 +167,9 @@ networks:
     internal: true
   runner:
     internal: true
+    driver_opts:
+      # A stable interface name for a host firewall rule (at most 15 characters).
+      com.docker.network.bridge.name: grove-runner
   egress: {}
 
 volumes:
