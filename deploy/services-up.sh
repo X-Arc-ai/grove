@@ -33,9 +33,10 @@ wait_healthy neo4j "$tries" || log "neo4j is not healthy yet"
 # a healthy API means the database answers.
 output=""
 for _ in $(seq "$tries"); do
-    output=$(compose start api runner 2>&1) || true
+    output=$(compose start api gateway runner 2>&1) || true
     # The runner has no health check, so it counts when it runs.
-    if is_healthy api && [ -n "$(compose ps --status running --quiet runner 2>/dev/null || true)" ]; then
+    if is_healthy api && is_healthy gateway &&
+        [ -n "$(compose ps --status running --quiet runner 2>/dev/null || true)" ]; then
         log "the store and its writers run"
         exit 0
     fi

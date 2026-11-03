@@ -13,14 +13,17 @@ runs the compose project `grove` from `deploy/compose.yml`.
 |---|---|---|---|
 | `neo4j` | Neo4j Community, the pin of `docker-compose.dev.yml`. Heap 1 GB, page cache 512 MB, Cypher 25 by default. Data in the volume `grove-neo4j-data`. | `store` (internal) | the image's user |
 | `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body. The lane that builds an upload route adds its own nginx location, with its limit and `proxy_request_buffering off`. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
-| `runner` | OpenCode 1.18.32, checked against its release checksum, with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`. A placeholder process runs until the `runner` lane lands its loop. | `runner` (internal) | uid 10002 `grove-runner` |
+| `gateway` | The model gateway, `python -m grove.models.gateway` from the API's image (`docs/models.md`, the gateway). It holds the model keys and `GROVE_GATEWAY_SECRET`, and writes each call to `model_calls`. It listens on port 18300 of its networks (`GROVE_GATEWAY_HOST=0.0.0.0`, since the runner's container cannot reach a loopback address) and publishes no port; every call needs a run token signed with `GROVE_GATEWAY_SECRET`. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
+| `runner` | The runner loop, `python -m grove.runner`: it asks the API for due work and runs each pass in OpenCode 1.18.32 against the gateway (`GROVE_GATEWAY_URL=http://gateway:18300/v1`), with the config and the agents of the repo's `runner/` folder (`/opt/grove/runner` in the image). OpenCode is checked against its release checksum, runs with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`, and has no plugin. | `runner` (internal) | uid 10002 `grove-runner` |
 
-An internal network has no route out. So the store reaches nothing but the API, and the runner
-reaches the API and no address outside the box: it holds no store credential and no model key. The
-runner can still open a connection to the host itself through its network's gateway (sshd and
-nginx answer there). A host firewall rule for the runner's bridge belongs with its egress list. Only the API has a
-route out (`egress`), for the model providers, the mail provider and Google, and to fetch client
-metadata documents from any global https host (`docs/hosts.md`).
+An internal network has no route out. So the store reaches nothing but the API and the gateway,
+and the runner reaches the API, the gateway and no address outside the box: it holds no store
+credential and no model key. The runner can still open a connection to the host itself through its
+network's bridge (sshd and nginx answer there). That bridge has the fixed interface name
+`grove-runner`, so a host firewall rule can name it; the rule itself belongs with the runner's
+egress allowlist (open point). Only the API and the gateway have a route out (`egress`): the API
+for the model providers, the mail provider and Google, and to fetch client metadata documents from
+any global https host (`docs/hosts.md`); the gateway for the model providers.
 
 The public host name is configuration: `GROVE_PUBLIC_BASE_URL` in `/etc/grove/api.env`, today
 `https://app.grove.x-arc.ai`. The A record is DNS only, with no proxy in front of the box. nginx has
@@ -66,7 +69,10 @@ endpoint, the consent page, the exact `WWW-Authenticate` headers, and how a host
 | `resend.env` | `RESEND_API_KEY`, `MAIL_FROM` | The mail provider's send-only key. |
 | `modal.env` | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | The Modal token, once it exists. Optional until then. |
 | `google-oauth.json` | the Web client | The Google OAuth client file. |
-| `runner.env` | the runner token only | Written by the `runner` lane. Only the runner service reads it. |
+| `runner.env` | `GROVE_RUNNER_TOKEN` | Generated on the box by `deploy/runner-secrets.sh`, never printed. Only the runner service reads it. |
+| `runner-auth.env` | `GROVE_RUNNER_TOKEN_SHA256` | The sha256 of the runner token, computed again from `runner.env` by each run of `deploy/runner-secrets.sh`. The API reads it. |
+| `gateway.env` | `GROVE_GATEWAY_SECRET` | Generated on the box by `deploy/runner-secrets.sh`, never printed. The API (it mints the gateway run token and the pass token of each pass) and the gateway read it. Without it, or without `runner-auth.env`, the API's runner routes answer 503. |
+| `glimmer.env` | `GROVE_GLIMMER_BASE_URL`, `GROVE_GLIMMER_KEY` | The Modal server's URL and proxy token (`docs/models.md`). The API and the gateway read it. Optional until Glimmer is used. |
 
 Copy a file from the operator's machine through ssh standard input, so no value is on a command line
 and no file is pushed with `scp` or `rsync`:
@@ -77,6 +83,32 @@ ssh root@app.grove.x-arc.ai 'umask 077; cat > /etc/grove/model-api.env' < <local
 
 For every other ssh command, give `ssh -n`, so that ssh reads nothing from the standard input of
 the shell that runs it.
+
+## The runner's secrets
+
+`deploy/runner-secrets.sh` makes `gateway.env`, `runner.env` and `runner-auth.env` on the box, mode
+600 and root's. The script comes with the checkout of the sha that carries the runner loop, so on a
+box that has none of the three files `deploy-b` does this once:
+
+1. Deploy that sha. With no runner token, the runner logs `grove-runner not_configured
+   missing=GROVE_RUNNER_TOKEN` once and waits (it does not exit, so `compose up --wait` passes),
+   and the API's runner routes answer 503.
+2. Run the script:
+
+   ```
+   ssh -n root@app.grove.x-arc.ai /opt/grove/src/deploy/runner-secrets.sh
+   ```
+
+3. Deploy the same sha again: an env file reaches a container only when compose creates it, so
+   `api`, `gateway` and `runner` must be created again with the new files.
+
+It prints file names with `created` or `kept`, and no value. It keeps a secret or a token that is
+there, and computes `runner-auth.env` again from `runner.env` at every run, so the hash the API
+holds always matches the token the runner sends. A new value goes from `python3` straight into a
+temporary file in `/etc/grove`, which then replaces the file whole. It refuses to run when
+`/etc/grove` does not exist (run `deploy/bootstrap.sh` first), and stops on a value there that is
+under 32 characters. To change the runner token, remove its line from `runner.env`, run the script
+and deploy again, so the API and the runner both start with the new pair.
 
 ## Deploy a commit
 
@@ -106,8 +138,9 @@ On the box, `deploy/deploy.sh <sha>`:
 5. installs the host files of that commit (`deploy/install-host.sh`): the nginx sites, the
    certificate on first use (certbot, webroot), the backup units, the certbot reload hook and log
    rotation. If `nginx -t` refuses the new sites, the old ones go back and the deploy stops;
-6. builds the `api` and `runner` images (the only build on the box), starts `neo4j`, runs the
-   migrations from the image's copy of `server/`, records the sha, and starts `api` and `runner`;
+6. builds the `api` and `runner` images (the only build on the box; the gateway runs the `api`
+   image), starts `neo4j`, runs the migrations from the image's copy of `server/`, records the sha,
+   and starts `api`, `gateway` and `runner`;
 7. runs `deploy/smoke.sh` against the public host, writes the result to `deploy.log`, and removes
    the images of every build except this one and the one it last replaced.
 
@@ -137,25 +170,27 @@ Neo4j Community has no online backup: a dump needs the server stopped. `grove-ba
 
 1. takes the box lock, so no deploy runs during it, and removes the work folder that a killed
    backup left;
-2. stops the runner and the API, so nothing writes;
+2. stops the runner, the gateway and the API, so nothing writes (the gateway writes a
+   `model_calls` row for each call, and a write between the two fingerprints fails the backup);
 3. starts Neo4j if a boot or a failed run left it stopped, waits until it is healthy, and records
    the dump fingerprint of the store;
 4. stops Neo4j and runs `neo4j-admin database dump`;
-5. starts Neo4j, checks that the fingerprint did not move, and starts the API and the runner;
+5. starts Neo4j, checks that the fingerprint did not move, and starts the API, the gateway and
+   the runner;
 6. keeps the dump with its fingerprint and checksum;
 7. runs `deploy/restore-check.sh` on the new dump, and only when it matches, removes dumps older
    than 30 days.
 
 The API is down for the length of the dump: 34 seconds on the first run, with a store that held
-only its schema. If a step fails, or systemd stops the script, it starts Neo4j, the API and the
-runner again before it exits. The unit's `ExecStopPost` runs `deploy/services-up.sh` after every
-run, so a script that was killed outright also leaves the services running.
+only its schema. If a step fails, or systemd stops the script, it starts Neo4j, the API, the
+gateway and the runner again before it exits. The unit's `ExecStopPost` runs `deploy/services-up.sh`
+after every run, so a script that was killed outright also leaves the services running.
 `grove-services.service` runs it too, at every boot and after any failed backup (`OnFailure`), and
 tries again each minute until it succeeds, for a host that went down in the dump window or a store
 that took long to come back. `services-up.sh` first removes a one-off container that a killed run
 left, so nothing else holds the store. compose refuses to start the API while the store reports
-unhealthy, so the script keeps starting both writers until the API's health check reads the store
-and the runner runs.
+unhealthy, so the script keeps starting the API, the gateway and the runner until the API's health
+check reads the store, the gateway's health check answers and the runner runs.
 
 Run a one-off container by hand only under the box lock
 (`flock /run/grove/deploy.lock docker compose --project-name grove ... run ...`): `services-up.sh`
@@ -199,3 +234,4 @@ ledger, compare).
    no variable, it registers with no address.
 5. Copy the other secret files (above).
 6. Deploy a sha.
+7. Run `deploy/runner-secrets.sh` and deploy the same sha again (the runner's secrets, above).
