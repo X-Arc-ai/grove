@@ -150,7 +150,13 @@ def due_work(
         now = clock.now(world_id)
         if budget_reached(query, now):
             continue
-        live = live_run(query, now, settings)
+        rows = query.read(_LIVE_RUNS)
+        live = next((row for row in rows if stale_cutoff(row, settings) > now), None)
+        if live is None and rows:
+            # A run that died with no end: free its job now, not only when a pass starts.
+            run_rows.abandon_stale_runs(
+                driver, world_id, stale_margin_seconds=settings.lease_margin_seconds
+            )
         if live is not None:
             if live["agent"] != "learner" and query.read(_DUE_REQUEST, now=now):
                 due.append({"world_id": world_id, "agent": "learner", "preempt": live["id"]})
@@ -402,7 +408,7 @@ def end_pass(
                 job_id,
                 worker=run_id,
                 done=outcome == "ok",
-                requeue=outcome == "preempted",
+                requeue=outcome in ("preempted", "stopped"),
             )
     usage = query.read(_RUN_USAGE, run_id=run_id)[0]
     ended = run_rows.finish_run(

@@ -135,6 +135,10 @@ services:
     restart: unless-stopped
     init: true
     user: "10002:10002"
+    # A stop ends each running pass: the group gets 10 s after SIGTERM and 5 s after SIGKILL,
+    # then the pass's folder (the person's words) is removed and the pass is ended. Docker's
+    # default 10 s would kill the loop before that.
+    stop_grace_period: 40s
     # The runner token only: no store credential and no model key reach this service.
     env_file:
       - path: /etc/grove/runner.env

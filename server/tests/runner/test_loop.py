@@ -19,7 +19,15 @@ import pytest
 from grove import clock
 from grove.api.app import create_app
 from grove.api.config import ApiSettings
-from grove.runner.loop import OPENCODE_FLAGS, LoopSettings, Runner, prepare_home
+from grove.runner.loop import (
+    OPENCODE_FLAGS,
+    LoopSettings,
+    PassRun,
+    Runner,
+    prepare_home,
+    run_pass,
+    summarise,
+)
 from grove.runner.passes import PassSettings
 from grove.store.query import WorldQuery
 from grove.writer import request_state
@@ -113,10 +121,30 @@ def rig(driver, make_world, tmp_path):
     return world_id, app, loop_settings, record, fake_dir, token
 
 
-def test_a_queued_store_starts_a_learner_pass_within_60_seconds(driver, rig):
-    world_id, app, loop_settings, record, _, _ = rig
+def test_the_service_polls_often_enough_for_the_60_second_start():
+    """Regression (R4 verifier): a slow default poll stayed green while each test set its own."""
+    env = {
+        "GROVE_API_URL": "http://api:8000",
+        "GROVE_RUNNER_TOKEN": "x" * 40,
+        "GROVE_GATEWAY_URL": "http://gateway:18300/v1",
+    }
+    assert LoopSettings.from_environment(env).poll_seconds <= 10.0
+
+
+def test_a_queued_store_starts_a_learner_pass_within_60_seconds(driver, rig, tmp_path):
+    world_id, app, loop_settings, record, _, token = rig
     with Served(app()) as served:
-        runner = Runner(loop_settings(served.url, "propose", poll_seconds=5.0))
+        # The poll of the service as the box runs it: from its environment, with no override.
+        settings = loop_settings(served.url, "propose")
+        env = {
+            "GROVE_API_URL": served.url,
+            "GROVE_RUNNER_TOKEN": token,
+            "GROVE_GATEWAY_URL": settings.gateway_url,
+            "GROVE_RUNNER_HOME": str(settings.home),
+            "GROVE_RUNNER_CONFIG": str(settings.config_dir),
+            "GROVE_OPENCODE_BIN": settings.opencode_bin,
+        }
+        runner = Runner(LoopSettings.from_environment(env))
         thread = threading.Thread(target=runner.serve, daemon=True)
         thread.start()
         threading.Event().wait(1.0)
@@ -267,7 +295,7 @@ def test_a_store_behind_a_running_curator_pass_starts_a_learner_within_60_second
         priority=20,
     )
     with Served(app(time_cap_seconds=300)) as served:
-        runner = Runner(loop_settings(served.url, "hang", poll_seconds=5.0))
+        runner = Runner(loop_settings(served.url, "hang"))
         thread = threading.Thread(target=runner.serve, daemon=True)
         thread.start()
         assert wait_for(lambda: (fake_dir / "child.pid").exists(), 30)
@@ -286,3 +314,85 @@ def test_a_store_behind_a_running_curator_pass_starts_a_learner_within_60_second
         ("learner", "ok"),
     ]
     assert (runs_seen[1]["started"] - queued_at).total_seconds() <= 60
+
+
+def test_with_no_runner_token_the_service_waits_and_stops_cleanly(tmp_path):
+    """Regression: on a first deploy runner.env holds no token yet. A loop that exits makes the
+    container restart in a loop, and `compose up --wait` fails the deploy."""
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "GROVE_API_URL": "http://127.0.0.1:1",
+        "GROVE_GATEWAY_URL": "http://127.0.0.1:1/v1",
+        "GROVE_RUNNER_HOME": str(tmp_path),
+    }
+    process = subprocess.Popen(
+        [sys.executable, "-m", "grove.runner"],
+        env=env,
+        cwd=Path(__file__).parents[2],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        threading.Event().wait(2.0)
+        assert process.poll() is None
+    finally:
+        process.send_signal(signal.SIGTERM)
+        output, _ = process.communicate(timeout=20)
+    assert process.returncode == 0
+    assert "grove-runner not_configured missing=GROVE_RUNNER_TOKEN" in output
+    assert "Traceback" not in output
+
+
+def test_a_restart_removes_every_pass_folder_a_killed_runner_left(tmp_path):
+    """Regression (R4 security review): a kill skips the removal, and a pass folder holds
+    OpenCode's session store, so the person's words."""
+    home = tmp_path / "home"
+    stale = home / "passes" / "01a19fe3-690c-7976-a621-4e49cd31497e"
+    (stale / "data" / "opencode").mkdir(parents=True)
+    (stale / "events.jsonl").write_text('{"type": "tool_use", "part": {"tool": "bash"}}')
+    config = home / ".config" / "opencode"
+    (config / "plugin").mkdir(parents=True)
+    (config / "plugin" / "planted.ts").write_text("export default {}")
+    (config / "opencode.jsonc").write_text("{}")
+    prepare_home(home, REPO / "runner")
+    assert list((home / "passes").iterdir()) == []
+    assert sorted(p.name for p in config.iterdir()) == ["agents", "opencode.json"]
+
+
+def test_a_pass_that_fails_to_start_still_removes_its_folder(tmp_path):
+    settings = LoopSettings(
+        api_url="http://127.0.0.1:1",
+        runner_token="x" * 40,
+        gateway_url="http://127.0.0.1:1/v1",
+        home=tmp_path / "home",
+        config_dir=REPO / "runner",
+        opencode_bin=str(tmp_path / "no-such-opencode"),
+        brain_bin=str(BIN / "brain"),
+        shell_bin=str(BIN / "grove-brain-shell"),
+    )
+    prepare_home(settings.home, settings.config_dir)
+    grant = {
+        "run_id": "01a19fe3-690c-7976-a621-4e49cd31497e",
+        "agent": "learner",
+        "pass_token": "p1.x",
+        "gateway_token": "g1.x",
+        "time_cap_seconds": 5,
+    }
+    with pytest.raises(OSError):
+        run_pass(settings, PassRun(grant))
+    assert list((settings.home / "passes").iterdir()) == []
+
+
+def test_only_opencodes_own_error_event_sets_the_budget_outcome(tmp_path):
+    """Regression (R4 security review): stored text in a tool output must not set an outcome."""
+    events = tmp_path / "events.jsonl"
+    tool = {"type": "tool_use", "part": {"tool": "bash", "state": {"output": "budget_reached"}}}
+    events.write_text(json.dumps(tool) + "\n")
+    assert summarise(events)[2] is False
+    error = {
+        "type": "error",
+        "error": {"name": "APIError", "data": {"responseBody": '{"code": "budget_reached"}'}},
+    }
+    events.write_text(json.dumps(tool) + "\n" + json.dumps(error) + "\n")
+    assert summarise(events)[2] is True

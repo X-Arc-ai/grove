@@ -87,12 +87,20 @@ the shell that runs it.
 ## The runner's secrets
 
 `deploy/runner-secrets.sh` makes `gateway.env`, `runner.env` and `runner-auth.env` on the box, mode
-600 and root's. `deploy-b` runs it on the box once, before the first deploy that carries the runner
-loop:
+600 and root's. The script comes with the checkout of the sha that carries the runner loop, so on a
+box that has none of the three files `deploy-b` does this once:
 
-```
-ssh -n root@app.grove.x-arc.ai /opt/grove/src/deploy/runner-secrets.sh
-```
+1. Deploy that sha. With no runner token, the runner logs `grove-runner not_configured
+   missing=GROVE_RUNNER_TOKEN` once and waits (it does not exit, so `compose up --wait` passes),
+   and the API's runner routes answer 503.
+2. Run the script:
+
+   ```
+   ssh -n root@app.grove.x-arc.ai /opt/grove/src/deploy/runner-secrets.sh
+   ```
+
+3. Deploy the same sha again: an env file reaches a container only when compose creates it, so
+   `api`, `gateway` and `runner` must be created again with the new files.
 
 It prints file names with `created` or `kept`, and no value. It keeps a secret or a token that is
 there, and computes `runner-auth.env` again from `runner.env` at every run, so the hash the API
@@ -225,5 +233,5 @@ ledger, compare).
    the certificate. Set `GROVE_ACME_EMAIL` to give certbot a contact address for a new account; with
    no variable, it registers with no address.
 5. Copy the other secret files (above).
-6. Run `deploy/runner-secrets.sh` (the runner's secrets, above).
-7. Deploy a sha.
+6. Deploy a sha.
+7. Run `deploy/runner-secrets.sh` and deploy the same sha again (the runner's secrets, above).

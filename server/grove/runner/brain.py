@@ -7,6 +7,8 @@ sees only the pass's world.
 """
 
 import json
+import re
+from datetime import datetime
 from typing import Any
 
 from grove.prompts import DataBlock, render_blocks
@@ -55,6 +57,22 @@ def _messages(content: object) -> list[dict[str, Any]]:
     return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
 
 
+_CODE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
+
+
+def _code_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) and _CODE.fullmatch(value) else None
+
+
+def _instant_or_none(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
 def _speaker(connector_type: str, verbatim: object) -> str:
     """The speaker a block carries. A host's words are the person's own only when the host
     marked them verbatim; otherwise they are the host's account. ingest-b owns the speakers of
@@ -95,8 +113,9 @@ def _request_input(query: WorldQuery, request_id: str, n0: int) -> tuple[dict, l
         shown.append(
             {
                 "block": n0 + len(blocks),
-                "message_key": message.get("key"),
-                "at": message.get("at"),
+                # Stored fields reach an agent outside a block only as codes and instants.
+                "message_key": _code_or_none(message.get("key")),
+                "at": _instant_or_none(message.get("at")),
                 "speaker_kind": speaker,
             }
         )

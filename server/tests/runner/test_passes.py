@@ -304,3 +304,37 @@ def test_a_learner_pass_is_never_preempted(driver, seeded, auth, frozen):
     queue_store(driver, seeded, "Remember: Tomas Reyes joins the Elm Street fair.")
     start_pass(driver, auth, seeded, settings=replace(FAST, learner_requests=1))
     assert all(row["world_id"] != seeded for row in due_work(driver, settings=FAST))
+
+
+def test_the_job_of_a_maintenance_pass_that_died_comes_back(driver, seeded, auth, frozen):
+    """Regression (R4 verifier): a hard kill during a Curator pass left its job claimed forever."""
+    from grove.writer import runs
+
+    job_id = runs.enqueue_job(
+        driver, seeded, agent="curator", trigger="after_update", input_references=["x"], priority=20
+    )
+    first = start_pass(driver, auth, seeded, settings=FAST)
+    assert first.agent == "curator" and first.job_id == job_id
+    # The runner dies here: no end call reaches the API.
+    frozen.advance(seconds=FAST.lease_seconds + 1)
+    rows = [row for row in due_work(driver, settings=FAST) if row["world_id"] == seeded]
+    assert rows == [{"world_id": seeded, "agent": "curator"}]
+    assert run_record(driver, seeded, first.run_id)["outcome"] == "abandoned"
+    second = start_pass(driver, auth, seeded, settings=FAST)
+    assert second.agent == "curator" and second.job_id == job_id
+    job = WorldQuery(driver, seeded).read("MATCH (j:Job {id: $id}) RETURN j", id=job_id)[0]["j"]
+    assert job["state"] == "claimed" and job["claimed_by"] == second.run_id and job["attempts"] == 2
+
+
+def test_a_stopped_maintenance_pass_puts_its_job_back_with_no_attempt_spent(
+    driver, seeded, auth, frozen
+):
+    from grove.writer import runs
+
+    job_id = runs.enqueue_job(
+        driver, seeded, agent="connector", trigger="revisions", input_references=[], priority=10
+    )
+    grant = start_pass(driver, auth, seeded, settings=FAST)
+    end_pass(driver, seeded, grant.run_id, outcome="stopped")
+    job = WorldQuery(driver, seeded).read("MATCH (j:Job {id: $id}) RETURN j", id=job_id)[0]["j"]
+    assert job["state"] == "queued" and job["attempts"] == 0 and job["run_after"] == frozen.now()

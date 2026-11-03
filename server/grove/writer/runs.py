@@ -42,6 +42,114 @@ def _one(rows: list[dict]) -> dict | None:
     return rows[0] if rows else None
 
 
+def _abandon_stale(tx: WorldTx, now: datetime, stale_margin_seconds: int) -> bool:
+    """Marks each `running` run past its time cap plus the margin `abandoned`, and puts the job
+    it held back in the queue (its requests come back through their leases). Returns whether a
+    live run remains. The caller holds the world lock."""
+    live = False
+    for row in tx.run(
+        "MATCH (r:RunRecord {outcome: $running}) "
+        "RETURN r.id AS id, r.started AS started, r.time_cap AS time_cap",
+        running=RUNNING,
+    ):
+        deadline = row["started"] + timedelta(seconds=(row["time_cap"] or 0) + stale_margin_seconds)
+        if deadline > now:
+            live = True
+            continue
+        tx.run(
+            "MATCH (r:RunRecord {id: $id}) WHERE r.outcome = $running "
+            "SET r.outcome = $abandoned, r.finished = $now, r.version = r.version + 1, "
+            "r.touched_at = $now",
+            id=row["id"],
+            running=RUNNING,
+            abandoned=ABANDONED,
+            now=now,
+        )
+        for job in tx.run(
+            "MATCH (j:Job {claimed_by: $id}) WHERE j.state = $claimed "
+            "SET j.touched_at = j.touched_at "
+            "RETURN j.id AS id, j.attempts AS attempts, j.agent_or_job_type AS agent",
+            id=row["id"],
+            claimed=JOB_CLAIMED,
+        ):
+            if (job["attempts"] or 0) >= JOB_MAX_ATTEMPTS:
+                _set_job(tx, job["id"], state=JOB_FAILED, now=now)
+            else:
+                _put_back(
+                    tx,
+                    job["id"],
+                    job["agent"],
+                    attempts=job["attempts"] or 0,
+                    run_after=now,
+                    now=now,
+                )
+    return live
+
+
+def abandon_stale_runs(driver: Driver, world_id: str, *, stale_margin_seconds: int) -> bool:
+    """`_abandon_stale` in a transaction of its own, under the world lock. Returns whether a
+    live run remains."""
+
+    def work(tx: WorldTx) -> bool:
+        tx.lock_world()
+        return _abandon_stale(tx, _now(world_id), stale_margin_seconds)
+
+    return WorldWriter(driver, world_id).transaction(work)
+
+
+def _set_job(tx: WorldTx, job_id: str, *, state: str, now: datetime) -> None:
+    tx.run(
+        "MATCH (j:Job {id: $id}) SET j.state = $state, j.claimed_by = null, "
+        "j.version = j.version + 1, j.touched_at = $now",
+        id=job_id,
+        state=state,
+        now=now,
+    )
+
+
+def _put_back(
+    tx: WorldTx, job_id: str, agent: str, *, attempts: int, run_after: datetime, now: datetime
+) -> str:
+    """The job back in the queue. When the agent already has a queued job (a trigger came while
+    this one was claimed), this job's inputs join that one and this one ends `done`: a world
+    holds one queued job per agent."""
+    other = tx.run(
+        "MATCH (j:Job {agent_or_job_type: $agent, state: $queued}) WHERE j.id <> $id "
+        "SET j.touched_at = j.touched_at RETURN j.id AS id, j.input_references AS refs LIMIT 1",
+        agent=agent,
+        queued=JOB_QUEUED,
+        id=job_id,
+    )
+    if other:
+        mine = tx.run("MATCH (j:Job {id: $id}) RETURN j.input_references AS refs", id=job_id)
+        refs = json.loads(other[0]["refs"]) if other[0]["refs"] else []
+        for ref in json.loads(mine[0]["refs"]) if mine and mine[0]["refs"] else []:
+            if ref not in refs:
+                refs.append(ref)
+        tx.run(
+            "MATCH (j:Job {id: $id}) SET j.input_references = $refs, "
+            "j.run_after = CASE WHEN j.run_after > $at THEN $at ELSE j.run_after END, "
+            "j.version = j.version + 1, j.touched_at = $now",
+            id=other[0]["id"],
+            refs=json.dumps(refs),
+            at=run_after,
+            now=now,
+        )
+        _set_job(tx, job_id, state=JOB_DONE, now=now)
+        return JOB_DONE
+    tx.run(
+        "MATCH (j:Job {id: $id}) SET j.state = $state, j.claimed_by = null, "
+        "j.run_after = $run_after, j.attempts = $attempts, j.version = j.version + 1, "
+        "j.touched_at = $now",
+        id=job_id,
+        state=JOB_QUEUED,
+        run_after=run_after,
+        attempts=attempts,
+        now=now,
+    )
+    return JOB_QUEUED
+
+
 def start_run(
     driver: Driver,
     world_id: str,
@@ -60,26 +168,8 @@ def start_run(
     def work(tx: WorldTx) -> dict | None:
         tx.lock_world()
         now = _now(world_id)
-        live = tx.run(
-            "MATCH (r:RunRecord {outcome: $running}) "
-            "RETURN r.id AS id, r.started AS started, r.time_cap AS time_cap",
-            running=RUNNING,
-        )
-        for row in live:
-            deadline = row["started"] + timedelta(
-                seconds=(row["time_cap"] or 0) + stale_margin_seconds
-            )
-            if deadline > now:
-                return None
-            tx.run(
-                "MATCH (r:RunRecord {id: $id}) WHERE r.outcome = $running "
-                "SET r.outcome = $abandoned, r.finished = $now, r.version = r.version + 1, "
-                "r.touched_at = $now",
-                id=row["id"],
-                running=RUNNING,
-                abandoned=ABANDONED,
-                now=now,
-            )
+        if _abandon_stale(tx, now, stale_margin_seconds):
+            return None
         row = compact(
             {
                 "id": run_id,
@@ -301,46 +391,34 @@ def end_job(
     driver: Driver, world_id: str, job_id: str, *, worker: str, done: bool, requeue: bool = False
 ) -> str | None:
     """The job's state after its pass: done; or back to queued with a back-off; or failed once
-    its attempts are spent. `requeue` (a pass stopped for the interactive lane) puts it back at
-    once and gives back its attempt. Only the holder ends it; anything else changes nothing."""
+    its attempts are spent. `requeue` (a pass stopped for the interactive lane, or by a stop of
+    the service) puts it back at once and gives back its attempt. Only the holder ends it;
+    anything else changes nothing."""
 
     def work(tx: WorldTx) -> str | None:
         now = _now(world_id)
         found = tx.run(
             "MATCH (j:Job {id: $id}) SET j.touched_at = j.touched_at "
-            "RETURN j.state AS state, j.claimed_by AS worker, j.attempts AS attempts",
+            "RETURN j.state AS state, j.claimed_by AS worker, j.attempts AS attempts, "
+            "j.agent_or_job_type AS agent",
             id=job_id,
         )
         if not found or found[0]["state"] != JOB_CLAIMED or found[0]["worker"] != worker:
             return found[0]["state"] if found else None
-        attempts = found[0]["attempts"] or 0
-        if requeue and not done:
-            tx.run(
-                "MATCH (j:Job {id: $id}) SET j.state = $state, j.claimed_by = null, "
-                "j.run_after = $now, j.attempts = $attempts, j.version = j.version + 1, "
-                "j.touched_at = $now",
-                id=job_id,
-                state=JOB_QUEUED,
-                attempts=max(attempts - 1, 0),
-                now=now,
-            )
-            return JOB_QUEUED
+        attempts, agent = found[0]["attempts"] or 0, found[0]["agent"]
         if done:
-            state, run_after = JOB_DONE, None
-        elif attempts >= JOB_MAX_ATTEMPTS:
-            state, run_after = JOB_FAILED, None
-        else:
-            wait = JOB_BACKOFF_SECONDS[min(attempts, len(JOB_BACKOFF_SECONDS)) - 1]
-            state, run_after = JOB_QUEUED, now + timedelta(seconds=wait)
-        tx.run(
-            "MATCH (j:Job {id: $id}) SET j.state = $state, j.claimed_by = null, "
-            "j.run_after = coalesce($run_after, j.run_after), j.version = j.version + 1, "
-            "j.touched_at = $now",
-            id=job_id,
-            state=state,
-            run_after=run_after,
-            now=now,
+            _set_job(tx, job_id, state=JOB_DONE, now=now)
+            return JOB_DONE
+        if requeue:
+            return _put_back(
+                tx, job_id, agent, attempts=max(attempts - 1, 0), run_after=now, now=now
+            )
+        if attempts >= JOB_MAX_ATTEMPTS:
+            _set_job(tx, job_id, state=JOB_FAILED, now=now)
+            return JOB_FAILED
+        wait = JOB_BACKOFF_SECONDS[min(attempts, len(JOB_BACKOFF_SECONDS)) - 1]
+        return _put_back(
+            tx, job_id, agent, attempts=attempts, run_after=now + timedelta(seconds=wait), now=now
         )
-        return state
 
     return WorldWriter(driver, world_id).transaction(work)

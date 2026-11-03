@@ -122,3 +122,38 @@ def test_two_worlds_cannot_see_each_other_through_the_cli(driver, served):
     assert code == 1 and doc["error"]["code"] == "not_found"
     _, status_a, _ = cli(server, pass_a, "status")
     assert status_a["world_id"] == world_a
+
+
+def test_brain_get_refuses_a_path_and_recall_sends_no_text_in_a_url(driver, make_world):
+    """Regression (R4 security review): no stored words in a URL, and no path through get."""
+    seen: list[str] = []
+    auth, token = new_auth()
+    app = create_app(
+        ApiSettings(public_base_url="http://127.0.0.1:8000"),
+        driver=driver,
+        runner_auth=auth,
+        pass_settings=FAST,
+    )
+
+    async def recording(scope, receive, send):
+        if scope["type"] == "http":
+            seen.append(scope["path"] + "?" + scope["query_string"].decode())
+        await app(scope, receive, send)
+
+    world_id = seeded_world(driver, make_world())
+    queue_store(driver, world_id)
+    with Served(recording) as server:
+        import httpx
+
+        grant = httpx.post(
+            f"{server.url}/v1/internal/runner/passes",
+            json={"world_id": world_id},
+            headers={"Authorization": f"Bearer {token}"},
+            trust_env=False,
+        ).json()["grant"]
+        code, found, _ = cli(server, grant, "recall", "Lina", "Okafor")
+        assert code == 0 and found["matches"] == []
+        code, doc, _ = cli(server, grant, "get", "../../runner/due")
+        assert code == 1 and doc["error"]["code"] == "invalid_arguments"
+    assert not any("Lina" in url or "Okafor" in url for url in seen), seen
+    assert not any("runner/due" in url for url in seen if "brain" in url), seen
