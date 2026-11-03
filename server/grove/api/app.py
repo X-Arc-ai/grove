@@ -19,8 +19,11 @@ from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import ApiSettings, load_api_settings
 from grove.api.errors import install_error_handlers, not_found
+from grove.api.internal import PREFIX as INTERNAL_PREFIX
+from grove.api.internal import router as internal_router
 from grove.api.mail import Mailer
 from grove.api.views import PREFIX, router
+from grove.runner.passes import PassSettings, RunnerAuth
 from grove.store.connection import Driver, open_driver
 from grove.views.session import SESSION_COOKIE
 
@@ -64,9 +67,13 @@ def create_app(
     mailer: Mailer | None = None,
     google_http: httpx.Client | None = None,
     world_id_for: Callable[[str], str] | None = None,
+    runner_auth: RunnerAuth | None = None,
+    pass_settings: PassSettings | None = None,
 ) -> FastAPI:
     """With a driver, the caller owns it: the app never closes it. With no mailer or google_http,
-    sign-in loads the real one at first use. world_id_for gives a test its own t_ worlds."""
+    sign-in loads the real one at first use. world_id_for gives a test its own t_ worlds. With no
+    runner_auth, the internal routes read GROVE_GATEWAY_SECRET and GROVE_RUNNER_TOKEN_SHA256 at
+    first use."""
     settings = settings or load_api_settings()
 
     @asynccontextmanager
@@ -83,6 +90,8 @@ def create_app(
     app = FastAPI(title="Grove", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.settings = settings
     app.state.auth = AuthDeps(mailer=mailer, google_http=google_http, world_id_for=world_id_for)
+    app.state.runner_auth = runner_auth
+    app.state.pass_settings = pass_settings
     if driver is not None:
         app.state.driver = driver
     install_error_handlers(app)
@@ -93,7 +102,7 @@ def create_app(
     ) -> Response:
         """The views and sign-in answer with the person's own data: no cache keeps a copy."""
         response = await call_next(request)
-        if request.url.path.startswith((PREFIX, AUTH_PREFIX)):
+        if request.url.path.startswith((PREFIX, AUTH_PREFIX, INTERNAL_PREFIX)):
             response.headers["Cache-Control"] = "no-store"
         return response
 
@@ -101,6 +110,7 @@ def create_app(
     app.include_router(wellknown.router)
     app.include_router(router)
     app.include_router(auth_router)
+    app.include_router(internal_router)
     folder = os.environ.get(WEB_DIST_ENV)
     if folder:
         _add_web_pages(app, folder)
