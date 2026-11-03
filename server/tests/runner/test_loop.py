@@ -300,10 +300,22 @@ def test_a_killed_runner_leaves_its_request_queued_and_the_next_pass_applies_it_
         running = [run["outcome"] for run in record()] == ["abandoned", "running"]
         (fake_dir / "release").write_text("")
         runs = wait_for(ended(record, 2), 30)
+        # The runner still polls: the curator job that the Learner pass enqueued can start a
+        # third pass. A read after one more poll holds that record too, so the checks below
+        # look at the two Learner passes and at what came after them, never at the whole list.
+        threading.Event().wait(1.5)
+        later = record()
         runner.stopping.set()
         thread.join(timeout=30)
     assert saved and held and running
-    assert runs and [run["outcome"] for run in runs] == ["abandoned", "ok"]
+    for seen in (runs, later):
+        assert seen
+        assert [(run["agent"], run["outcome"]) for run in seen[:2]] == [
+            ("learner", "abandoned"),
+            ("learner", "ok"),
+        ]
+        # Applied once: no later Learner pass took the request again.
+        assert all(run["agent"] != "learner" for run in seen[2:])
     items = WorldQuery(driver, world_id).read(
         "MATCH (i:Item {title: 'Lina Okafor'}) RETURN i.id AS id"
     )
