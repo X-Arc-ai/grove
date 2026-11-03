@@ -23,8 +23,6 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from neo4j import Driver
-
 from grove import clock
 from grove.models.errors import (
     EgressRefused,
@@ -36,6 +34,7 @@ from grove.models.errors import (
 from grove.models.layer import ModelLayer, Result
 from grove.models.shape import Usage
 from grove.prompts import DataBlock, build_prompt
+from grove.store.connection import Driver
 from grove.store.query import WorldQuery
 from grove.writer.judgments import JudgmentRow, record_judgments
 
