@@ -43,7 +43,7 @@ from grove.writer.requests import check_request_id
 PREFIX = "/v1/internal"
 MAX_BATCH_BYTES = 2 * 1024 * 1024
 MAX_SMALL_BODY = 16 * 1024
-OUTCOMES = frozenset({"ok", "failed", "killed", "timeout", "stopped", "budget"})
+OUTCOMES = frozenset({"ok", "failed", "killed", "timeout", "stopped", "preempted", "budget"})
 router = APIRouter(prefix=PREFIX)
 
 

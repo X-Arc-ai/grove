@@ -102,14 +102,22 @@ _DUE_JOBS = (
     "RETURN DISTINCT j.agent_or_job_type AS agent"
 )
 _LIVE_RUNS = (
-    "MATCH (r:RunRecord {outcome: 'running'}) RETURN r.started AS started, r.time_cap AS time_cap"
+    "MATCH (r:RunRecord {outcome: 'running'}) "
+    "RETURN r.id AS id, r.agent AS agent, r.started AS started, r.time_cap AS time_cap"
 )
 
 
-def has_live_run(query: WorldQuery, now: datetime, settings: "PassSettings") -> bool:
-    """A run that reads `running` inside its time cap plus the margin. One past that died with
+def live_run(query: WorldQuery, now: datetime, settings: "PassSettings") -> dict | None:
+    """The run that reads `running` inside its time cap plus the margin. One past that died with
     no end, and `start_run` marks it abandoned when the next pass starts."""
-    return any(stale_cutoff(row, settings) > now for row in query.read(_LIVE_RUNS))
+    for row in query.read(_LIVE_RUNS):
+        if stale_cutoff(row, settings) > now:
+            return row
+    return None
+
+
+def has_live_run(query: WorldQuery, now: datetime, settings: "PassSettings") -> bool:
+    return live_run(query, now, settings) is not None
 
 
 def budget_reached(query: WorldQuery, now: datetime) -> bool:
@@ -124,7 +132,12 @@ def budget_reached(query: WorldQuery, now: datetime) -> bool:
 def due_work(
     driver: Driver, *, limit: int = 100, settings: "PassSettings | None" = None
 ) -> list[dict[str, str]]:
-    """One row per world with work and no live run: `{world_id, agent}`, the Learner first."""
+    """One row per world with work and no live run: `{world_id, agent}`, the Learner first.
+
+    The interactive lane comes first (spec 2327, 3008) while one pass runs per world: a world
+    with a due request and a live Curator or Connector pass gets `{world_id, agent: learner,
+    preempt: <run id>}`. The runner stops that pass (outcome `preempted`, its job back in the
+    queue with no attempt spent), and the Learner starts on a later poll, inside the 60 s."""
     settings = settings or PassSettings()
     due: list[dict[str, str]] = []
     for world_id in _worlds(driver):
@@ -135,7 +148,12 @@ def due_work(
         except ScopeError:
             continue
         now = clock.now(world_id)
-        if has_live_run(query, now, settings) or budget_reached(query, now):
+        if budget_reached(query, now):
+            continue
+        live = live_run(query, now, settings)
+        if live is not None:
+            if live["agent"] != "learner" and query.read(_DUE_REQUEST, now=now):
+                due.append({"world_id": world_id, "agent": "learner", "preempt": live["id"]})
             continue
         if query.read(_DUE_REQUEST, now=now):
             due.append({"world_id": world_id, "agent": "learner"})
@@ -378,7 +396,14 @@ def end_pass(
             fail_request(driver, world_id, caller, row["id"], code, worker=run_id, retryable=True)
     else:
         for job_id in record.get("input_ids") or []:
-            run_rows.end_job(driver, world_id, job_id, worker=run_id, done=outcome == "ok")
+            run_rows.end_job(
+                driver,
+                world_id,
+                job_id,
+                worker=run_id,
+                done=outcome == "ok",
+                requeue=outcome == "preempted",
+            )
     usage = query.read(_RUN_USAGE, run_id=run_id)[0]
     ended = run_rows.finish_run(
         driver,

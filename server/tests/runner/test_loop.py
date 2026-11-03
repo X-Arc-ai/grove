@@ -252,3 +252,37 @@ def test_a_killed_runner_leaves_its_request_queued_and_the_next_pass_applies_it_
         "MATCH (i:Item {title: 'Lina Okafor'}) RETURN i.id AS id"
     )
     assert len(items) == 1
+
+
+def test_a_store_behind_a_running_curator_pass_starts_a_learner_within_60_seconds(driver, rig):
+    world_id, app, loop_settings, record, fake_dir, _ = rig
+    from grove.writer import runs
+
+    runs.enqueue_job(
+        driver,
+        world_id,
+        agent="curator",
+        trigger="after_update",
+        input_references=["x"],
+        priority=20,
+    )
+    with Served(app(time_cap_seconds=300)) as served:
+        runner = Runner(loop_settings(served.url, "hang", poll_seconds=5.0))
+        thread = threading.Thread(target=runner.serve, daemon=True)
+        thread.start()
+        assert wait_for(lambda: (fake_dir / "child.pid").exists(), 30)
+        (fake_dir / "mode").write_text("propose")
+        queued_at = clock.now()
+        request_id = queue_store(driver, world_id)
+        saved = wait_for(
+            lambda: request_state(driver, world_id, request_id).api_state == "saved", 70
+        )
+        runner.stopping.set()
+        thread.join(timeout=30)
+    assert saved
+    runs_seen = record()
+    assert [(r["agent"], r["outcome"]) for r in runs_seen[:2]] == [
+        ("curator", "preempted"),
+        ("learner", "ok"),
+    ]
+    assert (runs_seen[1]["started"] - queued_at).total_seconds() <= 60

@@ -297,9 +297,12 @@ def claim_job(driver: Driver, world_id: str, *, agent: str, worker: str) -> dict
     return WorldWriter(driver, world_id).transaction(work)
 
 
-def end_job(driver: Driver, world_id: str, job_id: str, *, worker: str, done: bool) -> str | None:
+def end_job(
+    driver: Driver, world_id: str, job_id: str, *, worker: str, done: bool, requeue: bool = False
+) -> str | None:
     """The job's state after its pass: done; or back to queued with a back-off; or failed once
-    its attempts are spent. Only the holder ends it; anything else changes nothing."""
+    its attempts are spent. `requeue` (a pass stopped for the interactive lane) puts it back at
+    once and gives back its attempt. Only the holder ends it; anything else changes nothing."""
 
     def work(tx: WorldTx) -> str | None:
         now = _now(world_id)
@@ -311,6 +314,17 @@ def end_job(driver: Driver, world_id: str, job_id: str, *, worker: str, done: bo
         if not found or found[0]["state"] != JOB_CLAIMED or found[0]["worker"] != worker:
             return found[0]["state"] if found else None
         attempts = found[0]["attempts"] or 0
+        if requeue and not done:
+            tx.run(
+                "MATCH (j:Job {id: $id}) SET j.state = $state, j.claimed_by = null, "
+                "j.run_after = $now, j.attempts = $attempts, j.version = j.version + 1, "
+                "j.touched_at = $now",
+                id=job_id,
+                state=JOB_QUEUED,
+                attempts=max(attempts - 1, 0),
+                now=now,
+            )
+            return JOB_QUEUED
         if done:
             state, run_after = JOB_DONE, None
         elif attempts >= JOB_MAX_ATTEMPTS:

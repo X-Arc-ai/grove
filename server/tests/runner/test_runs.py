@@ -129,3 +129,13 @@ def test_only_the_holder_ends_a_job(driver, seeded, frozen):
     runs.claim_job(driver, seeded, agent="curator", worker="holder")
     assert runs.end_job(driver, seeded, job_id, worker="intruder", done=True) == "claimed"
     assert runs.end_job(driver, seeded, job_id, worker="holder", done=True) == "done"
+
+
+def test_a_requeued_job_comes_back_at_once_and_keeps_its_attempts(driver, seeded, frozen):
+    job_id = runs.enqueue_job(
+        driver, seeded, agent="curator", trigger="after_update", input_references=["a"], priority=20
+    )
+    runs.claim_job(driver, seeded, agent="curator", worker="w1")
+    assert runs.end_job(driver, seeded, job_id, worker="w1", done=False, requeue=True) == "queued"
+    again = runs.claim_job(driver, seeded, agent="curator", worker="w2")
+    assert again is not None and again["attempts"] == 1

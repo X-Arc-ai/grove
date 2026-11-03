@@ -222,6 +222,8 @@ class PassRun:
     grant: dict[str, Any]
     process: subprocess.Popen | None = None
     stop: threading.Event = field(default_factory=threading.Event)
+    # Set with `stop` when the API asks for the world's interactive lane: a Learner waits.
+    preempted: bool = False
 
 
 def _kill_group(process: subprocess.Popen) -> None:
@@ -274,7 +276,7 @@ def run_pass(settings: LoopSettings, run: PassRun) -> tuple[str, str]:
             except subprocess.TimeoutExpired:
                 if run.stop.is_set():
                     _kill_group(run.process)
-                    outcome = "stopped"
+                    outcome = "preempted" if run.preempted else "stopped"
                 elif clock.monotonic() - started >= grant["time_cap_seconds"]:
                     _kill_group(run.process)
                     outcome = "timeout"
@@ -326,7 +328,20 @@ class Runner:
         for row in due:
             world_id = row.get("world_id")
             with self._lock:
-                if world_id in self._runs or len(self._runs) >= self.settings.max_passes:
+                held = self._runs.get(world_id)
+                if row.get("preempt"):
+                    # A request waits behind a maintenance pass of this world: stop that pass.
+                    # The Learner starts on a later poll, once the pass has ended.
+                    if (
+                        held
+                        and held[0].grant["run_id"] == row["preempt"]
+                        and not held[0].stop.is_set()
+                    ):
+                        held[0].preempted = True
+                        held[0].stop.set()
+                        log("pass_preempted", world=world_id, run=row["preempt"])
+                    continue
+                if held or len(self._runs) >= self.settings.max_passes:
                     continue
             if self.stopping.is_set():
                 break
