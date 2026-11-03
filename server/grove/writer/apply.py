@@ -374,16 +374,24 @@ def _spelled_once(sent: dict[str, tuple[str, Any]], name: str, key: str, value: 
     sent.setdefault(name, (key, value))
 
 
-def _check_properties(run: _Run, kind: dict[str, Any], properties: dict[str, Any]) -> dict:
+def _check_properties(
+    run: _Run,
+    kind: dict[str, Any],
+    properties: dict[str, Any],
+    *,
+    sent_names: set[str] | None = None,
+) -> dict:
     """The properties under their declared names. A state property sits only on a record, and a
-    record holds at most one (D1, D4)."""
+    record holds at most one (D1, D4). A value that names an item is refused (O14); on an update
+    only the values it sends (`sent_names`) are checked, so a stored value never blocks it."""
     named: dict[str, Any] = {}
     sent: dict[str, tuple[str, Any]] = {}
     state: list[str] = []
     for name, value in properties.items():
         declared = _declared_property(run, kind, name)
         _spelled_once(sent, declared["name"], name, value)
-        item_id = ontology.value_names_item(run.tx, value)
+        checked = sent_names is None or declared["name"] in sent_names
+        item_id = ontology.value_names_item(run.tx, value) if checked else None
         if item_id is not None:
             raise Refused(
                 "invalid_arguments",
@@ -710,7 +718,12 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
                     merged.pop(name_of, None)
                 else:
                     merged[name_of] = part
-            merged = _check_properties(run, kind, merged)
+            merged = _check_properties(
+                run,
+                kind,
+                merged,
+                sent_names={name for name, (_, part) in sent.items() if part is not None},
+            )
             new = merged or None
             columns = {"properties": _json(new), "property_values": _property_values(new)}
         elif name in ("title", "summary", "body"):

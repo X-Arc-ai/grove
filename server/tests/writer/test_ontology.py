@@ -40,6 +40,7 @@ from tests.writer.helpers import (
     new_op_id,
     observation,
     read,
+    supports,
 )
 
 SPARK = "muse-spark-1.3"
@@ -744,20 +745,38 @@ def plan_item(ev_id: str, title: str = "Replant the orchard", **properties: Any)
     )
 
 
+def plan_kind(driver, world_id: str) -> str:
+    registry = Registry.load(WorldQuery(driver, world_id))
+    return next(kind["id"] for kind in registry.kinds.values() if kind["name"] == "plan")
+
+
 def fits(
-    driver, world_id: str, word_type: str, name: str, field_name: str, value: Any
+    driver,
+    world_id: str,
+    word_type: str,
+    name: str,
+    field_name: str,
+    value: Any,
+    kind_id: str | None = None,
 ) -> list[str]:
-    """One field-fit verdict of the second judge."""
-    ref = store_subject_value(
-        driver, world_id, json.dumps(field_fit_value(word_type, name, field_name, value))
-    )
+    """One field-fit verdict of the second judge; `kind_id` binds a property name's kind."""
+    value_text = json.dumps(field_fit_value(word_type, name, field_name, value, kind_id))
+    ref = store_subject_value(driver, world_id, value_text)
     call = model_call(driver, world_id, GLIMMER)
     return record_judgments(driver, world_id, call, [JudgmentRow("field_fit", ref, "fits")])
 
 
 def mint_owner(driver, world_id: str, chat: dict[str, str]) -> dict[str, Any]:
     """The first property name of the plan kind: no neighbour, so only its field is judged."""
-    ids = fits(driver, world_id, "property_name", "owner", "temporal_class", "permanent")
+    ids = fits(
+        driver,
+        world_id,
+        "property_name",
+        "owner",
+        "temporal_class",
+        "permanent",
+        plan_kind(driver, world_id),
+    )
     ops = [property_proposal("owner", ids, []), plan_item("e1", owner="the orchard group")]
     apply(driver, world_id, ops, [observation(chat, "e1", 1)], caller=LEARNER)
     return read(driver, world_id, "MATCH (p:PropertyName {name: 'owner'}) RETURN p")[0]["p"]
@@ -783,8 +802,7 @@ def test_owner_owned_by_and_owner_name_resolve_to_one_property_name(driver, seed
         "text",
     )
 
-    registry = Registry.load(WorldQuery(driver, world_id))
-    plan_kind = next(kind for kind in registry.kinds.values() if kind["name"] == "plan")
+    plan_kind_id = plan_kind(driver, world_id)
     titles = {2: "Mend the hedge by the lane", 3: "Paint the barn door"}
     for line, phrase in ((2, "owned_by"), (3, "owner_name")):
         ev = f"e{line}"
@@ -798,7 +816,9 @@ def test_owner_owned_by_and_owner_name_resolve_to_one_property_name(driver, seed
             ids += record_judgments(
                 driver, world_id, call, [JudgmentRow("same_word", subject, "same")]
             )
-        ids += fits(driver, world_id, "property_name", phrase, "temporal_class", "permanent")
+        ids += fits(
+            driver, world_id, "property_name", phrase, "temporal_class", "permanent", plan_kind_id
+        )
         op = property_proposal(phrase, ids, [{"word": "owner", "distinction": "none found"}])
         op["worked_example"] = {"ev_id": ev}
         item = create_item("plan", titles[line], ev, status="proposed", recheck_by=RECHECK)
@@ -808,7 +828,7 @@ def test_owner_owned_by_and_owner_name_resolve_to_one_property_name(driver, seed
     names = read(driver, world_id, "MATCH (p:PropertyName) RETURN p.name AS name")
     assert names == [{"name": "owner"}]
     for phrase in ("owner", "owned_by", "owner_name", "Owner Name"):
-        found = registry_of(driver, world_id).property_name(plan_kind["id"], phrase)
+        found = registry_of(driver, world_id).property_name(plan_kind_id, phrase)
         assert found["id"] == owner["id"]
     stored = read(
         driver, world_id, "MATCH (i:Item {title: 'Paint the barn door'}) RETURN i.properties AS p"
@@ -1050,3 +1070,128 @@ def test_a_reading_from_the_other_end_is_for_meanings_and_texts_have_a_length(dr
         op = propose("e1", judged(driver, world_id), **over)
         refusals = refused(driver, world_id, [*people("e1"), op], [observation(chat, "e1", 1)])
         assert refusals[0].rule == rule, (over, refusals)
+
+
+# Regressions of the reviewer's probes on 8dd77d5 ---------------------------------------------
+
+
+def prop_row(driver, world_id: str, name: str) -> dict[str, Any]:
+    return read(driver, world_id, "MATCH (p:PropertyName {name: $n}) RETURN p", n=name)[0]["p"]
+
+
+def test_a_property_name_earns_only_from_the_writes_that_set_it(driver, seeded, chat):
+    """Probe PD1: evidence that confirms the item but writes no property is no use of the property
+    name, so two such episodes leave it at its one episode."""
+    world_id = seeded["world_id"]
+    mint_owner(driver, world_id, chat)
+    plan = read(driver, world_id, "MATCH (i:Item {title: 'Replant the orchard'}) RETURN i.id AS id")
+    for n in (2, 3):
+        src = make_source(driver, world_id, "whatsapp", [f"invented chat {n}: still proposed"])
+        attach = {
+            "op": "attach_evidence",
+            "op_id": new_op_id(),
+            "target": plan[0]["id"],
+            "ev_id": f"s{n}",
+            "polarity": "supports",
+        }
+        apply(driver, world_id, [attach], [observation(src, f"s{n}", 1)], caller=LEARNER)
+    owner = prop_row(driver, world_id, "owner")
+    assert (owner["status"], owner["distinct_episodes"], owner["uses"]) == ("provisional", 1, 1)
+    kind = read(
+        driver, world_id, "MATCH (k:Kind {id: $id}) RETURN k", id=plan_kind(driver, world_id)
+    )
+    assert kind[0]["k"]["distinct_episodes"] == 3
+
+
+def test_an_update_counts_and_checks_only_the_properties_it_writes(driver, seeded, chat):
+    """Probe PD2: an update of one property adds no use to another, and a stored value that a
+    later item's title matches never blocks an update of another property."""
+    world_id = seeded["world_id"]
+    kind_id = plan_kind(driver, world_id)
+    owner = mint_owner(driver, world_id, chat)
+    ids = judged(
+        driver,
+        world_id,
+        name="steward",
+        word_type="property_name",
+        neighbour=owner["id"],
+    )
+    ids += fits(
+        driver, world_id, "property_name", "steward", "temporal_class", "permanent", kind_id
+    )
+    op = property_proposal(
+        "steward", ids, [{"word": "owner", "distinction": "the owner holds it, a steward runs it"}]
+    )
+    op["worked_example"] = {"ev_id": "e5"}
+    item = plan_item("e5", "Clear the ditch", owner="the ditch crew", steward="the parish")
+    apply(driver, world_id, [op, item], [observation(chat, "e5", 5)], caller=LEARNER)
+    before = prop_row(driver, world_id, "owner")["uses"]
+
+    def update(ev: str, line: int, value: str) -> None:
+        ditch = read(
+            driver,
+            world_id,
+            "MATCH (i:Item {title: 'Clear the ditch'}) RETURN i.id AS id, i.version AS v",
+        )[0]
+        op = {
+            "op": "update_item",
+            "op_id": new_op_id(),
+            "item": ditch["id"],
+            "version": ditch["v"],
+            "fields": {"properties": {"steward": value}},
+            "evidence_refs": supports(ev),
+            "reason": "the steward changed",
+        }
+        apply(driver, world_id, [op], [observation(chat, ev, line)], caller=LEARNER)
+
+    update("e6", 6, "the vestry")
+    assert prop_row(driver, world_id, "owner")["uses"] == before
+    assert prop_row(driver, world_id, "steward")["uses"] == 2
+
+    org = create_item("organisation", "The Ditch Crew", "e7", status="active")
+    apply(driver, world_id, [org], [observation(chat, "e7", 7)], caller=LEARNER)
+    update("e8", 8, "the churchwardens")
+    # A value the update sends is still checked.
+    with pytest.raises(BatchDeclined) as declined:
+        update("e9", 9, "The Ditch Crew")
+    assert [r.rule for r in declined.value.refusals] == ["value_names_item"]
+
+
+@pytest.mark.parametrize("name", ["is superseded by", "are corrected by", "is affected by"])
+def test_a_primitive_name_after_a_copula_is_a_primitive_word(driver, seeded, chat, name):
+    """Probe PD3."""
+    world_id = seeded["world_id"]
+    ops = [*people("e1"), propose("e1", judged(driver, world_id, name=name), name=name)]
+    refusals = refused(driver, world_id, ops, [observation(chat, "e1", 1)])
+    assert (refusals[0].code, refusals[0].rule) == ("invalid_arguments", "primitive_word")
+
+
+def test_a_field_fit_verdict_of_one_kinds_property_never_counts_for_another_kind(
+    driver, seeded, chat
+):
+    """Probe PD4."""
+    world_id = seeded["world_id"]
+    registry = Registry.load(WorldQuery(driver, world_id))
+    task = next(kind["id"] for kind in registry.kinds.values() if kind["name"] == "task")
+    ids = fits(
+        driver,
+        world_id,
+        "property_name",
+        "owner",
+        "temporal_class",
+        "permanent",
+        plan_kind(driver, world_id),
+    )
+    op = property_proposal("owner", ids, [])
+    op["kind"] = "task"
+    item = create_item(
+        "task",
+        "Dig the pond",
+        "e1",
+        status="open",
+        recheck_by=RECHECK,
+        properties={"owner": "the pond group"},
+    )
+    refusals = refused(driver, world_id, [op, item], [observation(chat, "e1", 1)])
+    assert ("unrecorded_verdict", "judgment_subject") in [(r.code, r.rule) for r in refusals]
+    assert task
