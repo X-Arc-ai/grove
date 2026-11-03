@@ -125,8 +125,17 @@ def _fallback_summary(refusal: Refusal) -> str:
     return f"{refusal.op or 'operation'} {refusal.op_id}"
 
 
+def only_version_conflict(refusals: list[Refusal]) -> bool:
+    """A stale version and what depends on it: the one decline that a fresh read can repair."""
+    return any(refusal.code == "version_conflict" for refusal in refusals) and all(
+        refusal.code == "version_conflict" or refusal.rule == "depends_on_declined"
+        for refusal in refusals
+    )
+
+
 class BatchDeclined(Exception):
-    """The batch was refused and nothing was written. `refusals` names every refused operation."""
+    """The batch was refused and nothing was written. `refusals` names every refused operation.
+    `retryable` is true only for a stale version: the next pass re-reads and proposes a new one."""
 
     def __init__(
         self,
@@ -143,26 +152,35 @@ class BatchDeclined(Exception):
             summaries=dict(summaries or {}),
             request_id=request_id,
         )
+        self.retryable = only_version_conflict(self.refusals)
         super().__init__(self.receipt.render())
 
     code = "declined"
-    retryable = False
 
 
 class WriteFailed(Exception):
     """The commit did not happen. Nothing was written, and a retry may succeed. A commit whose
     outcome is unknown raises WriteOutcomeUnknown instead."""
 
-    def __init__(self, message: str, *, code: str = "unavailable", retryable: bool = True) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "unavailable",
+        retryable: bool = True,
+        request_id: str | None = None,
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.request_id = request_id
 
 
 class WriteOutcomeUnknown(Exception):
     """The connection dropped while the commit was in flight: the batch may or may not have
-    committed. Never retry blind. Read the change set back by `change_set_id` (or `commit_id`):
-    if it holds entries, the batch is saved; if not, nothing was written."""
+    committed. A replay with the same `request_id` and the same batch is safe, because the request
+    row says whether it committed. Any other retry is blind. The change set can also be read back
+    by `change_set_id` (or `commit_id`): if it holds entries, the batch is saved."""
 
     code = "outcome_unknown"
     retryable = False
@@ -177,8 +195,8 @@ class WriteOutcomeUnknown(Exception):
 
 
 class ReceiptUnavailable(Exception):
-    """The batch committed, but its receipt could not be read back. The batch is saved: never
-    apply it again. Read the receipt later by `change_set_id`."""
+    """The batch committed, but its receipt could not be read back. The batch is saved. A replay
+    with the same `request_id` and the same batch writes nothing and returns the receipt."""
 
     code = "receipt_unavailable"
     retryable = False

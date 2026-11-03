@@ -1,4 +1,4 @@
-"""The OAuth writer and its read helpers against the real store (S41).
+"""The OAuth writer and its read helpers against the real store (S45).
 
 Codes are single use, a reuse revokes the family, a refresh rotates inside its family and grant,
 a grant's revoke takes its tokens with it, a token carries its grant's world, and two redeems that

@@ -1,6 +1,6 @@
 """The OAuth 2.1 authorization server of /mcp: clients, consent, codes and tokens. docs/hosts.md.
 
-The rows are in `oauth_clients`, `oauth_grants`, `oauth_tokens` and `authorization_codes` (S41).
+The rows are in `oauth_clients`, `oauth_grants`, `oauth_tokens` and `authorization_codes` (S45).
 `grove.writer.oauth` is their only writer, `grove.oauth.store` reads them, and every secret is
 stored as the sha256 hex of `grove.oauth.secrets.token_hash`.
 """

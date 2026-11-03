@@ -1,14 +1,18 @@
 """The email code: hashes only, the first sign-in, every way a code fails, and the limits."""
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from threading import Event
 
 import pytest
 
 from grove import clock
 from grove.api import auth as auth_module
+from grove.store.connection import DATABASE
 from grove.store.errors import STORE_UNAVAILABLE
 from grove.store.query import WorldQuery
+from grove.writer import accounts as accounts_module
 from grove.writer.accounts import email_hash
 from tests.auth.conftest import (
     LOOPBACK,
@@ -180,6 +184,62 @@ def test_the_fifth_try_can_succeed_and_the_sixth_fails_even_with_the_right_code(
     for _ in range(4):
         client.post(VERIFY, json={"email": other, "code": _wrong(right)})
     assert client.post(VERIFY, json={"email": other, "code": right}).status_code == 200
+
+
+def _a_start_waits_at_the_code_rows(driver, hashed: str) -> bool:
+    """The store names a waiter, so the test asserts a wait from the store, not from a timer."""
+    show = (
+        "SHOW TRANSACTIONS YIELD status, parameters "
+        "WHERE parameters.email_hash = $h AND status STARTS WITH 'Blocked' RETURN status"
+    )
+    pause = Event()
+    for _ in range(400):
+        with driver.session(database=DATABASE) as session:
+            if session.run(show, h=hashed).data():
+                return True
+        pause.wait(0.05)
+    return False
+
+
+def test_a_start_at_the_limit_that_waited_for_a_wrong_try_leaves_its_count_alone(
+    app, client, driver, accounts, mailer, monkeypatch
+):
+    """Regression: the start's lock was `SET c.attempts = c.attempts`, which reads the count before
+    it waits and writes it back after. A start at the limit answers 429 and still commits, so a
+    loop of them erased wrong tries, and the limit of tries on a code did not hold."""
+    address = accounts.address()
+    for _ in range(5):
+        assert client.post(START, json={"email": address}).status_code == 200
+    right = mailer.last_code(address)
+    holding, release = Event(), Event()
+    real = accounts_module._rows
+
+    def hold_the_first_wrong_try(tx, cypher, **params):
+        rows = real(tx, cypher, **params)
+        if cypher == accounts_module._LOCK_CODE and not holding.is_set():
+            holding.set()
+            assert release.wait(60), "the test never released the wrong try"
+        return rows
+
+    monkeypatch.setattr(accounts_module, "_rows", hold_the_first_wrong_try)
+    wrong = {"email": address, "code": _wrong(right)}
+
+    with ThreadPoolExecutor(2) as pool:
+        wrong_try = pool.submit(browser(app).post, VERIFY, json=wrong)
+        assert holding.wait(60), "the wrong try never reached the code's lock"
+        start = pool.submit(browser(app).post, START, json={"email": address})
+        waited = _a_start_waits_at_the_code_rows(driver, email_hash(address))
+        release.set()
+        assert wrong_try.result(timeout=60).status_code == 401
+        assert start.result(timeout=60).status_code == 429
+
+    assert codes_of(driver, address)[-1]["c"]["attempts"] == 1, "the start erased the wrong try"
+    # So the limit holds: four more wrong tries make five, and the right code then comes too late.
+    for _ in range(4):
+        assert client.post(VERIFY, json=wrong).status_code == 401
+    assert client.post(VERIFY, json={"email": address, "code": right}).status_code == 401
+    assert user_of(driver, address) is None
+    assert waited, "the start did not wait for the wrong try"
 
 
 @pytest.mark.parametrize(

@@ -4,15 +4,18 @@ Every name here is invented. Tests in this folder may plant rows with raw Cypher
 below go through the writer's own functions so a test reads like a caller.
 """
 
+import json
 from datetime import UTC, datetime, timedelta
 from itertools import count
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from grove.store.connection import DATABASE
 from grove.store.query import WorldQuery
 from grove.writer import Caller, apply_batch, record_connector, record_episode, record_source
+from grove.writer.declines import stored_op_id
 from grove.writer.worlds import create_world
 
 PERSON = Caller(kind="person", scopes=frozenset({"grove.read", "grove.write"}), actor="person:t")
@@ -191,3 +194,85 @@ def count_rows(driver, world_id: str) -> dict[str, int]:
     links = raw(driver, "MATCH ()-[l:LINK {world_id: $w}]->() RETURN count(l) AS c", w=world_id)
     counts["LINK"] = links[0]["c"]
     return counts
+
+
+class NoStore:
+    """A driver or a transaction that fails the test the moment anything asks it for the store."""
+
+    def __getattr__(self, name: str):
+        raise AssertionError(f"the store was reached before the check: {name}")
+
+
+def request_key() -> str:
+    return f"req-{uuid4().hex[:12]}"
+
+
+def request_row(driver, world_id: str, request_id: str) -> dict[str, Any] | None:
+    rows = read(driver, world_id, "MATCH (r:Request {id: $id}) RETURN r", id=request_id)
+    return rows[0]["r"] if rows else None
+
+
+def world_dump(driver, world_id: str) -> str:
+    """Every row of the world with every property, and the :World row: the proof of no write."""
+    nodes = raw(
+        driver,
+        "MATCH (n {world_id: $w}) RETURN labels(n) AS labels, properties(n) AS p",
+        w=world_id,
+    )
+    links = raw(
+        driver, "MATCH ()-[l:LINK {world_id: $w}]->() RETURN properties(l) AS p", w=world_id
+    )
+    worlds = raw(driver, "MATCH (w:World {id: $w}) RETURN properties(w) AS p", w=world_id)
+    rows = sorted(json.dumps(row, sort_keys=True, default=str) for row in [*nodes, *links, *worlds])
+    return "\n".join(rows)
+
+
+def unknown_kind(chat: dict[str, str], line: int = 1, kind: str = "spaceship") -> dict[str, Any]:
+    """A batch the writer refuses with unknown_kind."""
+    ev = f"e{line}"
+    return batch([create_item(kind, "The silver hull", ev)], [observation(chat, ev, line)])
+
+
+def stale_update(chat: dict[str, str], item_id: str, line: int = 5) -> dict[str, Any]:
+    """An update at version 1: refused with version_conflict once the item has moved on."""
+    ev = f"e{line}"
+    op = {
+        "op": "update_item",
+        "op_id": new_op_id(),
+        "item": item_id,
+        "version": 1,
+        "fields": {"summary": f"an invented summary from line {line}"},
+        "evidence_refs": supports(ev),
+        "reason": "the message states it",
+    }
+    return batch([op], [observation(chat, ev, line)])
+
+
+def assert_only_decline_log(driver, world_id: str, before: dict[str, int], refusals: list) -> None:
+    """A decline wrote nothing but its log: every other label is equal, at most one new request
+    row, one :Decline per refused op key with its rule and code, and no message or details stored.
+    A caller with no write scope never reaches the log, so for it nothing changes at all."""
+    after = count_rows(driver, world_id)
+    if all(refusal.rule == "write_scope" for refusal in refusals):
+        assert after == before
+        return
+    logged = ("Request", "Decline")
+    assert {k: v for k, v in after.items() if k not in logged} == {
+        k: v for k, v in before.items() if k not in logged
+    }
+    assert 0 <= after.get("Request", 0) - before.get("Request", 0) <= 1
+    expected: dict[str, set[tuple[str, str]]] = {}
+    for refusal in refusals:
+        expected.setdefault(stored_op_id(refusal.op_id), set()).add((refusal.rule, refusal.code))
+    assert after.get("Decline", 0) - before.get("Decline", 0) == len(expected)
+    rows = raw(driver, "MATCH (d:Decline {world_id: $w}) RETURN properties(d) AS d", w=world_id)
+    found = [row["d"] for row in rows]
+    for op_id, codes in expected.items():
+        assert any(
+            row["op_id"] == op_id and (row["rule"], row["code"]) in codes for row in found
+        ), (op_id, codes, found)
+    requests = raw(driver, "MATCH (r:Request {world_id: $w}) RETURN properties(r) AS r", w=world_id)
+    for row in [*found, *(entry["r"] for entry in requests)]:
+        assert "message" not in row and "details" not in row
+        text = row.get("receipt") or ""
+        assert '"message"' not in text and '"details"' not in text

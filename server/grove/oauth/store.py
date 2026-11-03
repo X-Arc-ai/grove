@@ -1,6 +1,6 @@
 """The OAuth rows as the routes read them: read transactions only, through PlatformQuery.
 
-grove.writer.oauth writes these rows (S41). A token is looked up by its hash
+grove.writer.oauth writes these rows (S45). A token is looked up by its hash
 (grove.oauth.secrets.token_hash), never by its value.
 """
 

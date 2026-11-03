@@ -1,4 +1,4 @@
-"""New secrets and the one hash the store keeps of them (S41).
+"""New secrets and the one hash the store keeps of them (S45).
 
 A code, a token or a client secret leaves the server once, in the answer that issues it. The store
 keeps only its sha256 hex, so a dump or a log of a row cannot be replayed.

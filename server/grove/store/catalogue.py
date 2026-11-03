@@ -841,20 +841,49 @@ REQUESTS = Table(
     group="snapshot",
     owner="D2",
     columns=(
-        _col("id", "id", note="the caller's idempotency key, unique per world (S9)"),
+        _col("id", "id", note="the caller's idempotency key, unique per world (S9, S41)"),
         _WORLD,
-        _col("caller", "code"),
-        _col("source id of the request's text", "id", "source_id"),
+        _col("caller", "code", note="the actor code of the first writer"),
+        _col(
+            "source id of the request's text",
+            "id",
+            "source_id",
+            note="only a row with one can be claimed (S41)",
+        ),
         _col("run id", "id"),
         _col("status", "enum:request_status"),
         _col("attempts", "int"),
         _col("created at", "instant"),
         _col("committed at", "instant"),
-        _col("receipt", "json_ids", note="ids and codes; a title is read fresh when shown"),
+        _col(
+            "receipt",
+            "json_ids",
+            note="ids and codes; a title is read fresh when shown. "
+            "A declined row holds its stored decline here (S42)",
+        ),
         _col("last error code", "code"),
+        *_version_touched(),
+        _ruling("commit_id", "id", "S41: the one commit of this request"),
+        _ruling("change_set_id", "id", "S41: the one change set of this request"),
+        _ruling("fingerprint", "code", "S41: sha256 of the committed batch"),
+        _ruling("declined_fingerprint", "code", "S41: sha256 of the batch last declined"),
+        _ruling("repairs", "int", "S41: 1 once the one repair attempt is spent (line 748)"),
+        _ruling("retry_at", "instant", "S41: when a queued or failed row is due again"),
+        _ruling("lease_until", "instant", "S41: when an applying row is due again"),
+        _ruling("claimed_by", "code", "S41: the worker that holds the lease"),
+        _ruling("content_key", "code", "S41: what a second enqueue under this key compares"),
+        _ruling("verbatim", "bool", "S41: B.3 remember, for the later pass"),
+        _ruling("host_message_id", "locator", "S41: B.3 remember, for the later pass"),
+        _ruling("said_at", "instant", "S41: B.3 remember, for the later pass"),
+        _ruling("about", "ids", "S41: B.3 remember, for the later pass"),
     ),
     uniques=_keys("requests", ("world_id", "id")),
     indexes=_ranges("requests", ("world_id", "status")),
+    notes=(
+        "A request commits once, in one batch, and `saved` moves in the same transaction as that "
+        "commit (S41). A filter in MATCH or WHERE reads with no lock, so a transition checks the "
+        "row after it holds the row's write lock (S1)."
+    ),
 )
 
 DECLINES = Table(
@@ -876,8 +905,15 @@ DECLINES = Table(
             note="list of {item id, score}",
         ),
         _col("override used", "bool"),
+        _ruling("code", "code", "S42: the typed error code of the refusal"),
+        _ruling("recorded_at", "instant", "S42: when the decline was logged"),
     ),
     uniques=_keys("declines", ("world_id", "request_id", "op_id")),
+    notes=(
+        "Ids and codes only: a refusal's message and details are never stored, and an op id that "
+        "could hold text is stored by its hash (S42). `op_id` is `batch` for a fault of the whole "
+        "batch."
+    ),
 )
 
 JOBS = Table(
@@ -1492,8 +1528,8 @@ OAUTH_CLIENTS = Table(
             note="S32: a UUIDv7 from dynamic registration, or the URL of a Client ID Metadata "
             "Document (lines 3036, 3148)",
         ),
-        _col("world_id", "id", note="S41: always absent; the oauth_grants row holds it"),
-        _ruling("user_id", "id", "S41: always absent; the oauth_grants row holds it"),
+        _col("world_id", "id", note="S45: always absent; the oauth_grants row holds it"),
+        _ruling("user_id", "id", "S45: always absent; the oauth_grants row holds it"),
         _col(
             "host",
             "config",
@@ -1506,9 +1542,9 @@ OAUTH_CLIENTS = Table(
             "config",
             note="a list of URIs; a host's registration metadata (line 2561)",
         ),
-        _col("scopes granted", "code", note="S41: always absent; the oauth_grants row holds it"),
-        _col("granted at", "instant", note="S41: always absent; the oauth_grants row holds it"),
-        _col("revoked at", "instant", note="S41: always absent; the oauth_grants row holds it"),
+        _col("scopes granted", "code", note="S45: always absent; the oauth_grants row holds it"),
+        _col("granted at", "instant", note="S45: always absent; the oauth_grants row holds it"),
+        _col("revoked at", "instant", note="S45: always absent; the oauth_grants row holds it"),
         _ruling(
             "token_endpoint_auth_method",
             "code",
@@ -1517,7 +1553,7 @@ OAUTH_CLIENTS = Table(
         _ruling(
             "client_secret_hash",
             "code",
-            "the sha256 hex of the client secret; absent for a public client (S41)",
+            "the sha256 hex of the client secret; absent for a public client (S45)",
         ),
         _ruling("registered_at", "instant", "when the row was made"),
         _ruling("fetched_at", "instant", "a metadata document client's last fetch"),
@@ -1526,7 +1562,7 @@ OAUTH_CLIENTS = Table(
     notes=(
         "A B.1 table read through the platform query layer: a client exists before any world "
         "consents to it. It restores with the snapshot tables (S21). A person's consent is an "
-        "oauth_grants row (S41). Only server/grove/writer/oauth.py writes it."
+        "oauth_grants row (S45). Only server/grove/writer/oauth.py writes it."
     ),
 )
 
@@ -1618,7 +1654,7 @@ OAUTH_TOKENS = _platform(
         _p("client_id", "locator", "an oauth_clients client id (S32)"),
         _p("user_id", "id"),
         _p("world_id", "id", "S5: tokens are bound to one world (line 3038), the grant's world"),
-        _p("token_hash", "code", "S41: the sha256 hex of the token; the token itself is not kept"),
+        _p("token_hash", "code", "S45: the sha256 hex of the token; the token itself is not kept"),
         _p("token_type", "code", "access or refresh"),
         _p("scopes", "code", "a list of scope codes"),
         _p("created_at", "instant"),
@@ -1647,7 +1683,7 @@ AUTHORIZATION_CODES = _platform(
         _p("client_id", "locator", "an oauth_clients client id (S32)"),
         _p("user_id", "id"),
         _p("world_id", "id"),
-        _p("code_hash", "code", "S41: the sha256 hex of the code; the code itself is not kept"),
+        _p("code_hash", "code", "S45: the sha256 hex of the code; the code itself is not kept"),
         _p("code_challenge", "code", "PKCE S256"),
         _p("redirect_uri", "config"),
         _p("scopes", "code", "a list of scope codes"),
@@ -1660,7 +1696,7 @@ AUTHORIZATION_CODES = _platform(
         _p(
             "reused_at",
             "instant",
-            "S41: the first redeem after the code was used; its family gets no more tokens",
+            "S45: the first redeem after the code was used; its family gets no more tokens",
         ),
     ),
     _keys("authorization_codes", ("id",), ("code_hash",)),
@@ -1763,7 +1799,7 @@ OAUTH_GRANTS = Table(
     uniques=_keys("oauth_grants", ("id",), ("client_id", "world_id")),
     indexes=_ranges("oauth_grants", ("world_id",)),
     notes=(
-        "S41: a person's consent to a host, one row per (client, world). A new consent to the "
+        "S45: a person's consent to a host, one row per (client, world). A new consent to the "
         "same host from the same world finds the row, sets its scopes and time and clears "
         "revoked_at. A revoke sets revoked_at and revokes every token of the grant in the same "
         "transaction. Only server/grove/writer/oauth.py writes it. A platform row: it restores "

@@ -21,6 +21,7 @@ from tests.writer.helpers import (
     PERSON,
     T0,
     apply,
+    assert_only_decline_log,
     at_minute,
     clock_at,
     count_rows,
@@ -92,7 +93,7 @@ def declined(driver, world_id: str, ops: list[dict], evidence: list[dict]) -> li
     before = count_rows(driver, world_id)
     with pytest.raises(BatchDeclined) as caught:
         apply(driver, world_id, ops, evidence)
-    assert count_rows(driver, world_id) == before
+    assert_only_decline_log(driver, world_id, before, caught.value.refusals)
     return caught.value.refusals
 
 
