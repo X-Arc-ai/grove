@@ -51,8 +51,8 @@ if [ ! -f "$GROVE_ETC/api.env" ]; then
     log "wrote $GROVE_ETC/api.env"
 fi
 if [ ! -f "$GROVE_ETC/runner.env" ]; then
-    printf '# The runner token only. The runner lane writes it.\n' >"$GROVE_ETC/runner.env"
-    log "wrote $GROVE_ETC/runner.env (no token yet)"
+    printf '# The runner token only. deploy/runner-secrets.sh writes it.\n' >"$GROVE_ETC/runner.env"
+    log "wrote $GROVE_ETC/runner.env (no token yet: run deploy/runner-secrets.sh)"
 fi
 umask 022
 
