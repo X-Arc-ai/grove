@@ -119,7 +119,7 @@ def _world_field(body: Any) -> str:
 
 @router.get("/runner/due")
 def runner_due(request: Request, _: Service) -> dict[str, Any]:
-    return {"due": due_work(request.app.state.driver)}
+    return {"due": due_work(request.app.state.driver, settings=pass_settings(request))}
 
 
 @router.post("/runner/passes")
@@ -206,12 +206,19 @@ def _own_request(live: LivePass, request_id: Any) -> str:
 
 
 def _still_held(driver: Any, live: LivePass, request_id: str) -> None:
-    """The pass still holds the request: its lease has not passed to another pass."""
+    """The pass still holds the request: it is `applying` under this run, or this run's batch was
+    declined and the writer's one repair is still open. A lease that passed to another pass
+    (another `claimed_by`) or a request already saved is no longer this pass's."""
     rows = WorldQuery(driver, live.world_id).read(
-        "MATCH (r:Request {id: $id}) RETURN r.status AS status, r.claimed_by AS worker",
+        "MATCH (r:Request {id: $id}) RETURN r.status AS status, r.claimed_by AS worker, "
+        "r.run_id AS run, r.repairs AS repairs",
         id=request_id,
     )
-    if not rows or rows[0]["status"] != "applying" or rows[0]["worker"] != live.claims.run_id:
+    row = rows[0] if rows else {}
+    run_id = live.claims.run_id
+    held = row.get("status") == "applying" and row.get("worker") == run_id
+    repair = row.get("status") == "declined" and row.get("run") == run_id and not row.get("repairs")
+    if not (held or repair):
         raise ApiError(
             409,
             "invalid_arguments",

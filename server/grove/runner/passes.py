@@ -17,7 +17,7 @@ The runner service holds no store credential, so the API does each step for it:
 import json
 import os
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from grove import clock
@@ -47,6 +47,8 @@ class PassSettings:
     lease_margin_seconds: int = 120
     token_cap: int = 300_000
     learner_requests: int = 5
+    # A test on the shared dev store lists only its own worlds. Production leaves it unset.
+    only_worlds: frozenset[str] | None = None
 
     @property
     def lease_seconds(self) -> int:
@@ -99,19 +101,41 @@ _DUE_JOBS = (
     "MATCH (j:Job {state: 'queued'}) WHERE j.run_after <= $now "
     "RETURN DISTINCT j.agent_or_job_type AS agent"
 )
-_LIVE_RUN = "MATCH (r:RunRecord {outcome: 'running'}) RETURN r.id AS id LIMIT 1"
+_LIVE_RUNS = (
+    "MATCH (r:RunRecord {outcome: 'running'}) RETURN r.started AS started, r.time_cap AS time_cap"
+)
 
 
-def due_work(driver: Driver, *, limit: int = 100) -> list[dict[str, str]]:
+def has_live_run(query: WorldQuery, now: datetime, settings: "PassSettings") -> bool:
+    """A run that reads `running` inside its time cap plus the margin. One past that died with
+    no end, and `start_run` marks it abandoned when the next pass starts."""
+    return any(stale_cutoff(row, settings) > now for row in query.read(_LIVE_RUNS))
+
+
+def budget_reached(query: WorldQuery, now: datetime) -> bool:
+    """Every pass job waits at the ceiling (jobs.json), so a world whose budget for today is
+    reached starts no pass: its requests stay queued and spend no attempt until the reset."""
+    rows = query.read(
+        "MATCH (b:Budget {day: $day}) RETURN b.state AS state", day=now.astimezone(UTC).date()
+    )
+    return bool(rows) and rows[0]["state"] == "reached"
+
+
+def due_work(
+    driver: Driver, *, limit: int = 100, settings: "PassSettings | None" = None
+) -> list[dict[str, str]]:
     """One row per world with work and no live run: `{world_id, agent}`, the Learner first."""
+    settings = settings or PassSettings()
     due: list[dict[str, str]] = []
     for world_id in _worlds(driver):
+        if settings.only_worlds is not None and world_id not in settings.only_worlds:
+            continue
         try:
             query = WorldQuery(driver, world_id)
         except ScopeError:
             continue
         now = clock.now(world_id)
-        if query.read(_LIVE_RUN):
+        if has_live_run(query, now, settings) or budget_reached(query, now):
             continue
         if query.read(_DUE_REQUEST, now=now):
             due.append({"world_id": world_id, "agent": "learner"})
@@ -224,8 +248,9 @@ def start_pass(
     if agent not in AGENTS:
         raise ValueError("unknown agent")
     _, job = AGENTS[agent]
-    model = catalog.job(job).model
-    effort = catalog.job(job).effort
+    job_spec = catalog.job(job)
+    model = catalog.model_for(job_spec).id
+    effort = job_spec.effort
     run_id = new_id(world_id)
     started = run_rows.start_run(
         driver,
