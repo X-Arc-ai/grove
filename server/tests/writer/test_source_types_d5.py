@@ -255,7 +255,8 @@ def test_done_with_only_said_or_reported_done_evidence_is_refused_and_reported_d
 def test_a_confirming_artifact_in_the_same_transaction_allows_done(driver, w, talk):
     task = open_task(driver, w, talk)
     files = source(driver, w, "notes_files_releases", ["Signed hand-over: the seating plan, sent"])
-    artifact = line(files, "f1", 1, statement_class="artifact")
+    # The whole stored file is the artifact (S46); a line of a note never is.
+    artifact = whole(files, "f1", statement_class="artifact")
     done = line(talk, "d1", 2, statement_class="report_happened")
     apply(driver, w, [attach(task, "f1"), change_status(task, "done", "d1")], [artifact, done])
     row = item_row(driver, w, task)
