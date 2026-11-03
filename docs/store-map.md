@@ -698,6 +698,7 @@ S27: parser, locator format, source-type mapping and speaker rules are code, not
 | id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
 | world_id | `world_id` | `id` | b1 |  |
 | type | `type` | `enum:connector_type` | b1 |  |
+| (none) | `provider` | `code` | ruling | the upload format of an upload connector: claude_code, codex, chatgpt, claude_ai (ingest-a1); one row per world, type and provider |
 | auth reference | `auth_reference` | `code` | b1 |  |
 | scope | `scope` | `json_ids` | b1 | an allowlist compiled into the read (D14) |
 | settings | `settings` | `json_ids` | b1 | calendar log mode, calendar id, from date, days logged |

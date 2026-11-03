@@ -519,6 +519,12 @@ CONNECTORS = Table(
         _ID,
         _WORLD,
         _col("type", "enum:connector_type"),
+        _ruling(
+            "provider",
+            "code",
+            "the upload format of an upload connector: claude_code, codex, chatgpt, claude_ai "
+            "(ingest-a1); one row per world, type and provider",
+        ),
         _col("auth reference", "code"),
         _col("scope", "json_ids", note="an allowlist compiled into the read (D14)"),
         _col("settings", "json_ids", note="calendar log mode, calendar id, from date, days logged"),
