@@ -25,6 +25,12 @@
     if(!owner||!liveSessionReady||(!force&&liveData.started))return;
     var request=liveData={owner:owner,started:true,pending:true,sources:null,connections:null,health:null};
     function current(){var now=api.getState();return request===liveData&&now.auth&&now.account===owner;}
+    var reminderContext=api.pendingExportContext();
+    api.refreshPendingExports().then(function(){
+      if(current()&&api.isPendingExportContext(reminderContext)){ui.reminderError='';render(true);}
+    }).catch(function(){
+      if(current()&&api.isPendingExportContext(reminderContext)){ui.reminderError='Grove could not load your export reminders. Try again.';render(true);}
+    });
     var reads=[['sources',live.ENDPOINTS.sourceCoverage,'connectors'],['connections',live.ENDPOINTS.sourceConnections,'connections'],['health',live.ENDPOINTS.health,null]];
     Promise.all(reads.map(function(row){return live.getJSON(row[1]).then(function(res){
       if(!current()||!res.ok||!res.body)return;
@@ -104,6 +110,7 @@
   function arrive(body){
     liveSessionReady=true;
     if(api.bindAccount(body.account)){
+      liveUploads={};ui.reminderRequest=null;ui.reminderError='';
       ui.step=0;ui.guideStage=0;ui.editName=false;ui.nameDraft='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};ui.requestDrafts={};ui.uploadFile=null;ui.connecting={};ui.query='';ui.notice='';
       if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
     }
@@ -172,6 +179,7 @@
   // A person already on the sign-in card (checking, the email code) keeps the step they are on.
   function endSession(){
     liveSessionReady=false;liveData={owner:null};
+    liveUploads={};ui.reminderRequest=null;ui.reminderError='';
     var onCard=!api.getState().auth&&!!ui.authStage;
     api.signOut();
     if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
@@ -223,7 +231,7 @@
   };
   var HELP={chats:'https://faq.whatsapp.com/1180414079177245/',chatgpt:'https://help.openai.com/en/articles/7260999-exporting-your-chatgpt-history-and-data',claude:'https://support.claude.com/en/articles/9450526-export-your-claude-data',grok:'https://x.ai/legal/faq'};
   function liveUpload(id){
-    var account=JSON.stringify(api.getState().auth);
+    var account=JSON.stringify(api.pendingExportContext());
     if(!liveUploads[id]||liveUploads[id].account!==account)liveUploads[id]={account:account,file:null,pending:false,result:null,error:''};
     return liveUploads[id];
   }
@@ -259,7 +267,7 @@
     var film='<div class="gp-app-frame" aria-label="Animated guide: '+esc(frames.map(function(f){return f.label;}).join('. '))+'"><iframe title="Automatic '+p.label+' guide" tabindex="-1" aria-hidden="true" inert sandbox srcdoc="'+esc(doc)+'"></iframe></div>';
     var picker=upload?exportPicker(id):'';
     var selected=live?liveUpload(id):{file:ui.uploadFile};
-    var primary=upload?'<button class="gp-primary" data-action="upload-export"'+(!canUpload(id)||!selected.file||selected.pending?' disabled':'')+'>'+(selected.pending?'Upload in progress':'Upload '+(id==='notes'?'file':'export'))+'</button>':id==='muse'?'<button class="gp-primary" data-import="muse">Connect Muse</button>':'<button class="gp-primary" data-action="export-requested">'+(id==='chats'?'I have my export':'I’ve requested it')+'</button>';
+    var primary=upload?'<button class="gp-primary" data-action="upload-export"'+(!canUpload(id)||!selected.file||selected.pending?' disabled':'')+'>'+(selected.pending?'Upload in progress':'Upload '+(id==='notes'?'file':'export'))+'</button>':id==='muse'?'<button class="gp-primary" data-import="muse">Connect Muse</button>':'<button class="gp-primary" data-action="export-requested"'+(live&&ui.reminderRequest?' disabled':'')+'>'+(id==='chats'?'I have my export':'I’ve requested it')+'</button>';
     var devices=id==='chats'&&!upload?'<div class="gp-device-choice" aria-label="WhatsApp device">'+[['iphone','iPhone'],['android','Android']].map(function(d){return '<button data-guide-device="'+d[0]+'" aria-pressed="'+(ui.guideDevice===d[0])+'">'+d[1]+'</button>';}).join('')+'</div>':'';
     var controls=frames.length>1?'<div class="gp-film-tools"><button class="gp-text" data-action="film-toggle" aria-label="Pause guide">Ⅱ</button></div>':'';
     var content=header+devices+film+picker+controls+'<footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">'+(upload?(id==='notes'||id==='chats'?'Later':'When the email arrives'):'Back')+'</button>'+primary+'</footer>';
@@ -411,19 +419,38 @@
     if(live){
       if(!canUpload(provider))return;
       var upload=liveUpload(provider);
+      var context=api.pendingExportContext();
+      function current(){return api.isPendingExportContext(context)&&liveUpload(provider)===upload;}
       if(upload.pending)return;
       upload.pending=true;upload.result=null;upload.error='';render(true);
       live.uploadExport(provider,file).then(function(res){
-        if(liveUpload(provider)!==upload)return;
+        if(!current())return;
         if(!res.ok){upload.error='HTTP '+res.status+': '+live.errorText(res.body,'The upload failed. Please try again.');return;}
         var result=res.body;
         if(!result||!['taken_in','nothing_new','kept_out','failed'].includes(result.state)){upload.error='The server returned an unrecognized upload result. Keep this export and try again.';return;}
         upload.result=result;
-        if((result.state==='taken_in'||result.state==='nothing_new')&&result.failed_chats===0){upload.file=null;if(api.cancelExport)api.cancelExport(provider);refreshLiveData(true);}
-      }).catch(function(error){if(liveUpload(provider)===upload)upload.error=error.message||'The upload could not reach Grove. Please try again.';}).finally(function(){upload.pending=false;if(liveUpload(provider)===upload)render(true);});
+        if((result.state==='taken_in'||result.state==='nothing_new')&&result.failed_chats===0){
+          upload.file=null;
+          if(result.reminder&&result.reminder.status==='updated'&&result.reminder.snapshot)api.applyPendingExports(result.reminder.snapshot,context);
+          if(result.reminder&&result.reminder.status==='unavailable')upload.error='The import succeeded. Grove could not update the export reminder. Keep the export and retry to clear it.';
+          refreshLiveData(true);
+        }
+      }).catch(function(error){if(current())upload.error=error.message||'The upload could not reach Grove. Please try again.';}).finally(function(){upload.pending=false;if(current())render(true);});
       return;
     }
     ui.error='';api.importSource(id,{name:file.name,size:file.size,provider:provider,update:!!accountActive(provider),label:PROVIDERS[provider]&&PROVIDERS[provider].label}).then(function(){ui.guide=null;render(true);var el=modalRoot.querySelector('[data-source-choice="'+provider+'"] .gp-source-orb'),r=el&&el.getBoundingClientRect();if(window.GroveMotion)window.GroveMotion.source(provider,r?{x:r.left+r.width/2,y:r.top+r.height/2}:null);}).catch(function(){ui.error='That source could not be added. Please try again.';render(true);});
+  }
+  function requestPendingExport(){
+    if(!live){if(api.requestExport)api.requestExport(ui.guide);ui.guideStage=1;ui.uploadFile=null;render(true);return;}
+    if(ui.reminderRequest)return;
+    var provider=ui.guide,context=api.pendingExportContext(),request={};
+    ui.reminderRequest=request;ui.error='';render(true);
+    api.requestExport(provider).then(function(applied){
+      if(ui.reminderRequest!==request||!api.isPendingExportContext(context))return;
+      if(applied&&ui.guide===provider){ui.guideStage=1;ui.uploadFile=null;ui.reminderError='';}
+    }).catch(function(error){
+      if(ui.reminderRequest===request&&api.isPendingExportContext(context))ui.error=error.message||'Grove could not save your export reminder. Try again.';
+    }).finally(function(){if(ui.reminderRequest===request){ui.reminderRequest=null;render(true);}});
   }
   function focus(selector){requestAnimationFrame(function(){var el=root.querySelector(selector||'#gp-title')||root.querySelector('#gp-title');if(el)el.focus({preventScroll:true});});}
   function settleEntrance(){
@@ -449,7 +476,7 @@
     var bottom=onboard?'':'<button class="gp-accounts-trigger" data-action="connections" aria-label="Take Grove to your AI"><span class="gp-host-cta">Take Grove to your AI '+arrow()+'</span><span class="gp-provider-stack">'+HOST_ORDER.map(function(id){return '<span class="'+(!live&&s.connectedHosts.includes(id)?'is-connected':'')+'">'+icon(id)+'<small>'+PROVIDERS[id].label+'</small></span>';}).join('')+'</span></button>'+(s.currentNodeCount?'<button class="gp-types-toggle" data-action="types">Node types</button>':'');
     if(chrome.innerHTML!==bottom){chrome.innerHTML=bottom;bindChrome();}
     var rq=document.getElementById('requests-button'),pending=(s.requests||[]).filter(function(r){return r.status==='open';}).length;rq.hidden=onboard;rq.classList.toggle('has-pending',pending>0);rq.setAttribute('aria-label','Grove needs your input'+(pending?', '+pending+(pending===1?' question':' questions'):''));rq.setAttribute('aria-expanded',String(ui.panel==='requests'));
-    sessionNote.textContent=ui.offline?SIGNIN_COPY.offline:'';sessionNote.hidden=!ui.offline;
+    sessionNote.textContent=ui.offline?SIGNIN_COPY.offline:(ui.reminderError||'');sessionNote.hidden=!sessionNote.textContent;
     updateLive();renderTour();
     if(live)refreshLiveData(false);
   }
@@ -512,8 +539,8 @@
     else if(action==='next'||action==='skip')move(function(){if(ui.step<4)setStep(ui.step+1);else finish();});
     else if(action==='guide-up'){if(ui.guideStage===1){ui.guideStage=0;ui.uploadFile=null;}else{ui.guide=null;ui.guideStep=0;}render(true);}
     else if(action==='guide-back'){ui.guide=null;ui.guideStep=0;ui.uploadFile=null;render(true);}
-    else if(action==='export-requested'){if(api.requestExport)api.requestExport(ui.guide);ui.guideStage=1;ui.uploadFile=null;render(true);}
-    else if(action==='upload-stage'){if(api.requestExport)api.requestExport(ui.guide);ui.guideStage=1;ui.uploadFile=null;render(true);}
+    else if(action==='export-requested'){requestPendingExport();}
+    else if(action==='upload-stage'){requestPendingExport();}
     else if(action==='export-stage'){ui.editName=false;ui.nameDraft='';ui.guideStage=0;ui.uploadFile=null;render(true);}
     else if(action==='upload-export'){var file=live?liveUpload(ui.guide).file:ui.uploadFile;if(!file)return;var p=PROVIDERS[ui.guide];importSource(p.source,file,ui.guide);if(!live)ui.uploadFile=null;}
     else if(action==='film-toggle'){

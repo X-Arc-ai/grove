@@ -16,6 +16,7 @@
     health: '/v1/views/health',
     positions: '/v1/views/positions',
     upload: '/v1/sources/upload',
+    pendingExports: '/v1/sources/pending-exports',
     sourceCoverage: '/v1/sources/connectors',
     sourceConnections: '/v1/connectors',
     googleStart: '/v1/auth/google/start?next=/',
@@ -91,7 +92,7 @@
   // graph); a sign-in that the server accepts arms it again. A call sent before that sign-in speaks
   // for the session that ended, so its 401 ends nothing. The auth calls never send it: their answers
   // belong to the sign-in card.
-  var signedOutSent = false, sessionsBegun = 0;
+  var signedOutSent = false, sessionsBegun = 0, sessionAccount = null;
   function watchSession(sentIn, res) {
     var code = res.body && res.body.error && res.body.error.code;
     if ((res.status === 401 || code === 'unauthenticated') && !signedOutSent && sentIn === sessionsBegun) {
@@ -100,7 +101,14 @@
     }
     return res;
   }
-  function signedIn(res) { if (res.ok) signedOutSent = false; return res; }
+  function signedIn(res) {
+    if (res.ok) {
+      signedOutSent = false;
+      var account = res.body && res.body.account;
+      if (account && account !== sessionAccount) { sessionAccount = account; sessionsBegun++; }
+    }
+    return res;
+  }
   function newSession(res) { if (res.ok) sessionsBegun++; return signedIn(res); }
   function getJSON(path) { return request('GET', path).then(watchSession.bind(null, sessionsBegun)); }
   function postJSON(path, body) { return request('POST', path, body === undefined ? {} : body).then(watchSession.bind(null, sessionsBegun)); }
@@ -158,6 +166,12 @@
     getJSON: getJSON,
     postJSON: postJSON,
     uploadExport: uploadExport,
+    pendingExports: function () { return getJSON(ENDPOINTS.pendingExports); },
+    requestExport: function (provider) {
+      var codes = { chatgpt: 'chatgpt', claude: 'claude_ai', chats: 'whatsapp', muse: 'muse', grok: 'grok' };
+      if (!Object.prototype.hasOwnProperty.call(codes, provider)) return Promise.reject(new Error('Unknown export provider.'));
+      return postJSON(ENDPOINTS.pendingExports + '/' + codes[provider], {});
+    },
     errorText: errorText,
     savePositions: savePositions,
     // GET the session: 200 {signed_in, self_item_id, has_items, account, method} when signed in, 401 otherwise.
@@ -171,6 +185,6 @@
     emailVerify: function (email, code) {
       return postAuth(ENDPOINTS.emailVerify, { email: String(email || '').trim(), code: String(code || '').trim() }).then(newSession);
     },
-    logout: function () { return postAuth(ENDPOINTS.logout); },
+    logout: function () { return postAuth(ENDPOINTS.logout).then(function (res) { if (res.ok) { sessionsBegun++; sessionAccount = null; } return res; }); },
   };
 })();

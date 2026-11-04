@@ -1733,6 +1733,17 @@ WORLDS = _platform(
         ),
         _p("seed_version", "code"),
         _p(
+            "pending_export_requests",
+            "json_ids",
+            "At most five closed provider codes mapped to server UUIDv7 generations; "
+            "at most 1024 UTF-8 bytes; absent means empty; no source text or consent",
+        ),
+        _p(
+            "pending_export_revision",
+            "int",
+            "Reminder revision, 0 through 2^53-1; absent means 0; World metadata only",
+        ),
+        _p(
             "self_item_id",
             "id",
             "S40: the person's own item, set in the transaction that creates it; absent before",
