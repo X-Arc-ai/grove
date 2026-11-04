@@ -115,3 +115,120 @@ semantics, an ordered backfill committer, exact replay and kill evidence, and th
 week's precision, recall, question rate, Spark share and latency measurements. Typed-source
 persistence, admission, erasure and restoration remain with A2 and D14. No live model,
 provider, deployment, runtime, or full D10 acceptance follows from this source component.
+
+## Inactive pure execution protocol
+
+The additional execution modules publish `grove.learner.legacy.v1` as
+`PURE_EXECUTION_PROTOCOL_ONLY`. They produce validated **untrusted data** and pure transition
+plans. They do not provide principal authority, source admission, a database adapter, a model
+dispatcher, or a production route. `runtime.require_runtime()` always raises
+`ExtractionRefused("learner_authority_unavailable")`. No flag or supplied callback enables it.
+The existing `SourceBatch`, `RegistrySnapshot`, `ExtractionPlan`, and extraction entry points
+remain unchanged.
+
+`execution_types` defines frozen records with tuple children. `decode_binding()` accepts UTF-8
+bytes or JSON text and returns an `ExecutionBinding`; `encode_binding()` returns canonical
+UTF-8 JSON. The codec rejects duplicate, unknown, and missing fields, invalid Unicode,
+nonfinite or fractional numbers, boolean counters, negative counters, and integer overflow.
+The binding limit is 1 MiB, the proposal limit is 512 KiB, nesting is limited to 16 levels,
+and counters use nonnegative signed 64-bit integers. Individual retained JSON/request/output
+strings have a stricter 262,144-character bound. Direct Python records also pass aggregate
+limits before hashing. Binding, proposal, state, and disposition hashes use separate domains;
+identity fields are never joined with an unescaped separator.
+
+The binding includes protocol/source/prompt/schema versions; untrusted principal, grant,
+origin, policy and privacy references; Run and Request versions; claim and budget fields;
+the producer; the complete retained Source and speaker JSON; the exact Episode; every
+retained message descriptor; selected keys; context versions and membership; and the fixed
+model/writer profiles. Embedded Source text remains private derived material. This component
+does not persist it or declare an erasure policy for a future durable store.
+
+Call `check_legacy_profile()` after decoding to check semantic consistency. A successful
+decode alone proves only structural validity. The exact producer tuples are:
+
+| Connector type | Provider | Parser | Batch and cut rule |
+|---|---|---|---|
+| `past_ai_conversations` | `chatgpt` | `chatgpt.v1` | `session_delta.v1` |
+| `past_ai_conversations` | `claude_ai` | `claude_ai.v1` | `session_delta.v1` |
+| `past_ai_conversations` | `claude_code` | `claude_code.v1` | `session_delta.v1` |
+| `past_ai_conversations` | `codex` | `codex.v1` | `session_delta.v1` |
+
+The first profile requires one complete Source and one complete Episode, at most 128 retained
+messages, 16,384 characters per message, and 65,536 UTF-8 text bytes. It validates the complete
+retained JSON through the existing typed-source guard before selecting any message.
+A typed marker outside the proposed selection still refuses the complete work. Raw text,
+pointers, multipart Episodes, multiple Episodes per Source, media, unsupported producers,
+and oversized work cannot become a successful prefix.
+
+Every descriptor must match its retained key, `key:<key>` locator, text digest, original
+source timestamp including offset, speaker, sender, modality, and original author.
+Keys use the writer's minimum of four characters and must fit the full locator limit.
+Run IDs use the model layer's stricter 80-character ASCII limit. Blank text stays in the
+inventory but does not enter the model selection. Neither Episode bounds, read time,
+display names, upload ownership, nor a guessed timezone can replace message provenance.
+The profile supplies no person timezone.
+
+Context has six complete membership categories: registry, target, alias, neighbor, evidence,
+and history. Each category permits at most 256 references with corresponding versions.
+`check_dependencies()` compares source content, source metadata, producer and Episode facts,
+principal/policy/privacy references, protocol identity, context versions, and membership.
+Operational `read_generation`, capture identity, and protocol versions do not replace those
+semantic dependencies. A new alias or candidate requires another grounding pass.
+Saved replay omits old context/target checks because the accepted effect can change them;
+it still validates the complete current source/profile and privacy references.
+
+The fixed model stages are triage on Modal/Glimmer at low effort, extraction on Meta/Spark
+at minimal effort, and optional classification adjudication on Meta/Spark at low effort.
+There is no fallback or backfill route. `Invocation` binds a normalized request envelope,
+stage, Run, claim epoch, ordinal, route/model/job/effort, actual result bytes, ModelCall ID,
+and request/output digests. The envelope has `binding_digest`, `stage`, and `payload` fields.
+Its payload is untrusted; the future model adapter must construct and admit the actual
+provider request and verify each ModelCall association. This protocol does not query a
+ModelCall store or assert that a named call occurred.
+
+`decode_proposal()` creates immutable operation/evidence descriptors, dispositions, and
+invocation references. An operation descriptor identifies the operation, its evidence, and
+its payload digest; it is **not an executable writer batch**. The future writer adapter must
+load and validate the complete matching payload with all normal writer checks. The pure
+component validates descriptor membership and the nine-operation profile without replacing
+the existing writer's shape, source-type, capability, or transaction checks.
+
+`plan_completion()` requires exactly one primary disposition per retained message, in order.
+Only code-proved `ignored_blank`, completely bound `reviewed_empty`, and fully mapped
+`extracted` outcomes can complete. Every triage `(locator, statement_class)` pair needs a
+final class outcome and operation/evidence mapping. A changed class requires a bound
+adjudication result. Held input/facts, redaction, unresolved work, rejected work, and revoked
+work refuse completion. An unknown later call cannot reuse an older successful result.
+Counts derive from the complete ledger, not model totals.
+
+`advance(state, event)` returns a new immutable state with a predecessor digest and incremented
+operational versions. Events carry the expected revision, claim epoch, operational time, and
+current untrusted snapshot. Send and commit plans require a current active Run/claim and
+unchanged dependencies. Operational versions advance separately from the immutable input
+binding. Consumers must supply the expected current versions after each planned transition.
+This is optimistic state comparison only; it does not acquire a lock or establish authority.
+
+The reducer supports claim, invocation intent/send/result, failure/unknown outcome, proposal,
+decline, repair, stale/rebind, recovery, budget wait, block, revoke, and completion. It permits
+five total transport attempts, two triage calls, two adjudication calls, one grounding retry,
+and one reserved writer repair. A repair reserves its slot before the next call. The same
+declined proposal returns the unchanged state. Requeue preserves spent budgets. A grounding
+retry archives the old calls and requires a newly checked complete binding; it does not
+renew the transport or repair budget. Failed transport delays are 30, 60, 120, and 240 seconds,
+subject to the shared deadline. Programming errors and malformed protocol data refuse.
+
+`plan_replay()` returns the matching immutable completion only after current source/privacy
+and live-claim checks. A replacement Run needs a newer recovery claim. A late failure cannot
+reverse a completion. `plan_counter_delta()` computes once-per-Episode empty/extracted
+contributions, preserves historical extraction after a later empty revision, and advances
+an extraction cursor only over contiguous completed entries. It never changes the import
+watermark. Actual creation counts, seven-day metrics, unknown-date coverage, counter writes,
+and cursor persistence require the later durable adapter.
+
+The focused tests use synthetic records only. Simulated crashes prove reducer transitions,
+not database rollback, physical process recovery, or exactly-once provider execution.
+Publication of this component does not activate runtime D10. The next source unit must use
+the accepted shared writer transaction seam, obtain its own schema reservation, and preserve
+the D14 data/erasure contract. Real admission, each-send lifetime checks, durable dispositions,
+atomic graph/completion/counter/outbox writes, provider integration, and full labelled-week
+acceptance remain open.
