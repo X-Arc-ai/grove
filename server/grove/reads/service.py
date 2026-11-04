@@ -9,13 +9,16 @@ import hashlib
 from collections.abc import Callable, Sequence
 from copy import deepcopy
 from dataclasses import asdict
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from grove.reads.capture import Capture, encode
 from grove.reads.coverage import CoverageStatement, decide_answer
 from grove.reads.cursors import MAX_BYTES, MAX_PAGES, CursorBinding, PreparedPages, handles, prepare
 from grove.reads.requests import RecallQuery
 from grove.reads.runtime import deadline, snapshot_busy
+
+if TYPE_CHECKING:
+    from grove.reads.current_packet import CurrentRenderer
 
 MAX_PAGE_BYTES = 1_048_576
 LINKS_PER_PAGE = 50
@@ -34,6 +37,47 @@ def query_document(query: RecallQuery) -> dict:
 
 def query_digest(query: RecallQuery) -> str:
     return hashlib.sha256(encode(query_document(query))).hexdigest()
+
+
+def prepare_renderer_pages(
+    captured: Capture,
+    query: RecallQuery,
+    binding: CursorBinding,
+    renderer: "CurrentRenderer",
+    selected_ids: Sequence[str],
+    *,
+    complete: bool,
+    ambiguous: bool = False,
+) -> PreparedPages:
+    """Render a complete ordered selection from the same authorized captured view.
+
+    The production caller still owns capture, D14 filtering and ranking. Run this pure join
+    in ReadRuntime.worker; it honors the explicit evidence option before immutable admission.
+    """
+    deadline()
+    if (
+        complete is not True
+        or renderer.world_id != captured.world_id
+        or renderer.captured_at != captured.reflected_at
+        or isinstance(selected_ids, str | bytes)
+    ):
+        raise snapshot_busy()
+    rendered = []
+    for identity in selected_ids:
+        deadline()
+        rendered.append(
+            renderer.render_item(identity, include_evidence="evidence" in query.include)
+        )
+    return prepare_current_pages(
+        captured,
+        query,
+        binding,
+        rendered,
+        renderer.coverage,
+        renderer.render_link,
+        complete=complete,
+        ambiguous=ambiguous,
+    )
 
 
 def prepare_current_pages(
