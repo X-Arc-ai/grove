@@ -55,6 +55,7 @@ __all__ = [
     "rebuild_in_place",
     "replay_ledger",
     "restore",
+    "restore_loaded",
     "take_snapshot",
 ]
 
@@ -332,7 +333,9 @@ def _ledger_row(world_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
     if typed.get("world_id", world_id) != world_id:
         raise ValueError("a forget ledger row of another world")
     target = typed.get("target_type")
-    if target not in (*_FORGET_VALUES, _FORGET_ITEM):
+    if target not in (*_FORGET_VALUES, _FORGET_ITEM) and not (
+        target == "source_span" and typed.get("plan")
+    ):
         # A source span is the forget lane's: its text lives in sources, not in the history.
         raise ValueError(f"a forget of target type {target!r} is not replayed here")
     return typed
@@ -375,7 +378,7 @@ def _forget_items(tx: WorldTx, item_ids: list[str]) -> tuple[set[str], set[str]]
     return gone, values
 
 
-def replay_ledger(
+def _replay_legacy_ledger(
     driver: Driver, world_id: str, ledger_rows: Iterable[Mapping[str, Any]]
 ) -> set[str]:
     """Replays forget ledger rows, in one transaction. `field_value` and `named_value`: each
@@ -432,6 +435,30 @@ def replay_ledger(
             raise RuntimeError(f"a forgotten row came back in the rebuild: {sorted(kept)[0]}")
         _write_projection(tx, projection)
         return forgotten | set(projection.forgotten)
+
+    return WorldWriter(driver, world_id, timeout=_TIMEOUT).transaction(work)
+
+
+def replay_ledger(
+    driver: Driver, world_id: str, ledger_rows: Iterable[Mapping[str, Any]]
+) -> set[str]:
+    """Validate the complete ledger before applying its erasure plans."""
+    from grove.writer.forget import replay_plans, validate_ledger_rows
+
+    rows = validate_ledger_rows(world_id, ledger_rows)
+    legacy = [row for row in rows if "plan" not in row]
+    modern = [row for row in rows if "plan" in row]
+    if legacy and modern:
+        raise ValueError("mixed legacy and planned ledgers require an explicit migration")
+    if legacy:
+        return _replay_legacy_ledger(driver, world_id, legacy)
+    if not modern:
+        return set()
+
+    def work(tx: WorldTx) -> set[str]:
+        tx.lock_world()
+        gone, _ = replay_plans(tx, modern)
+        return gone
 
     return WorldWriter(driver, world_id, timeout=_TIMEOUT).transaction(work)
 
@@ -507,13 +534,13 @@ def _compare(
     return problems
 
 
-def restore(
+def restore_loaded(
     driver: Driver,
     world_id: str,
     snapshot: Mapping[str, Any],
     ledger_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    """D3's full restore into a world that holds only its :World row. Returns the restored
+    """D3's shared post-load procedure for a logical or physical snapshot. Returns the restored
     world's fingerprint without the forgotten ids, with `forgotten` (the ids, sorted). Raises
     RestoreMismatch before any write when the snapshot does not give its own recorded
     fingerprint, and after the restore when the world does not match it; ReplayRefused when an
@@ -522,7 +549,13 @@ def restore(
     refusal or a mismatch the world holds what was loaded, for a person to read: it must not go
     live. The writers are stopped for the whole procedure: its four steps are four
     transactions."""
-    ledger = list(ledger_rows)
+    from grove.store.d3_fingerprint import projection_parts
+    from grove.writer.forget import inventory_fingerprint, read_inventory, validate_ledger_rows
+    from grove.writer.forget_plan import transform
+
+    ledger = validate_ledger_rows(world_id, ledger_rows)
+    if any("plan" in row for row in ledger) and not all("plan" in row for row in ledger):
+        raise ValueError("mixed legacy and planned ledgers require an explicit migration")
     recorded = snapshot["fingerprint"]
     history = {"last_sequence": recorded["last_sequence"], "entries": recorded["entries"]}
     whole = fingerprint(snapshot["projection"], history, recorded["tables"])
@@ -532,12 +565,42 @@ def restore(
             expected=recorded,
             found=whole,
         )
-    load_snapshot(driver, world_id, snapshot)
     measures = {
         row_id: {key: _untag(value) for key, value in held.items()}
         for row_id, held in (snapshot.get("measures") or {}).items()
     }
     rebuild_in_place(driver, world_id, measures)
+    if ledger and all("plan" in row for row in ledger):
+        # Check the untouched loaded store before approved forget changes. A corrupt
+        # snapshot must not become acceptable merely because a later plan removes a row.
+        initial = read_once(driver, world_id, live_parts, timeout=_TIMEOUT)
+        initial_fingerprint = fingerprint(
+            initial["projection"], initial["history"], initial["tables"]
+        )
+        problems = _compare(
+            recorded, initial_fingerprint, snapshot["projection"], initial["projection"]
+        )
+        if problems:
+            raise RestoreMismatch(problems, expected=recorded, found=initial_fingerprint)
+        expected_inventory = read_once(driver, world_id, read_inventory, timeout=_TIMEOUT)
+        known = {row["id"] for row in expected_inventory["forget_ledger"]}
+        if not known <= {row["id"] for row in ledger}:
+            raise ValueError("latest ledger omits a stored forget")
+        for row in ledger:
+            expected_inventory, _ = transform(
+                expected_inventory, json.loads(row["plan"]), row["approved_at"]
+            )
+        expected = inventory_fingerprint(expected_inventory)
+        forgotten = replay_ledger(driver, world_id, ledger)
+        _keep_ledger(driver, world_id, ledger)
+        parts = read_once(driver, world_id, live_parts, timeout=_TIMEOUT)
+        found = fingerprint(parts["projection"], parts["history"], parts["tables"])
+        problems = _compare(
+            expected, found, projection_parts(expected_inventory), parts["projection"]
+        )
+        if problems:
+            raise RestoreMismatch(problems, expected=expected, found=found)
+        return {**found, "forgotten": sorted(forgotten)}
     forgotten = replay_ledger(driver, world_id, ledger)
     _keep_ledger(driver, world_id, ledger)
 
@@ -557,6 +620,31 @@ def restore(
     if problems:
         raise RestoreMismatch(problems, expected=expected, found=found)
     return {**found, "forgotten": sorted(forgotten)}
+
+
+def restore(
+    driver: Driver,
+    world_id: str,
+    snapshot: Mapping[str, Any],
+    ledger_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Validate the manifest and complete ledger, load the logical snapshot, then run D3."""
+    from grove.writer.forget import validate_ledger_rows
+
+    ledger = validate_ledger_rows(world_id, ledger_rows)
+    recorded = snapshot["fingerprint"]
+    history = {"last_sequence": recorded["last_sequence"], "entries": recorded["entries"]}
+    found = fingerprint(snapshot["projection"], history, recorded["tables"])
+    if found["fingerprint"] != recorded["fingerprint"]:
+        raise RestoreMismatch(
+            ["the snapshot does not give its recorded fingerprint; nothing was loaded"],
+            expected=recorded,
+            found=found,
+        )
+    if any("plan" in row for row in ledger) and not all("plan" in row for row in ledger):
+        raise ValueError("mixed legacy and planned ledgers require an explicit migration")
+    load_snapshot(driver, world_id, snapshot)
+    return restore_loaded(driver, world_id, snapshot, ledger)
 
 
 # The command line ------------------------------------------------------------------------------
