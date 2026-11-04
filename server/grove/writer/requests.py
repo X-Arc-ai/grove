@@ -358,6 +358,7 @@ def log_decline(
     def conflict(tx: WorldTx) -> None:
         rows = tx.run(_LOCK, id=request_id, at=at)
         row = rows[0]["r"] if rows else None
+        refuse_protected_request(row)
         if row is None or not row.get("source_id"):
             write_decline_rows(tx, request_id, refusals, at)
             return
@@ -522,6 +523,7 @@ def request_state(driver: Driver, world_id: str, request_id: str) -> RequestStat
     check_world_id(world_id)
     check_request_id(request_id)
     row = read_row(driver, world_id, request_id)
+    refuse_protected_request(row)
     return None if row is None else _full_state(driver, world_id, row)
 
 
