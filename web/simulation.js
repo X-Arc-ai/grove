@@ -68,7 +68,7 @@
       value.requests = !LIVE && Array.isArray(stored.requests) ? stored.requests : [];
       value.requestsSeeded = !!stored.requestsSeeded;
       value.mcpClients = Array.isArray(stored.mcpClients) ? stored.mcpClients.filter(function(c){return c&&typeof c.id==='string'&&typeof c.name==='string';}) : [];
-      value.pendingExports = stored.pendingExports && typeof stored.pendingExports === 'object' ? stored.pendingExports : {};
+      value.pendingExports = !LIVE && stored.pendingExports && typeof stored.pendingExports === 'object' ? stored.pendingExports : {};
       value.googleConnected = !!stored.googleConnected;
       value.accountImports = stored.accountImports || {};
       value.name = typeof stored.name === 'string' ? stored.name : '';
@@ -98,6 +98,43 @@
   }
 
   var state = readState();
+  var reminderEpoch = 0, reminderRevision = -1;
+
+  function pendingExportContext() { return { account: state.account, epoch: reminderEpoch }; }
+  function isPendingExportContext(context) {
+    return !!context && !!state.auth && context.account === state.account && context.epoch === reminderEpoch;
+  }
+  function applyPendingExports(body, context) {
+    if (!LIVE || !isPendingExportContext(context)) return false;
+    var aliases = { chatgpt: 'chatgpt', claude_ai: 'claude', whatsapp: 'chats', muse: 'muse', grok: 'grok' };
+    var values = body && body.pending_exports;
+    if (!body || body.account !== state.account || !Number.isSafeInteger(body.revision) || body.revision < 0 ||
+        !values || typeof values !== 'object' || Array.isArray(values) || Object.keys(values).length > 5 ||
+        Object.keys(body).some(function (key) { return !['account', 'revision', 'pending_exports'].includes(key); }) ||
+        Object.keys(values).some(function (key) {
+          return !Object.prototype.hasOwnProperty.call(aliases, key) || typeof values[key] !== 'string' ||
+            !/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(values[key]);
+        })) throw new Error('Grove returned invalid export reminders. Try again.');
+    if (body.revision < reminderRevision) return false;
+    var next = {};
+    Object.keys(values).sort().forEach(function (key) { next[aliases[key]] = values[key]; });
+    if (body.revision === reminderRevision && JSON.stringify(next) !== JSON.stringify(state.pendingExports)) {
+      throw new Error('Grove returned inconsistent export reminders. Try again.');
+    }
+    reminderRevision = body.revision;
+    state.pendingExports = next;
+    save();
+    return true;
+  }
+  function refreshPendingExports() {
+    if (!LIVE) return Promise.resolve(true);
+    var context = pendingExportContext();
+    return window.GroveLive.pendingExports().then(function (res) {
+      if (!isPendingExportContext(context)) return false;
+      if (!res.ok) throw new Error('Grove could not load your export reminders. Try again.');
+      return applyPendingExports(res.body, context);
+    });
+  }
 
   function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
@@ -252,7 +289,7 @@
       if(state.growthHistory.length>240)state.growthHistory=state.growthHistory.filter(function(p,i){return i===0||i===state.growthHistory.length-1||i%2===0;});
     }
     state.updatedAt = new Date().toISOString();
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); } catch (_) { /* continue in memory */ }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(LIVE ? Object.assign({}, state, {pendingExports:{}}) : state)); } catch (_) { /* continue in memory */ }
     announce();
     if (options && options.reload) requestReload();
   }
@@ -319,7 +356,7 @@
   }
   function updateSource(id) {var a=state.accountImports[id];if(!a)return Promise.resolve(getState());return importSource(a.source,{provider:id,label:a.label,name:a.name,kind:a.kind,update:true});}
   function acknowledgeChanges(){state.recentNodes=[];state.recentEdges=[];state.nodeDelta=0;state.edgeDelta=0;save();return getState();}
-  function cancelExport(id){delete state.pendingExports[id];save();return getState();}
+  function cancelExport(id){if(LIVE)return getState();delete state.pendingExports[id];save();return getState();}
   function seedRequests(){
     // Live mode: the questions come from the server (views-b); none are made from store titles.
     if(LIVE||!state.onboardingComplete||!fixture||!Object.keys(state.accountImports).length)return;
@@ -344,11 +381,20 @@
   function removeMcpClient(id){state.mcpClients=state.mcpClients.filter(function(c){return c.id!==id;});save();return getState();}
   function answerRequest(id,answer){var r=state.requests.find(function(r){return r.id===id;});var text=String(answer||'').trim().slice(0,2000);if(!r||!text)return getState();r.answer=text;r.status='answered';r.answeredAt=new Date().toISOString();save();return getState();}
   // Live mode: the last graph payload goes too, so no item of the session stays in memory.
-  function signOut(){state.auth=null;if(LIVE){liveSession++;live={selfId:null,nodes:[],edges:[]};}save();return getState();}
+  function signOut(){state.auth=null;if(LIVE){reminderEpoch++;reminderRevision=-1;state.pendingExports={};liveSession++;live={selfId:null,nodes:[],edges:[]};}save();return getState();}
   function saveGrowth(value){['focus','reading','avoid'].forEach(function(k){state.growth[k]=String(value[k]||'').trim().slice(0,1500);});state.growth.confirm=!!value.confirm;save();return getState();}
   function clearGrove(){var auth=state.auth,account=state.account,name=state.name,growth=state.growth;resetOnboarding();state.auth=auth;state.account=account;state.name=name;state.growth=growth;state.onboardingStep=1;save({reload:true});return getState();}
 
   function requestExport(id) {
+    if (LIVE) {
+      var context = pendingExportContext();
+      if (!isPendingExportContext(context)) return Promise.reject(new Error('Sign in to save an export reminder.'));
+      return window.GroveLive.requestExport(id).then(function (res) {
+        if (!isPendingExportContext(context)) return false;
+        if (!res.ok) throw new Error('Grove could not save your export reminder. Try again.');
+        return applyPendingExports(res.body, context);
+      });
+    }
     if (!HOSTS[id] && id!=='chats') return getState();
     state.pendingExports[id] = { requestedAt: new Date().toISOString() };
     save(); return getState();
@@ -376,6 +422,7 @@
   function completeTour() { state.tourComplete = true; save(); return getState(); }
   function resetOnboarding() {
     var before = currentCounts();
+    reminderEpoch++; reminderRevision = -1;
     importEpoch += 1; Object.keys(jobs).forEach(stopJob); state = freshState();
     state.nodeDelta = 0; state.edgeDelta = 0;
     save({ reload: before.nodes > 0 || before.edges > 0 }); return getState();
@@ -386,6 +433,7 @@
     if (!LIVE || !account) return false;
     var other = !!state.account && state.account !== account;
     if (other) resetOnboarding();
+    if (state.account !== account) { reminderEpoch++; reminderRevision = -1; state.pendingExports = {}; }
     state.account = String(account); save();
     return other;
   }
@@ -509,6 +557,8 @@
   };
 
   window.GroveSimulation = {
+    pendingExportContext: pendingExportContext, isPendingExportContext: isPendingExportContext,
+    applyPendingExports: applyPendingExports, refreshPendingExports: refreshPendingExports,
     addMcpClient:addMcpClient, removeMcpClient:removeMcpClient, acknowledgeChanges:acknowledgeChanges, addFile:addFile, removeFile:removeFile, updateSource:updateSource, cancelExport:cancelExport, saveGrowth:saveGrowth, clearGrove:clearGrove, getChanges:getChanges, getState: getState, getSources: getSources, setName: setName, setStep: setStep,
     importSource: importSource, completeOnboarding: completeOnboarding, completeTour: completeTour,
     signIn: signIn, signOut:signOut, bindAccount: bindAccount, resumeOnboarding: resumeOnboarding, answerRequest:answerRequest, disconnectSource: disconnectSource, disconnectHost: disconnectHost, resetOnboarding: resetOnboarding, connectHost: connectHost, requestExport: requestExport, connectGoogle: connectGoogle,

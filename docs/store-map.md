@@ -1751,6 +1751,8 @@ The signin lane owns any further column.
 | (none) | `next_sequence` | `int` | convention | S10: starts at 0; advanced by one direct SET |
 | (none) | `read_generation` | `int` | convention | D7: nonnegative operational capture generation; monotonic per mutating world transaction |
 | (none) | `seed_version` | `code` | convention |  |
+| (none) | `pending_export_requests` | `json_ids` | convention | At most five closed provider codes mapped to server UUIDv7 generations; at most 1024 UTF-8 bytes; absent means empty; no source text or consent |
+| (none) | `pending_export_revision` | `int` | convention | Reminder revision, 0 through 2^53-1; absent means 0; World metadata only |
 | (none) | `self_item_id` | `id` | convention | S40: the person's own item, set in the transaction that creates it; absent before |
 
 ### users

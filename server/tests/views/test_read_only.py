@@ -118,6 +118,7 @@ def assert_api_writer_boundary(files):
         # The app maps the shared refusal type without opening a writer operation.
         "app.py": {"grove.writer.errors"},
         "views.py": {"grove.writer.positions"},
+        "uploads.py": {"grove.writer.onboarding"},
         "auth.py": {"grove.writer.accounts", "grove.writer.errors"},
         "oauth.py": {"grove.writer.oauth"},
         # D14 remains an explicit authenticated API, never an import from the view package.
