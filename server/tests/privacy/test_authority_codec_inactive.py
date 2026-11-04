@@ -5,16 +5,18 @@ import subprocess
 import sys
 from pathlib import Path
 
-from grove.authority import codec, records, transitions
+from grove.authority import codec, legacy, records, transitions
 
-PURE = {"records.py", "codec.py", "transitions.py"}
+PURE = {"records.py", "codec.py", "transitions.py", "legacy.py"}
 FOUNDATION = {"__init__.py", "scalars.py", "capacity.py", "lease.py"}
+READERS = {"legacy_reader.py"}
 ROOT = Path(__file__).resolve().parents[2] / "grove"
 
 
 def test_exact_pure_and_foundation_sets_cover_every_authority_module():
-    assert {path.name for path in (ROOT / "authority").glob("*.py")} == PURE | FOUNDATION
+    assert {path.name for path in (ROOT / "authority").glob("*.py")} == PURE | FOUNDATION | READERS
     assert PURE.isdisjoint(FOUNDATION)
+    assert READERS.isdisjoint(PURE | FOUNDATION)
 
 
 def test_pure_modules_have_only_closed_imports_and_no_io_clock_environment_or_process():
@@ -65,12 +67,13 @@ def test_pure_modules_have_only_closed_imports_and_no_io_clock_environment_or_pr
         "fsync",
     }
     for name in sorted(PURE):
+        module_allowed = allowed | ({"datetime"} if name == "legacy.py" else set())
         tree = ast.parse((ROOT / "authority" / name).read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
-                assert all(alias.name in allowed for alias in node.names)
+                assert all(alias.name in module_allowed for alias in node.names)
             if isinstance(node, ast.ImportFrom):
-                assert node.module in allowed
+                assert node.module in module_allowed
             if isinstance(node, ast.Call):
                 called = (
                     node.func.attr
@@ -116,7 +119,7 @@ def test_plain_package_import_still_does_not_load_a_codec_or_lease():
 
 
 def test_api_outputs_expose_no_authorization_or_persistence_method():
-    for module in (codec, records, transitions):
+    for module in (codec, legacy, records, transitions):
         for name in (
             "authorize",
             "activate",
