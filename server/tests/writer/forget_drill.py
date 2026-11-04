@@ -16,7 +16,7 @@ from grove.writer.forget import read_inventory
 from grove.writer.forget_plan import WORLD_TABLES
 from grove.writer.forget_sources import ForgottenSource
 from grove.writer.history import Stamp, add_entry, add_text, row_json
-from grove.writer.ingest import write_chat_delta
+from grove.writer.ingest import EpisodeCut, write_chat_delta
 from grove.writer.restore import rebuild_in_place
 from grove.writer.sources import record_connector, record_episode, record_source
 from grove.writer.testing import refuse_real_world
@@ -522,7 +522,15 @@ def reimport_forget_drill(driver, fixture):
             connector_id=fixture["ids"]["connector"],
             parser_version="drill.v1",
             delta_keys=[m["key"] for m in payload["messages"]],
-            episodes=[],
+            episodes=[
+                EpisodeCut(
+                    payload["messages"][0]["key"],
+                    payload["messages"][-1]["key"],
+                    AT,
+                    AT,
+                    "drill.v1",
+                )
+            ],
             newest_at=AT,
         )
     except ForgottenSource:
