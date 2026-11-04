@@ -26,13 +26,13 @@ def pages(dist, make_app):
     return browser(make_app())
 
 
-def test_root_with_no_cookie_is_the_home_page(pages):
+def test_root_with_no_cookie_redirects_to_login(pages):
     response = pages.get("/")
-    assert response.status_code == 200
-    assert response.text == PAGES["home.html"]
-    assert response.headers["content-type"].startswith("text/html")
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["vary"] == "Cookie"
+    assert "set-cookie" not in response.headers
 
 
 def test_root_with_a_cookie_is_the_app_page_and_reads_no_store(dist, make_app):
@@ -72,7 +72,7 @@ def test_privacy_is_the_privacy_page(pages):
 
 @pytest.mark.parametrize(
     ("path", "name"),
-    [("/", "home.html"), ("/signin", "index.html"), ("/privacy", "privacy.html")],
+    [("/login", "index.html"), ("/signin", "index.html"), ("/privacy", "privacy.html")],
 )
 def test_a_missing_file_is_the_typed_404(path, name, dist, pages):
     (dist / name).unlink()

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from grove.api import (
     belief_tools,
@@ -80,11 +80,13 @@ def _add_web_pages(app: FastAPI, folder: str) -> None:
         return FileResponse(path, media_type="text/html", headers=headers)
 
     @app.get("/", include_in_schema=False)
-    def root(request: Request) -> FileResponse:
-        """No store read: with a cookie, the page itself asks the session and shows the sign-in
-        card on a 401."""
-        name = "index.html" if request.cookies.get(SESSION_COOKIE) else "home.html"
-        return page(name, {"Cache-Control": "no-store", "Vary": "Cookie"})
+    def root(request: Request) -> Response:
+        """Enter login directly without a cookie. With one, the app checks the session and
+        shows the sign-in card on a 401; this route never reads the store."""
+        headers = {"Cache-Control": "no-store", "Vary": "Cookie"}
+        if not request.cookies.get(SESSION_COOKIE):
+            return RedirectResponse("/login", status_code=303, headers=headers)
+        return page("index.html", headers)
 
     @app.get("/login", include_in_schema=False)
     @app.get("/signup", include_in_schema=False)

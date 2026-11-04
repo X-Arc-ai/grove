@@ -6,11 +6,12 @@ from grove.api.app import WEB_DIST_ENV, create_app
 
 
 def test_get_root_serves_the_built_page_when_the_folder_is_set(driver, tmp_path, monkeypatch):
-    # With no session cookie, GET / is the home page; tests/auth/test_pages.py has the rest.
-    (tmp_path / "home.html").write_text("<!doctype html><title>Grove</title>", encoding="utf-8")
+    # Anonymous root visits reach the account page without an intermediate landing page.
+    (tmp_path / "index.html").write_text("<!doctype html><title>Grove</title>", encoding="utf-8")
     monkeypatch.setenv(WEB_DIST_ENV, str(tmp_path))
     response = TestClient(create_app(driver=driver)).get("/")
     assert response.status_code == 200
+    assert response.url.path == "/login"
     assert response.headers["content-type"].startswith("text/html")
     assert response.text == "<!doctype html><title>Grove</title>"
 
