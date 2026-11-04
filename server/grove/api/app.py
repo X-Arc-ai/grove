@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
 from grove.api import connectors, health, mcp, oauth, pipedream, uploads, wellknown
+from grove.api.assets import add_public_assets
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
@@ -55,6 +56,8 @@ def _open_driver() -> Driver:
 
 
 def _add_web_pages(app: FastAPI, folder: str) -> None:
+    add_public_assets(app, Path(folder))
+
     def page(name: str, headers: dict[str, str] | None = None) -> FileResponse:
         path = Path(folder) / name
         if not path.is_file():
