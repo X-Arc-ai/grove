@@ -44,7 +44,7 @@ with open(os.path.join(here, "env.json"), "w") as out:
 with open(os.path.join(here, "fake.pid"), "w") as out:
     out.write(str(os.getpid()))
 shell = os.environ["SHELL"]
-if mode == "propose":
+if mode in ("propose", "propose_hold"):
     read = subprocess.run([shell, "-c", "brain pass"], capture_output=True, text=True)
     packet = json.loads(read.stdout)
     form = packet["batch_form"]
@@ -52,7 +52,15 @@ if mode == "propose":
     command = "brain propose <<'EOF'\\n" + json.dumps(form) + "\\nEOF"
     answer = subprocess.run([shell, "-c", command], capture_output=True, text=True).stdout
     print(json.dumps({{"type": "tool_use", "part": {{"tool": "bash"}}}}))
-    print(json.dumps({{"type": "text", "part": {{"text": json.loads(answer)["state"]}}}}))
+    state = json.loads(answer)["state"]
+    print(json.dumps({{"type": "text", "part": {{"text": state}}}}), flush=True)
+    if mode == "propose_hold":
+        # The request is saved; the pass exits only when the test releases it.
+        open(os.path.join(here, "proposed"), "w").close()
+        for _ in range(400):
+            if os.path.exists(os.path.join(here, "release")):
+                break
+            threading.Event().wait(0.05)
     sys.exit(0)
 if mode == "hang":
     child = subprocess.Popen(["/bin/sleep", "600"])
@@ -71,6 +79,20 @@ def wait_for(check, seconds: float):
             return value
         stop.wait(0.1)
     return check()
+
+
+def ended(record, count: int):
+    """A check for wait_for: the run records once the first `count` passes have ended. A saved
+    request is not an ended pass: its pass saves, then exits, and a stop between the two ends the
+    pass as stopped."""
+
+    def check():
+        runs = record()
+        if len(runs) >= count and all(run["outcome"] != "running" for run in runs[:count]):
+            return runs
+        return None
+
+    return check
 
 
 def alive(pid: int) -> bool:
@@ -235,7 +257,8 @@ def test_a_killed_runner_leaves_its_request_queued_and_the_next_pass_applies_it_
 ):
     world_id, app, loop_settings, record, fake_dir, token = rig
     request_id = queue_store(driver, world_id)
-    with Served(app(time_cap_seconds=4, lease_margin_seconds=2)) as served:
+    # The time cap leaves room for the held pass below; the lease is the cap plus the margin.
+    with Served(app(time_cap_seconds=8, lease_margin_seconds=2)) as served:
         settings = loop_settings(served.url, "hang")
         env = {
             "PATH": "/usr/bin:/bin",
@@ -265,17 +288,34 @@ def test_a_killed_runner_leaves_its_request_queued_and_the_next_pass_applies_it_
         assert request_state(driver, world_id, request_id).status == "applying"
         assert record()[0]["outcome"] == "running"
         (fake_dir / "child.pid").unlink()
-        runner = Runner(loop_settings(served.url, "propose", poll_seconds=1.0))
+        runner = Runner(loop_settings(served.url, "propose_hold", poll_seconds=1.0))
         thread = threading.Thread(target=runner.serve, daemon=True)
         thread.start()
         saved = wait_for(
             lambda: request_state(driver, world_id, request_id).api_state == "saved", 40
         )
+        # The order CI saw (run 41687472698), held on purpose: the request reads saved while
+        # its pass still runs. A stop here ended the pass as stopped; the pass must end first.
+        held = wait_for(lambda: (fake_dir / "proposed").exists(), 10)
+        running = [run["outcome"] for run in record()] == ["abandoned", "running"]
+        (fake_dir / "release").write_text("")
+        runs = wait_for(ended(record, 2), 30)
+        # The runner still polls: the curator job that the Learner pass enqueued can start a
+        # third pass. A read after one more poll holds that record too, so the checks below
+        # look at the two Learner passes and at what came after them, never at the whole list.
+        threading.Event().wait(1.5)
+        later = record()
         runner.stopping.set()
         thread.join(timeout=30)
-    assert saved
-    runs = record()
-    assert [run["outcome"] for run in runs] == ["abandoned", "ok"]
+    assert saved and held and running
+    for seen in (runs, later):
+        assert seen
+        assert [(run["agent"], run["outcome"]) for run in seen[:2]] == [
+            ("learner", "abandoned"),
+            ("learner", "ok"),
+        ]
+        # Applied once: no later Learner pass took the request again.
+        assert all(run["agent"] != "learner" for run in seen[2:])
     items = WorldQuery(driver, world_id).read(
         "MATCH (i:Item {title: 'Lina Okafor'}) RETURN i.id AS id"
     )
@@ -305,10 +345,10 @@ def test_a_store_behind_a_running_curator_pass_starts_a_learner_within_60_second
         saved = wait_for(
             lambda: request_state(driver, world_id, request_id).api_state == "saved", 70
         )
+        runs_seen = wait_for(ended(record, 2), 30)
         runner.stopping.set()
         thread.join(timeout=30)
-    assert saved
-    runs_seen = record()
+    assert saved and runs_seen
     assert [(r["agent"], r["outcome"]) for r in runs_seen[:2]] == [
         ("curator", "preempted"),
         ("learner", "ok"),
