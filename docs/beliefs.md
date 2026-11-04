@@ -49,7 +49,8 @@ the active run and the complete contradiction and support queues. A concurrent c
 packet read and commit therefore refuses the batch. The adapter orders each conflict's cited
 operations before its resolution, and all conflict resolutions before later maintenance work.
 Every resolution records a reason. A conflict open for seven days must become a question with
-both readings. A `to_question` resolution cannot carry an operation that changes the standing
+two distinct readings and at least one retained source in `checked_source_ids`.
+A `to_question` resolution cannot carry an operation that changes the standing
 claim. The question is created by the writer in the same transaction.
 
 The pass cannot end `ok` with an open contradiction or pending support change. It becomes a
@@ -62,6 +63,57 @@ The Connector cites the retained evidence and the judgments returned by the code
 read/judge tools. It must not manufacture a judgment ID, source timestamp, source type, or
 confidence. A re-test supplies its observation to `evidence` and its writer payload to
 `dispositions`. Each due re-test and each computed drift needs a recorded disposition.
+
+`brain judge` and `brain retest` accept JSON on standard input using the same quoted heredoc
+form as `brain propose`. Their internal API routes use the active pass token and its world.
+Neither route accepts source text, a caller verdict, or a caller confidence.
+
+| Command and mode | Input fields | Writer consumer |
+|---|---|---|
+| `brain judge`, `evidence` | `mode`, `belief_id`, and either `evidence_id` or `source_id` with `locator` | Recorded `judgment_ids` for a source or active evidence row. |
+| `brain judge`, `same_belief` | `mode`, `survivor`, `absorbed` | `merge_beliefs.judgment_ids`. |
+| `brain judge`, `field_fit` | `mode`, `title`, `subject_refs`, `externally_testable: true`, `retest_how` | `mint_belief.judgment_ids` and the returned `field_subject`. |
+| `brain retest` | Only `belief_id` | `read.observation` in `evidence`; one `retest_belief` in `dispositions`. |
+
+The supported external method is stored as `retest_how` with `connector` and `locator`.
+The connector must be `web_pages`, and its JSON scope must contain the exact HTTPS URL.
+Code checks DNS, pins the connection, limits the response, refuses redirects, screens the text,
+and stores the source and episode before two model calls. The writer checks the stored connector
+and external locator again. The helper returns `judgment_ids`, `model_call_ids`, `verdicts`,
+`correlated`, and `read`. The agent cites these records; it does not resubmit the verdicts.
+The evidence-mode verdicts are `supports`, `contradicts`, `complements`, and `not_about_claim`.
+`complements` means a compatible additional fact, not evidence that overturns the claim.
+
+For example, this is the tool command form:
+
+```sh
+brain retest <<'EOF'
+{"belief_id":"<belief-id>"}
+EOF
+```
+
+Copy the returned `read.observation` into the envelope's `evidence` array. Preserve its `ev_id`,
+which is exactly `retest:<belief_id>:<source_id>`. A disposition has the following shape:
+
+```json
+{
+  "op": "retest_belief",
+  "op_id": "retest-service",
+  "target": "<belief-id>",
+  "pieces": [{"ev_id": "<returned-ev-id>", "judgment_id": "<first-judgment-id>"}],
+  "second_judge": ["<second-judgment-id>"],
+  "recheck_by": "<future-ISO-time>",
+  "reason": "The declared source was read and both judgments were recorded."
+}
+```
+
+The writer derives the disposition from the recorded calls. Supporting judgments can advance
+`last_confirmed`; contrary judgments can weaken the belief without advancing it. A disagreement
+creates a contradiction without adding contrary evidence or changing the belief state. Completed
+checks refresh `recheck_by`. A new open contradiction prevents `end_pass` from returning `ok`;
+the Connector must read and resolve it before it can claim success.
+Matching `complements` or `not_about_claim` judgments create no evidence and leave the belief and
+`last_confirmed` unchanged. The writer records the outcome, check time, and reason on the belief.
 
 The D4 generic `verify` operation still refuses belief claims. `retest_belief` is the separate
 D9 path. The same source read must supply dispositions for the other claims it tested. A
@@ -96,6 +148,9 @@ meaning. Reads must keep world scope and the existing privacy checks.
 
 Ontology hygiene, record compression, and the walk between areas are P1 work. This core envelope
 does not silently accept those sections. Its refusal does not establish their acceptance.
+The D6 dependent planner remains a separate acceptance dependency. The current packet exposes
+incoming dependents, and support dispositions can record gaps. This is not yet the required
+call to the shared cascade planner. Integration must follow the accepted walk merge on develop.
 
 `server/tests/consolidation` exercises idle triggers, queue completion, run binding, world
 isolation, escaped complete histories, API refusal paths, question creation, and a concurrent
