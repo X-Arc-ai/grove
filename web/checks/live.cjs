@@ -17,7 +17,7 @@ const KIND={company:'organisation',project:'plan',client:'place',pattern:'assump
 function liveWorld(){
   const nodes=synthetic.elements.nodes.map(w=>Object.assign({},w.data,{type:KIND[w.data.type]||w.data.type}));
   nodes.push(Object.assign({},nodes[0],{id:'k001',label:'Sourdough method',type:'recipe',summary:'A recipe kind the sim does not know'}));
-  return {nodes,edges:synthetic.elements.edges.map(w=>Object.assign({},w.data)),selfId:'p001',positions:{},session:true,code:'246810'};
+  return {nodes,edges:synthetic.elements.edges.map(w=>Object.assign({},w.data)),selfId:'p001',positions:{},session:true,code:'246810',account:'acct-default',hasItems:true};
 }
 function makeServer(world){
   const calls=[];
@@ -342,7 +342,7 @@ function legendRows(elements){
     assert.equal(call.path,'/v1/auth/email/start');assert.equal(call.method,'POST');assert.deepStrictEqual(call.body,{email:'anas@example.com'});assert.equal(call.init.headers['Content-Type'],'application/json');
     assert.equal(p.ui.authStage,'code');assert(p.html().includes('Check your inbox'));assert(!/482|use-code|gp-email-preview/.test(p.html()),'No code hint');
     await p.verifyEmail('000000');call=sv.calls[sv.calls.length-1];assert.equal(call.path,'/v1/auth/email/verify');assert.deepStrictEqual(call.body,{email:'anas@example.com',code:'000000'});
-    assert.equal(A.getState().auth,null);assert(p.ui.error.includes('code doesn’t match'));
+    assert.equal(A.getState().auth,null);assert(p.ui.error.includes('invalid or expired'));
     await p.verifyEmail('246810');assert.equal(A.getState().auth.provider,'email');assert.equal(A.getState().auth.email,'anas@example.com');assert.equal(p.ui.authStage,null);
     p.handle('logout');await settle();call=sv.calls[sv.calls.length-1];assert.equal(call.path,'/v1/auth/logout');assert.equal(call.method,'POST');
     assert.equal(A.getState().auth,null);assert.equal(p.ui.authStage,'signin');assert(sv.calls.every(c=>c.init.credentials==='same-origin'));
@@ -412,7 +412,7 @@ function legendRows(elements){
   //     panels close, the sign-in card shows, and the graph leaves memory and the screen. Each live
   //     call can be the one: a graph reload, the 3-minute poll, a node detail, a position save.
   const ALL_FILES=['live.js','layout-keep.js','simulation.js','native-app.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'];
-  const signedInStore=()=>({'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,auth:{provider:'email',email:'sam.reyes@example.org'},name:'Sam',onboardingComplete:true,onboardingStep:4,tourComplete:true})});
+  const signedInStore=()=>({'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,account:'acct-default',auth:{provider:'email',email:'sam.reyes@example.org'},name:'Sam',onboardingComplete:true,onboardingStep:4,tourComplete:true})});
   async function sessionPage(w,store,prepare){
     const sv=makeServer(w),st=store||signedInStore(),pg=page(sv,st,ALL_FILES,HOOK,null,prepare);let heard=0;
     pg.sandbox.addEventListener('grove:unauthenticated',()=>heard++);await settle();
@@ -712,7 +712,7 @@ function legendRows(elements){
     t.p.handle('logout');await settle();assertCleared(t,'logout with a read out');assert.equal(t.heard(),0);
     await t.p.startEmail('robin.vale@example.org');assert.equal(t.p.ui.authStage,'code','The code step shows');
     late[0](t.sv.typed(401,'unauthenticated','Sign in to continue'));await settle();
-    assert.equal(t.heard(),1,'The late 401 is heard');assert.equal(t.p.ui.authStage,'code','The late 401 keeps the code step');assert.equal(t.p.ui.email,'robin.vale@example.org','The late 401 keeps the typed email');
+    assert.equal(t.heard(),0,'The old session 401 is ignored');assert.equal(t.p.ui.authStage,'code','The late 401 keeps the code step');assert.equal(t.p.ui.email,'robin.vale@example.org','The late 401 keeps the typed email');
     assert(t.p.html().includes('Check your inbox')&&t.p.html().includes('robin.vale@example.org'),'The card still asks for the code');
   }
   // 6p. A session that ends with a node open or under the pointer: the poll of the next session
@@ -872,10 +872,10 @@ function legendRows(elements){
     assert(/#gp-session-note\s*\{[^}]*z-index:101/.test(read('product.css')),'The note stands over the loading cover');
   }
   for(const [label,fail] of [['a 503',{sessionStatus:503}],['a 500',{sessionStatus:500}],['a failed request',{sessionThrows:true}]]){
-    // Signed in here: the local state stays, the map shows, and the note says what failed.
+    // Cached sign-in: retain its state but cover the map until the server verifies it.
     const w=liveWorld();Object.assign(w,fail);
     const t=await sessionPage(w);
-    assertSignedIn(t,label+' at load, signed in here');
+    assert(t.S.getState().auth,label+': cached identity is not a new verification');assert.equal(t.p.ui.authStage,'checking',label+': the verification cover stays');
     assert.equal(t.S.getState().auth.email,'sam.reyes@example.org',label+': the local sign-in stays');assert.equal(JSON.parse(t.st['grove-minimal-codex-v3']).auth.email,'sam.reyes@example.org',label+': local storage keeps the sign-in');
     assert.equal(t.S.getState().name,'Sam',label+': the local name stays');
     assert.equal(t.p.sessionNote.hidden,false,label+': the note shows');assert.equal(t.p.sessionNote.textContent,OFFLINE,label+': the note holds the offline text');
@@ -893,7 +893,7 @@ function legendRows(elements){
     assert.equal(t.p.ui.authStage,'signin',label+': the card leaves the waiting step');assert(t.p.html().includes('Continue with Google'),label+': the sign-in options show');
     assert.deepStrictEqual(cardAlerts(t.form),[OFFLINE],label+': the card shows the offline text');
     assert.equal(t.p.sessionNote.hidden,true,label+': the card holds the text, not the note');
-    assert.equal(t.S.getState().name,'Sam',label+': the local state stays');assert.deepStrictEqual(t.pg.errors,[],label+': no error');
+    assert.equal(t.S.getState().name,'',label+': anonymous state keeps no name');assert.deepStrictEqual(t.pg.errors,[],label+': no error');
     // The service comes back and the 3-minute poll fires: with nobody signed in here it reads
     // nothing, so no graph goes behind the card and no position is saved.
     Object.assign(w,{sessionStatus:0,sessionThrows:false});
@@ -1132,7 +1132,7 @@ function legendRows(elements){
   }
 
   // 6ab. The sign-in slice on the page: what the server's answers and the address decide.
-  const COPY={google:'Google sign-in did not finish. Try again.',tooMany:'Too many codes for this address. Try again in a few minutes.'};
+  const COPY={google:'Google sign-in did not finish. Try again.',tooMany:'Please wait a few minutes before you request another code.'};
   const storedPerson=extra=>({'grove-minimal-codex-v3':JSON.stringify(Object.assign({version:3,schema:4,auth:null,name:'Sam',growth:{focus:'Sam likes long walks',reading:'',avoid:'',confirm:true},files:{notes:[{name:'sam-notes.txt'}]},onboardingComplete:true,onboardingStep:4,tourComplete:true},extra))});
   // A page at an address: env.search and env.pathname, with a history that records each new address.
   function signinPage(w,st,where){
@@ -1204,9 +1204,9 @@ function legendRows(elements){
   };
   {
     // Another account: the earlier person's local state goes before the sign-in completes.
-    const w=Object.assign(signedOutWorld(),{account:'acct-b',method:'email',graphStatus:0});w.session=false;
+    const w=Object.assign(signedOutWorld(),{account:'acct-b',method:'email',graphStatus:0,hasItems:false});w.session=false;
     const t=signinPage(w,storedPerson({account:'acct-a'}));await settle();
-    assert.equal(t.S.getState().account,'acct-a','The stored account waits for a sign-in');assert.equal(t.S.getState().name,'Sam');
+    assert.equal(t.S.getState().account,null,'Anonymous state has no current account');assert.equal(t.S.getState().name,'');
     t.p.ui.nameDraft='Sam';t.p.ui.growthDraft={focus:'Sam likes long walks'};t.p.ui.noteDraft={title:'Sam',body:'Sam'};
     await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');
     assert.equal(t.S.getState().account,'acct-b','The new account binds');noTraceOfSam(t,'email, another account');
@@ -1217,23 +1217,23 @@ function legendRows(elements){
     // The same in one page: the first person logs out, the next signs in.
     const onePage=signinPage(Object.assign(liveWorld(),{account:'acct-a',method:'email'}),storedPerson({account:'acct-a',auth:{provider:'email',email:'sam.reyes@example.org'}}),{pathname:'/'});await settle();
     assert.equal(onePage.S.getState().name,'Sam','The same account keeps its local state');assert.equal(onePage.p.ui.authStage,null);
-    onePage.p.handle('logout');await settle();assert.equal(onePage.p.ui.authStage,'signin');assert.equal(onePage.S.getState().account,'acct-a','A logout keeps the stored account');assert.equal(onePage.S.getState().name,'Sam');
+    onePage.p.handle('logout');await settle();assert.equal(onePage.p.ui.authStage,'signin');assert.equal(onePage.S.getState().account,null,'Logout clears the current account');assert.equal(onePage.S.getState().name,'');
     onePage.w.account='acct-b';await onePage.p.startEmail('robin.vale@example.org');await onePage.p.verifyEmail('246810');
     noTraceOfSam(onePage,'one page, the next person');assert.equal(onePage.S.getState().account,'acct-b');
     // The way back on load (a session of another person, with a local sign-in of the first): reset too.
     const load=signinPage(Object.assign(liveWorld(),{account:'acct-b',method:'google'}),storedPerson({account:'acct-a',auth:{provider:'email',email:'sam.reyes@example.org'}}),{pathname:'/'});await settle();
     noTraceOfSam(load,'on load');assert.equal(load.S.getState().auth.provider,'google','The new session signs in');assert.equal(load.S.getState().auth.email,'','The first address is gone');assert.equal(load.S.getState().account,'acct-b');
-    // The same account after a logout: nothing resets.
+    // The same account after logout keeps no private content.
     const again=signinPage(Object.assign(signedOutWorld(),{account:'acct-a',graphStatus:0}),storedPerson({account:'acct-a'}));await settle();
     again.w.session=false;await again.p.startEmail('sam.reyes@example.org');await again.p.verifyEmail('246810');
-    assert.equal(again.S.getState().name,'Sam','The same account keeps its name');assert.equal(again.S.getState().growth.focus,'Sam likes long walks');
-    // No stored account (an older page): binds with no reset.
+    noTraceOfSam(again,'same account after logout');
+    // No stored account (an older page): unbound content is cleared.
     const older=signinPage(Object.assign(liveWorld(),{account:'acct-a'}),storedPerson({auth:{provider:'email',email:'sam.reyes@example.org'}}),{pathname:'/'});await settle();
-    assert.equal(older.S.getState().account,'acct-a','An absent stored account binds');assert.equal(older.S.getState().name,'Sam','An absent stored account resets nothing');
+    assert.equal(older.S.getState().account,'acct-a','An absent stored account binds');assert.equal(older.S.getState().name,'','An absent stored account cannot own cached content');
     assert.equal(JSON.parse(older.st['grove-minimal-codex-v3']).account,'acct-a','The account is in local storage');
-    // An answer with no account changes nothing.
+    // A different verified default account clears the old account.
     const none=signinPage(liveWorld(),storedPerson({account:'acct-a',auth:{provider:'email',email:'sam.reyes@example.org'}}),{pathname:'/'});await settle();
-    assert.equal(none.S.getState().account,'acct-a');assert.equal(none.S.getState().name,'Sam');
+    assert.equal(none.S.getState().account,'acct-default');assert.equal(none.S.getState().name,'');
   }
   {
     // Resume: a world with items on a browser with nothing in progress opens the map.

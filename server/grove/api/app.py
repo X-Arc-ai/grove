@@ -86,8 +86,12 @@ def _add_web_pages(app: FastAPI, folder: str) -> None:
         name = "index.html" if request.cookies.get(SESSION_COOKIE) else "home.html"
         return page(name, {"Cache-Control": "no-store", "Vary": "Cookie"})
 
+    @app.get("/login", include_in_schema=False)
+    @app.get("/signup", include_in_schema=False)
+    @app.get("/logout", include_in_schema=False)
     @app.get("/signin", include_in_schema=False)
     def signin() -> FileResponse:
+        """Public account screens; only POST /v1/auth/logout revokes a session."""
         return page("index.html", {"Cache-Control": "no-store"})
 
     @app.get("/privacy", include_in_schema=False)
