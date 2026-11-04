@@ -555,6 +555,21 @@ CONNECTORS = Table(
             "(ingest-a1); one row per world, type and provider",
         ),
         _col("auth reference", "code"),
+        _ruling("instance_key", "code", "opaque identity of one selected calendar or repository"),
+        _ruling(
+            "credential_ciphertext",
+            "code",
+            "AES-GCM sealed provider tokens; key held outside the store",
+        ),
+        _ruling("connection_status", "code", "pending, connected or disconnected"),
+        _ruling("oauth_state_hash", "code", "single-use SHA256 of pending consent state"),
+        _ruling("oauth_expires_at", "instant", "pending consent deadline"),
+        _ruling("sync_cursor", "code", "provider cursor, separate from the message-time watermark"),
+        _ruling(
+            "event_versions", "json_ids", "bounded event and field fingerprints; no event text"
+        ),
+        _ruling("sync_owner", "id", "owner of the current bounded sync lease"),
+        _ruling("sync_until", "instant", "sync lease deadline"),
         _col("scope", "json_ids", note="an allowlist compiled into the read (D14)"),
         _col("settings", "json_ids", note="calendar log mode, calendar id, from date, days logged"),
         _col("batch rule", "code"),
@@ -582,7 +597,7 @@ CONNECTORS = Table(
         ),
         *_version_touched(),
     ),
-    uniques=_keys("connectors", ("id",)),
+    uniques=_keys("connectors", ("id",), ("world_id", "provider", "instance_key")),
     indexes=_ranges("connectors", ("world_id", "type")),
     notes="S27: parser, locator format, source-type mapping and speaker rules are code, not rows.",
 )

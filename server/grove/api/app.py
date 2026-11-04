@@ -6,6 +6,7 @@ privacy.html and consent.html): the API image builds them and sets it, and a loc
 too. The consent page is read from it at each /authorize, so a page built later needs no restart.
 """
 
+import asyncio
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
@@ -15,7 +16,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 
-from grove.api import health, mcp, oauth, uploads, wellknown
+from grove.api import connectors, health, mcp, oauth, uploads, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
@@ -38,6 +39,7 @@ NO_STORE_PATHS = (
     AUTH_PREFIX,
     INTERNAL_PREFIX,
     uploads.PREFIX,
+    connectors.PREFIX,
     *OAUTH_PATHS,
     "/.well-known/",
 )
@@ -84,6 +86,7 @@ def create_app(
     oauth_deps: OAuthDeps | None = None,
     runner_auth: RunnerAuth | None = None,
     pass_settings: PassSettings | None = None,
+    connector_deps: connectors.ConnectorDeps | None = None,
 ) -> FastAPI:
     """With a driver, the caller owns it: the app never closes it. With no mailer or google_http,
     sign-in loads the real one at first use. world_id_for gives a test its own t_ worlds.
@@ -92,15 +95,27 @@ def create_app(
     With no runner_auth, the internal routes read GROVE_GATEWAY_SECRET and
     GROVE_RUNNER_TOKEN_SHA256 at first use."""
     settings = settings or load_api_settings()
+    connector_config = connector_deps or connectors.ConnectorDeps()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Opening a driver does not connect, so the API starts while the store is still down.
         if driver is None:
             app.state.driver = driver_factory()
+        poll_stop = asyncio.Event()
+        poll_task = None
+        if os.environ.get("GROVE_CONNECTOR_POLL") == "1":
+            from grove.connectors.poll import run_poll
+
+            poll_task = asyncio.create_task(
+                run_poll(app.state.driver, settings, connector_config, poll_stop)
+            )
         try:
             yield
         finally:
+            poll_stop.set()
+            if poll_task is not None:
+                await poll_task
             if driver is None:
                 app.state.driver.close()
 
@@ -120,6 +135,7 @@ def create_app(
     app.state.mcp_tools = tuple(DEFAULT_TOOLS if mcp_tools is None else mcp_tools)
     app.state.runner_auth = runner_auth
     app.state.pass_settings = pass_settings
+    app.state.connectors = connector_config
     if driver is not None:
         app.state.driver = driver
     install_error_handlers(app)
@@ -140,6 +156,7 @@ def create_app(
     app.include_router(mcp.router)
     app.include_router(router)
     app.include_router(uploads.router)
+    app.include_router(connectors.router)
     app.include_router(auth_router)
     app.include_router(internal_router)
     folder = os.environ.get(WEB_DIST_ENV)
