@@ -59,6 +59,7 @@ def test_every_view_read_runs_in_read_mode_only(driver, world):
         create_app(driver=guarded), raise_server_exceptions=False, cookies={SESSION_COOKIE: token}
     )
     for path in (
+        "/v1/privacy",
         "/v1/views/session",
         "/v1/views/graph",
         "/v1/views/graph?as_of=2026-10-01T00:00:00Z&known_as_of=2026-10-01T00:00:00Z",
@@ -111,11 +112,18 @@ def test_the_views_package_never_imports_the_writer():
         assert not any(name.startswith("grove.writer") for name in imports_of(path)), path.name
 
 
-def test_the_api_reaches_the_writer_only_for_positions_sign_in_oauth_and_the_brain_cli():
+def test_the_api_reaches_only_explicit_writer_operations():
     allowed = {
         "views.py": {"grove.writer.positions"},
         "auth.py": {"grove.writer.accounts", "grove.writer.errors"},
         "oauth.py": {"grove.writer.oauth"},
+        # D14 remains an explicit authenticated API, never an import from the view package.
+        "forget.py": {
+            "grove.writer.forget",
+            "grove.writer.forget_approvals",
+            "grove.writer.forget_ledger",
+            "grove.writer.errors",
+        },
         # brain propose and brain finish of a live pass (runner): the writer's public API, the
         # run record's account of a proposal, a receipt for the agent, the request id check.
         "internal.py": {"grove.writer", "grove.writer.receipts", "grove.writer.requests"},
