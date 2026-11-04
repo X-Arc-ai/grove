@@ -151,7 +151,7 @@ function legendRows(elements){
   // 1. live.js: one endpoint map, same-origin fetch helpers, positions in batches of 5000.
   {
     const server=makeServer(liveWorld()),pg=page(server,{},['live.js']),G=pg.sandbox.GroveLive;
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',positions:'/v1/views/positions',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',positions:'/v1/views/positions',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
     const res=await G.getJSON('/v1/views/health');assert(res.ok&&res.body.overall.state==='healthy');
     assert.equal(server.calls[0].method,'GET');assert.equal(server.calls[0].init.credentials,'same-origin');
     const many=[];for(let i=0;i<12000;i++)many.push({id:i<11990?synthetic.elements.nodes[i%222].data.id:'x'+i,x:i,y:-i});
@@ -261,7 +261,76 @@ function legendRows(elements){
 
   // 6. Sign-in in live mode (product.js): session check, Google, Apple, email code, logout.
   const AUTH_FILES=['live.js','simulation.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'];
-  const HOOK='  window.productTest={ui,handle,chooseSignIn,startEmail,verifyEmail,render,modalRoot,tourRoot,sessionNote,html:()=>modalRoot.innerHTML};render(true);';
+  const HOOK='  window.productTest={ui,handle,bind,chooseSignIn,startEmail,verifyEmail,render,modalRoot,tourRoot,sessionNote,html:()=>modalRoot.innerHTML};render(true);';
+
+  // The real setup must never turn a browser-local flag into a connection receipt.
+  {
+    const failures=[];
+    const check=async(name,run)=>{try{await run();console.log('PASS onboarding: '+name);}catch(e){failures.push(name+': '+e.message);console.error('FAIL onboarding: '+name+': '+e.message);}};
+    const held={version:3,schema:4,account:'setup-account',auth:{provider:'email',email:'robin@example.test'},onboardingStep:1,onboardingComplete:false,tourComplete:true,pendingExports:{chatgpt:{requestedAt:'2026-11-01T00:00:00Z'}},connectedHosts:['muse'],hostConnected:true,mcpClients:[{id:'cached-app',name:'Cached app'}]};
+    const stored={'grove-minimal-codex-v3':JSON.stringify(held)};
+    const w=Object.assign(liveWorld(),{account:'setup-account',hasItems:false}),sv=makeServer(w);
+    const pg=page(sv,stored,AUTH_FILES,HOOK),p=pg.sandbox.productTest,S=pg.sandbox.GroveSimulation;
+    await settle();
+    const snapshot=()=>JSON.stringify(['sources','accountImports','pendingExports','connectedHosts','mcpClients','files'].map(k=>S.getState()[k]));
+    await check('skip preserves unfinished work',async()=>{
+      const before=snapshot(),calls=sv.calls.length;
+      for(let step=1;step<=3;step++){
+        assert.equal(p.ui.step,step);
+        assert(/data-action="skip"[^>]*>Skip for now</.test(p.html()),'visible Skip for now at step '+step);
+        assert(!/data-import=|data-integration=|data-file=|data-files-form|data-note-form/.test(p.html()),'unfinished actions are not offered in live setup');
+        p.handle('skip');await settle();
+        assert.equal(snapshot(),before,'skip changes no source, pending export or connection');
+        assert.equal(S.getState().onboardingComplete,false,'skip does not complete onboarding');
+      }
+      assert.equal(sv.calls.length,calls,'skip sends no request');
+    });
+    p.ui.step=4;p.render(true);
+    await check('same-origin MCP URL and copy',async()=>{
+      assert.equal(pg.sandbox.GroveLive.ENDPOINTS.mcp,'/mcp');
+      pg.sandbox.location.href='https://app.grove.x-arc.ai/signin?next=x';
+      assert.equal(pg.sandbox.GroveLive.mcpUrl(),'https://app.grove.x-arc.ai/mcp');
+      pg.sandbox.location.href='http://grove.test/';
+      assert(p.html().includes('value="http://grove.test/mcp"'),'the visible URL uses the current origin');
+      let copied;pg.sandbox.navigator.clipboard={writeText:text=>{copied=text;return Promise.resolve();}};
+      p.handle('copy-mcp');await settle();assert.equal(copied,'http://grove.test/mcp');
+    });
+    await check('cached host and custom app are not receipts',async()=>{
+      assert(!/is-connected|Grove is connected|Cached app|data-mcp-form|data-mcp-remove/.test(p.html()),'cached flags cannot claim a connection');
+      const reload=page(sv,stored,AUTH_FILES,HOOK);await settle();reload.sandbox.productTest.ui.step=4;reload.sandbox.productTest.render(true);
+      assert(!/is-connected|Grove is connected|Cached app|data-mcp-form/.test(reload.sandbox.productTest.html()),'reload cannot restore false success');
+    });
+    await check('Muse action opens directions without a local connection',async()=>{
+      const before=snapshot(),host=makeElement('button');host.dataset.hostInline='muse';
+      p.modalRoot.querySelectorAll=selector=>selector==='[data-host-inline]'?[host]:[];
+      p.bind();host.onclick();
+      assert(p.html().includes('Muse Desktop'),'Muse directions are visible');
+      assert(p.html().includes('consent'),'the real consent step is explicit');
+      assert(p.html().includes('http://grove.test/mcp'));
+      assert(!/data-action="host-connect"|Grove is with you/.test(p.html()));
+      assert.equal(snapshot(),before,'selecting Muse changes no connection state');
+      p.handle('host-connect');assert.equal(snapshot(),before,'the old action cannot fabricate a live connection');
+      p.handle('host-back');assert(p.html().includes('Take Grove with you'));
+    });
+    await check('Muse source shortcut also opens real directions',async()=>{
+      const before=snapshot(),entry=makeElement('button');entry.dataset.guide='muse';
+      p.modalRoot.querySelectorAll=selector=>selector==='[data-guide]'?[entry]:[];
+      p.bind();entry.onclick();
+      assert(p.html().includes('Muse Desktop')&&p.html().includes('consent'));
+      assert(!p.html().includes('data-import="muse"'),'the source shortcut offers no simulated Muse import');
+      assert.equal(snapshot(),before,'the shortcut creates no import or connection');
+      p.handle('host-back');
+    });
+    await check('simulation still connects locally',async()=>{
+      const fixturePage=page(makeServer(liveWorld()),{},['simulation.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'],HOOK,null,(el,env)=>{env.globals.GROVE_FIXTURE=synthetic;});
+      const f=fixturePage.sandbox.productTest,A=fixturePage.sandbox.GroveSimulation;
+      A.signIn('email','robin@example.test');f.ui.authStage=null;f.ui.step=4;f.render(true);
+      const host=makeElement('button');host.dataset.hostInline='muse';f.modalRoot.querySelectorAll=selector=>selector==='[data-host-inline]'?[host]:[];
+      f.bind();host.onclick();assert(A.getState().connectedHosts.includes('muse'));assert(f.html().includes('Grove is connected'));assert(f.html().includes('data-mcp-form'));
+    });
+    assert.deepStrictEqual(failures,[],'truthful setup regressions');
+  }
+
   {
     const w=liveWorld();w.session=false;const sv=makeServer(w),st={},pg=page(sv,st,AUTH_FILES,HOOK),p=pg.sandbox.productTest,A=pg.sandbox.GroveSimulation;
     assert.equal(p.ui.authStage,'checking');assert(p.html().includes('gp-auth-loading'),'The sign-in card waits for the session');

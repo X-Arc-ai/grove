@@ -8,6 +8,7 @@
 
   // Every server path the views call. Nothing else in web/ names a server path.
   var ENDPOINTS = {
+    mcp: '/mcp',
     session: '/v1/views/session',
     graph: '/v1/views/graph',
     node: '/v1/views/node/',
@@ -133,6 +134,7 @@
 
   window.GroveLive = {
     ENDPOINTS: ENDPOINTS,
+    mcpUrl: function () { return new URL(ENDPOINTS.mcp, window.location.href).href; },
     PAGES: PAGES,
     KIND_STYLE: KIND_STYLE,
     getJSON: getJSON,
