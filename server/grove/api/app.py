@@ -16,7 +16,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from grove.api import cascade, connectors, health, mcp, oauth, uploads, wellknown
+from grove.api import cascade, connectors, health, mcp, oauth, pipedream, uploads, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
@@ -194,6 +194,7 @@ def create_app(
     app.include_router(router)
     app.include_router(uploads.router)
     app.include_router(connectors.router)
+    app.include_router(pipedream.router)
     app.include_router(auth_router)
     app.include_router(internal_router)
     app.include_router(cascade.router)
