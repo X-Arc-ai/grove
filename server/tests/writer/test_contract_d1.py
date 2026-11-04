@@ -725,7 +725,7 @@ def git_observation(driver, world_id: str, ev_id: str, line: int) -> dict:
         line,
         locator=f"key:{GIT_TOKEN}",
         message_key=GIT_TOKEN,
-        statement_class="report_happened",
+        statement_class="artifact",
     )
 
 

@@ -257,14 +257,14 @@ not prove that a stored value follows that type.
 | Glimmer's idle time and cold starts bill on Modal and not in `model_calls`, and the workspace has no spend limit. The server stops after one idle minute, but one call after a quiet time costs about 0.26 USD of GPU at the H100 price: a cold start of about three minutes and the idle minute. So a call every four minutes bills a GPU all day, about 95 USD, and triage continues at the ceiling. A later lane that sends Glimmer a steady stream must batch it. `modal billing report` shows the true spend. | 2659 | `ingest-b`, `deploy-b` |
 | The person's own item. The views read an optional `World.self_item_id` and mark that item as the person's own (`self_item_id` in the session and graph answers). Closed by `signin` (S40): the `worlds` row has the column, and the first sign-in writes it in the transaction that makes the item. | none; a build fact | `signin` |
 | `docs/data-flow.md` marks a path Runs or Planned, and `web/build.py` builds the privacy page's table from it. A lane whose path starts to run with a person's data changes its row to Runs in the same PR: past AI conversation uploads (Runs since `ingest-a1`), WhatsApp, voice notes, notes, files and images (`ingest-a2`), the calendar (`ingest-a3`), model calls (`ingest-b`), evidence packets (`hosts-b`). | none; a build fact | `ingest-a2`, `ingest-a3`, `ingest-b`, `hosts-b` |
-| The privacy page has no statement on Google's API Services User Data Policy or its Limited Use requirements. The calendar consent asks a sensitive scope, so the lane of the calendar consent adds it before that consent goes to Google's review. | none; a build fact | `ingest-a3` |
+| The Calendar privacy page includes Google's API Services User Data Policy and Limited Use statement (`ingest-a3`). Live consent and provider review remain separate from the local disclosure checks. | none; a build fact | `ingest-a3`, deploy owner |
 | The session contract the views read: the cookie `grove_session`; `:Session.token_hash` is the lowercase sha256 hex of the cookie value; a session is valid while `revoked_at` is absent and `expires_at` is later than the clock's now; `:Session.user_id` leads to the oldest `:World` with that `owner_user_id`. `docs/views.md` states it in full. Closed by `signin`: `server/grove/writer/accounts.py` and `server/grove/api/auth.py` write these rows and this cookie, and `docs/signin.md` states them. | none; a build fact | `signin` |
 | The views' account, sources, questions and workers still use the simulation's local browser state. A sign-in that brings another account resets that state in the tab that signs in (`signin`). A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b` |
 | The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`. Closed by `deploy-a`: the API image runs `web/build.py` and sets that variable, and the deploy smoke asks for the page. | none; a build fact | `deploy-a` |
 | `change_status` and `end_item` do not trigger the walk yet, and `reopen_item` does not yet send an R1 ending back as a proposal. | 3160 to 3162 | `walk` |
 | A judgment marked correlated counts toward the two judges of a contradiction: D9 and B.2 ask only for two models. | 3165 | `beliefs` |
 | `grove.extract.v1` must offer the statement class `artifact` (S51), and the connectors must write `sources.speakers` from each message's own metadata (an automated sender, a forwarded message's author, each with its locator), and `sources.document` true for an uploaded file or picture, or an automated booking confirmation stays a chat line and an uploaded receipt stays `said`. | 1086, 1112, 1129 | `ingest-a1`, `ingest-b` |
-| The Calendar connector must pass trusted retained-message `calendar_events` facts through `add_screened_source`: scheduled instant, IANA timezone, provider status and optional revision time. S51 enforces those facts for new and reused evidence. The real provider adapter and consent flow remain separate acceptance work. | 1097, 1099 | `ingest-a3` |
+| Closed for the synthetic connector path by `ingest-a3`: typed Calendar facts pass from the dedicated reader through the atomic chat transaction to `write_screened_source(calendar_events=...)`, only for retained keys. S51 checks new and reused evidence. Provider consent, configured deployment and live acceptance remain separate. | 1097, 1099 | `ingest-a3`, deploy owner |
 | The two middle bands open a contradiction row (S52); `verify` records the band and the deferral, and the row waits for `open_contradiction`. | 957, 1841 | `beliefs` |
 | The lane's batch (`server/grove/store/lane.py`) has no agent yet: the Curator takes it each pass, calls the judge (`server/grove/models/verify_judge.py`) on fetched evidence, and sends one `verify` per claim. A deferral's question to the person, and the escalation at the third deferral, are the questions queue's. | 966 to 974, 2141 | `cleanup` |
 | The REST and MCP answer and correct take `relay` (S53) into `enqueue_request`, with `verbatim` and `host_message_id`, and the receipt repeats the quoted words. | 1116, 3195 to 3197 | `hosts-b` |
@@ -821,7 +821,7 @@ S28: B.1 has no membership column. The map lists this as an open point.
 
 `:Connector`, node. Scope world. Restore group snapshot. Owner D5, D10, D13.
 
-Keys: `connectors_id_unique` (id).
+Keys: `connectors_id_unique` (id); `connectors_world_id_provider_instance_key_unique` (world_id, provider, instance_key).
 
 Indexes: `connectors_world_id_type_idx` (world_id, type).
 
@@ -834,6 +834,15 @@ S27: parser, locator format, source-type mapping and speaker rules are code, not
 | type | `type` | `enum:connector_type` | b1 |  |
 | (none) | `provider` | `code` | ruling | the upload format of an upload connector: claude_code, codex, chatgpt, claude_ai (ingest-a1); one row per world, type and provider |
 | auth reference | `auth_reference` | `code` | b1 |  |
+| (none) | `instance_key` | `code` | ruling | opaque identity of one selected calendar or repository |
+| (none) | `credential_ciphertext` | `code` | ruling | AES-GCM sealed provider tokens; key held outside the store |
+| (none) | `connection_status` | `code` | ruling | pending, connected or disconnected |
+| (none) | `oauth_state_hash` | `code` | ruling | single-use SHA256 of pending consent state |
+| (none) | `oauth_expires_at` | `instant` | ruling | pending consent deadline |
+| (none) | `sync_cursor` | `code` | ruling | provider cursor, separate from the message-time watermark |
+| (none) | `event_versions` | `json_ids` | ruling | bounded event and field fingerprints; no event text |
+| (none) | `sync_owner` | `id` | ruling | owner of the current bounded sync lease |
+| (none) | `sync_until` | `instant` | ruling | sync lease deadline |
 | scope | `scope` | `json_ids` | b1 | an allowlist compiled into the read (D14) |
 | settings | `settings` | `json_ids` | b1 | calendar log mode, calendar id, from date, days logged |
 | batch rule | `batch_rule` | `code` | b1 |  |
