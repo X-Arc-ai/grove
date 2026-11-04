@@ -127,6 +127,8 @@ def assert_api_writer_boundary(files):
             "grove.writer.forget_ledger",
             "grove.writer.errors",
         },
+        # D6's explicit explanation POST uses only its explanation writer.
+        "cascade.py": {"grove.writer.cascade_explanations"},
         # Authenticated connector consent/settings/sync use only their connection writer.
         "connectors.py": {"grove.writer.connectors", "grove.writer.errors"},
         # brain propose and brain finish of a live pass (runner): the writer's public API, the
@@ -152,6 +154,8 @@ def test_api_app_can_import_the_shared_writer_error_type(tmp_path):
 @pytest.mark.parametrize(
     ("route", "source"),
     [
+        ("app.py", "from grove.writer.accounts import create_account"),
+        ("cascade.py", "from grove.writer.accounts import create_account"),
         ("unapproved.py", "from grove.writer.connectors import connection"),
         ("connectors.py", "from grove.writer.accounts import create_account"),
         ("views.py", "import grove.writer.connectors"),
