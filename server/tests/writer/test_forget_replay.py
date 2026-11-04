@@ -3,7 +3,7 @@
 import pytest
 
 from grove.store.replay import FORGOTTEN_MARKER, ReplayRefused
-from tests.store.test_replay import Book, item, recorded, registry
+from tests.store.test_replay import Book, item, recorded, registry, world
 
 
 def paired():
@@ -44,3 +44,13 @@ def test_forgotten_item_also_omits_its_belief_side_row():
     found = book.rebuild()
     assert item_id not in found.rows["items"]
     assert item_id not in found.rows["beliefs"]
+
+
+def test_belief_creation_does_not_erase_the_item_birth_guard():
+    book, item_id, _ = paired()
+    book.add(
+        book.op(), "item", item_id, "title", "Too early", old="Paired belief", world_time=world(0)
+    )
+    with pytest.raises(ReplayRefused) as failure:
+        book.rebuild()
+    assert failure.value.rule == "older_than_head"

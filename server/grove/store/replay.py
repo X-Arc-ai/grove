@@ -207,7 +207,7 @@ class _Replay:
         self.groups: dict[str | tuple[str, str], set[tuple[Any, Any]]] = {}
         self.touched: dict[str | tuple[str, str], datetime | None] = {}
         self.heads: dict[tuple[str, str], datetime] = {}
-        self.born: dict[str, datetime | None] = {}
+        self.born: dict[str | tuple[str, str], datetime | None] = {}
         self.keys: dict[str, str] = {}
         self.active: dict[str, str] = {}
         self.forgotten: set[str] = set()
@@ -349,7 +349,7 @@ class _Replay:
                 self.active[key] = entity_id
         self.rows[name][entity_id] = row
         self.where[identity] = name
-        self.born[entity_id] = _instant(entry.get("world_time"))
+        self.born[identity] = _instant(entry.get("world_time"))
         return True
 
     def standard_key(self, row: Mapping[str, Any]) -> str:
