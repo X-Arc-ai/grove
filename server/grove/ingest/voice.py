@@ -7,9 +7,10 @@ to people or creates a source type from a model's words.
 
 import hashlib
 import io
+import struct
 import wave
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from grove.ingest.connector import NotAnExport, ReadBudget
 from grove.models.errors import InvalidOutput
@@ -67,7 +68,7 @@ def transcribe_wav(
                 raise NotAnExport("the voice input must be normalized mono 16-bit PCM")
             if frames * 2 > len(data) or len(reader.readframes(frames)) != frames * 2:
                 raise NotAnExport("the WAV frame data is incomplete")
-    except (wave.Error, EOFError):
+    except (wave.Error, EOFError, RuntimeError, struct.error):
         raise NotAnExport("the voice input is not a readable WAV") from None
     transcript = layer.transcribe(
         world_id,
@@ -83,7 +84,10 @@ def transcribe_wav(
         )
     turns = tuple(
         TimedTurn(
-            turn, None if source_at is None else source_at + timedelta(milliseconds=turn.start_ms)
+            turn,
+            None
+            if source_at is None
+            else source_at.astimezone(UTC) + timedelta(milliseconds=turn.start_ms),
         )
         for turn in transcript.turns
     )
