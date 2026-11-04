@@ -457,3 +457,308 @@ def test_seed_lock_deadline_is_bounded_and_preserves_inode(tmp_path):
         ):
             pass
     assert lock.stat().st_ino == inode
+
+
+def manifest_snapshot(row):
+    return {
+        **{
+            key: row[key]
+            for key in (
+                "id",
+                "name",
+                "project",
+                "service",
+                "image",
+                "running",
+                "status",
+                "health",
+                "restart",
+                "restart_count",
+            )
+        },
+        "oneoff": row["oneoff"].lower(),
+        "networks": sorted(row["networks"]),
+    }
+
+
+@pytest.fixture
+def mixed_protocol(protocol, tmp_path, monkeypatch):
+    original, commands = protocol
+    older = "5" * 40
+    old_api_image = "sha256:" + "6" * 64
+    for name, row in commands.rows.items():
+        row.update(
+            id=hashlib.sha256(name.encode()).hexdigest(),
+            name="/grove-" + name + "-1",
+            restart_count=0,
+        )
+    commands.rows["api"]["image"] = old_api_image
+    history = container("api", oneoff=True)
+    history.update(
+        id="9" * 64,
+        name="/grove-migrate-prior",
+        running=False,
+        status="exited",
+        restart={"Name": "no", "MaximumRetryCount": 0},
+        restart_count=0,
+    )
+    commands.rows["history"] = history
+    normal_run = commands.run
+    commands.after_build = None
+
+    def run(args, seconds=30, **kwargs):
+        args = [str(arg) for arg in args]
+        if args[:3] == ["docker", "image", "inspect"] and args[-1] == "grove-api:" + BASE:
+            commands.calls.append((args, seconds))
+            return old_api_image
+        value = normal_run(args, seconds, **kwargs)
+        if args[:2] == ["docker", "compose"] and "build" in args and commands.after_build:
+            commands.after_build()
+        return value
+
+    commands.run = run
+    host = tmp_path / "host.lock"
+    admission = original.p["state"] / "cutover-admission.lock"
+    host.touch(mode=0o600)
+    admission.touch(mode=0o600)
+    monkeypatch.setenv("GROVE_LOCK_FILE", str(host))
+    locks = {}
+    for name, path in (("host", host), ("admission", admission), ("seed", original.seed)):
+        info = path.stat()
+        locks[name] = {"path": str(path), "device": info.st_dev, "inode": info.st_ino}
+    data = {
+        "version": 1,
+        "request": original.data["request"],
+        "target": TARGET,
+        "baseline": BASE,
+        "smoke_sha256": original.smoke_hash,
+        "locks": locks,
+        "services": {
+            name: {
+                "revision": None if name == "neo4j" else BASE if name == "api" else older,
+                "container": manifest_snapshot(commands.rows[name]),
+            }
+            for name in (*cutover.WRITERS, "neo4j")
+        },
+        "retained": [manifest_snapshot(history)],
+    }
+    path = tmp_path / "baseline.json"
+
+    def build(data=data):
+        path.write_text(json.dumps(data))
+        path.chmod(0o600)
+        return cutover.Cutover(
+            TARGET,
+            BASE,
+            original.data["request"],
+            original.seed,
+            original.smoke,
+            original.smoke_hash,
+            commands,
+            baseline_manifest=path,
+            baseline_manifest_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        )
+
+    return build, data, commands, path
+
+
+def test_exact_manifest_accepts_mixed_baseline_and_preserves_history(mixed_protocol):
+    build, data, commands, _ = mixed_protocol
+    retained = copy.deepcopy(commands.rows["history"])
+    instance = build()
+    instance.execute()
+    assert commands.rows["history"] == retained
+    result = json.loads((instance.p["state"] / "cutover-last.json").read_text())
+    assert result["baseline_manifest_sha256"] == instance.manifest.digest
+    assert result["stage"] == "complete"
+    assert not any(
+        args[:2] in (["docker", "rm"], ["docker", "prune"]) for args, _ in commands.calls
+    )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "unknown",
+        "active_history",
+        "missing_history",
+        "history_image",
+        "history_restart",
+        "service_image",
+        "missing_service",
+        "service_id",
+        "service_revision",
+        "lock_identity",
+        "manifest_bytes",
+        "helper",
+        "queued",
+        "legacy",
+    ],
+)
+def test_manifest_refuses_drift_before_build(mixed_protocol, fault):
+    build, data, commands, path = mixed_protocol
+    if fault == "service_revision":
+        data["services"]["api"]["revision"] = "7" * 40
+    instance = build()
+    if fault == "unknown":
+        commands.rows["stranger"] = {**commands.rows["history"], "id": "8" * 64}
+    elif fault == "active_history":
+        commands.rows["history"].update(running=True, status="running")
+    elif fault == "missing_history":
+        del commands.rows["history"]
+    elif fault == "history_image":
+        commands.rows["history"]["image"] = "sha256:" + "8" * 64
+    elif fault == "history_restart":
+        commands.rows["history"]["restart_count"] = 1
+    elif fault == "service_image":
+        commands.rows["api"]["image"] = "sha256:" + "8" * 64
+    elif fault == "missing_service":
+        del commands.rows["runner"]
+    elif fault == "service_id":
+        commands.rows["runner"]["id"] = "8" * 64
+    elif fault == "lock_identity":
+        lock = Path(data["locks"]["seed"]["path"])
+        lock.rename(lock.with_suffix(".prior"))
+        lock.touch(mode=0o600)
+    elif fault == "manifest_bytes":
+        path.write_text(path.read_text() + " ")
+    elif fault in ("helper", "queued", "legacy"):
+        commands.failure = fault
+    with pytest.raises(cutover.Refused):
+        instance.execute()
+    assert not any("build" in args or args[:2] == ["docker", "stop"] for args, _ in commands.calls)
+    assert not cutover.state_path().exists()
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "target",
+        "request",
+        "smoke",
+        "active_history",
+        "restart_policy",
+        "duplicate",
+        "unknown_field",
+        "unbound_hash",
+    ],
+)
+def test_manifest_rejects_invalid_authority(mixed_protocol, fault):
+    build, data, commands, path = mixed_protocol
+    if fault == "target":
+        data["target"] = "7" * 40
+    elif fault == "request":
+        data["request"] = "another-request"
+    elif fault == "smoke":
+        data["smoke_sha256"] = "7" * 64
+    elif fault == "active_history":
+        data["retained"][0].update(running=True, status="running")
+    elif fault == "restart_policy":
+        data["retained"][0]["restart"]["Name"] = "always"
+    elif fault == "duplicate":
+        data["retained"].append(data["retained"][0])
+    elif fault == "unknown_field":
+        data["allow_services"] = ["api"]
+    else:
+        instance = build()
+        with pytest.raises(cutover.Refused):
+            cutover.Cutover(
+                TARGET,
+                BASE,
+                instance.data["request"],
+                instance.seed,
+                instance.smoke,
+                instance.smoke_hash,
+                commands,
+                baseline_manifest=path,
+            )
+        return
+    with pytest.raises(cutover.Refused):
+        build()
+    assert commands.calls == []
+
+
+def test_manifest_checks_build_time_drift_before_first_service_change(mixed_protocol):
+    build, _, commands, _ = mixed_protocol
+    instance = build()
+    commands.after_build = lambda: commands.rows["api"].update(id="8" * 64)
+    with pytest.raises(cutover.Refused):
+        instance.execute()
+    assert not any(
+        args[:2] in (["docker", "stop"], ["docker", "update"]) for args, _ in commands.calls
+    )
+    assert not cutover.state_path().exists()
+
+
+def test_manifest_retains_failure_and_does_not_retry(mixed_protocol):
+    build, _, commands, _ = mixed_protocol
+    instance = build()
+    commands.failure = "migration"
+    with pytest.raises(cutover.Refused):
+        instance.execute()
+    result = json.loads(cutover.state_path().read_text())
+    assert result["stage"] == "failed"
+    assert result["baseline_manifest_sha256"] == instance.manifest.digest
+    count = len(commands.calls)
+    with pytest.raises(cutover.Refused, match="maintenance_active"):
+        instance.execute()
+    assert len(commands.calls) == count
+
+
+def test_unbound_mixed_baseline_still_refuses(mixed_protocol):
+    build, _, commands, _ = mixed_protocol
+    bound = build()
+    del commands.rows["history"]
+    plain = cutover.Cutover(
+        TARGET, BASE, bound.data["request"], bound.seed, bound.smoke, bound.smoke_hash, commands
+    )
+    with pytest.raises(cutover.Refused, match="baseline_identity_mismatch"):
+        plain.execute()
+    assert not any("build" in args for args, _ in commands.calls)
+
+
+def test_manifest_detects_target_replacement_before_start(mixed_protocol, monkeypatch):
+    build, _, commands, _ = mixed_protocol
+    instance = build()
+    original = instance.candidate_identity
+
+    def inspect(*, started):
+        if started:
+            commands.rows["api"]["id"] = "8" * 64
+        original(started=started)
+
+    monkeypatch.setattr(instance, "candidate_identity", inspect)
+    with pytest.raises(cutover.Refused, match="target_identity_mismatch"):
+        instance.execute()
+    assert json.loads(cutover.state_path().read_text())["stage"] == "failed"
+
+
+@pytest.mark.parametrize("fault", ["symlink", "mode", "hash", "missing_lock"])
+def test_manifest_file_and_lock_prerequisites_are_private(mixed_protocol, fault):
+    build, data, commands, path = mixed_protocol
+    instance = build()
+    if fault == "symlink":
+        saved = path.with_suffix(".saved")
+        path.rename(saved)
+        path.symlink_to(saved)
+    elif fault == "mode":
+        path.chmod(0o644)
+    elif fault == "hash":
+        path.write_text(path.read_text() + " ")
+    else:
+        Path(data["locks"]["admission"]["path"]).unlink()
+    with pytest.raises((cutover.Refused, OSError)):
+        instance.execute()
+    assert commands.calls == []
+
+
+def test_launch_checks_journal_before_any_parent_process(protocol, monkeypatch, capsys):
+    instance, _ = protocol
+    calls = []
+    monkeypatch.delenv("GROVE_FORGET_LEDGER_HOST_DIR", raising=False)
+    monkeypatch.delenv("GROVE_CUTOVER_BASELINE_MANIFEST", raising=False)
+    monkeypatch.delenv("GROVE_CUTOVER_BASELINE_SHA256", raising=False)
+    monkeypatch.setattr(cutover.Commands, "run", lambda *args, **kwargs: calls.append(args))
+    assert cutover.main(["launch", TARGET]) != 0
+    assert calls == []
+    assert "journal_not_configured" in capsys.readouterr().err

@@ -29,8 +29,8 @@ server {
     ssl_session_tickets off;
 
     add_header Strict-Transport-Security "max-age=31536000" always;
-    # nginx writes a body to disk before the API sees it, so no path takes a large one. The upload
-    # route is the one exception: its own location below, with its limit and no request buffering.
+    # Upload and material mutations use explicit API limits and stream without request files.
+    # Other routes retain the default limit.
     client_max_body_size 10m;
 
     proxy_http_version 1.1;
@@ -79,6 +79,32 @@ server {
     location = /token {
         limit_req zone=grove_oauth burst=20 nodelay;
         limit_req_status 429;
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    # File bytes are the raw body. Match material_files.MAX_FILE exactly.
+    location = /v1/materials/files {
+        client_max_body_size 16m;
+        proxy_request_buffering off;
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    # Both note create and note edit accept at most 70 KiB of JSON.
+    location = /v1/materials/notes {
+        client_max_body_size 70k;
+        proxy_request_buffering off;
+        proxy_pass http://127.0.0.1:8000;
+    }
+    location ^~ /v1/materials/notes/ {
+        client_max_body_size 70k;
+        proxy_request_buffering off;
+        proxy_pass http://127.0.0.1:8000;
+    }
+
+    # Remaining material mutations are deletion confirmation/deletion: 4096 bytes.
+    location /v1/materials/ {
+        client_max_body_size 4k;
+        proxy_request_buffering off;
         proxy_pass http://127.0.0.1:8000;
     }
 

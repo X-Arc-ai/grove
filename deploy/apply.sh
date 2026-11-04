@@ -14,6 +14,15 @@ ref=$2
 [ "$(git -C "$GROVE_SRC" rev-parse HEAD)" = "$sha" ] || die "the checkout is not at $sha"
 maintenance_guard
 
+# Check the existing durable journal before any host-file or service mutation.
+# This never initializes or repairs it; database equality is a separate release gate.
+if ! python3 "$here/materials_preflight.py"; then
+    # Reserved for this pre-mutation refusal. The parent must not run its installer fallback.
+    exit 78
+fi
+# A later tool can also exit 78. Keep that a normal failure, never an early-refusal signal.
+trap 'code=$?; if [ "$code" -eq 78 ]; then exit 1; fi' EXIT
+
 # Gateway construction refuses absent configuration before it can answer health checks.
 # Validate the files this deploy will consume, before any host-file or service mutation.
 GROVE_ETC_DIR="$GROVE_ETC" "$here/runner-secrets.sh" --check
@@ -81,7 +90,12 @@ export GROVE_CUTOVER_PUBLIC_BASE_URL
 GROVE_CUTOVER_PUBLIC_BASE_URL=$(public_base_url)
 # The protocol owns migration, target creation and smoke. Markers alone never
 # authorize recovery. Its durable barrier also covers the old deploy parent.
-if python3 "$here/cutover.py" run "$sha" "$previous"; then
+baseline_args=()
+if [ -n "${GROVE_CUTOVER_BASELINE_MANIFEST:-}${GROVE_CUTOVER_BASELINE_SHA256:-}" ]; then
+    baseline_args=(--baseline-manifest "${GROVE_CUTOVER_BASELINE_MANIFEST:-}"
+        --baseline-manifest-sha256 "${GROVE_CUTOVER_BASELINE_SHA256:-}")
+fi
+if python3 "$here/cutover.py" run "$sha" "$previous" "${baseline_args[@]}"; then
     record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: served, smoke ok"
 else
     record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: cutover FAILED; inspect maintenance state"
