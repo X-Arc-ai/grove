@@ -239,7 +239,55 @@ is `export_digest:<sha256>`. Different overlapping exports remain different arti
 identical unrelated transcripts cannot be distinguished by bytes alone. These tests prove
 repeat parser identity, not transactional re-import idempotence or independent evidence.
 
-Persistence, typed episode cuts, post-screen source-part byte bounds, extraction, holds,
-cross-artifact evidence deduplication, speaker resolution, counts and typed-content erasure
-remain separate integration work. No complete D5/D10, media, or release acceptance follows
-from this internal transport. See `docs/ingest-media.md` for the component limits.
+Persistence, extraction, holds, cross-artifact evidence deduplication, speaker resolution,
+production counts and typed-content erasure remain separate integration work. No complete
+D5/D10, media, or release acceptance follows from this internal transport.
+See `docs/ingest-media.md` for the component limits.
+
+## Internal pure retention prerequisite
+
+`grove.ingest.text_retention.prepare_text_delta` prepares an immutable `TextDeltaDraft` in
+memory only. No production consumer imports it, and the four registered providers stay
+unchanged. The draft is not a `ScreenedSource`, writer token, admission result or import
+success. Its statuses are `empty_delta`, `kept_out` and `draft_only`.
+
+The two exact internal identities use `whatsapp.export.v1` and `document.text.v1`.
+WhatsApp accepts transcript bytes only; ZIP and binary signatures refuse. Documents use
+`parse_text(markdown=True, source_at=None)` with no caller speaker metadata. Original keys,
+artifact identity and source order stay intact. `already_stored` only simulates a delta;
+actual replay and erasure fences require later transaction-local checks.
+
+Only bounded synthetic `DraftScreeningRules` reach the real Screener. The wrapper never loads
+privacy configuration from files or the environment. Fact values remain unadmitted. Real
+fact-policy screening, erasure/restore compatibility, provenance guards and an authorized
+writer integration remain prerequisites for any persistence.
+
+| Internal draft limit | Bound |
+|---|---|
+| Exact input bytes | 16 MiB before parser allocation |
+| Parsed messages / stored keys | 1,000 each; stored keys are an exact frozenset |
+| Key size | 1,024 characters; aggregate key UTF-8 bytes at most 1,024,000 |
+| Synthetic rules | 32 rename pairs, 32 denylist terms, 32 own identifiers |
+| Rule strings | 128 characters / 512 bytes; rename labels at most 64 bytes; aggregate 32,768 bytes |
+| Preliminary screening group | Locator/key/sender/text total 31,250 characters; canonical facts total 2,048,000 bytes |
+| Final parts | At most 64; 4,000,000 UTF-8 bytes each; 16,000,000 total |
+
+Pre-screen groups refuse an oversized single row. Retained JSON uses the existing
+`ScreenedMessage.as_row()` fields and `json.dumps(sort_keys=True, ensure_ascii=False)`
+spacing. Exact byte accounting includes metadata, escaping and array punctuation. Final
+parts stay within their screening group. Group receipt counts attach once to its first
+part; an entirely dropped group retains one empty diagnostic part and no episode.
+
+Cuts operate across all retained rows, independently of final part boundaries. Fully timed
+WhatsApp rows split only at a forward adjacent gap greater than 90 minutes. Each cut uses
+its true minimum/maximum time. Any retained unknown time selects one null-bound WhatsApp
+cut. Documents use one cut with absent times. Unknown speaker/time counts overlap;
+`held_source_messages` counts their union. No display sender establishes speaker authority.
+
+`grove.source_fact_values` is separately pure: standard library plus `grove.source_facts`
+only. Its `text_fact_values.v1` projection preserves every local candidate, year width,
+precision, exact UTC seconds, explicit signed offset and retained timezone spelling.
+Explicit typed selectors match whole message keys. Full-batch validation includes
+nonmatches, duplicates, Unicode, a 1,000-row limit and a 4,000,000-byte canonical record
+limit. Only this budget view serializes `at` as null or canonical UTC seconds; it does not
+change Source JSON. These helpers do not authenticate intent or perform erasure.
