@@ -10,8 +10,10 @@ durability, or power-loss recovery.
 import copy
 import multiprocessing
 import os
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -45,7 +47,9 @@ from grove.writer.authority_records import (
 from grove.writer.tx import WorldWriter
 from grove.writer.worlds import create_world
 from tests.privacy.test_authority_codec import H, canonical, effect, hashed, ledger, uid
+from tests.privacy.test_authority_legacy import WORLD
 from tests.privacy.test_authority_publication import FileJournal, record_event
+from tests.privacy.test_authority_schema import CONSTRAINTS, ROOT
 
 STAMP = "2026-11-04T12:02:00.000000Z"
 NOW = datetime(2026, 11, 4, 12, 2, tzinfo=UTC)
@@ -117,6 +121,160 @@ def _projection_row(world, projection):
 @dataclass(frozen=True)
 class _TestLegacyEvidence:
     effect: object
+
+
+class Rows:
+    def __init__(self, values=(), *, changed=False):
+        self.values = list(values)
+        self.changed = changed
+
+    def __iter__(self):
+        return iter(self.values)
+
+    def single(self):
+        assert len(self.values) <= 1
+        return self.values[0] if self.values else None
+
+    def consume(self):
+        return SimpleNamespace(counters=SimpleNamespace(contains_updates=self.changed))
+
+
+class Native:
+    """A deterministic query responder for the actual WorldTx wrapper."""
+
+    def __init__(self, driver):
+        self.driver = driver
+
+    def run(self, statement, parameters=None, **kwargs):
+        p = {**(parameters or {}), **kwargs}
+        db = self.driver
+        db.calls.append(statement)
+        if "lock_marker" in statement:
+            return Rows([{"id": WORLD, "generation": db.data["generation"]}])
+        if "read_generation = w.read_generation + 1" in statement:
+            db.data["generation"] += 1
+            return Rows([{"generation": db.data["generation"]}], changed=True)
+        if "owner_user_id AS owner" in statement:
+            return Rows(
+                [
+                    {
+                        "owner": "owner-1",
+                        "sequence": db.data["sequence"],
+                        "generation": db.data["generation"],
+                    }
+                ]
+            )
+        if "count(n)" in statement:
+            count = len(db.data["operations"]) if "AuthorityOperation" in statement else 0
+            return Rows([{"count": count}])
+        if "AuthorityProjection" in statement:
+            if "SET n +=" in statement:
+                db.data["projection"].update(p["props"])
+                return Rows(changed=True)
+            return Rows([{"n": copy.deepcopy(db.data["projection"])}])
+        if "AuthorityOperation" in statement:
+            if "CREATE" in statement:
+                item = {**p["row"], "world_id": WORLD}
+                assert item["id"] not in db.data["operations"]
+                db.data["operations"][item["id"]] = item
+                return Rows(changed=True)
+            if "SET n +=" in statement:
+                db.data["operations"][p["id"]].update(p["props"])
+                return Rows(changed=True)
+            return Rows(
+                {"n": copy.deepcopy(item)}
+                for item in db.data["operations"].values()
+                if item["id"] == p.get("id") or item["idempotency_key"] == p.get("key")
+            )
+        raise AssertionError("unexpected synthetic database query")
+
+
+class MemoryDriver:
+    def __init__(self, fixture, paths):
+        reduction = fixture.decode()
+        ledger = reduction.ledger
+        self.data = {
+            "projection": {
+                "world_id": WORLD,
+                "owner_id": "owner-1",
+                "installation_id": uid(1),
+                "profile_code": "authority_state_v1",
+                "profile_digest": fixture.header["schema_profile"]["digest"],
+                "installation_epoch": reduction.installation_epoch,
+                "authority_epoch": reduction.authority_epoch,
+                "erasure_revision": reduction.erasure_revision,
+                "sequence": len(fixture.events),
+                "head_digest": hashed(fixture.events[-1]),
+                "state_digest": reduction.state_digest,
+                "ledger_format": ledger.format,
+                "ledger_file_digest": ledger.file_digest,
+                "ledger_rows_digest": ledger.rows_digest,
+                "ledger_count": ledger.count,
+                "ready": True,
+                "fence": 0,
+                "active_intent_id": None,
+            },
+            "operations": {},
+            "generation": 11,
+            "sequence": 7,
+            "effects": 0,
+        }
+        self.paths, self.calls = paths, []
+        self.callbacks = self.effect_callbacks = 0
+        self.inside = False
+        self.retry_effect = self.lose_effect_response = False
+
+    @contextmanager
+    def session(self, **kwargs):
+        yield self
+
+    def execute_write(self, callback):
+        saved = copy.deepcopy(self.data)
+        files = {key: path.read_bytes() for key, path in self.paths.items()}
+
+        def attempt():
+            self.callbacks += 1
+            self.inside = True
+            try:
+                return callback(Native(self))
+            finally:
+                self.inside = False
+                assert {key: path.read_bytes() for key, path in self.paths.items()} == files
+
+        try:
+            result = attempt()
+            changed_effect = self.data["effects"] > saved["effects"]
+            if changed_effect and self.retry_effect:
+                self.retry_effect = False
+                self.data = copy.deepcopy(saved)
+                result = attempt()
+        except Exception:
+            self.data = saved
+            raise
+        if changed_effect and self.lose_effect_response:
+            self.lose_effect_response = False
+            raise OSError("synthetic response loss after committed callback")
+        return result
+
+
+def test_migration_has_only_the_five_exact_uniqueness_declarations():
+    text = (ROOT / "server/migrations/0018_authority_outcomes.cypher").read_text()
+    body = "\n".join(line for line in text.splitlines() if not line.startswith("//"))
+    statements = [part.strip() for part in body.split(";") if part.strip()]
+    assert len(statements) == 5
+    found = {}
+    pattern = (
+        r"CREATE "
+        r"CONSTRAINT (\w+) IF NOT EXISTS FOR \(n:(\w+)\) REQUIRE "
+        r"(n\.\w+|\(n\.\w+(?:, n\.\w+)*\)) IS UNIQUE"
+    )
+    for statement in statements:
+        match = re.fullmatch(pattern, statement)
+        assert match is not None
+        name, label, properties = match.groups()
+        assert name not in found
+        found[name] = (label, tuple(re.findall(r"n\.(\w+)", properties)))
+    assert found == CONSTRAINTS
 
 
 class _KernelOwner:
