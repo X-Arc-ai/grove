@@ -160,6 +160,16 @@ def pending(page):
     return page.evaluate("GroveSimulation.getState().pendingExports")
 
 
+def settled_shot(page, path):
+    # The product permits entry animations up to 1800ms. Do not present a transition
+    # frame as evidence of the settled interface, and do not override product styles.
+    page.wait_for_timeout(2000)
+    assert page.locator(".gp-dialog").evaluate(
+        "el => Number(getComputedStyle(el).opacity) >= 0.99"
+    )
+    page.screenshot(path=str(path))
+
+
 def wait_pending(page, keys):
     page.wait_for_function(
         "keys => JSON.stringify(Object.keys(GroveSimulation.getState().pendingExports).sort()) === JSON.stringify(keys.sort())",
@@ -215,7 +225,7 @@ def run(shots):
             page.locator("[role=alert]").filter(has_text="could not save")
         ).to_be_visible()
         assert pending(page) == {}
-        page.screenshot(path=str(shots / "request-failed.png"))
+        settled_shot(page, shots / "request-failed.png")
         page.locator("[data-action=export-requested]").click()
         expect(page.locator("[data-action=upload-export]")).to_be_disabled()
         wait_pending(page, ["chatgpt"])
@@ -236,7 +246,7 @@ def run(shots):
         other.goto(BASE + "/signin")
         other.locator("[data-action=start]").click()
         wait_pending(other, ["chatgpt"])
-        other.screenshot(path=str(shots / "second-browser-pending.png"))
+        settled_shot(other, shots / "second-browser-pending.png")
         other.locator("[data-guide=chatgpt]").click()
         expect(other.locator("[data-action=upload-export]")).to_be_disabled()
         other.locator("[data-pick-export]").set_input_files(
@@ -251,7 +261,7 @@ def run(shots):
             other.locator("[role=alert]").filter(has_text="import succeeded")
         ).to_be_visible()
         wait_pending(other, ["chatgpt"])
-        other.screenshot(path=str(shots / "completion-unavailable.png"))
+        settled_shot(other, shots / "completion-unavailable.png")
         server.upload_mode = "success"
         other.locator("[data-pick-export]").set_input_files(
             {"name": "export.json", "mimeType": "application/json", "buffer": PAYLOAD}
