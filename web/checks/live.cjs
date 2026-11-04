@@ -343,7 +343,7 @@ function legendRows(elements){
     assert.equal(p.ui.authStage,'checking');assert(p.html().includes('gp-auth-loading'),'The sign-in card waits for the session');
     await settle();assert.equal(sv.calls[0].path,'/v1/views/session');assert.equal(p.ui.authStage,'signin');assert(p.html().includes('Continue with Google'));assert.equal(A.getState().auth,null);
     const n0=sv.calls.length;p.chooseSignIn('google');assert.deepStrictEqual(pg.assigned,['/v1/auth/google/start?next=/']);assert.equal(sv.calls.length,n0);
-    p.chooseSignIn('apple');assert(p.html().includes('Not available yet'));assert.equal(sv.calls.length,n0,'Apple calls nothing');assert.equal(A.getState().auth,null);
+    p.chooseSignIn('apple');assert(p.html().includes('Continue with Apple'));assert(p.html().includes('data-signin="apple" disabled aria-disabled="true"'));assert(!p.html().includes('Not available yet'));assert.equal(sv.calls.length,n0,'Apple calls nothing');assert.equal(A.getState().auth,null);
     w.emailStartFails=true;await p.startEmail('anas@example.com');assert.equal(p.ui.authStage,'signin');assert(p.ui.error.includes('could not send a code'));
     w.emailStartFails=false;await p.startEmail(' anas@example.com ');let call=sv.calls[sv.calls.length-1];
     assert.equal(call.path,'/v1/auth/email/start');assert.equal(call.method,'POST');assert.deepStrictEqual(call.body,{email:'anas@example.com'});assert.equal(call.init.headers['Content-Type'],'application/json');

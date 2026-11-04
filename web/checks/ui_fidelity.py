@@ -346,7 +346,7 @@ def run_checks(base, shots):
             page.screenshot(path=str(shots / f"live-{width}-workers.png"))
             expect(page.locator("#health-state .healthy")).to_have_count(0)
             page.locator("#requests-button").click()
-            expect(page.get_by_text("Questions are not available yet")).to_be_visible()
+            expect(page.get_by_text("Questions from your Grove appear here.")).to_be_visible()
             page.keyboard.press("Escape")
             assert page.evaluate("document.documentElement.scrollWidth<=innerWidth"), "No horizontal page overflow"
             context.close()

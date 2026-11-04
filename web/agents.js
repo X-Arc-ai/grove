@@ -46,12 +46,12 @@
       })&&body.recent_runs.every(function(row){return keys(row,['agent','outcome','started_at','finished_at'])&&member(row.agent,workerNames)&&member(row.outcome,outcomeText)&&
         (row.started_at===null||timestamp(row.started_at))&&(row.finished_at===null||timestamp(row.finished_at));});
     }
-    function displayTime(value){return value===null?'Time unavailable':new Date(value).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'});}
+    function displayTime(value){return value===null?'—':new Date(value).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'});}
     function summaries(){
       var values={};
       ['learner','curator','connector'].forEach(function(name,i){
         var row=liveSnapshot&&liveSnapshot.agents[i];
-        values[name]=row?activityText[row.activity.state]+' · '+(row.policy.state==='disabled'?policyText[row.policy.reason]:capabilityText[row.capability.reason]):liveStatus==='loading'?'Checking status…':'Activity unavailable';
+        values[name]=row?activityText[row.activity.state]:liveStatus==='loading'?'Checking status…':liveStatus==='error'?'Activity could not be read':'No activity loaded';
       });
       return values;
     }
@@ -59,15 +59,15 @@
       liveToggle.setAttribute('aria-expanded',String(liveToggle.checked));
       var buttonText=liveStatus==='loading'?'Refresh again':liveStatus==='error'?'Retry':'Refresh';
       var content='<div class="hood-panel-heading"><h2>Your Grove workers</h2><button type="button" class="hood-live-refresh" data-worker-refresh>'+buttonText+'</button><button type="button" class="hood-live-close" data-worker-close aria-label="Close worker activity">×</button></div>';
-      content+='<p class="hood-live-intro">Stored activity. This view does not start workers.</p>';
+      content+='<p class="hood-live-intro">Recorded worker activity.</p>';
       if(liveStatus==='loading')content+='<p role="status" class="hood-live-message">Checking worker status…</p>';
-      else if(liveStatus==='error'||!liveSnapshot)content+='<p role="status" class="hood-live-message">Worker status is unavailable. Try again.</p>';
+      else if(liveStatus==='error'||!liveSnapshot)content+='<p role="status" class="hood-live-message">Worker status could not be read. Try again.</p>';
       else{
         content+='<p class="hood-live-observed" role="status">Last checked '+safeText(displayTime(liveSnapshot.observed_at))+'</p>';
-        content+=liveSnapshot.agents.map(function(row){return '<section class="hood-live-worker" data-worker="'+row.agent+'"><div class="hood-live-worker-head"><span class="hood-score-dot gp-worker-'+row.agent+'" aria-hidden="true"></span><h3>'+workerNames[row.agent]+'</h3><button type="button" disabled title="Following a worker is not available">Follow</button></div><p class="hood-live-activity">'+activityText[row.activity.state]+'</p><p class="hood-live-policy">'+policyText[row.policy.reason]+'</p><p class="hood-live-capability">'+capabilityText[row.capability.reason]+'</p></section>';}).join('');
+        content+=liveSnapshot.agents.map(function(row){return '<section class="hood-live-worker" data-worker="'+row.agent+'"><div class="hood-live-worker-head"><span class="hood-score-dot gp-worker-'+row.agent+'" aria-hidden="true"></span><h3>'+workerNames[row.agent]+'</h3><button type="button" disabled>Follow</button></div><p class="hood-live-activity">'+activityText[row.activity.state]+'</p></section>';}).join('');
         content+='<details class="hood-live-recent"><summary>Recent activity'+(liveSnapshot.recent_has_more?' · latest 20':'')+'</summary>';
         content+=liveSnapshot.recent_runs.length?'<ol>'+liveSnapshot.recent_runs.map(function(row){return '<li><strong>'+workerNames[row.agent]+' · '+outcomeText[row.outcome]+'</strong><span>Started '+safeText(displayTime(row.started_at))+'</span><span>'+(row.finished_at===null?'No finish time recorded':'Finished '+safeText(displayTime(row.finished_at)))+'</span></li>';}).join('')+'</ol>':'<p>No recent activity recorded.</p>';
-        content+='</details><p class="hood-live-note">Process status is unavailable. A stored run does not confirm that a worker is still active.</p>';
+        content+='</details>';
       }
       var focused=livePanel.contains(document.activeElement)&&document.activeElement.hasAttribute('data-worker-refresh');
       livePanel.innerHTML=content;
