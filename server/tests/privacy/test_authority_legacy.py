@@ -153,18 +153,60 @@ def test_minimal_historical_external_row_is_supported():
     assert legacy.legacy_row(decode(payload([original])), 0).plan_version == "legacy"
 
 
+# These later tables have no selector in the frozen legacy/v2 format.
+# Keep this list explicit so any new unclassified table still fails parity.
+UNSUPPORTED_WORLD_TABLES = frozenset(
+    {
+        "learner_work",
+        "learner_executions",
+        "learner_calls",
+        "learner_dispositions",
+        "learner_completions",
+        "learner_episode_progress",
+        "learner_handoffs",
+        "authority_projections",
+        "authority_operations",
+        "authority_approval_uses",
+    }
+)
+
+
 def test_complete_published_catalogue_and_plan_keys_match_frozen_profile():
     expected = {
         table.name: tuple(frozenset(u.props) - {"world_id"} for u in table.uniques)
         for table in TABLES
         if table.scope == "world"
         and table.name
-        not in {"change_entries", "forget_ledger", "forget_approvals", "history_values"}
+        not in (
+            {"change_entries", "forget_ledger", "forget_approvals", "history_values"}
+            | UNSUPPORTED_WORLD_TABLES
+        )
     }
     assert dict(legacy.DELETE_KEYS) == expected
-    assert legacy.WORLD_TABLES == {table.name for table in TABLES if table.scope == "world"}
+    world_tables = {table.name for table in TABLES if table.scope == "world"}
+    assert UNSUPPORTED_WORLD_TABLES <= world_tables
+    assert legacy.WORLD_TABLES == world_tables - UNSUPPORTED_WORLD_TABLES
+    assert legacy.WORLD_TABLES.isdisjoint(UNSUPPORTED_WORLD_TABLES)
     assert legacy.ITEM_FIELDS == TEXT["items"]
     assert set(legacy._PLAN[1]) == PLAN_KEYS
+
+
+@pytest.mark.parametrize("table_name", sorted(UNSUPPORTED_WORLD_TABLES))
+def test_later_world_tables_remain_unavailable_to_legacy_selectors(table_name):
+    source = plan()
+    source["delete"] = [{"table": "items", "key": {"id": "synthetic-id"}}]
+    original = row()
+    original["plan"] = _json(source)
+    validate_plan(source)
+    assert (
+        legacy.legacy_row(decode(payload([original])), 0).plan_digest
+        == sha256(_json(source).encode()).hexdigest()
+    )
+
+    # Change only the selector's table; the same valid row and key remain.
+    source["delete"][0]["table"] = table_name
+    original["plan"] = _json(source)
+    refused(payload([original]))
 
 
 def test_every_published_plan_selector_and_span_mode():

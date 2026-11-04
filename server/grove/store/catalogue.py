@@ -77,6 +77,7 @@ TYPE_CLASSES: dict[str, str] = {
     "locator": "a place in a source, or a URL",
     "code": "a machine code, not free text",
     "config": "developer-written configuration",
+    "digest": "exactly 64 lowercase hexadecimal characters, only in approved authority columns",
 }
 
 
@@ -2543,7 +2544,160 @@ LEARNER_TABLES: tuple[Table, ...] = (
     LEARNER_HANDOFFS,
 )
 
-LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS, FORGET_APPROVALS) + LEARNER_TABLES
+# Authority v1 is an inactive operational protocol. These rows are outside D3
+# snapshots/history and the erasure cascade. Writers validate the exact bounds.
+_AUTHORITY_ID = "Opaque ASCII [A-Za-z0-9_.:-]{1,128}"
+_AUTHORITY_UUID = "Nonzero lowercase canonical UUID"
+_AUTHORITY_DIGEST = "Exactly 64 lowercase hexadecimal characters"
+_AUTHORITY_U = "Integer in 0..2^63-1; booleans are not integers"
+_AUTHORITY_P = "Integer in 1..2^63-1; booleans are not integers"
+_AUTHORITY_SEQUENCE = "Integer in 1..32768; booleans are not integers"
+_AUTHORITY_AT = "UTC native datetime; exact 27-byte UTC representation at the codec boundary"
+
+AUTHORITY_PROJECTIONS = Table(
+    name="authority_projections",
+    label="AuthorityProjection",
+    element="node",
+    scope="world",
+    group="ledger",
+    owner="forget",
+    columns=(
+        _ruling("world_id", "id", _AUTHORITY_ID),
+        _ruling("owner_id", "id", _AUTHORITY_ID),
+        _ruling("installation_id", "id", _AUTHORITY_UUID),
+        _ruling("profile_code", "code", "Exactly authority_state_v1"),
+        _ruling("profile_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("installation_epoch", "int", _AUTHORITY_P),
+        _ruling("authority_epoch", "int", _AUTHORITY_P),
+        _ruling("erasure_revision", "int", _AUTHORITY_U),
+        _ruling("sequence", "int", _AUTHORITY_SEQUENCE),
+        _ruling("head_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("state_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("ledger_format", "code", "Exactly grove.forget-ledger.v1"),
+        _ruling("ledger_file_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("ledger_rows_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("ledger_count", "int", _AUTHORITY_U + "; legacy decoder cap also applies"),
+        _ruling("ready", "bool", "Metadata only; never runtime permission"),
+        _ruling("fence", "int", _AUTHORITY_U + "; monotonic, never lowered"),
+        _ruling("active_intent_id", "id", "Absent or " + _AUTHORITY_UUID),
+    ),
+    uniques=(Constraint("authority_projection_world_unique", ("world_id",)),),
+    notes=(
+        "Inactive authority source: one row per world, with world_id as its identity. "
+        "Profile, owner and installation identity are immutable; epoch changes require restore. "
+        "No-op verification performs no SET and advances no fence, generation or sequence. "
+        "No bootstrap, backfill or runtime activation is supplied."
+    ),
+)
+
+AUTHORITY_OPERATIONS = Table(
+    name="authority_operations",
+    label="AuthorityOperation",
+    element="node",
+    scope="world",
+    group="ledger",
+    owner="forget",
+    columns=(
+        _ruling("id", "id", _AUTHORITY_UUID + "; immutable intent identity"),
+        _ruling("idempotency_key", "id", _AUTHORITY_UUID),
+        _ruling("world_id", "id", _AUTHORITY_ID),
+        _ruling("owner_id", "id", _AUTHORITY_ID),
+        _ruling("installation_id", "id", _AUTHORITY_UUID),
+        _ruling("profile_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("intent_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("prepare_event_id", "id", _AUTHORITY_UUID),
+        _ruling("prepare_sequence", "int", _AUTHORITY_SEQUENCE),
+        _ruling("prepare_head_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("base_sequence", "int", "Integer in 0..32768; zero is reserved for later origin"),
+        _ruling("base_head_digest", "digest", _AUTHORITY_DIGEST + "; absent only for later origin"),
+        _ruling("base_state_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("expected_result_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("installation_epoch", "int", _AUTHORITY_P),
+        _ruling("authority_epoch", "int", _AUTHORITY_P),
+        _ruling("erasure_revision", "int", _AUTHORITY_U),
+        _ruling("mode", "code", "Exactly ordinary, restrictive, restore, origin or close"),
+        _ruling("original_approval_id", "id", "Absent or " + _AUTHORITY_UUID),
+        _ruling("choice_digest", "digest", "Absent or " + _AUTHORITY_DIGEST),
+        _ruling("registered_at", "instant", _AUTHORITY_AT),
+        _ruling("phase", "enum:authority_phase", "Current attempt state"),
+        _ruling("attempt_id", "id", _AUTHORITY_UUID),
+        _ruling("attempt_fence", "int", _AUTHORITY_P),
+        _ruling("operation_id", "id", _AUTHORITY_UUID),
+        _ruling("revoked_through", "int", _AUTHORITY_U),
+        _ruling("barrier_id", "id", "Absent or " + _AUTHORITY_UUID),
+        _ruling("barrier_fence", "int", "Absent or " + _AUTHORITY_P),
+        _ruling(
+            "outcome", "enum:authority_outcome", "Absent before terminal commit; then immutable"
+        ),
+        _ruling("result_state_digest", "digest", "Terminal only; " + _AUTHORITY_DIGEST),
+        _ruling("result_installation_epoch", "int", "Terminal only; " + _AUTHORITY_P),
+        _ruling("result_authority_epoch", "int", "Terminal only; " + _AUTHORITY_P),
+        _ruling("result_erasure_revision", "int", "Terminal only; " + _AUTHORITY_U),
+        _ruling("result_ledger_format", "code", "Terminal only; exactly grove.forget-ledger.v1"),
+        _ruling("result_ledger_file_digest", "digest", "Terminal only; " + _AUTHORITY_DIGEST),
+        _ruling("result_ledger_rows_digest", "digest", "Terminal only; " + _AUTHORITY_DIGEST),
+        _ruling("result_ledger_count", "int", "Terminal only; " + _AUTHORITY_U),
+        _ruling("d3_sequence_before", "int", "Terminal only; " + _AUTHORITY_U),
+        _ruling("d3_sequence_after", "int", "Terminal only; " + _AUTHORITY_U),
+        _ruling("terminal_at", "instant", "Terminal only; " + _AUTHORITY_AT),
+        _ruling("resolution", "enum:authority_resolution", "Terminal only; immutable"),
+        _ruling("renewed_approval_id", "id", "Absent or terminal-only " + _AUTHORITY_UUID),
+    ),
+    uniques=(
+        Constraint("authority_operation_id_unique", ("id",)),
+        Constraint("authority_operation_key_unique", ("world_id", "idempotency_key")),
+    ),
+    notes=(
+        "Inactive bounded outcome registry, at most 32768 rows per world. Registration fields "
+        "are immutable. Attempt fields change only under the matching fence. Terminal fields "
+        "are absent before terminal commit and immutable afterward. UNKNOWN and "
+        "NOT_APPLIED_PROVEN are never persisted as outcomes. Full event bytes remain in the "
+        "external journal; there is no separate attempt log."
+    ),
+)
+
+AUTHORITY_APPROVAL_USES = Table(
+    name="authority_approval_uses",
+    label="AuthorityApprovalUse",
+    element="node",
+    scope="world",
+    group="ledger",
+    owner="forget",
+    columns=(
+        _ruling("id", "id", _AUTHORITY_UUID + "; equals approval_id"),
+        _ruling("approval_id", "id", _AUTHORITY_UUID + "; equals id"),
+        _ruling("world_id", "id", _AUTHORITY_ID),
+        _ruling("user_id", "id", _AUTHORITY_ID),
+        _ruling("installation_id", "id", _AUTHORITY_UUID),
+        _ruling("intent_id", "id", _AUTHORITY_UUID),
+        _ruling("choice_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("display_digest", "digest", _AUTHORITY_DIGEST),
+        _ruling("installation_epoch", "int", _AUTHORITY_P),
+        _ruling("authority_epoch", "int", _AUTHORITY_P),
+        _ruling("use_kind", "enum:authority_use_kind", "Irreversible use result"),
+        _ruling("role", "enum:authority_use_role", "Original or renewed approval"),
+        _ruling("used_at", "instant", _AUTHORITY_AT),
+    ),
+    uniques=(
+        Constraint("authority_approval_use_id_unique", ("id",)),
+        Constraint("authority_approval_use_world_unique", ("world_id", "approval_id")),
+    ),
+    notes=(
+        "Inactive immutable irreversible approval-use facts, at most 32768 rows per world. "
+        "Consumption commits in the same transaction as its terminal outcome. No bearer "
+        "token, private source digest, automatic TTL or erasure-plan deletion is permitted."
+    ),
+)
+
+AUTHORITY_TABLES: tuple[Table, ...] = (
+    AUTHORITY_PROJECTIONS,
+    AUTHORITY_OPERATIONS,
+    AUTHORITY_APPROVAL_USES,
+)
+
+LATER_TABLES: tuple[Table, ...] = (
+    (MAP_POSITIONS, OAUTH_GRANTS, FORGET_APPROVALS) + LEARNER_TABLES + AUTHORITY_TABLES
+)
 
 # B.1's five groups, in B.1 order.
 B1_GROUPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
