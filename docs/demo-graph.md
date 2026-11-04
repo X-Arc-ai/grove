@@ -64,6 +64,42 @@ This path makes zero model calls and incurs zero model spend. It creates no
 RunRecord that claims a learner or model ran. It does not exercise the general
 ingestion pipeline or claim full D7/D14 runtime acceptance.
 
+## Autonomous worker boundary
+
+The runner uses the persisted demo designation to refuse autonomous Curator and
+Connector passes. Partial or corrupt designation metadata remains restricted,
+even when runtime demo configuration is absent. `connector_due` and
+`_ensure_connector_job` refuse before packet construction or enqueue. `due_work`
+does not select autonomous jobs in these worlds. `start_pass` refuses both explicit
+and inferred non-Learner agents before a RunRecord, Job claim, or token grant.
+`_schedule_after` creates no Curator or Connector follow-up, including after Cedar
+Learner work. Existing queued Jobs retain their state, inputs, and attempts. A
+designated world without a due Request also leaves stale runs for operator review.
+
+The existing Cedar-only store/Learner path remains available under its current
+screening and authorization rules. This guard adds no intake permission. Normal
+worlds retain autonomous scheduling. The web API, authentication, bounded recall,
+and graph reads do not require a global worker shutdown after the seed.
+
+The fixed seed creates saved Requests and synthetic `ai_host` Connectors without
+`connection_status='connected'`. It does not create cascade explanation jobs.
+Its normal Item changes can cross the Connector's revisions threshold, which is
+why the runner guard is required even though the seed command calls no model.
+
+Deployment must stop and drain existing passes before this code starts. This
+guard does not revoke existing tokens or stop an already active pass. Before the
+seed, the operator must perform a read-only census of queued/claimed Jobs, live
+or stale RunRecords, due/applying Requests, pending cascade explanations, and
+connected source-poll entries. Use direct reads, never `/runner/due`: that route
+can enqueue work in ordinary worlds. Resolve unexpected pending work under the
+deployment owner's authority. The seed does not create explanation or connected
+source-poll work, but unrelated pre-existing work requires its own review.
+
+Deploy only a revision with this guard, the rich-compatible reader, accepted auth
+changes, and the migration cutover. Preserve the enriched world on failure; the
+old Cedar-only reader cannot serve it. Source tests do not prove deployment,
+native database behavior, provider inactivity, or live account acceptance.
+
 ## Read and display bounds
 
 Restricted recall ranks the fixed public vocabulary by topic. It captures at
