@@ -247,7 +247,7 @@ class Cutover:
             '"service":{{json (index .Config.Labels "com.docker.compose.service")}},'
             '"oneoff":{{json (index .Config.Labels "com.docker.compose.oneoff")}},'
             '"running":{{json .State.Running}},"status":{{json .State.Status}},'
-            '"health":{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}},'
+            '"health":{{with (index .State "Health")}}{{json .Status}}{{else}}null{{end}},'
             '"restart":{{json .HostConfig.RestartPolicy}},'
             '"networks":{{json .NetworkSettings.Networks}}}'
         )
