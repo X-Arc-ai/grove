@@ -20,6 +20,14 @@
     pendingExports: '/v1/sources/pending-exports',
     sourceCoverage: '/v1/sources/connectors',
     sourceConnections: '/v1/connectors',
+    materials: '/v1/materials',
+    materialFiles: '/v1/materials/files',
+    materialNotes: '/v1/materials/notes',
+    materialDetail: '/v1/materials/{id}',
+    materialEdit: '/v1/materials/notes/{id}',
+    materialPreview: '/v1/materials/{id}/delete-preview',
+    materialConfirmation: '/v1/materials/{id}/delete-confirmations',
+    materialDelete: '/v1/materials/{id}/delete',
     googleStart: '/v1/auth/google/start?next=/',
     emailStart: '/v1/auth/email/start',
     emailVerify: '/v1/auth/email/verify',
@@ -134,6 +142,43 @@
   function postJSON(path, body) { return request('POST', path, body === undefined ? {} : body).then(watchSession.bind(null, sessionsBegun)); }
   function postAuth(path, body) { return request('POST', path, body === undefined ? {} : body); }
 
+  function materialRequest(action, id, body, key, signal) {
+    var routes = {list: ['GET', 'materials'], detail: ['GET', 'materialDetail'],
+      file: ['POST', 'materialFiles'], note: ['POST', 'materialNotes'], edit: ['PUT', 'materialEdit'],
+      preview: ['GET', 'materialPreview'], confirm: ['POST', 'materialConfirmation'], delete: ['POST', 'materialDelete']};
+    var route = routes[action];
+    if (!route) return Promise.reject(new Error('Unknown material action.'));
+    var path = ENDPOINTS[route[1]];
+    if (path.includes('{id}')) {
+      if (typeof id !== 'string' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id)) return Promise.reject(new Error('Invalid material identifier.'));
+      path = path.replace('{id}', id);
+    }
+    var init = {method: route[0], credentials: 'same-origin', cache: 'no-store',
+      signal: signal, headers: {Accept: 'application/json'}};
+    if (action === 'list' && body) path += '?cursor=' + encodeURIComponent(body);
+    if (route[0] !== 'GET') {
+      init.headers['X-Grove-Action'] = 'materials';
+      if (key) init.headers['Idempotency-Key'] = key;
+      if (action === 'file') {
+        var mimes = {txt: 'text/plain', md: 'text/markdown', pdf: 'application/pdf',
+          docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation'};
+        var mime = body instanceof File && mimes[body.name.split('.').pop().toLowerCase()];
+        if (!mime) return Promise.reject(new Error('Use a TXT, Markdown, PDF, DOCX or PPTX file.'));
+        init.headers['Content-Type'] = mime;
+        init.headers['X-Grove-Filename'] = encodeURIComponent(body.name);
+        init.body = body;
+      } else {
+        init.headers['Content-Type'] = 'application/json'; init.body = JSON.stringify(body);
+      }
+    }
+    var sentIn = sessionsBegun;
+    return window.fetch(path, init).then(read).then(function (res) {
+      if (sentIn !== sessionsBegun || (signal && signal.aborted)) return {ok: false, status: 409, stale: true, body: null};
+      return watchSession(sentIn, res);
+    });
+  }
+
   // Upload the selected file itself. JSON request() would serialize only its metadata.
   // Keep HTTP errors as responses so the upload form can retain the file for a retry.
   function uploadExport(provider, file) {
@@ -189,6 +234,7 @@
     KIND_STYLE: KIND_STYLE,
     getJSON: getJSON,
     postJSON: postJSON,
+    materialRequest: materialRequest,
     uploadExport: uploadExport,
     workers: function () {
       var sentIn = sessionsBegun;
