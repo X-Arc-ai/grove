@@ -41,6 +41,7 @@ from grove.writer.verify import (
     CreateConfirm,
     LateBearing,
     can_confirm,
+    check_calendar_confirmation,
     check_late_bearing,
     confirm_at_create,
     plan_horizon,
@@ -277,6 +278,7 @@ def _existing_evidence(run: _Run, evidence_id: str) -> dict[str, Any]:
             {"evidence_id": evidence_id},
         )
     row = rows[0]["e"]
+    check_calendar_confirmation(run, row)
     columns = {key: row.get(key) for key in OBSERVATION_COLUMNS}
     columns["premises"] = list(columns.get("premises") or [])
     return columns
@@ -325,6 +327,7 @@ def _settle(run: _Run, plans: list[_Plan], target_id: str) -> None:
         same = run.tx.run(_SAME_EVIDENCE, key=key[0], target=target_id, polarity=plan.polarity)
         if same:
             row = same[0]["e"]
+            check_calendar_confirmation(run, row)
             plan.id, plan.known = row["id"], True
             run.cited_evidence.append(row)
         seen[key] = plan.id
@@ -1644,12 +1647,13 @@ def _rolled_up_from_parts(run: _Run, item_id: str, premises: list[str]) -> bool:
         return False
     rows = run.tx.run(
         "MATCH (e:Evidence) WHERE e.id IN $ids RETURN e.id AS id, e.target_id AS target, "
-        "e.active AS active, e.polarity AS polarity, e.source_type AS source_type",
+        "e.active AS active, e.polarity AS polarity, e.source_type AS source_type, e AS evidence",
         ids=premises,
     )
     if len(rows) != len(set(premises)):
         return False
     for row in rows:
+        check_calendar_confirmation(run, row["evidence"])
         if not (
             row["active"]
             and row["polarity"] == "supports"

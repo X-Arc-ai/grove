@@ -122,15 +122,34 @@ def _local_day(at: datetime, zone: str | None) -> date:
 
 
 def calendar_logged(
-    connector: dict[str, Any], source: dict[str, Any], source_time: datetime, zone: str | None
+    connector: dict[str, Any],
+    source: dict[str, Any],
+    source_time: datetime,
+    zone: str | None,
+    *,
+    message_key: str,
+    locator: str,
 ) -> bool:
-    """D5's log setting: an entry dated before the read, on a day the person keeps as a log (from
-    the setting's start date, or a day marked as logged). Anything else stays planned."""
+    """Only a bound, non-cancelled past event can use the person's Calendar log setting.
+
+    The screened-source writer validates these facts against retained messages. Caller dates,
+    caller timezones, free-form event text and missing bindings cannot establish eligibility.
+    """
+    facts = json.loads(source.get("calendar_events") or "{}").get(message_key)
+    if not facts or locator != f"key:{message_key}" or facts.get("status") != "confirmed":
+        return False
+    scheduled = facts.get("scheduled_at")
+    trusted_zone = facts.get("timezone")
+    if scheduled is None or trusted_zone is None:
+        return False
+    scheduled = parse_instant(scheduled)
+    if source_time != scheduled or (zone is not None and zone != trusted_zone):
+        return False
     settings = json.loads(connector.get("settings") or "{}")
     read_at = source.get("received_at")
-    if read_at is None or not source_time < read_at:
+    if read_at is None or not scheduled < read_at:
         return False
-    day = _local_day(source_time, zone)
+    day = _local_day(scheduled, trusted_zone)
     logged_days = {str(value) for value in settings.get("logged_days") or []}
     if day.isoformat() in logged_days:
         return True
@@ -328,7 +347,12 @@ def resolve_observation(
             logged=(
                 connector_type == "calendar"
                 and calendar_logged(
-                    connector, source, source_time, observation.get("person_timezone")
+                    connector,
+                    source,
+                    source_time,
+                    observation.get("person_timezone"),
+                    message_key=observation["message_key"],
+                    locator=observation["locator"],
                 )
             ),
             relay=relay,

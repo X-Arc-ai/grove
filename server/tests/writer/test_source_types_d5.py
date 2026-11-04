@@ -15,6 +15,7 @@ import pytest
 
 from grove import clock
 from grove.clock import TestClock
+from grove.screening import Message, Screener, ScreeningConfig
 from grove.store.connection import DATABASE
 from grove.store.current import standings
 from grove.store.query import WorldQuery
@@ -25,7 +26,9 @@ from grove.writer import (
     record_episode,
     record_source,
 )
+from grove.writer.sources import add_screened_source
 from grove.writer.testing import plant_node, set_self_item
+from grove.writer.tx import WorldWriter
 from tests.writer.helpers import (
     HOST,
     LEARNER,
@@ -566,6 +569,38 @@ def test_an_inferred_claim_carries_derivation_inferred_and_verify_refuses_it(
 CALENDAR_LINES = ["Okonkwo Hall dinner", "Velmora flight", "Board meeting", "Caterer tasting"]
 
 
+def bound_calendar(driver, w, at, zone, settings):
+    connector = record_connector(driver, w, "calendar", settings=settings)
+    screened = Screener(ScreeningConfig()).screen_source(
+        "calendar-export", [Message("calendar-entry", None, CALENDAR_LINES[0], at)]
+    )
+    stored = add_screened_source(
+        WorldWriter(driver, w),
+        screened,
+        connector_id=connector,
+        parser_version="test-1",
+        calendar_events={
+            "calendar-entry": {
+                "scheduled_at": at.isoformat(),
+                "timezone": zone or "UTC",
+                "status": "confirmed",
+            }
+        },
+    )
+    episode = record_episode(
+        driver,
+        w,
+        connector_id=connector,
+        source_ids=[stored["source_id"]],
+        first_message_key="calendar-entry",
+        last_message_key="calendar-entry",
+        start_time=at,
+        end_time=at,
+        cut_rule="calendar-event",
+    )
+    return {"source_id": stored["source_id"], "episode_id": episode}
+
+
 def test_a_future_calendar_entry_is_planned(driver, w):
     calendar = source(driver, w, "calendar", CALENDAR_LINES)
     entry = whole(calendar, "c1", at=NOW + timedelta(days=10), statement_class="intention")
@@ -594,9 +629,18 @@ def test_a_past_calendar_entry_is_planned_without_the_log_setting(driver, w):
 def test_a_past_calendar_entry_is_confirmed_with_the_log_setting_from_its_start_date(
     driver, w, at, zone, expected
 ):
-    calendar = source(driver, w, "calendar", CALENDAR_LINES, settings={"log_from": "2027-02-20"})
+    calendar = bound_calendar(driver, w, at, zone, {"log_from": "2027-02-20"})
     extra = {"person_timezone": zone} if zone else {}
-    entry = whole(calendar, "c1", at=at, statement_class="report_happened", **extra)
+    entry = observation(
+        calendar,
+        "c1",
+        1,
+        at=at,
+        statement_class="report_happened",
+        message_key="calendar-entry",
+        locator="key:calendar-entry",
+        **extra,
+    )
     assert typed(driver, w, entry)["source_type"] == expected
 
 
@@ -608,10 +652,16 @@ def test_a_past_calendar_entry_is_confirmed_with_the_log_setting_from_its_start_
     ],
 )
 def test_a_past_calendar_entry_on_a_logged_day_is_confirmed(driver, w, at, expected):
-    calendar = source(
-        driver, w, "calendar", CALENDAR_LINES, settings={"logged_days": ["2027-02-10"]}
+    calendar = bound_calendar(driver, w, at, "UTC", {"logged_days": ["2027-02-10"]})
+    entry = observation(
+        calendar,
+        "c1",
+        1,
+        at=at,
+        statement_class="report_happened",
+        message_key="calendar-entry",
+        locator="key:calendar-entry",
     )
-    entry = whole(calendar, "c1", at=at, statement_class="report_happened")
     assert typed(driver, w, entry)["source_type"] == expected
 
 

@@ -650,6 +650,11 @@ SOURCES = Table(
             "bool",
             "S46: the connector stored an uploaded file or picture, not typed text",
         ),
+        _ruling(
+            "calendar_events",
+            "json_ids",
+            "S46: bounded retained-message facts: scheduled_at, timezone, status and updated_at",
+        ),
         _col("forget state", "enum:forget_state", note="changed in place by a forget (line 2525)"),
         *_version_touched(),
     ),

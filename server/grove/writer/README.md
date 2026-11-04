@@ -482,3 +482,40 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | The person promotes a word at once; the consolidation agent only at the bar | `invalid_arguments` (rules `earning_bar`, `already_canonical`) | `test_ontology.py` |
 | The Oct 2 drill: no operation of an agent writes the registry or a primitive, an agent cannot declare a writer-set field, an edited seed never reaches a living world, the runner holds no store credential and the store refuses a process with none | `invalid_arguments` (rules `unknown_op`, `writer_field`, `primitive_word`), `not_found` | `test_ontology_drill.py` |
 | Labelled pairs: reworded titles at 0.8, 0.86 and 1.0 are refused, pairs at 0.72 and 0.3 come back as candidates, and revision N after N-1 passes only with `distinct_from` and is logged with `override_used`; `distinct_from` clears only the item it names; a title that differs only by an invisible format character meets the gate | `near_duplicate` | `test_neardup_labelled.py` |
+
+### Calendar event bindings
+
+`write_screened_source` and `add_screened_source` accept `calendar_events` only for a
+Calendar connector. Connector code passes a map from each retained message key to:
+
+```json
+{
+  "scheduled_at": "2027-02-25T09:00:00+00:00",
+  "timezone": "UTC",
+  "status": "confirmed",
+  "updated_at": "2027-02-26T10:00:00+00:00"
+}
+```
+
+The map holds at most 1,000 entries and 512,000 UTF-8 bytes. Keys are codes of at most
+128 characters. The timezone is a valid IANA timezone of at most 128 characters.
+`scheduled_at` and optional `updated_at` are aware ISO instants of at most 64 characters.
+The stored instants are normalized to UTC. Status is `confirmed`, `tentative`, or
+`cancelled`; only a cancelled event may have a null scheduled time. Its retained
+message must also have a null `at`. Other scheduled times must equal the retained
+message's `at`. Missing, duplicate, or screened-out message keys are refused.
+
+The binding identifies exactly `key:<message key>`. The timezone defines the trusted
+Calendar log day. The observation may omit `person_timezone`; if supplied, it must
+match the binding to confirm. Its `source_time` must equal the scheduled instant.
+Only an event with status `confirmed`, scheduled before the source read and covered
+by `log_from` or `logged_days`, can confirm an occurrence. A missing binding or any
+other case stays planned. `updated_at` is never an occurrence time. Free-form event
+text and model-proposed fields cannot supply this binding.
+
+Existing confirming Calendar evidence must pass the same check when cited again.
+This includes existing-row reuse and rolled-up completion premises. Unsupported
+confirmation is refused with `calendar_binding`; this change does not migrate old
+rows. The ingest-a3 connector must transport these facts from its provider parser,
+retain only facts for messages that survive screening, and preserve its atomic
+source transaction. Its provider and cancellation acceptance remains separate.

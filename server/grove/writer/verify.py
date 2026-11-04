@@ -28,7 +28,7 @@ from grove.store.primitives import KIND_BELIEF
 from grove.writer.clocks import parse_instant
 from grove.writer.errors import Refused
 from grove.writer.history import compact
-from grove.writer.provenance import connector_type_of
+from grove.writer.provenance import calendar_logged, connector_type_of
 
 if TYPE_CHECKING:
     from grove.writer.apply import _Plan, _Run
@@ -277,6 +277,27 @@ def capability_of(
     fields = _claim_fields(run, claim_type, claim)
     specific, accepted = _specific_rows(run, connector_type, fields.registry_id)
     return caps.resolve(row, connector, connector_type, fields, specific, accepted)
+
+
+def check_calendar_confirmation(run: "_Run", row: dict[str, Any]) -> None:
+    """Old confirming rows need the same trusted Calendar binding when cited again."""
+    if row.get("source_type") != "confirmed":
+        return
+    source, connector, connector_type = _source_and_connector(run, row["source_id"])
+    if connector_type == "calendar" and not calendar_logged(
+        connector,
+        source,
+        row["source_time"],
+        row.get("person_timezone"),
+        message_key=row["message_key"],
+        locator=row["locator"],
+    ):
+        raise Refused(
+            "invalid_arguments",
+            "calendar_binding",
+            "Calendar confirmation needs trusted event facts",
+            {},
+        )
 
 
 def can_confirm(run: "_Run", row: dict[str, Any], claim_type: str, claim_id: str) -> bool:
