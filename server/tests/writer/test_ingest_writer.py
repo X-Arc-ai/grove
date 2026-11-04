@@ -242,6 +242,44 @@ def test_record_read_moves_coverage(driver, seeded, test_clock):
         record_read(driver, world_id, connector, outcome="took_in", failed=-1)
 
 
+@pytest.mark.parametrize("outcome", ["denied", "failed", "kept_out"])
+@pytest.mark.parametrize("previous_success", [False, True])
+def test_unsuccessful_read_preserves_last_success(
+    driver, seeded, test_clock, outcome, previous_success
+):
+    """A denied or excluded source cannot erase the date D7 reports as last seen."""
+    world_id, _ = seeded
+    connector = ensure_connector(driver, world_id, "past_ai_conversations", "zz_w", batch_rule="b")
+    successful_at = test_clock.now() if previous_success else None
+    if previous_success:
+        record_read(driver, world_id, connector, outcome="nothing_new")
+    test_clock.advance(minutes=10)
+    attempted_at = test_clock.now() - timedelta(minutes=1)
+
+    record_read(driver, world_id, connector, outcome=outcome, attempted_at=attempted_at)
+
+    row = WorldQuery(driver, world_id).read("MATCH (c:Connector) RETURN c")[0]["c"]
+    assert row.get("last_successful_read") == successful_at
+    assert row["last_attempted_read"] == attempted_at
+    assert row["last_outcome"] == outcome
+    assert row["touched_at"] == test_clock.now()
+
+
+@pytest.mark.parametrize("outcome", ["took_in", "nothing_new"])
+def test_successful_read_after_denial_advances_last_success(driver, seeded, test_clock, outcome):
+    world_id, _ = seeded
+    connector = ensure_connector(driver, world_id, "past_ai_conversations", "zz_w", batch_rule="b")
+    record_read(driver, world_id, connector, outcome="denied")
+    test_clock.advance(minutes=10)
+
+    record_read(driver, world_id, connector, outcome=outcome)
+
+    row = WorldQuery(driver, world_id).read("MATCH (c:Connector) RETURN c")[0]["c"]
+    assert row["last_successful_read"] == test_clock.now()
+    assert row["last_attempted_read"] == test_clock.now()
+    assert row["last_outcome"] == outcome
+
+
 # Upload-only tokens ------------------------------------------------------------------------
 
 

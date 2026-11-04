@@ -104,17 +104,12 @@ _CLEAR_CLAIM = {"retry_at": None, "lease_until": None, "claimed_by": None}
 _FAILABLE = ("queued", "applying", "failed")
 
 _READ = "MATCH (r:Request {id: $id}) RETURN r"
-# A direct SET on a property takes the row's lock before it reads the row (S1). This one keeps the
-# value, so a path that ends with no change has written nothing, also in a caller's transaction.
-_LOCK = "MATCH (r:Request {id: $id}) SET r.touched_at = coalesce(r.touched_at, $at) RETURN r"
-_MERGE = (
-    "MERGE (r:Request {id: $id}) ON CREATE SET r += $row, r.fresh_marker = true "
-    "SET r.touched_at = coalesce(r.touched_at, $at) "
-    "WITH r, coalesce(r.fresh_marker, false) AS fresh REMOVE r.fresh_marker RETURN r, fresh"
-)
+# Every callback already holds the World lock, including unchanged request replays.
+_LOCK = _READ
+_CREATE = "CREATE (r:Request {id: $id}) SET r += $row RETURN r"
 _UPDATE = "MATCH (r:Request {id: $id}) SET r += $columns, r.version = coalesce(r.version, 0) + 1"
 _ATTACH = (
-    "MATCH (r:Request {id: $id}) SET r.touched_at = coalesce(r.touched_at, $at) "
+    "MATCH (r:Request {id: $id}) "
     "WITH r WHERE r.status = 'saved' AND r.receipt IS NULL "
     "SET r.receipt = $receipt, r.touched_at = $at, r.version = coalesce(r.version, 0) + 1"
 )
@@ -126,10 +121,7 @@ _DUE = (
     "(r.status = 'applying' AND (r.lease_until IS NULL OR r.lease_until <= $now)))"
 )
 _READ_DUE = "MATCH (r:Request) WHERE " + _DUE + " RETURN r ORDER BY r.created_at, r.id LIMIT $limit"
-_LOCK_IF_DUE = (
-    "MATCH (r:Request {id: $id}) SET r.touched_at = coalesce(r.touched_at, $now) "
-    "WITH r WHERE " + _DUE + " RETURN r"
-)
+_LOCK_IF_DUE = "MATCH (r:Request {id: $id}) WITH r WHERE " + _DUE + " RETURN r"
 
 
 # Checks that need no store -------------------------------------------------------------------
@@ -215,6 +207,9 @@ def merge_row(
 ) -> tuple[dict[str, Any], bool]:
     """The row, under its lock, and whether this transaction created it. A new row's version is 0
     unless the caller says otherwise: its first status update makes it 1."""
+    existing = tx.run(_READ, id=request_id)
+    if existing:
+        return existing[0]["r"], False
     row = {
         "caller": caller.actor,
         "status": "queued",
@@ -225,8 +220,8 @@ def merge_row(
         "touched_at": at,
         **{key: value for key, value in columns.items() if value is not None},
     }
-    found = tx.run(_MERGE, id=request_id, row=row, at=at)[0]
-    return found["r"], found["fresh"]
+    found = tx.run(_CREATE, id=request_id, row=row)[0]
+    return found["r"], True
 
 
 def _attempts_after(row: dict[str, Any]) -> int:

@@ -10,7 +10,7 @@ from datetime import datetime
 from importlib import resources
 from typing import Any
 
-from neo4j import Driver, ManagedTransaction
+from neo4j import Driver, ManagedTransaction, unit_of_work
 
 from grove import clock
 from grove.ids import new_id
@@ -25,7 +25,7 @@ from grove.store.primitives import (
 )
 from grove.store.query import CYPHER_PREFIX
 from grove.store.scope import WORLD_PARAM, check_world_id
-from grove.writer.tx import WorldTx, WorldWriter
+from grove.writer.tx import WorldTx
 
 _ORIGIN = "starter"
 _STATUS = "canonical"
@@ -45,10 +45,14 @@ _SEED_TIMEOUT = 120.0
 # MERGE on the unique id alone is what stays safe when two callers race.
 _ENSURE_PRIMITIVE_MEANING = CYPHER_PREFIX + "MERGE (m:Meaning {id: $id}) SET m += $row"
 _ENSURE_PRIMITIVE_KIND = CYPHER_PREFIX + "MERGE (k:Kind {id: $id}) SET k += $row"
-# MERGE on the unique id makes a second caller wait for the first to commit, and then see its seed.
+# MERGE serializes creation of an absent id. An existing row needs the explicit World lock
+# before its seed state is read: MERGE alone can return a state that changes before that lock.
 _ENSURE_WORLD = CYPHER_PREFIX + (
     "MERGE (w:World {id: $world_id}) ON CREATE SET w.owner_user_id = $owner_user_id, "
-    "w.created_at = $at, w.next_sequence = 0 "
+    "w.created_at = $at, w.next_sequence = 0, w.read_generation = 0"
+)
+_READ_SEED_STATE = CYPHER_PREFIX + (
+    "MATCH (w:World {id: $world_id}) "
     "RETURN w.owner_user_id AS owner_user_id, w.seed_version AS seed_version"
 )
 _MARK_SEEDED = CYPHER_PREFIX + (
@@ -324,9 +328,9 @@ def create_world(driver: Driver, world_id: str, *, owner_user_id: str) -> dict[s
         # WorldTx refuses the platform label :World by design, and the row must commit with the
         # seed. No other module writes it.
         managed = tx.unscoped()
-        world = managed.run(
-            _ENSURE_WORLD, world_id=world_id, owner_user_id=owner_user_id, at=at
-        ).single()
+        managed.run(_ENSURE_WORLD, world_id=world_id, owner_user_id=owner_user_id, at=at).consume()
+        tx.lock_world()
+        world = managed.run(_READ_SEED_STATE, world_id=world_id).single(strict=True)
         version = world["seed_version"]
         if version is not None and version != starter["seed_version"]:
             # A world seeded before the property names (S55) gets the rows it lacks, and no other.
@@ -358,4 +362,15 @@ def create_world(driver: Driver, world_id: str, *, owner_user_id: str) -> dict[s
             **ids,
         }
 
-    return WorldWriter(driver, world_id, timeout=_SEED_TIMEOUT).transaction(work)
+    # Only this fixed creation path can run before the World row exists. The initial
+    # MERGE is tracked, then work acquires the same lock as an ordinary writer.
+    @unit_of_work(timeout=_SEED_TIMEOUT)
+    def unit(native: ManagedTransaction) -> dict[str, Any]:
+        scoped = WorldTx(native, world_id)
+        try:
+            return scoped._finish(work(scoped))
+        finally:
+            scoped._closed = True
+
+    with driver.session(database=DATABASE) as session:
+        return session.execute_write(unit)

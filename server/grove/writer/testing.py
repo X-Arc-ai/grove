@@ -43,7 +43,7 @@ def plant_node(
     # Every label is checked against the catalogue, so splicing it into the text is safe.
     labels = label.split(":")
     if labels == [_WORLD_LABEL]:
-        row = {**props, "id": world_id}
+        row = {"read_generation": 0, **props, "id": world_id}
     elif set(labels) <= WORLD_LABELS:
         row = {"id": new_id(world_id), **props, "world_id": world_id}
         if primitive:
@@ -91,12 +91,33 @@ def plant_link(
     return row
 
 
+def advance_version(driver: Driver, world_id: str, entity: str, entity_id: str) -> None:
+    """Simulate an intervening update of a planted item or link in a t_ world."""
+    refuse_real_world(world_id)
+    queries = {
+        "item": "MATCH (n:Item {world_id: $world, id: $id}) ",
+        "link": "MATCH ()-[n:LINK {world_id: $world, id: $id}]->() ",
+    }
+    if entity not in queries:
+        raise ValueError("only a planted item or link can advance")
+    with driver.session(database=DATABASE) as session:
+        row = session.run(
+            "CYPHER 25 "
+            + queries[entity]
+            + "SET n.version = n.version + 1 RETURN n.version AS version",
+            world=world_id,
+            id=entity_id,
+        ).single()
+    if row is None:
+        raise ValueError("no planted entity in this test world")
+
+
 _SESSION_LIFETIME = timedelta(hours=1)
 # The :World row of a test world: made on first use, its owner set on every call. The id is the
 # key of the uniqueness constraint, so two calls for one world find one row.
 _OWN_WORLD = (
     "CYPHER 25 MERGE (w:World {id: $world_id}) "
-    "ON CREATE SET w.created_at = $at, w.next_sequence = 0 "
+    "ON CREATE SET w.created_at = $at, w.next_sequence = 0, w.read_generation = 0 "
     "SET w.owner_user_id = $user_id"
 )
 _PLANT_USER = (
