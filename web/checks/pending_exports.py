@@ -225,7 +225,7 @@ def run(shots):
             )
             == {}
         )
-        page.locator("[data-action=guide-back]").click()
+        page.locator("[data-action=guide-back]").first.click()
         page.locator("[data-action=skip]").click()
         page.reload()
         wait_pending(page, ["chatgpt"])
