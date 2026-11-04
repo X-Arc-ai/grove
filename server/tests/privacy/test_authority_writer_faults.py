@@ -9,13 +9,13 @@ import threading
 from dataclasses import replace
 
 import pytest
-from grove.writer.authority_records import check_binding
 
 from grove import clock
 from grove.authority.lease import LeaseRefused, open_existing_root
 from grove.authority.publication import PublicationRefused
 from grove.authority.publication_files import PublicationFiles
 from grove.authority.publisher import PublicationSession
+from grove.writer.authority_records import check_binding
 from grove.writer.tx import WorldTx
 from tests.privacy.test_authority_codec import uid
 from tests.privacy.test_authority_legacy import WORLD
@@ -67,6 +67,43 @@ def test_response_loss_stays_unknown_even_if_effect_committed(harness):
         assert next(iter(h.db.data["operations"].values()))["outcome"] == "COMMITTED_EXACT"
         assert not h.final_targets
         assert b'"pending"' in h.paths["manifest"].read_bytes()
+
+
+@pytest.mark.parametrize("cut", ["effect_ack", "completion_ack"])
+def test_fresh_recovery_resolves_exact_effect_and_completion_ack_loss(harness, monkeypatch, cut):
+    h = harness
+    original_replace = PublicationFiles.replace
+    journals = 0
+
+    def replace_then_lose_ack(self, candidate, *args):
+        nonlocal journals
+        result = original_replace(self, candidate, *args)
+        if candidate.role == "journal":
+            journals += 1
+            if journals == 2:
+                raise OSError("synthetic completion acknowledgement loss")
+        return result
+
+    if cut == "effect_ack":
+        h.db.lose_effect_response = True
+    else:
+        monkeypatch.setattr(PublicationFiles, "replace", replace_then_lose_ack)
+    with h.open() as session:
+        session.bind_writer(h.writer)
+        pending = h.pending(session)
+        with pytest.raises(PublicationRefused):
+            session.complete(pending, h.proposal.completion_template)
+        assert h.db.data["effects"] == 1
+        assert b'"pending"' in h.paths["manifest"].read_bytes()
+    monkeypatch.setattr(PublicationFiles, "replace", original_replace)
+    h.writer = h.new_writer(operation_kind="recovery")
+    with h.open() as session:
+        session.bind_writer(h.writer)
+        result = session.recover(WORLD, h.proposal, h.proposal.completion_template)
+        assert result.code == "committed"
+        assert result.state.projection == h.writer._native.projection
+    assert h.db.data["effects"] == 1
+    assert h.db.data["projection"]["active_intent_id"] is None
 
 
 @pytest.mark.parametrize("service", ["principal", "references"])

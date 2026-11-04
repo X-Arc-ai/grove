@@ -11,17 +11,17 @@ from hashlib import sha256
 from types import SimpleNamespace
 
 import pytest
+
+from grove import clock
+from grove.authority.publication import ObservedFile, PublicationRefused
+from grove.authority.publisher import open_publication
+from grove.writer import authority_forget, authority_outcomes
 from grove.writer.authority_adapter import AuthorityOwners, CapturedJournal, InactiveAuthorityWriter
 from grove.writer.authority_records import (
     InspectionCommand,
     check_binding,
     check_command,
 )
-
-from grove import clock
-from grove.authority.publication import ObservedFile, PublicationRefused
-from grove.authority.publisher import open_publication
-from grove.writer import authority_forget, authority_outcomes
 from grove.writer.tx import WorldTx
 from tests.privacy.test_authority_codec import canonical, hashed, uid
 from tests.privacy.test_authority_legacy import WORLD, payload, row
@@ -267,7 +267,7 @@ class Work:
 
     def assert_current(self, bindings, world_id, operation_kind):
         assert self.resource.active and bindings == self.resource.harness.bindings
-        assert world_id == WORLD and operation_kind == "publication"
+        assert world_id == WORLD and operation_kind == self.resource.harness.writer.operation_kind
 
     def drain(self):
         owner = self.resource
@@ -285,7 +285,7 @@ class Workers(Resource):
     @contextmanager
     def operation(self, bindings, world_id, operation_kind):
         assert bindings == self.harness.bindings and world_id == WORLD
-        assert operation_kind == "publication"
+        assert operation_kind == self.harness.writer.operation_kind
         self.active = True
         self.harness.events.append("enter")
         try:
@@ -395,7 +395,8 @@ def test_real_binder_preflight_precedes_stage_and_preserves_requirement_tuples(h
     with h.open() as session:
         assert session.bind_writer(h.writer) is session
         assert h.snapshot() == before and h.db.data == data
-        assert "preflight_legacy" in h.events and h.db.callbacks == 2
+        # Projection, capacity and legacy planning are separate read-only callbacks.
+        assert "preflight_legacy" in h.events and h.db.callbacks == 3
         state = session.inspect(WORLD)
         observed = h.writer.check_current(state, h.proposal)
         assert observed.requirements == state.requirements

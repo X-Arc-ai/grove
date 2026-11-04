@@ -8,6 +8,7 @@ durability, or power-loss recovery.
 """
 
 import copy
+import multiprocessing
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -297,8 +298,7 @@ class _KernelOwner:
             assert command.completion == self.completion
 
 
-@pytest.fixture
-def kernel_owners(monkeypatch):
+def _install_test_boundaries(monkeypatch):
     """Replace only the external authority and effect adapter, explicitly."""
     owners = []
 
@@ -333,12 +333,17 @@ def kernel_owners(monkeypatch):
     monkeypatch.setattr(authority_forget, "apply_legacy_forget_in_tx", test_effect)
     monkeypatch.setattr(clock, "now", lambda world=None: NOW)
 
-    def make(world="world-1", *, expansion=False):
+    def make(world="t_forget_00000000-0000-4000-8000-000000000001", *, expansion=False):
         owner = _KernelOwner(world, expansion=expansion)
         owners.append(owner)
         return owner
 
     return make
+
+
+@pytest.fixture
+def kernel_owners(monkeypatch):
+    return _install_test_boundaries(monkeypatch)
 
 
 def _seed_rows(owner):
@@ -511,6 +516,81 @@ def test_synthetic_duplicate_register_apply_and_finalize_are_exact_noops(synthet
     assert h.snapshot() == before
     assert len(before["tables"]["AuthorityApprovalUse"]) == 1
     assert before["world"]["sequence"] == 17
+
+
+@pytest.mark.parametrize("field", ["id", "idempotency_key", "intent_digest", "prepare_head_digest"])
+def test_same_intent_or_key_with_different_registered_bytes_refuses(synthetic, field):
+    h = synthetic()
+    h.register()
+    # First prove that the unmodified, otherwise-valid record permits an exact retry.
+    assert h.register().outcome == "UNKNOWN"
+    row = h.store.tables["AuthorityOperation"][0]
+    row[field] = uid(9900) if field in {"id", "idempotency_key"} else "c" * 64
+    validate_row("operation", row)
+    before = h.snapshot()
+    with pytest.raises(PublicationRefused, match="outcome:conflict"):
+        h.register()
+    assert h.snapshot() == before
+
+
+@pytest.mark.parametrize("fail_after_burn", [False, True])
+def test_reapproval_consumes_renewed_and_burns_original_atomically(
+    synthetic, monkeypatch, fail_after_burn
+):
+    h = synthetic(expansion=True)
+    original = h.owner.prepare.payload.intent.authorization
+    renewed = replace(original, approval_id=uid(9910), approved_at=STAMP)
+    assert renewed.approved_at > original.approved_at
+    h.owner._renewed_approval = renewed
+    old_row = h.store.tables["ForgetApproval"][0]
+    new_row = {**old_row, "id": renewed.approval_id}
+    # Only the renewed approval owns the bearer token. The expired original is
+    # checked as historical evidence and burned in the same transaction.
+    old_row["token_hash"] = "c" * 64
+    old_row["expires_at"] = NOW - timedelta(minutes=1)
+    h.store.tables["ForgetApproval"].append(new_row)
+
+    def approval_access(tx, approval, historical=False):
+        assert approval == (original if historical else renewed)
+        return ApprovalAccess(approval, TARGET_DIGEST, None if historical else TOKEN)
+
+    monkeypatch.setattr(h.owner, "_approval_in_tx", approval_access)
+    if fail_after_burn:
+        burn = kernel.burn_authority_approval_in_tx
+
+        def failed_burn(*args, **kwargs):
+            burn(*args, **kwargs)
+            raise RuntimeError("fault after both approvals")
+
+        monkeypatch.setattr(kernel, "burn_authority_approval_in_tx", failed_burn)
+    before = h.snapshot()
+
+    def consume(tx):
+        kernel.consume_authority_approval_in_tx(
+            tx,
+            h.owner.binding,
+            h.owner.prepare.payload.intent,
+            renewed,
+            role="renewed",
+            original=original,
+        )
+
+    if fail_after_burn:
+        with pytest.raises(RuntimeError, match="after both approvals"):
+            h.store.transaction(consume)
+        assert h.snapshot() == before
+    else:
+        h.store.transaction(consume)
+        uses = h.store.tables["AuthorityApprovalUse"]
+        assert {(row["approval_id"], row["role"]) for row in uses} == {
+            (original.approval_id, "original"),
+            (renewed.approval_id, "renewed"),
+        }
+        assert all(row["used_at"] == NOW for row in h.store.tables["ForgetApproval"])
+        after = h.snapshot()
+        with pytest.raises(PublicationRefused):
+            h.store.transaction(consume)
+        assert h.snapshot() == after
 
 
 def test_synthetic_fence_refuses_delayed_registration_and_apply(synthetic):
@@ -754,6 +834,71 @@ def _race_locked(h, first, second, *, rollback=False):
         result_b = future_b.result(timeout=20)
         assert entered_b.is_set()
         return result_a, result_b
+
+
+def _owned_native_child(world, cut, sender, wait):
+    """Only this test's child and allocated world participate in a process cut."""
+    from grove.store.connection import open_driver
+
+    _require_native_target()
+    try:
+        with pytest.MonkeyPatch.context() as patch:
+            owner = _install_test_boundaries(patch)(world)
+            if cut == "before_lock":
+                sender.send("before_lock")
+                wait.wait(30)
+                return
+            with open_driver() as driver:
+                writer = WorldWriter(driver, world)
+
+                def apply(tx):
+                    result = kernel.apply_effects_in_tx(tx, owner.apply)
+                    if cut == "before_commit":
+                        sender.send("before_commit")
+                        wait.wait(30)
+                    return result
+
+                result = writer.transaction(apply)
+                if cut == "after_commit":
+                    sender.send(result.outcome)
+                    wait.wait(30)
+    finally:
+        sender.close()
+
+
+@pytest.mark.parametrize("cut", ["before_lock", "before_commit", "after_commit"])
+def test_native_owned_child_termination_requires_fresh_outcome(native, cut):
+    h = native()
+    h.register()
+    context = multiprocessing.get_context("spawn")
+    receiver, sender = context.Pipe(duplex=False)
+    wait = context.Event()
+    child = context.Process(target=_owned_native_child, args=(h.owner.world, cut, sender, wait))
+    child.start()
+    sender.close()
+    try:
+        assert receiver.poll(15), "owned child did not reach its exact cut"
+        assert receiver.recv() == ("COMMITTED_EXACT" if cut == "after_commit" else cut)
+        child.terminate()
+        child.join(10)
+        assert not child.is_alive() and child.exitcode != 0
+        if cut == "after_commit":
+            assert h.inspect().outcome == "COMMITTED_EXACT"
+            assert len(h.snapshot()["tables"]["AuthorityApprovalUse"]) == 1
+        else:
+            # Process exit alone never proves rollback. Serialize a barrier and
+            # inspect its exact committed fence before reporting non-application.
+            assert h.inspect().outcome == "UNKNOWN"
+            assert h.fence().outcome == "UNKNOWN"
+            assert h.inspect().outcome == "NOT_APPLIED_PROVEN"
+            assert h.snapshot()["tables"]["AuthorityApprovalUse"] == []
+    finally:
+        receiver.close()
+        wait.set()
+        if child.is_alive():
+            child.terminate()
+            child.join(10)
+        assert not child.is_alive()
 
 
 def test_native_commit_then_waiting_inspection_observes_committed_exact(native):
