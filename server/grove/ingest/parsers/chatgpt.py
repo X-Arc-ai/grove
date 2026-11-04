@@ -19,6 +19,7 @@ from grove.ingest.connector import (
     ParsedChat,
     ParsedMessage,
     Upload,
+    bounded_id,
     clean_text,
     clip,
     in_time_order,
@@ -57,7 +58,7 @@ _ALL = "all"
 
 
 def _text_id(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
+    return bounded_id(value) if isinstance(value, str) and value else None
 
 
 def _base_name(path: str) -> str:
@@ -245,7 +246,7 @@ class _Reader:
             or content_type in _DROPPED_TYPES
         ):
             return []
-        message_id = _text_id(message.get("id")) or node_id
+        message_id = _text_id(message.get("id")) or bounded_id(node_id)
         at = utc_from_epoch(message.get("create_time"))
         if role == "user":
             return self._user(message_id, at, content, content_type, metadata)

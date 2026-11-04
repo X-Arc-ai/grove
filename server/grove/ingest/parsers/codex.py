@@ -31,6 +31,7 @@ from grove.ingest.connector import (
     ParsedChat,
     ParsedMessage,
     Upload,
+    bounded_id,
     clean_text,
     clip,
     in_time_order,
@@ -311,6 +312,8 @@ def _rollout(data: bytes, upload: Upload) -> _Rollout | None:
     old_items: list[tuple[int, datetime | None, tuple[str, str]]] = []
     for index, (number, value) in enumerate(archive.json_lines(data, budget=upload.budget)):
         if index == 0:
+            if isinstance(value, dict) and _is_old_meta(value):
+                bounded_id(value["id"])
             first = value
         if _is_wrapped(value):
             wrapped = True
@@ -319,6 +322,8 @@ def _rollout(data: bytes, upload: Upload) -> _Rollout | None:
                 times.append(at)
             payload = value["payload"]
             if value["type"] == "session_meta" and wrapped_meta is None:
+                if isinstance(payload.get("id"), str):
+                    bounded_id(payload["id"])
                 wrapped_meta = payload
             elif value["type"] == "response_item":
                 found = _item_message(payload, _SLOT)

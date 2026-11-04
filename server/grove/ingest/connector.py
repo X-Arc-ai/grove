@@ -60,6 +60,9 @@ MAX_MESSAGES = 1_000_000
 # The text charged per upload. Synthetic screening probes measured about 0.3 million
 # characters a second; total request time also includes parsing and store writes.
 MAX_TEXT_CHARS = 50_000_000
+# IDs are reused for every message key. Bound each component before retaining a chat or
+# joining/encoding a key, so one large ID cannot multiply work by the message count.
+MAX_ID_CHARS = 1024
 _TOO_LARGE = "the export holds more than one upload takes: upload it in parts"
 # The screener's working copies of a text take many times its size (a non-ASCII text keeps two
 # offsets a character in each of two copies), so the pipeline screens at most this much of one
@@ -86,8 +89,15 @@ def _is_code(value: object, *, limit: int = 64) -> bool:
     )
 
 
+def bounded_id(value: str) -> str:
+    """Keep an identifier unchanged or refuse it. Truncation would merge distinct identities."""
+    if len(value) > MAX_ID_CHARS:
+        raise NotAnExport("an identifier exceeds the 1024-character limit")
+    return value
+
+
 def _fingerprint(parts: Sequence[object]) -> str:
-    joined = _SEPARATOR.join("" if part is None else str(part) for part in parts)
+    joined = _SEPARATOR.join(bounded_id("" if part is None else str(part)) for part in parts)
     # surrogatepass: an id read from JSON may hold a lone surrogate, and it must still hash.
     return hashlib.sha256(joined.encode("utf-8", "surrogatepass")).hexdigest()[:_KEY_HEX]
 
@@ -224,6 +234,7 @@ class ParsedChat:
     def __post_init__(self) -> None:
         if not isinstance(self.chat_id, str) or not self.chat_id:
             raise ValueError("ParsedChat.chat_id must be non-empty text")
+        bounded_id(self.chat_id)
         keys = [message.key for message in self.messages]
         if len(set(keys)) != len(keys):
             raise ValueError("ParsedChat holds one message key twice")
