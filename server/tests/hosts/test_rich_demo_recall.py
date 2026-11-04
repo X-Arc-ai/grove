@@ -1,18 +1,28 @@
 """Native integration: saved synthetic evidence, Cedar and actual graph payloads."""
 
 import json
+from copy import deepcopy
 
 import pytest
-from grove.writer.demo_seed import seed_story
 
 from grove import clock
 from grove.api.errors import ApiError
-from grove.demo.corpus import stories
-from grove.demo_policy import configured_email_hash
-from grove.reads.demo_current import MAX_ITEMS, DemoRecallHandler
+from grove.demo.corpus import VERSION, stories
+from grove.demo_policy import DEMO_VERSION, configured_email_hash
+from grove.reads.demo_current import (
+    _TOPIC_CAPTURE,
+    MAX_ITEMS,
+    MAX_ROWS,
+    MAX_TEXT,
+    MAX_VALUE,
+    DemoRecallHandler,
+    _validate,
+)
+from grove.store.current import SUCCESSOR_MEANINGS
 from grove.store.query import WorldQuery
 from grove.views.graph import Window, graph_payload
 from grove.writer import Caller, apply_batch
+from grove.writer.demo_seed import seed_story
 from tests.hosts.test_demo_recall import demo_context as demo_context
 from tests.hosts.test_demo_recall import queue
 from tests.hosts.test_store_component import complete
@@ -53,6 +63,33 @@ def test_rich_saved_recall_preserves_cedar_and_has_real_graph(demo_context):
     assert all(edge["data"]["source"] in ids and edge["data"]["target"] in ids for edge in edges)
     assert payload["selection"]["truncated"] is False
     json.dumps(payload, allow_nan=False)
+
+    # Even a matching fabricated creation snapshot cannot add unapproved content
+    # to a valid fixed source. This is a pure tampered-copy control, no store write.
+    captured = query.read(
+        _TOPIC_CAPTURE,
+        own=account.self_item_id,
+        cedar_version=DEMO_VERSION,
+        rich_version=VERSION,
+        message_keys=[stories()[0].items[0].key],
+        item_cap=MAX_ITEMS + 1,
+        row_cap=MAX_ROWS + 1,
+        text_cap=MAX_TEXT,
+        value_cap=MAX_VALUE,
+        successors=list(SUCCESSOR_MEANINGS),
+    )[0]
+    tampered = deepcopy(captured)
+    victim = next(
+        item for item in tampered["items"] if item["title"] == stories()[0].items[0].title
+    )
+    victim["body"] = "Unapproved extra material"
+    entry = next(e for e in tampered["entries"] if e["entity_id"] == victim["id"])
+    value = next(v for v in tampered["values"] if v["id"] == entry["new_value_id"])
+    original = json.loads(value["value"])
+    original["row"]["body"] = victim["body"]
+    value["value"] = json.dumps(original)
+    with pytest.raises(ApiError, match="provenance"):
+        _validate(tampered, context.world_id, clock.now(context.world_id))
 
     # The candidate selection uses the bound source key, not a mutable title.
     chosen = rich["items"][0]
