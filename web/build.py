@@ -7,12 +7,12 @@ The views load no fixture. The checks inject a synthetic one into the unbundled 
 The privacy generator writes docs/data-flow.md; the page includes every generated table row.
 The consent page is a template: the API fills its two marks at each /authorize (grove.oauth.consent).
 """
-from pathlib import Path
 import base64
 import html as html_text
+import importlib.util
 import json
 import re
-import importlib.util
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 FIXTURE_HOOK = "window.GROVE_FIXTURE"
