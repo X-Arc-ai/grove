@@ -29,6 +29,7 @@ from grove.screening import ScreenedSource
 from grove.store.enums import ENUMS
 from grove.writer.connectors import ConnectionBusy, require_sync
 from grove.writer.errors import InvalidRecord
+from grove.writer.forget_sources import refuse_forgotten_source
 from grove.writer.history import compact
 from grove.writer.sources import write_screened_source
 from grove.writer.tx import WorldTx, WorldWriter
@@ -240,6 +241,8 @@ def write_chat_delta(
         _aware(newest_at, "newest_at")
 
     def work(tx: WorldTx) -> dict[str, Any] | None:
+        # Match the cascade's lock order before the narrower connector lock.
+        refuse_forgotten_source(tx, locator, keys)
         if has_designation(designation_in_tx(tx) or {}):
             raise DemoDenied()
         if sync_owner is not None:

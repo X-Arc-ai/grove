@@ -38,6 +38,7 @@ from grove.store.enums import ENUMS
 from grove.writer.calendar_facts import calendar_facts_json
 from grove.writer.clocks import ClockError, parse_instant
 from grove.writer.errors import InvalidRecord
+from grove.writer.forget_sources import refuse_forgotten_source
 from grove.writer.history import compact
 from grove.writer.tx import WorldTx, WorldWriter
 
@@ -175,6 +176,7 @@ def record_source(
         _text(content_pointer, "content_pointer")
 
     def work(tx: WorldTx) -> str:
+        refuse_forgotten_source(tx, external_locator)
         connector = _connector(tx, connector_id)
         if has_designation(designation_in_tx(tx) or {}):
             require_designation_in_tx(tx)
@@ -373,6 +375,7 @@ def write_screened_source(
     if type(parser_version) is not str or _CODE.fullmatch(parser_version) is None:
         raise ValueError("parser_version is not a code")
     counts = _checked_counts(screened.counts)
+    refuse_forgotten_source(tx, screened.locator, (message.key for message in screened.messages))
     speakers_text = speakers_json(speakers)
     connector = _connector(tx, connector_id)
     demo_columns = {}
