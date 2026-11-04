@@ -483,3 +483,11 @@ def test_missing_trigger_and_bad_time_refuse():
 
 def test_no_trigger_has_no_effect():
     assert cascade.plan(snapshot(), []) == cascade.CascadePlan()
+
+
+def test_r4_can_propose_return_to_a_previous_reported_done_status():
+    state = snapshot()
+    state["prior_status"]["b"] = {"status": "reported done", "role": "reported_done"}
+    (proposal,) = actions(cascade.plan(state, [change()]), "R4")
+    assert proposal["action"] == "resume"
+    assert proposal["suggested_status"] == "reported done"
