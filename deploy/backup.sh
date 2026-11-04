@@ -12,7 +12,9 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 keep_days=${GROVE_BACKUP_KEEP_DAYS:-30}
 [[ $keep_days =~ ^[1-9][0-9]*$ ]] || die "GROVE_BACKUP_KEEP_DAYS must be a whole number of days"
 
-take_lock "${GROVE_BACKUP_WAIT_SECONDS:-1800}"
+maintenance_guard
+take_lock 30
+maintenance_guard
 GROVE_BUILD_SHA=$(deployed_sha)
 export GROVE_BUILD_SHA
 
@@ -29,7 +31,9 @@ finish() {
         log "starting neo4j, api, gateway and runner again"
         compose start neo4j || true
         wait_healthy neo4j || true
-        compose start api gateway runner || true
+        if [ ! -e "$GROVE_STATE/cutover.json" ] && [ ! -L "$GROVE_STATE/cutover.json" ]; then
+            compose start api gateway runner || true
+        fi
     fi
     rm -rf "${work:?}"
     [ "$status" = 0 ] || record backup.log "backup $name FAILED (exit $status)"
@@ -69,6 +73,7 @@ wait_healthy neo4j || die "neo4j did not come back after the dump"
 # The store must be what was fingerprinted: nothing wrote while the services were down.
 compose_run api python -m grove.store.dump_fingerprint --expect "$fingerprint" >/dev/null ||
     die "the store changed across the dump"
+maintenance_guard
 compose start api gateway runner
 services_down=0
 log "backup $name: services running again"

@@ -545,6 +545,9 @@ class Box:
 def box(tmp_path: Path) -> Box:
     root = tmp_path / "box"
     shutil.copytree(DEPLOY, root / "src" / "deploy")
+    clock_source = root / "src/server/grove/clock.py"
+    clock_source.parent.mkdir(parents=True)
+    shutil.copy2(REPO / "server/grove/clock.py", clock_source)
     for name in ("etc", "state", "log", "backups", "acme", "systemd", "logrotate", "fake"):
         (root / name).mkdir(parents=True)
     (root / "etc").chmod(0o700)
@@ -590,8 +593,11 @@ def box(tmp_path: Path) -> Box:
 
     real_install = shutil.which("install")
     assert real_install, "install(1) is missing"
+    test_path = os.pathsep.join(
+        (str(bin_dir), str(Path(sys.executable).parent), os.environ["PATH"])
+    )
     env = {
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "PATH": test_path,
         "HOME": str(root),
         "LC_ALL": "C",
         "REAL_INSTALL": real_install,
@@ -606,6 +612,7 @@ def box(tmp_path: Path) -> Box:
         "GROVE_LOCK_FILE": str(root / "lock" / "grove-deploy.lock"),
         "GROVE_NGINX_DIR": str(root / "nginx"),
         "GROVE_SYSTEMD_DIR": str(root / "systemd"),
+        "GROVE_CUTOVER_INSTALLED": str(root / "installed" / "cutover.py"),
         "GROVE_LETSENCRYPT_DIR": str(root / "letsencrypt"),
         "GROVE_ACME_ROOT": str(root / "acme"),
         "GROVE_LOGROTATE_DIR": str(root / "logrotate"),

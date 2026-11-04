@@ -142,60 +142,154 @@ its own `GROVE_ETC` directory, even if a different initializer directory overrid
 
 ## Deploy a commit
 
-A deploy names one full sha that is on `origin/develop`. One deploy runs at a time: the operator's
-machine holds a lock, and the box holds a second one, `/run/grove/deploy.lock` in a folder only root
-can enter, that the backup, the restore check and `services-up.sh` also take. A deploy waits up to
-30 minutes for it. From the operator's machine:
+The migration cutover requires an exact release request. It is not a general rollback tool.
+The request names the full published `develop` SHA, current baseline, existing seed-lock path,
+additional smoke script and its SHA256, and every permitted host operation. Do not run a seed
+through this protocol. Seed and account actions need their own released contract.
 
+### First-upgrade bootstrap
+
+The currently served parent can keep its old shell program after Git replaces the checkout.
+On early target failure it can also restore its old installer. Install the persistent guard
+before that parent runs. Under the continuous operator lock, fetch the authorized target and
+verify its ancestry and the clean checkout. Obtain the guard and clock **from Git on the host**:
+
+```sh
+# TARGET is the exact full SHA from the release request. No file transfer is needed.
+set -euo pipefail
+git -C /opt/grove/src fetch origin develop
+git -C /opt/grove/src merge-base --is-ancestor "$TARGET" origin/develop
+install -d -m 700 /var/lib/grove/cutover-bootstrap
+umask 077
+git -C /opt/grove/src show "$TARGET:deploy/cutover.py" > /var/lib/grove/cutover-bootstrap/cutover.py
+git -C /opt/grove/src show "$TARGET:server/grove/clock.py" > /var/lib/grove/cutover-bootstrap/grove-clock.py
+python3 /var/lib/grove/cutover-bootstrap/cutover.py install
 ```
-deploy/with-deploy-lock.sh ssh -n root@app.grove.x-arc.ai /opt/grove/src/deploy/deploy.sh <full sha>
+
+Run the bootstrap as a fail-fast shell. Verify both fetched file hashes against the release
+source before execution. Python 3.12 is required. Installation writes these files atomically
+and fsyncs each file and each newly created parent directory:
+
+- `/usr/local/libexec/grove-cutover.py`, mode 0700;
+- `/usr/local/libexec/grove-clock.py`, mode 0600, the same application clock provider;
+- `/etc/systemd/system/grove-services.service.d/90-cutover.conf`;
+- `/etc/systemd/system/grove-backup.service.d/90-cutover.conf`.
+
+The drop-ins replace the recovery and backup ExecStart commands. The backup drop-in also
+replaces ExecStopPost. OnFailure still reaches the guarded recovery unit. The old installer
+replaces only base unit files; it leaves these drop-ins and installed programs intact. Check
+`systemctl cat` and resolved ExecStart/ExecStopPost after installation and any fallback.
+
+Approved manual recovery goes through the installed guard:
+
+```sh
+python3 /usr/local/libexec/grove-cutover.py recover services-up
+python3 /usr/local/libexec/grove-cutover.py recover backup
 ```
 
-`with-deploy-lock.sh` takes `~/.grove/locks/deploy.lock.d` (a `mkdir` lock with an owner file) and
-starts a detached releaser in a process group of its own. The releaser frees the lock one hour
-after it was taken, whether the holder still runs or not, and only while the owner file still holds
-its own token. If the releaser is gone too (the machine restarted, or a kill took both), the next
-caller takes over a lock that is past its cap and says so. It exits 75 when the lock is held. Give
-ssh the operator's own key options; they are not part of this repo.
+Do not call old checkout recovery scripts directly. Current checkout scripts also check the
+persistent barrier before cleanup or writer restart. Direct Docker starts are not a recovery
+interface. Raw root commands can bypass advisory locks and are outside this protocol.
 
-On the box, `deploy/deploy.sh <sha>`:
+### One bounded attempt
 
-1. takes the box lock `/run/grove/deploy.lock`;
-2. fetches `develop` from GitHub and refuses a sha that is not on it, and a checkout with local
-   changes or ignored files;
-3. checks out the sha and hands over to that commit's own `deploy/apply.sh`, which
-4. runs `runner-secrets.sh --check` immediately after its lock and sha assertions, before any
-   screening directory creation, permission change, host-file installation, build, migration,
-   marker write or service replacement. It then checks the other secret files and screening
-   files, refusing missing required files, open permissions, foreign env owners or screening
-   links. It makes `/etc/grove/screening` when absent and hands existing screening files to uid 10001;
-5. installs the host files of that commit (`deploy/install-host.sh`): the nginx sites, the
-   certificate on first use (certbot, webroot), the backup units, the certbot reload hook and log
-   rotation. If `nginx -t` refuses the new sites, the old ones go back and the deploy stops;
-6. builds the `api` and `runner` images (the only build on the box; the gateway runs the `api`
-   image), starts `neo4j`, runs the migrations from the image's copy of `server/`, records the sha,
-   and starts `api`, `gateway` and `runner`;
-7. runs `deploy/smoke.sh` against the public host, writes the result to `deploy.log`, and removes
-   the images of every build except this one and the one it last replaced.
+Set these non-secret request fields from the exact released operation:
 
-If `apply.sh` fails before compose replaces the containers, `deploy.sh` moves the checkout back to
-the sha the box still runs and installs that commit's host files again. From that point on,
-`deployed.sha` and the checkout name the new build, also when it does not turn healthy; `deploy.log`
-says so, and a deploy of the previous sha rolls it back.
+- `GROVE_CUTOVER_REQUEST`: a unique request identifier, 1–64 letters, digits, underscores or hyphens;
+- `GROVE_CUTOVER_SEED_LOCK`: the absolute path to the existing shared seed-lock inode;
+- `GROVE_CUTOVER_SMOKE_SCRIPT`: the absolute path to the approved additional smoke script;
+- `GROVE_CUTOVER_SMOKE_SHA256`: its exact SHA256. The script receives the target SHA as its sole argument.
 
-`--ref <branch>` with `GROVE_ALLOW_BRANCH_DEPLOY=1` deploys a sha of another branch, to try a
-change on the box before its merge; without the variable only `develop` deploys. To roll back,
-deploy the sha in `/var/lib/grove/previous.sha`; a redeploy of one sha leaves it as it is.
+The extra smoke script must return failure for any missing acceptance result. Keep its inputs
+and output free of credentials and personal data. The normal public smoke runs first; both
+smoke programs share a 120-second limit.
 
-The smoke checks also run from any machine:
-
+```sh
+python3 /usr/local/libexec/grove-cutover.py launch "$TARGET"
 ```
+
+Keep the existing operator lock around bootstrap and this one invocation. Do not wrap `launch`
+in another host `flock`: `deploy.sh` owns `/run/grove/deploy.lock`, with a 30-second acquisition
+limit. `cutover.py` owns the recovery-admission lock and the existing seed lock, each with a
+30-second acquisition limit. It opens the seed file without creation, truncation or replacement.
+Recovery wrappers hold shared admission for the entire legacy script and its traps. The legacy
+script alone owns the host lock. A conflicting helper causes refusal, not forced cancellation.
+
+The launcher gives the complete attempt an inner 2,800-second deadline and a 2,900-second outer
+watchdog. Failure cleanup has at most 100 seconds. These bounds stay below the 3,000-second
+maximum and the operator lock's one-hour cap. Each command also has its smaller limit:
+
+| Step | Maximum |
+|---|---:|
+| Image build | 900 seconds |
+| Runner stop | 40-second grace, 50-second command |
+| Gateway/API stop | 30-second grace, 40-second command |
+| Transaction drain | 30 seconds; any remaining transaction refuses |
+| Migration execution | 900 seconds |
+| Generation reconciliation | 60 seconds |
+| Target creation and startup together | 180 seconds |
+| Both public and request smoke together | 120 seconds |
+
+Configuration checks and host installation precede the cutover. The protocol then:
+
+1. Excludes recovery helpers and holds the existing seed lock. It requires a complete owned
+   container inventory and exact baseline image IDs. Active or queued legacy helpers, unexplained
+   containers, and old one-offs refuse the attempt. Neo4j must already be healthy.
+2. Builds the target images and records their immutable image IDs. It does not restart or replace
+   Neo4j. It records non-secret request, baseline, target, container and original restart-policy
+   data in root-private `/var/lib/grove/cutover.json`.
+3. Sets every old writer's restart policy to `no`, stops runner first, then gateway/API. It checks
+   that all writers stopped, all restart policies remain disabled, and Neo4j retains its identity.
+   Migration cannot start before this barrier. A loss before restart disablement completes is a
+   pre-migration failure; no schema operation has started.
+4. Creates one named `grove-migrate-<request>` container from the pinned target API image. It has
+   no automatic restart. It checks all other database transactions, applies unchanged migration
+   files, then explicitly reconciles generations independently of ledger skips.
+5. Reconciliation initializes only NULL `World.read_generation` fields. It preserves valid integers
+   below `2**63 - 1`, refuses malformed or exhausted counters, and validates again in one explicit
+   transaction with no managed retry. Normal application writers keep their existing strict checks.
+6. Stops and retains the migration container. It creates stopped target writers with pinned image
+   IDs and restart disabled, verifies their actual images, starts them, verifies health and images,
+   and runs the normal and additional smoke programs.
+7. Only after acceptance, restores the original restart policies, writes `previous.sha` and
+   `deployed.sha`, then atomically archives maintenance state as `cutover-last.json`. Images and
+   networks are retained. No image or network pruning occurs.
+
+`SHOW TRANSACTIONS` must see all transactions for the database. The current Community database
+uses one operational user. Confirm visibility during host acceptance; a restricted view cannot
+prove drain. Only aggregate status/counts may enter evidence.
+
+### Failure and explicit recovery boundary
+
+Any maintenance-state path, including an empty or malformed file or dangling link, blocks all
+approved automatic and manual recovery. A failed attempt retains its phase, identities, original
+policies, named migration container and failure status. Timeouts stop only that migration container
+and known target writers. If terminal container state or database transaction completion cannot be
+proved, the result stays `unknown` and maintenance remains. No automatic retry or rollback exists.
+
+A new exact request must authorize diagnosis and recovery. Preserve the original receipt first.
+Never delete a migration ledger row or edit an applied migration. Before migration, baseline recovery
+still needs explicit helper/container reconciliation. After migration starts, an old-baseline recovery
+requires separate schema compatibility acceptance. After target writes or demo enrichment, only an
+accepted compatible release may recover service; never purge data to make an old reader work.
+
+The next deployment refuses a retained migration one-off, even after success. Its new request must
+explicitly authorize removal of the **exact** prior container only after the archived complete receipt,
+image ID, terminal state and transaction completion agree. A failed or uncertain container remains.
+No generic stale-one-off cleanup may remove migration evidence.
+
+The source regressions use synthetic containers, command doubles, real local process termination,
+and filesystem locks. They do not prove a real reboot, power-loss durability, native Compose behavior,
+transaction visibility, database acceptance, or public service acceptance. Those remain deploy-lane checks.
+
+The ordinary smoke can also run independently:
+
+```sh
 deploy/smoke.sh https://app.grove.x-arc.ai <sha>
 ```
 
-They check that `/healthz` answers ok for that build, that `/`, `/signin` and `/privacy` each answer with a page, that both metadata paths name
-`<base>/mcp` (also for `meta-webindexer/1.1`), and that an unauthenticated `/mcp` call gets 401 with
-the metadata URL.
+It checks exact-SHA health, `/`, `/signin`, `/privacy`, both metadata paths including Meta's fetcher,
+and anonymous MCP refusal. It is not the complete release request acceptance.
 
 ### Runner network transition
 
@@ -211,19 +305,10 @@ and runner to the new network. The store network, Neo4j container, data volumes,
 and both deploy locks retain their existing roles. The runner network stays internal, its bridge
 stays fixed, and the gateway publishes no port. Service DNS names remain `api` and `gateway`.
 
-Keep the legacy network for rollback. Deploys do not prune it. If network creation or migration
-fails before the target replaces services, the old endpoints remain connected and the existing
-checkout/host-file recovery still applies, including when the old deploy entrypoint starts the
-upgrade. A failure after target service replacement keeps the target marker and reports unhealthy
-services; it does not claim that the old build recovered. An explicit deploy of the old revision
-reuses the legacy network and removes the gateway container as an orphan when that revision has
-no gateway service. A same-SHA redeploy reuses the new network and preserves `previous.sha`.
-
-The deployment tests model network labels, names, options, active endpoints, and live container
-health with synthetic state. They cover the original refusal, a name-only negative control,
-pre-replacement recovery, unhealthy target services, repeated deployment, and rollback. Their
-health response comes from live simulated containers, independently of the SHA marker. These tests
-do not prove native Compose behavior or live host recovery; those remain deployment acceptance.
+Keep the legacy network and retained images. The cutover protocol above supersedes automatic
+checkout recovery after maintenance starts. No network identity authorizes an old-baseline rollback.
+Existing network-model tests describe the historical transition; the cutover regressions cover the
+new maintenance contract. Neither proves native host behavior.
 
 ## Uploads and the screening files
 
@@ -312,11 +397,10 @@ Neo4j Community has no online backup: a dump needs the server stopped. `grove-ba
 The API is down for the length of the dump: 34 seconds on the first run, with a store that held
 only its schema. If a step fails, or systemd stops the script, it starts Neo4j, the API, the
 gateway and the runner again before it exits. The unit's `ExecStopPost` runs `deploy/services-up.sh`
-after every run, so a script that was killed outright also leaves the services running.
+after every run through the installed guard. Active cutover maintenance refuses writer recovery.
 `grove-services.service` runs it too, at every boot and after any failed backup (`OnFailure`), and
 tries again each minute until it succeeds, for a host that went down in the dump window or a store
-that took long to come back. `services-up.sh` first removes a one-off container that a killed run
-left, so nothing else holds the store. compose refuses to start the API while the store reports
+that took long to come back. `services-up.sh` removes stale backup one-offs only outside maintenance. It always preserves named migration containers. compose refuses to start the API while the store reports
 unhealthy, so the script keeps starting the API, the gateway and the runner until the API's health
 check reads the store, the gateway's health check answers and the runner runs.
 
