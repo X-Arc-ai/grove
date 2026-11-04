@@ -134,3 +134,6 @@ def test_the_runner_starts_a_pass_in_the_world_folder_once_it_exists(tmp_path):
     assert pass_folder(settings, grant, work) == work
     (tmp_path / "worlds" / "world-one").mkdir(parents=True)
     assert pass_folder(settings, grant, work) == tmp_path / "worlds" / "world-one"
+    # OpenCode's read tool follows a link, so a folder with one must not become the working folder.
+    os.symlink(tmp_path / "other", tmp_path / "worlds" / "world-one" / "link.txt")
+    assert pass_folder(settings, grant, work) == work
