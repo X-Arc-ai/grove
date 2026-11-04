@@ -20,6 +20,9 @@ def test_package_has_only_the_frozen_component_modules():
         "transitions.py",
         "legacy.py",
         "legacy_reader.py",
+        "publication.py",
+        "publication_files.py",
+        "publisher.py",
     }
     tree = ast.parse((AUTHORITY / "__init__.py").read_text())
     assert len(tree.body) == 1
