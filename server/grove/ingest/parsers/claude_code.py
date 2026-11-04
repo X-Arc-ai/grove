@@ -272,12 +272,13 @@ class _Chat:
     keys: set[str] = field(default_factory=set)
     times: list[datetime] = field(default_factory=list)
 
-    def add(self, record: dict[str, Any], uuid: str, at: datetime | None) -> None:
+    def add(self, record: dict[str, Any], uuid: str, at: datetime | None, upload: Upload) -> None:
         for speaker, text in _messages_of(record):
             key = message_key(KEY_PREFIX, self.chat_id, uuid, speaker)
             if key in self.keys:
                 # The same record in two files of one upload.
                 continue
+            upload.budget.take_message(len(text))
             self.keys.add(key)
             self.messages.append(ParsedMessage(key=key, text=text, at=at, speaker_kind=speaker))
 
@@ -320,11 +321,16 @@ def parse(upload: Upload) -> Iterator[ParsedChat]:
             uuid = record.get("uuid")
             if not isinstance(session, str) or not session or not isinstance(uuid, str) or not uuid:
                 continue
-            chat = chats.setdefault(session, _Chat(session))
+            chat = chats.get(session)
+            if chat is None:
+                upload.budget.take_chat()
+                chat = chats[session] = _Chat(session)
             at = utc_from_iso(record.get("timestamp"))
             if at is not None:
                 chat.times.append(at)
-            chat.add(record, uuid, at)
+            chat.add(record, uuid, at, upload)
+        # This file's bytes go before the next file is read.
+        del data
     if not recognised:
         raise NotAnExport("the file is not a Claude Code session export")
     for chat in chats.values():

@@ -56,8 +56,8 @@ SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
 MAX_PARALLEL_UPLOADS = 1
 RETRY_AFTER_SECONDS = 30
 
-# Parsing a large export can hold about 2.5 GiB at the caps of grove.ingest (the body, its text
-# and the parsed values), and the api container has 4 GiB (deploy/compose.yml): one at a time.
+# Parsed exports and screening need more memory than their wire size (docs/ingest.md).
+# Keep one upload at a time inside the api's 4 GiB limit, which includes its tmpfs.
 UPLOAD_SLOTS = threading.BoundedSemaphore(MAX_PARALLEL_UPLOADS)
 
 _CONNECTORS = (

@@ -754,7 +754,8 @@ def test_many_compressed_rollouts_share_one_read_budget():
 
 def test_the_lines_of_one_upload_count_against_its_budget():
     data = _jsonl(_rollout_lines())
-    lines = len([line for line in data.split(b"\n") if line.strip()])
+    # Every line counts, the empty one after the last newline too.
+    lines = len(data.split(b"\n"))
 
     def parse_with(budget):
         return list(codex.parse(Upload(io.BytesIO(data), len(data), budget=budget)))
@@ -781,3 +782,37 @@ def test_a_rollout_listed_after_its_continuation_still_reads_in_time_order():
         ("person", "Count the seed packets."),
         ("ai_host", "There are forty packets."),
     ]
+
+
+def test_lines_whose_stamps_fall_are_read_in_time_order():
+    """D10: a message is placed by its own time, not by its line."""
+    lines = [
+        _meta(),
+        _item(40, _message("user", _text_in("Label the trays."))),
+        _item(5, _message("user", _text_in("Fill the trays first."))),
+    ]
+
+    chat = _only(_jsonl(lines))
+
+    assert [m.text for m in chat.messages] == ["Fill the trays first.", "Label the trays."]
+    assert [m.key for m in chat.messages] == [
+        message_key("cx", SESSION, 3),
+        message_key("cx", SESSION, 2),
+    ]
+
+
+def test_the_chats_and_messages_of_one_upload_count_against_its_budget():
+    first = _jsonl([_meta(), _item(1, _message("user", _text_in("Count the packets.")))])
+    second = _jsonl(
+        [_meta(OTHER_SESSION), _item(1, _message("user", _text_in("Sort the packets.")))]
+    )
+    data = _zip([("a/rollout-1.jsonl", first), ("b/rollout-2.jsonl", second)])
+
+    def parse_with(budget):
+        return list(codex.parse(Upload(io.BytesIO(data), len(data), budget=budget)))
+
+    assert len(parse_with(ReadBudget(max_chats=2, max_messages=2))) == 2
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_chats=1))
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_messages=1))

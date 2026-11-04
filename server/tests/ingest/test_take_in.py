@@ -24,6 +24,7 @@ from grove.ingest import (
 )
 from grove.ingest import take_in as take_in_module
 from grove.ingest.archive import json_document
+from grove.ingest.connector import MAX_MESSAGE_CHARS
 from grove.ingest.take_in import KEPT_OUT, NOTHING_NEW, TAKEN_IN, UNTIMED, take_in
 from grove.store.query import WorldQuery
 from tests.ingest.conftest import counts, make_screener, upload_of
@@ -348,3 +349,62 @@ def test_coverage_of_a_read(driver, seeded_world, test_clock):
     assert row["read_count"] == 2
     assert row["failed_count"] == 0
     assert row["version"] >= 3
+
+
+def test_a_message_past_the_cap_is_cut_at_a_space_before_screening(
+    driver, seeded_world, test_clock
+):
+    """The screener's copies of a text take many times its size: one crafted message must not
+    take the API's memory. The cut is the same on a re-import, so the keys stay stored."""
+    long_text = "Kestrel " + "plan " * 30_000
+    data = export({"id": "chat-long", "lines": [long_text, "Noted"]})
+
+    result = run(driver, seeded_world, data, rename={"Kestrel": "Person K"})
+
+    assert result.state == TAKEN_IN
+    (row,) = sources(driver, seeded_world)
+    first, second = (message["text"] for message in json.loads(row["content"]))
+    body, mark = first.rsplit("\n", 1)
+    assert mark == "[cut: the message is longer than Grove keeps]"
+    assert len(body) <= MAX_MESSAGE_CHARS
+    assert body.startswith("Person K plan plan") and set(body.split()[2:]) == {"plan"}
+    assert second == "Noted"
+    assert run(driver, seeded_world, data, rename={"Kestrel": "Person K"}).state == NOTHING_NEW
+
+
+def test_a_chat_past_the_source_cap_is_stored_in_parts(
+    driver, seeded_world, test_clock, monkeypatch
+):
+    """A crafted chat must not reach the store as one huge property: its new part is cut into
+    sources of at most MAX_SOURCE_CHARS characters, with one session episode across them."""
+    monkeypatch.setattr(take_in_module, "MAX_SOURCE_CHARS", 30)
+    lines = [["one two three", 0], ["four five six", 1], ["seven eight", 2], ["nine", 3]]
+    data = export({"id": "chat-parts", "lines": lines})
+
+    result = run(driver, seeded_world, data)
+
+    assert result.state == TAKEN_IN
+    assert (result.chats_new, result.sources_added, result.episodes_added) == (1, 2, 1)
+    stored = [json.loads(row["content"]) for row in sources(driver, seeded_world)]
+    assert sorted([m["text"] for m in content] for content in stored) == [
+        ["one two three", "four five six"],
+        ["seven eight", "nine"],
+    ]
+    assert all(sum(len(m["text"]) for m in content) <= 30 for content in stored)
+    again = run(driver, seeded_world, data)
+    assert again.state == NOTHING_NEW
+    assert counts(driver, seeded_world)["sources"] == 2
+
+
+def test_parts_hold_one_message_at_least_and_keep_the_order(monkeypatch):
+    monkeypatch.setattr(take_in_module, "MAX_SOURCE_CHARS", 10)
+
+    def made(index, text):
+        return ParsedMessage(
+            key=message_key("zc", index), text=text, at=None, speaker_kind="person"
+        )
+
+    delta = [made(1, "a" * 25), made(2, "bbb"), made(3, "cccc"), made(4, "dddd")]
+    parts = take_in_module.parts_of(delta)
+    assert [[m.text for m in part] for part in parts] == [["a" * 25], ["bbb", "cccc"], ["dddd"]]
+    assert take_in_module.parts_of([]) == []

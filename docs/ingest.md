@@ -8,8 +8,10 @@ adds a connector. Code: `server/grove/ingest/` and `server/grove/writer/ingest.p
 
 ```
 upload bytes -> parser (ConnectorSpec.parse) -> chats
-  per chat: delta (keys not stored yet) -> Screener.screen_source -> episode cut (ConnectorSpec.cut)
-           -> write_chat_delta: source + screening receipt + episodes + connector watermark, one transaction
+  per chat: delta (keys not stored yet) -> bounded parts
+  per part: cap message text -> Screener.screen_source
+  per chat: episode cut over all kept messages (ConnectorSpec.cut)
+           -> write_chat_delta: source parts + receipts + episodes + watermark, one transaction
 after all chats: record_read (coverage: times, outcome, failed count)
 ```
 
@@ -19,13 +21,14 @@ after all chats: record_read (coverage: times, outcome, failed count)
   (no connector row either).
 - Screening runs in code before the sources table (D14, decision 6). It finishes before the
   write transaction opens (SC1).
-- One chat's delta commits whole, under the connector row's lock. If another upload stored any of
-  the delta's keys first, the writer raises `DeltaMoved` and the pipeline reads the delta again
-  (at most 3 tries).
+- One chat's complete delta commits atomically, including every source part and receipt.
+  Source parts do not change the connector's episode rule: one episode can name several
+  sources. If another upload stored any delta key first, the writer raises `DeltaMoved`
+  and the pipeline reads the chat's delta again (at most 3 tries).
 - A re-import of the same export finds every key stored: it writes no source, no receipt and no
   episode, and answers `nothing_new`. Only the connector's coverage times move.
-- A delta that screening drops whole writes one empty source (`[]`) with its receipt, but only
-  for a chat with no source yet. So a chat kept out whole is visible in coverage once, and a
+- A delta that screening drops whole writes empty source parts (`[]`) with their receipts,
+  but only for a chat with no source yet. So a chat kept out whole is visible in coverage once, and a
   re-import of a chat with dropped messages stays idempotent.
 - Screening is deterministic, so a later read that drops a message again counts it again in that
   read's receipt only when the read also stores new messages of the chat.
@@ -60,9 +63,10 @@ SPEC = register(ConnectorSpec(
 | `message_key(prefix, *ids)` | `<prefix><32 hex>`, one word: a fingerprint of the source's own ids for one message (A.4's message key). Deterministic, so a re-import and an overlapping later export repeat the key. No name can ride in it (store-map open point, spec line 2505). A rename form or a denylist term matches whole words only, so with no separator none can match the prefix: a rename map that holds "CC" or "Cai" changes no key. |
 | `chat_locator(prefix, chat_id)` | The source's `external_locator`: one per chat, opaque, the same one-word form. |
 | `register(spec)` | Refuses a key prefix whose keys or locators screening would change (with the detectors alone, and with the prefix as a rename form and as a denylist term): "dapi" glued to 32 hex reads as a secret, for example. The pipeline fails such a chat closed (`KeyChanged`). |
-| `in_time_order(messages)` | The messages of a chat merged from more than one file, in their own time order (D10); a message with no time stays after the one it follows. Every parser of this build calls it. |
+| `in_time_order(messages)` | Every chat's messages in their own time order (D10), including nonmonotonic stamps within one file; a message with no time stays after the one it follows. Every parser of this build calls it. |
 | `clean_text(value)` | Lone surrogates become U+FFFD, NUL is dropped, line ends are LF. The store and the model layer refuse lone surrogates. |
 | `Upload(stream, size)` | `head()`, `read_all(limit)`, `budget` (a `ReadBudget`, below). The file name is never passed: the parser knows the format by its bytes. |
+| `ReadBudget` | `Upload` creates a budget from its size. Before retaining a new chat, call `upload.budget.take_chat()`; before retaining a new message, call `upload.budget.take_message(len(text))`. Repeated message keys do not consume another message charge. |
 | `grove.ingest.archive` | `is_zip`, `zip_members(upload, suffixes=...)` (in memory, one member at a time, never extracted, with caps on the bytes actually read), `zstd_decompress(data, budget=upload.budget)`, `json_document`, `json_lines(data, budget=upload.budget)` (one line at a time, 1-based line numbers; a cut line is skipped). Pass `upload.budget` on every call. |
 | `NotAnExport` | A generic message, never a value from the file. |
 | Cut rules | `one_episode` (one session or the part added since the last read), `silence_windows(minutes)` (a window closes after that much silence; a message with no time joins the window it follows). |
@@ -78,15 +82,36 @@ idempotent.
 |---|---|---|
 | `GROVE_UPLOAD_MAX_BYTES` | 256 MiB | the body (the API and nginx) |
 | `archive.MAX_MEMBER_BYTES` | 256 MiB | one zip member, one zstd stream, one non-zip body read |
-| `MAX_READ_BYTES` | 768 MiB | every byte read out of zip members and zstd streams, over the upload |
-| `MAX_RECORDS` | 1,000,000 | JSON lines that are not blank, over the upload |
-| `archive.MAX_DOCUMENT_VALUES` | 12,000,000 | values of one JSON document, counted before it is parsed (each follows a comma or opens a container) |
+| `MAX_READ_BYTES` | 768 MiB | ceiling for every byte read out of zip members and zstd streams, over the upload |
+| `MAX_EXPANSION`, `MIN_READ_BYTES` | 64 times the body size; 64 MiB floor | actual archive-read budget: `min(768 MiB, max(64 MiB, 64 * upload.size))`; nested decompression charges the same budget at each layer |
+| `MAX_RECORDS` | 1,000,000 | every JSON line, including blank lines and the empty line after a final newline |
+| `MAX_CHATS` | 10,000 | distinct chats retained by the parser |
+| `MAX_MESSAGES` | 1,000,000 | distinct messages retained by the parser |
+| `MAX_TEXT_CHARS` | 50,000,000 | message text across the upload, charged as `min(len(text), MAX_MESSAGE_CHARS)` per retained message |
+| `archive.MAX_DOCUMENT_VALUES` | 8,000,000 | values of one JSON document, counted before it is parsed (each follows a comma or opens a container) |
 | `archive.MAX_LINE_VALUES` | 1,000,000 | values of one JSON line; a line past it is skipped unparsed, as a cut line is |
 | `MAX_PARALLEL_UPLOADS` | 1 | uploads at once; the next answers 429 with `retry_after_seconds` |
 
-At these caps one upload holds about 2.5 GiB at most (the body, its decoded text, the parsed
-values); the api container has 4 GiB (`docs/deploy.md`). A parser reads one file or document at
-a time and keeps only the messages it makes, never every raw line.
+`ParsedMessage` bounds retained text as soon as the parser creates it. Before screening,
+`kept_text` also keeps at most `MAX_MESSAGE_CHARS` (100,000) characters from a
+message, or `MAX_SENDER_CHARS` (200) from a sender, plus a cut marker. It cuts at whitespace,
+so a partial token cannot evade a detector. A single overlong token becomes only the marker.
+The cut is deterministic. `parts_of` groups the capped text and sender into consecutive parts
+of at most `MAX_SOURCE_CHARS` (4,000,000) characters, with at least one message per part.
+Each part gets its own source and receipt. The episode cut runs once over the full kept delta,
+and each episode names only the sources that contain its messages. All parts commit together.
+This limit counts text before screening, not the serialized JSON's metadata or bytes.
+A re-import retains the same keys and adds nothing.
+
+The earlier synthetic macOS parse-and-screen probes measured 226 MiB of peak RSS growth for a
+refused 16 MB ChatGPT zip, 1,117 MiB for a document just below the value cap, and 1,409 MiB for
+9,000 chats with 990,000 messages. The last probe used an explicit full read budget and took
+234 seconds to parse and screen; it did not write to the store. These probes predate the atomic
+multi-source write and are not a universal memory or runtime bound. The api container has a
+4 GiB memory limit, including its 320 MiB tmpfs, with no extra swap (`docs/deploy.md`).
+A parser reads one file or document at a time and retains its messages;
+ChatGPT and claude.ai JSON documents are parsed whole. Store time and proxy timeout behavior
+remain separate from these measurements.
 
 A stored source's content is the screener's JSON array; each row holds `key`, `sender`, `text`,
 `at`, and, from these connectors, `speaker_kind` and `modality`. An evidence locator into it is

@@ -4,8 +4,14 @@ Importing this package registers every parser of grove.ingest.parsers.
 """
 
 from grove.ingest.connector import (
+    MAX_CHATS,
+    MAX_EXPANSION,
+    MAX_MESSAGE_CHARS,
+    MAX_MESSAGES,
     MAX_READ_BYTES,
     MAX_RECORDS,
+    MAX_TEXT_CHARS,
+    MIN_READ_BYTES,
     ConnectorSpec,
     NotAnExport,
     ParsedChat,
@@ -16,6 +22,7 @@ from grove.ingest.connector import (
     clean_text,
     clip,
     in_time_order,
+    kept_text,
     message_key,
     one_episode,
     providers,
@@ -27,8 +34,14 @@ from grove.ingest.connector import (
 )
 
 __all__ = [
+    "MAX_CHATS",
+    "MAX_EXPANSION",
+    "MAX_MESSAGE_CHARS",
+    "MAX_MESSAGES",
     "MAX_READ_BYTES",
     "MAX_RECORDS",
+    "MAX_TEXT_CHARS",
+    "MIN_READ_BYTES",
     "ConnectorSpec",
     "NotAnExport",
     "ParsedChat",
@@ -39,6 +52,7 @@ __all__ = [
     "clean_text",
     "clip",
     "in_time_order",
+    "kept_text",
     "message_key",
     "one_episode",
     "providers",

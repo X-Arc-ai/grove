@@ -15,7 +15,15 @@ from typing import Any
 
 import pytest
 
-from grove.ingest import NotAnExport, archive, chat_locator, message_key, spec_for
+from grove.ingest import (
+    NotAnExport,
+    ReadBudget,
+    Upload,
+    archive,
+    chat_locator,
+    message_key,
+    spec_for,
+)
 from grove.ingest.parsers import chatgpt
 from grove.ingest.take_in import take_in
 from grove.screening import Message, Screener, ScreeningConfig
@@ -959,3 +967,46 @@ def test_a_document_past_the_value_cap_is_refused_before_it_is_parsed(monkeypatc
         parse(export_zip(data))
     monkeypatch.setattr(archive, "MAX_DOCUMENT_VALUES", archive.value_bound(data))
     assert parse(data)
+
+
+def test_one_chat_in_two_files_reads_in_its_own_time_order():
+    """The later file in the archive holds the earlier part of the chat (D10)."""
+    chat_id = "c0a1b2c3-0000-4000-8000-00000000e201"
+    later = Conversation(chat_id)
+    later.add(message("m-3", "user", ["Book the tram."], seconds=300))
+    later.add(message("m-4", "assistant", ["Tram 28 is booked."], seconds=400))
+    earlier = Conversation(chat_id)
+    earlier.add(message("m-1", "user", ["Plan the morning."], seconds=100))
+    earlier.add(message("m-2", "assistant", ["Start at the castle."], seconds=200))
+    data = as_zip(
+        [
+            ("a/conversations.json", as_json(later.export())),
+            ("b/conversations.json", as_json(earlier.export())),
+        ]
+    )
+
+    (chat,) = parse(data)
+
+    assert [m.text for m in chat.messages] == [
+        "Plan the morning.",
+        "Start at the castle.",
+        "Book the tram.",
+        "Tram 28 is booked.",
+    ]
+
+
+def test_the_chats_and_messages_of_one_upload_count_against_its_budget():
+    first = Conversation("c0a1b2c3-0000-4000-8000-00000000e301")
+    first.add(message("q-1", "user", ["Pack the bags."], seconds=1))
+    second = Conversation("c0a1b2c3-0000-4000-8000-00000000e302")
+    second.add(message("q-2", "user", ["Print the tickets."], seconds=2))
+    data = as_json(first.export(), second.export())
+
+    def parse_with(budget):
+        return list(chatgpt.parse(Upload(io.BytesIO(data), len(data), budget=budget)))
+
+    assert len(parse_with(ReadBudget(max_chats=2, max_messages=2))) == 2
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_chats=1))
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_messages=1))

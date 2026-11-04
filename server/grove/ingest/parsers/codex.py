@@ -354,13 +354,14 @@ class _Chat:
     keys: set[str] = field(default_factory=set)
     times: list[datetime] = field(default_factory=list)
 
-    def add(self, rollout: _Rollout) -> None:
+    def add(self, rollout: _Rollout, upload: Upload) -> None:
         self.times.extend(rollout.times)
         for number, at, (speaker, text) in rollout.items:
             key = message_key(KEY_PREFIX, self.chat_id, number)
             if key in self.keys:
                 # The same rollout twice in one upload.
                 continue
+            upload.budget.take_message(len(text))
             self.keys.add(key)
             # A program or a parent agent may have written the person's slot (D5).
             speaker = rollout.slot if speaker == _SLOT else speaker
@@ -396,10 +397,17 @@ def parse(upload: Upload) -> Iterator[ParsedChat]:
     recognised = False
     for data in _files(upload):
         rollout = _rollout(data, upload)
+        # This file's bytes go before the next file is decompressed.
+        del data
         if rollout is None:
             continue
         recognised = True
-        chats.setdefault(rollout.chat_id, _Chat(rollout.chat_id)).add(rollout)
+        chat = chats.get(rollout.chat_id)
+        if chat is None:
+            upload.budget.take_chat()
+            chat = chats[rollout.chat_id] = _Chat(rollout.chat_id)
+        chat.add(rollout, upload)
+        del rollout
     if not recognised:
         raise NotAnExport("the file is not a Codex rollout export")
     for chat in chats.values():
