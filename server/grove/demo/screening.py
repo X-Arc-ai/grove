@@ -2,9 +2,11 @@
 
 import hashlib
 from importlib import resources
+from datetime import datetime
 
 from grove.config import ConfigError
 from grove.screening import Denylist, RenameMap, Screener, ScreeningConfig
+from grove.screening import Message, ScreenedSource
 
 
 def new_demo_screener() -> Screener:
@@ -27,3 +29,23 @@ def lumen_fixture() -> bytes:
     ):
         raise ConfigError("the invented upload fixture is unavailable")
     return raw
+
+
+def screen_story(story_key: str) -> ScreenedSource:
+    """Screen only a fixed invented story; callers cannot supply replacement text."""
+    from grove.demo.corpus import stories
+    from grove.demo_policy import DemoDenied, require_corpus_identity
+
+    require_corpus_identity()
+    story = next((item for item in stories() if item.key == story_key), None)
+    if story is None:
+        raise DemoDenied()
+    screened = new_demo_screener().screen_source(
+        "synthetic:" + story.key,
+        [Message(key=row["key"], sender=None, text=row["text"],
+                 at=datetime.fromisoformat(row["at"])) for row in story.messages()],
+    )
+    if (screened.dropped_whole or screened.counts or
+            screened.content() != story.content() or len(screened.content()) > 32_768):
+        raise DemoDenied()
+    return screened

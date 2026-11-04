@@ -14,6 +14,7 @@ DEMO_VERSION = "cedar-v1"
 DEMO_TEXT = "The Cedar demo is in room 4 at 14:00 UTC."
 DEMO_INPUTS = (DEMO_TEXT,)
 DEMO_SEED_CLIENT = "demo-seed-v1"
+RICH_CORPUS_SHA256 = "88091dfafeafa6f50c49b5cadcb8f32a131a10a5e586656c2b5b95f1dfcf3ecb"
 _HASH = re.compile(r"[0-9a-f]{64}")
 
 DESIGNATION_QUERY = (
@@ -55,6 +56,8 @@ def has_designation(row: dict[str, Any]) -> bool:
 
 def designation_in_tx(tx: Any) -> dict[str, Any] | None:
     rows = collect(tx.unscoped().run(CYPHER_PREFIX + DESIGNATION_QUERY, world_id=tx.world_id), None)
+    if len(rows) > 1:
+        raise DemoDenied()
     return rows[0] if rows else None
 
 
@@ -78,6 +81,7 @@ def require_designation(driver: Any, world_id: str, user_id: str | None = None) 
         or row.get("demo_world_id") != world_id
         or not row.get("user_id")
         or row.get("designated_user_id") != row.get("user_id")
+        or row.get("claimed_demo_version") != DEMO_VERSION
         or (user_id is not None and row["user_id"] != user_id)
     ):
         raise DemoDenied()
@@ -97,6 +101,7 @@ def require_designation_in_tx(tx: Any) -> dict[str, Any]:
         or row.get("demo_world_id") != tx.world_id
         or not row.get("user_id")
         or row.get("designated_user_id") != row.get("user_id")
+        or row.get("claimed_demo_version") != DEMO_VERSION
     ):
         raise DemoDenied()
     oldest = collect(
@@ -105,3 +110,12 @@ def require_designation_in_tx(tx: Any) -> dict[str, Any]:
     if len(oldest) != 1 or oldest[0]["id"] != tx.world_id:
         raise DemoDenied()
     return row
+
+
+def require_corpus_identity() -> str:
+    """The additive fixture never expands the Cedar-only public intake policy."""
+    from grove.demo.corpus import VERSION, digest
+
+    if VERSION != "rich-demo-v1" or digest() != RICH_CORPUS_SHA256:
+        raise DemoDenied()
+    return RICH_CORPUS_SHA256

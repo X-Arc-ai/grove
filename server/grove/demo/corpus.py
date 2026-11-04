@@ -5,6 +5,7 @@ changing this version requires an explicit new reviewed fixture identity.
 """
 
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 from hashlib import sha256
 import json
 import re
@@ -46,8 +47,8 @@ class Story:
                 "key": item.key,
                 "sender": None,
                 "at": SOURCE_TIME,
-                "text": item.summary + " " + " ".join(
-                    f"{item.title} {link.meaning} {titles[link.target]}."
+                "text": item.summary + " Connections: " + "; ".join(
+                    f"{link.meaning} {titles[link.target]}"
                     for link in self.links if link.source == item.key
                 ),
             }
@@ -58,7 +59,7 @@ class Story:
         return json.dumps(self.messages(), ensure_ascii=False, sort_keys=True)
 
     def digest(self) -> str:
-        return sha256(canonical(asdict(self))).hexdigest()
+        return sha256(canonical({"story": asdict(self), "messages": self.messages()})).hexdigest()
 
 
 def canonical(value: object) -> bytes:
@@ -82,6 +83,7 @@ _PEOPLE = ("Mira Venn", "Oren Pell", "Tavi Noll", "Lysa Fen")
 _WORKSTREAMS = ("access", "supplies", "training", "evaluation")
 
 
+@lru_cache(maxsize=1)
 def stories() -> tuple[Story, ...]:
     result = []
     for domain, activity, material, audience, records, priority in _DOMAINS:
@@ -198,7 +200,7 @@ def stories() -> tuple[Story, ...]:
 
 
 def digest() -> str:
-    return sha256(canonical([asdict(story) for story in stories()])).hexdigest()
+    return sha256(canonical([story.digest() for story in stories()])).hexdigest()
 
 
 def manifest() -> dict:
