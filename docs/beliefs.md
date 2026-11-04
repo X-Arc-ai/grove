@@ -71,9 +71,26 @@ Neither route accepts source text, a caller verdict, or a caller confidence.
 | Command and mode | Input fields | Writer consumer |
 |---|---|---|
 | `brain judge`, `evidence` | `mode`, `belief_id`, and either `evidence_id` or `source_id` with `locator` | Recorded `judgment_ids` for a source or active evidence row. |
+| `brain judge`, `claim` | `mode`, `claim_id`, `source_id`, `locator` | Two recorded D4 judgments for an ordinary item or link, using a source retained by `brain retest` in this Connector pass. |
 | `brain judge`, `same_belief` | `mode`, `survivor`, `absorbed` | `merge_beliefs.judgment_ids`. |
 | `brain judge`, `field_fit` | `mode`, `title`, `subject_refs`, `externally_testable: true`, `retest_how` | `mint_belief.judgment_ids` and the returned `field_subject`. |
 | `brain retest` | Only `belief_id` | `read.observation` in `evidence`; one `retest_belief` in `dispositions`. |
+
+The retest also returns screened source text in escaped `read.data` blocks. The Connector reads
+that text to identify other claims the source checks. Claim mode accepts references only; it
+refuses caller text, verdicts, authority flags, other worlds, and a source from an earlier pass.
+It uses the existing D4 judges and records both calls. The writer still applies the evidence,
+capability, source-time, and load-bearing gates.
+
+An unchanged count that the source supports can receive `verify` with `confirmed`. If the source
+disproves a count, the envelope can revise it through `update_item` and record `verify` with
+`moved`. That disposition records the check of the old claim; it does not advance confirmation
+for the new words. Both paths use the original retest observation without another fetch.
+
+An ordinary claim check can create a SupportChanged row for its dependent belief. After each
+receipt, the Connector reads a fresh packet and resolves any new support or contradiction work
+with another complete guarded envelope. A fresh support judgment must follow the support change.
+The pass cannot succeed while those queues remain open.
 
 The supported external method is stored as `retest_how` with `connector` and `locator`.
 The connector must be `web_pages`, and its JSON scope must contain the exact HTTPS URL.
