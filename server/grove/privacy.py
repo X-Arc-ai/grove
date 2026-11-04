@@ -73,9 +73,10 @@ _ROWS = (
     (
         "agent_files",
         "Files and notes you add in setup",
-        "Grove's server, in your account's working folder for its agent",
-        "Stored as you add them, without screening. They are not added to your memories, "
-        "and you can remove them from the same screen.",
+        "Grove's server, in your account's working folder for its agent; "
+        "Meta Model API when the Learner reads them",
+        "Stored as you add them, without screening. What the Learner reads goes to the model "
+        "without screening. You can remove them from the same screen.",
     ),
     (
         "files",

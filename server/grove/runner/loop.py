@@ -200,9 +200,14 @@ def pass_folder(settings: LoopSettings, grant: dict[str, Any], work: Path) -> Pa
     """OpenCode's working folder: the world's added files, once it has any.
 
     The API writes that folder (grove.api.agent_files) and it outlives the pass. OpenCode's own
-    session store and logs stay in `work`, so the pass's folder still goes when the pass ends."""
+    session store and logs stay in `work`, so the pass's folder still goes when the pass ends.
+
+    OpenCode's read tool follows a link out of its working folder, and the API never makes one,
+    so a folder that holds a link is not used: it would reach another world's files."""
     folder = settings.home / "worlds" / grant["world_id"]
-    return folder if folder.is_dir() else work
+    if not folder.is_dir() or any(path.is_symlink() for path in folder.rglob("*")):
+        return work
+    return folder
 
 
 def pass_message(grant: dict[str, Any]) -> str:
