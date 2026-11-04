@@ -1557,6 +1557,22 @@ def _attach_evidence(run: _Run, index: int, op: dict[str, Any]) -> None:
     if all(plan.known for plan in plans):
         # The row is in the store already: a reason text would be a value no entry names.
         return
+    if target_type == "belief" and op["polarity"] == "contradicts":
+        from grove.writer.beliefs import _newer, _person_override
+
+        belief = run.tx.run("MATCH (b:Belief {item_id: $id}) RETURN b", id=target_id)[0]["b"]
+        if (
+            belief["state"] in ("tentative", "established")
+            and plans[0].columns["episode_id"] in (belief.get("transition_episodes") or [])
+            and _newer(plans[0].source_time, belief.get("last_support_at"))
+            and _person_override(belief, [plans[0].columns])
+        ):
+            raise Refused(
+                "invalid_arguments",
+                "belief_episode_reused",
+                "a contrary episode cannot reuse an earlier transition",
+                {},
+            )
     reason_id = run.text(op["reason"]) if op.get("reason") else None
     _write_evidence(run, plans, target_type, target_id, reason_id)
 
@@ -1734,6 +1750,11 @@ def _recompute(run: _Run, target_id: str, target_type: str) -> None:
     fields = claim_fields(rows)
     if target_type == "link":
         fields = {key: fields[key] for key in ("derived_source_type", "derivation")}
+        from grove.store.primitives import MEANING_DESCRIBES
+
+        links = run.tx.run(_READ_LINK, id=target_id)
+        if links and links[0]["l"].get("meaning") == MEANING_DESCRIBES:
+            fields["derivation"] = "inferred"
         run.tx.run(_SET_LINK, id=target_id, columns=fields)
     else:
         items = run.tx.run(_READ_ITEM, id=target_id)

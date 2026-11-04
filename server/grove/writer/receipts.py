@@ -220,7 +220,13 @@ def _line(
     if entity_type == "belief":
         if name == "row":
             return ReceiptLine("+", "belief", entity_id)
-        if name in ("state", "held_by_the_person", "person_change_notice", "successor"):
+        if name in (
+            "state",
+            "held_by_the_person",
+            "person_change_notice",
+            "successor",
+            "last_retest_outcome",
+        ):
             return ReceiptLine("*", "belief", entity_id, field=name, value_id=value_id)
         return None
     if entity_type == "item":

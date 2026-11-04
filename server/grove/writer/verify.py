@@ -210,7 +210,11 @@ def _claim_fields(run: "_Run", claim_type: str, claim: dict[str, Any]) -> caps.C
             temporal_class=meaning.get("temporal_class"),
             senders=senders,
         )
-    kind = run.registry.kinds.get(claim.get("kind"), {})
+    kind = (
+        run.registry.kind(KIND_BELIEF)
+        if claim.get("kind") == KIND_BELIEF
+        else run.registry.kinds.get(claim.get("kind"), {})
+    )
     lifecycle = kind.get("lifecycle_class")
     others = False
     own = self_item(run)
@@ -370,7 +374,12 @@ def _matches(judgment: dict[str, Any], piece_evidence: str | None, columns: dict
     )
 
 
-def _check_first(judgment: dict[str, Any], subject: str, piece: Piece) -> None:
+def _check_first(
+    judgment: dict[str, Any],
+    subject: str,
+    piece: Piece,
+    allowed_verdicts: frozenset[str] | None = None,
+) -> None:
     if judgment.get("subject") != subject:
         raise Refused(
             "unrecorded_verdict",
@@ -392,7 +401,9 @@ def _check_first(judgment: dict[str, Any], subject: str, piece: Piece) -> None:
             "a cited judgment judged another evidence row",
             {"judgment_id": judgment["id"]},
         )
-    if judgment.get("verdict") not in ("supports", "contradicts", "not_about_claim"):
+    if judgment.get("verdict") not in (
+        allowed_verdicts or frozenset({"supports", "contradicts", "not_about_claim"})
+    ):
         raise Refused(
             "unrecorded_verdict",
             "judgment_verdict",
@@ -401,7 +412,14 @@ def _check_first(judgment: dict[str, Any], subject: str, piece: Piece) -> None:
         )
 
 
-def _pieces(run: "_Run", op: dict[str, Any], subject: str, caller_kind: str | None) -> list:
+def _pieces(
+    run: "_Run",
+    op: dict[str, Any],
+    subject: str,
+    caller_kind: str | None,
+    *,
+    allowed_verdicts: frozenset[str] | None = None,
+) -> list:
     from grove.writer import apply
 
     judgments = _read_judgments(
@@ -457,7 +475,7 @@ def _pieces(run: "_Run", op: dict[str, Any], subject: str, caller_kind: str | No
             answer=raw.get("answer"),
         )
         if judgment is not None:
-            _check_first(judgment, subject, piece)
+            _check_first(judgment, subject, piece, allowed_verdicts)
         pieces.append(piece)
     if caller_kind == "ai_host":
         for piece in pieces:

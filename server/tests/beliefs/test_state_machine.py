@@ -183,11 +183,20 @@ def test_replaying_an_episode_cannot_flap(driver, seeded):
     same = observation(
         sources[0], "repeat", 1, at=T0 + timedelta(hours=8), message_key="another-key"
     )
-    attach(driver, w, belief, same, "contradicts", judgment_ids=judges(driver, w, belief, same))
-    assert state(driver, w, belief)["state"] == "established"
     before = state(driver, w, belief)
-    attach(driver, w, belief, same, "contradicts", judgment_ids=judges(driver, w, belief, same))
-    assert state(driver, w, belief) == before
+    for _ in range(2):
+        with pytest.raises(BatchDeclined) as error:
+            attach(
+                driver, w, belief, same, "contradicts", judgment_ids=judges(driver, w, belief, same)
+            )
+        assert error.value.refusals[0].rule == "belief_episode_reused"
+        assert state(driver, w, belief) == before
+    assert not read(
+        driver,
+        w,
+        "MATCH (e:Evidence {target_id: $id, polarity: 'contradicts'}) RETURN e",
+        id=belief,
+    )
 
 
 def test_same_source_support_does_not_restore(driver, seeded):
