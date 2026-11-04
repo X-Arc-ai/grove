@@ -30,6 +30,7 @@ from grove.store.errors import ScopeError
 from grove.store.query import PlatformQuery, WorldQuery
 from grove.writer import Caller, claim_next_request, fail_request, record_episode
 from grove.writer import runs as run_rows
+from grove.writer.clocks import parse_instant
 from grove.writer.requests import LEASE_SECONDS
 
 # Appendix C line 3269: ten changed items since the Connector's last pass, or a new contradiction.
@@ -236,8 +237,10 @@ def _ensure_episode(
         if said and said[0]["said_at"] is not None and said[0]["said_at"] <= received:
             candidates.append(said[0]["said_at"])
         times = [moment.isoformat() for moment in candidates]
-    start = min(times)
-    end = max(times)
+    # ISO text with different offsets does not sort in chronological order.
+    instants = [parse_instant(moment) for moment in times]
+    start = min(instants)
+    end = max(instants)
     first = messages[0]["key"] if messages and messages[0].get("key") else "whole"
     last = messages[-1]["key"] if messages and messages[-1].get("key") else first
     return record_episode(
