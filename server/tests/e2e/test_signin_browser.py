@@ -73,7 +73,7 @@ CLIENT_ID = "client-id.example.test"
 CLIENT_SECRET = "client-secret-for-tests"
 GOOGLE_NAME = "Maya Chen"
 NEUTRAL_TITLE = "You"
-WRONG_CODE_TEXT = "That code doesn’t match. Check it and try again."
+WRONG_CODE_TEXT = "That code is invalid or expired. Request a new code and try again."
 GOOGLE_ERROR_TEXT = "Google sign-in did not finish. Try again."
 TAGLINE = "Give your AI a world to understand"
 
@@ -453,7 +453,7 @@ def test_the_homepage_leads_to_the_card(browser, live):
         page.get_by_role("link", name="Sign in").first.click()
         _wait_for_card(page)
         assert _path_of(page) == "/signin"
-        assert page.get_by_role("button", name="Continue with Apple").is_visible()
+        assert page.get_by_role("button", name="Apple · Not available yet").is_visible()
         assert page.get_by_role("link", name="Privacy").is_visible()
         live.shot(page, "card")
     finally:
@@ -509,7 +509,7 @@ def test_an_email_code_signs_in_logs_out_and_resumes(browser, live, driver):
         assert all(row["revoked_at"] for row in sessions_of(driver, held.user_id))
 
         # With no cookie, / is the homepage again.
-        page.reload()
+        page.goto("/")
         page.get_by_text(TAGLINE).first.wait_for(timeout=WAIT_MS)
         assert page.locator("#grove-product").count() == 0
 
@@ -635,9 +635,12 @@ def test_apple_says_not_available_yet(browser, live):
         page = live.open(context)
         page.goto("/signin")
         _wait_for_card(page)
-        page.locator('[data-signin="apple"]').click()
+        assert page.locator('[data-signin="apple"]').is_disabled()
         page.locator('[data-signin="apple"][aria-disabled="true"]').wait_for(timeout=WAIT_MS)
-        assert page.locator('[data-signin="apple"]').inner_text().strip() == "Not available yet"
+        assert (
+            page.locator('[data-signin="apple"]').inner_text().strip()
+            == "Apple · Not available yet"
+        )
         assert _path_of(page) == "/signin"
         assert _session_cookie(context) is None
         live.shot(page, "apple")

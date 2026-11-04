@@ -112,6 +112,11 @@
 .legend { top:99px; transition:opacity .3s }
 .legend-row { animation:gp-enter .3s ease both }
 .gp-wide { width:100% }
+.gp-auth-navigation { display:flex; flex-direction:column; align-items:center; gap:8px; margin-top:20px; text-align:center }
+.gp-auth-navigation .gp-text { min-height:32px; max-width:100%; white-space:normal }
+.gp-logout .gp-text { margin-top:12px; min-height:36px }
+.gp-session-hidden #canvas,.gp-session-hidden #detail,.gp-session-hidden #search-overlay,.gp-session-hidden #grove-product { visibility:hidden }
+body.gp-logout-open #canvas,body.gp-logout-open #gp-motion { visibility:hidden }
 .gp-connection-route { display:flex; align-items:center; justify-content:center; padding:8px 0; gap:24px }
 .gp-connection-route>span { display:grid; place-items:center; width:48px; height:48px; border:1px solid var(--border); border-radius:50% }
 .gp-connection-route svg { width:24px; height:24px }
