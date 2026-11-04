@@ -10,7 +10,7 @@ from grove.connectors.calendar import SPEC, CalendarRefused, event_chat, read_ca
 from grove.ingest import CalendarEvent, ConnectorSpec, ParsedChat, ReadBudget
 from grove.ingest.take_in import take_in, take_parsed
 from grove.store.query import WorldQuery
-from grove.writer.connectors import ensure_connection
+from grove.writer.connectors import ensure_connection, start_sync, update_connection
 from grove.writer.errors import InvalidRecord
 from tests.connectors.test_calendar import event
 from tests.ingest.conftest import counts, make_screener, upload_of
@@ -57,6 +57,8 @@ def test_screening_drops_event_facts_with_their_message_and_keeps_retained_parts
     import grove.ingest.take_in as pipeline
 
     chosen = ensure_connection(driver, seeded_world, "google_calendar", "selected")
+    update_connection(driver, seeded_world, chosen, connection_status="connected")
+    _, owner = start_sync(driver, seeded_world, chosen)
     messages = tuple(
         event_chat("selected", event(name, summary=title), "UTC", ReadBudget()).messages[0]
         for name, title in (
@@ -73,6 +75,7 @@ def test_screening_drops_event_facts_with_their_message_and_keeps_retained_parts
         chosen,
         [ParsedChat("one-chat", messages)],
         screener=make_screener(denylist=["privatephrase"]),
+        sync_owner=owner,
     )
     # Bounded source parts remain one logical episode for this synthetic chat.
     assert result.failed_chats == 0 and result.episodes_added == 1
