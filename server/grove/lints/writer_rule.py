@@ -64,6 +64,39 @@ _ENTRY_POINTS = frozenset(
     for parts in (("execute", "write"), ("execute", "query"), ("begin", "transaction"))
 )
 
+# One controller-approved native read boundary needs an explicit transaction for D7's generation
+# bracket. Match its whole function AST, not its name or directory: even a session reassignment,
+# another call, removed cancellation or changed bound invalidates the exception. The placeholder
+# here is only the lint's declarative shape; production calls the SDK directly by its real name.
+_READ_RUNTIME_PATH = "server/grove/reads/runtime.py"
+_READ_ENTRY = "_".join(("begin", "transaction"))
+_READ_TRANSACTION = ast.parse(
+    """@asynccontextmanager
+async def transaction(self) -> AsyncIterator[Any]:
+    budget = deadline()
+    if self._closed:
+        raise snapshot_busy()
+    session = self.driver.session(
+        database=DATABASE,
+        default_access_mode="READ",
+        connection_acquisition_timeout=budget.remaining(),
+        max_transaction_retry_time=0,
+    )
+    closed = False
+    try:
+        tx = await session.OPEN_NATIVE_READ(timeout=budget.remaining())
+        yield tx
+        budget.remaining()
+        await tx.rollback()
+        await session.close()
+        closed = True
+    finally:
+        if not closed:
+            session.cancel()
+""".replace("OPEN_NATIVE_READ", _READ_ENTRY)
+).body[0]
+_READ_TRANSACTION_SHAPE = ast.dump(_READ_TRANSACTION)
+
 _MODE_WORDS = r"any|all|shortest|repeatable|different|elements?|relationships?|paths?|groups?|\d+"
 _PATH = r"\s+\w+\s*="
 _MATCH_HEAD = rf"(?:\s+(?:{_MODE_WORDS})\b|{_PATH})*"
@@ -134,14 +167,44 @@ def _check_tests_imports(root: Path, rel: str) -> list[Finding]:
     ]
 
 
+def _approved_read_entry(tree: ast.Module, rel: str) -> ast.Attribute | None:
+    """Only the direct SDK attribute in the one exact approved function can be exempt."""
+    if rel != _READ_RUNTIME_PATH:
+        return None
+    classes = [
+        node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "ReadRuntime"
+    ]
+    if len(classes) != 1:
+        return None
+    owner = classes[0]
+    if owner.bases or owner.keywords or owner.decorator_list or owner.type_params:
+        return None
+    methods = [
+        node
+        for node in owner.body
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "transaction"
+    ]
+    if len(methods) != 1 or ast.dump(methods[0]) != _READ_TRANSACTION_SHAPE:
+        return None
+    calls = [
+        node.func
+        for node in ast.walk(methods[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == _READ_ENTRY
+    ]
+    return calls[0] if len(calls) == 1 else None
+
+
 def _check_python(root: Path, rel: str) -> list[Finding]:
     tree = parse_python(root, rel)
     if tree is None:
         return [Finding(rel, 1, "writer/unparsable")]
 
+    approved = _approved_read_entry(tree, rel)
     findings = []
     for node in ast.walk(tree):
-        if not _ENTRY_POINTS.isdisjoint(_names(node)):
+        if node is not approved and not _ENTRY_POINTS.isdisjoint(_names(node)):
             findings.append(Finding(rel, node.lineno, "writer/entry-point"))
         if _imports_neo4j(node) and not rel.startswith(NEO4J_PREFIX):
             findings.append(Finding(rel, node.lineno, "writer/neo4j-import"))
