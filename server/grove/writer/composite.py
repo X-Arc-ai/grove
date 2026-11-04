@@ -502,9 +502,12 @@ def _copy_evidence(run: ap._Run, old_link: str, new_link: str, reason_id: str) -
     """The active rows of the re-pointed link, copied onto its new link (same observation)."""
     written = []
     for row in (found["e"] for found in run.tx.run(_ACTIVE_EVIDENCE_ON, id=old_link)):
-        if run.tx.run(
+        ap.check_reused_evidence(run, [row])
+        same = run.tx.run(
             ap._SAME_EVIDENCE, key=row["message_key"], target=new_link, polarity=row["polarity"]
-        ):
+        )
+        if same:
+            ap.check_reused_evidence(run, [found["e"] for found in same])
             continue
         evidence_id = run.new_id()
         copy = compact(

@@ -20,6 +20,7 @@ from neo4j.exceptions import DriverError, IncompleteCommit, Neo4jError
 
 from grove import clock
 from grove.ids import new_id
+from grove.store.query import WorldQuery
 from grove.store.scope import check_world_id
 from grove.writer import apply as apply_module
 from grove.writer.caller import Caller
@@ -27,10 +28,12 @@ from grove.writer.errors import (
     BatchDeclined,
     ReceiptUnavailable,
     Refusal,
+    Refused,
     WriteFailed,
     WriteOutcomeUnknown,
 )
 from grove.writer.history import Stamp
+from grove.writer.message_binding import check_batch_sources
 from grove.writer.ops import OPS, batch_ops, op_label, shape_refusals
 from grove.writer.receipts import Receipt, read_receipt
 from grove.writer.requests import (
@@ -159,6 +162,12 @@ def apply_batch(
     _check_id(run_id, "run_id")
     fingerprint = batch_fingerprint(batch)
 
+    def check_sources(reader, row=None):
+        try:
+            check_batch_sources(reader, batch, row)
+        except Refused as refused:
+            raise _declined([refused.refusal(None, None)], len(ops), request_id) from refused
+
     # Saved is terminal, so this read with no lock is safe, and a replay never waits for the world.
     if request_id is not None:
         try:
@@ -169,6 +178,7 @@ def apply_batch(
             ) from error
         answer = replay_rule(row, fingerprint)
         if answer != APPLY:
+            check_sources(WorldQuery(driver, world_id), row)
             return _answer_replay(driver, world_id, row, answer, len(ops))
     key = request_id if request_id is not None else new_id(world_id)
 
@@ -210,6 +220,7 @@ def apply_batch(
     def work(tx: WorldTx) -> None:
         tx.lock_world()
         row, _ = merge_row(tx, caller, key, stamp.at)
+        check_sources(tx, row)
         answer = replay_rule(row, fingerprint)
         if answer != APPLY:
             raise _Replay(row, answer)
@@ -222,6 +233,7 @@ def apply_batch(
             before_commit=False,
             caller_kind=caller.kind,
         )
+        check_sources(tx, row)
         mark_saved(tx, row, stamp, fingerprint, run_id)
         apply_module._before_commit()
 
