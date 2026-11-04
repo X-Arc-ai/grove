@@ -12,9 +12,10 @@ from datetime import datetime
 from typing import Any
 
 from grove import clock
-from grove.api.errors import ApiError, invalid_arguments
+from grove.api.errors import ApiError, invalid_arguments, unavailable
 from grove.mcp.tools import ToolContext
 from grove.store.current import SUCCESSOR_MEANINGS, Successor, standing
+from grove.store.errors import Neo4jError
 from grove.store.query import WorldQuery
 from grove.strict_json import loads_strict
 from grove.writer.source_types import claim_fields
@@ -385,18 +386,25 @@ class DemoRecallHandler:
         if not own:
             raise _refused()
         now = clock.now(context.world_id)
-        captured = WorldQuery(context.driver, context.world_id, timeout=5).read(
-            _CAPTURE,
-            own=own,
-            item_cap=MAX_ITEMS + 1,
-            row_cap=MAX_ROWS + 1,
-            text_cap=MAX_TEXT,
-            value_cap=MAX_VALUE,
-            successors=list(SUCCESSOR_MEANINGS),
-        )
-        if len(captured) != 1:
-            raise _refused()
-        items = _validate(captured[0], context.world_id, now)
+        try:
+            captured = WorldQuery(context.driver, context.world_id, timeout=5).read(
+                _CAPTURE,
+                own=own,
+                item_cap=MAX_ITEMS + 1,
+                row_cap=MAX_ROWS + 1,
+                text_cap=MAX_TEXT,
+                value_cap=MAX_VALUE,
+                successors=list(SUCCESSOR_MEANINGS),
+            )
+            if len(captured) != 1:
+                raise _refused()
+            items = _validate(captured[0], context.world_id, now)
+        except Neo4jError as error:
+            if error.is_retryable():
+                raise unavailable("the demo evidence could not be read") from None
+            raise ApiError(500, "internal", "the demo evidence could not be read") from None
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise _refused() from None
         # The complete restricted dataset is tiny. A loose topic match may return its facts,
         # while a miss only names the approved topic and does not assert a real-world absence.
         terms = set(re.findall(r"[a-z0-9]+", (about or "cedar").casefold()))
