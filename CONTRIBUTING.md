@@ -1,6 +1,6 @@
 # Contributing
 
-Use the [README setup](README.md#local-setup) to install the locked Python environment.
+Use the [README setup](README.md#run-it-locally) to install the locked Python environment.
 The repository remains private. Coordinate shared-file ownership before parallel work.
 Use a separate Git worktree for each active change. Preserve existing commits and evidence.
 
