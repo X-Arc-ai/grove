@@ -778,6 +778,25 @@ def finish_request(
         if not rows:
             raise _unknown_request(request_id)
         row = rows[0]["r"]
+        # A successful no-op must not discard source work withheld from the Learner.
+        from grove.learner_input import select_input
+
+        if row.get("source_id") is None and row.get("status") != "applying":
+            return row
+        sources = tx.run("MATCH (s:Source {id: $id}) RETURN s", id=row.get("source_id"))
+        if not sources:
+            raise _refused(
+                "missing_provenance", "source_work_pending", "the source is unavailable", request_id
+            )
+        source = sources[0]["s"]
+        connectors = tx.run("MATCH (c:Connector {id: $id}) RETURN c", id=source.get("connector_id"))
+        if not connectors or not select_input(source, connectors[0]["c"], row).complete:
+            raise _refused(
+                "missing_provenance",
+                "source_work_pending",
+                "required source work is held or unavailable",
+                request_id,
+            )
         if row.get("status") != "applying":
             return row
         _holder(row, worker)

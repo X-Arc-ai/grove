@@ -178,8 +178,13 @@ def brain_status(request: Request, live: Pass) -> dict[str, Any]:
 
 @router.get("/brain/pass")
 def brain_pass(request: Request, live: Pass) -> dict[str, Any]:
+    from grove.consolidation.packet import PacketTooLarge
+
     _curator_guard(live)
-    return brain.pass_input(request.app.state.driver, live.world_id, live.record)
+    try:
+        return brain.pass_input(request.app.state.driver, live.world_id, live.record)
+    except PacketTooLarge as refused:
+        raise unavailable(str(refused)) from None
 
 
 def _curator_guard(live: LivePass) -> None:
@@ -274,7 +279,7 @@ def _declined(error: BatchDeclined) -> JSONResponse:
     return JSONResponse(
         {
             "state": "declined",
-            "request_id": error.request_id,
+            "request_id": error.receipt.request_id,
             "retryable": error.retryable,
             "refusals": refusals,
         },
@@ -295,8 +300,27 @@ async def brain_propose(request: Request, live: Pass) -> JSONResponse:
     request_id = body.get("request_id")
     if live.claims.agent == "learner" and request_id is None:
         raise invalid_arguments("a Learner pass proposes under one of its requests", "request_id")
+    if live.claims.agent == "connector" and request_id is not None:
+        raise invalid_arguments("a Connector proposes under its live run", "request_id")
 
     def propose() -> JSONResponse:
+        submitted = batch
+        if live.claims.agent == "connector":
+            from grove.consolidation.schema import translate
+
+            try:
+                submitted = translate(driver, live.world_id, live.record, batch)
+            except BatchDeclined as error:
+                run_rows.note_proposal(
+                    driver,
+                    live.world_id,
+                    run_id,
+                    batch=batch,
+                    request_id=None,
+                    state="declined",
+                    decline_op_ids=[],
+                )
+                return _declined(error)
         if request_id is not None:
             own = _own_request(live, request_id)
             _still_held(driver, live, own)
@@ -328,14 +352,14 @@ async def brain_propose(request: Request, live: Pass) -> JSONResponse:
                 answer["receipt_text"] = _receipt_block(driver, live.world_id, state.receipt)
             return JSONResponse(answer, status_code=200 if answer["state"] != "declined" else 422)
         try:
-            receipt = apply_batch(driver, live.world_id, caller, batch, run_id=run_id)
+            receipt = apply_batch(driver, live.world_id, caller, submitted, run_id=run_id)
         except BatchDeclined as error:
             run_rows.note_proposal(
                 driver,
                 live.world_id,
                 run_id,
                 batch=batch,
-                request_id=error.request_id,
+                request_id=error.receipt.request_id,
                 state="declined",
                 decline_op_ids=[r.op_id for r in error.refusals],
             )

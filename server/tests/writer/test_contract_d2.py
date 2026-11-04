@@ -966,9 +966,24 @@ def test_two_models_that_both_say_contradicts_are_accepted(driver, seeded, chat)
     w = seeded["world_id"]
     belief = plant_belief(driver, w)
     ids = [
-        plant_judgment(driver, w, "judge-a", "contradicts", f"belief:{belief}"),
         plant_judgment(
-            driver, w, "judge-b", "contradicts", f"belief:{belief}", role="second_judge"
+            driver,
+            w,
+            "judge-a",
+            "contradicts",
+            f"belief:{belief}",
+            source_id=chat["source_id"],
+            locator="line:2",
+        ),
+        plant_judgment(
+            driver,
+            w,
+            "judge-b",
+            "contradicts",
+            f"belief:{belief}",
+            role="second_judge",
+            source_id=chat["source_id"],
+            locator="line:2",
         ),
     ]
     ev = observation(chat, "e1", 2)
