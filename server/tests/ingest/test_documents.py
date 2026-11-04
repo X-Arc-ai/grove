@@ -90,13 +90,11 @@ def test_text_reimport_identity_and_a_changed_file_get_distinct_keys():
     changed = parse_text(upload(data.replace(b"second", b"third")))
     assert one == again
     assert {part.key for part in one.parts}.isdisjoint(part.key for part in changed.parts)
-    chat = one.as_chat(speaker_kind="person", sender="Orla")
-    assert chat.chat_id == one.sha256
+    chat = one.as_chat()
+    assert chat.chat_id == f"export_digest:{one.sha256}"
     assert len(one_episode(chat.messages)) == 1
     assert len(chat.messages) == 2
-    assert all(
-        message.sender == "Orla" and message.speaker_kind == "person" for message in chat.messages
-    )
+    assert all(message.sender is None and message.speaker_kind is None for message in chat.messages)
 
 
 def test_source_time_preserves_its_offset_and_absence_stays_absent():
@@ -104,9 +102,36 @@ def test_source_time_preserves_its_offset_and_absence_stays_absent():
     result = parse_text(upload(b"The note."), source_at=at)
     assert result.source_at == at
     assert result.source_at.utcoffset() == timedelta(hours=2)
-    assert result.as_chat(speaker_kind="third_party").messages[0].at is at
+    assert result.as_chat().messages[0].at is None
+    assert result.as_chat().messages[0].source_facts.time.status == "absent"
     with pytest.raises(NotAnExport, match="timezone"):
         parse_text(upload(b"The note."), source_at=datetime(2026, 2, 3))
+
+
+def test_text_adapter_refuses_caller_speaker_and_keeps_exact_source_byte_facts():
+    data = "\ufeffCafé.\r\n\r\nA second note.".encode()
+    document = parse_text(upload(data))
+    for options in ({"speaker_kind": "person"}, {"sender": "Orla"}):
+        with pytest.raises(NotAnExport, match="caller-supplied"):
+            document.as_chat(**options)
+    chat = document.as_chat()
+    assert chat == parse_text(upload(data)).as_chat()
+    assert chat.started_at is None and chat.ended_at is None
+    for part, message in zip(document.parts, chat.messages, strict=True):
+        facts = message.source_facts
+        assert facts.artifact_sha256 == hashlib.sha256(data).hexdigest()
+        assert facts.locator.byte_start == part.byte_start
+        assert facts.locator.byte_end == part.byte_end
+        assert data[part.byte_start : part.byte_end].decode().strip() == part.text
+
+
+def test_internal_text_adapter_has_no_registration_or_subprocess(monkeypatch):
+    from grove.ingest.connector import providers
+
+    before = providers()
+    monkeypatch.setattr(documents.subprocess, "run", lambda *a, **k: pytest.fail("subprocess"))
+    parse_text(upload(b"# A note\nA choice."), markdown=True).as_chat()
+    assert providers() == before
 
 
 @pytest.mark.parametrize("data", [b"", b" \r\n\t", b"bad\xfftext"])
