@@ -61,6 +61,7 @@
     context = api.pendingExportContext();
     var ticket = epoch;
     await window.GroveDeferred.load('claude-preview');
+    await window.GroveDeferred.load('claude-preview-edges');
     if (!valid(ticket)) throw new Error('Your account changed. Start the example again.');
     var candidate = window.GroveClaudePreviewData;
     if (!candidate || !candidate.elements || !Array.isArray(candidate.elements.nodes) ||
