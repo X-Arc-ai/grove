@@ -391,6 +391,20 @@ def topic_items(about: str | None, maximum: int = 32) -> tuple[str, ...]:
         "saved",
     }
     words -= stop
+    kind_words = {
+        "tasks": "task",
+        "plans": "plan",
+        "projects": "plan",
+        "assumptions": "assumption",
+        "observations": "observation",
+        "decisions": "decision",
+        "decide": "decision",
+        "events": "event",
+        "people": "person",
+        "organizations": "organisation",
+        "organisations": "organisation",
+    }
+    requested_kinds = {kind_words.get(word, word) for word in words}
     if not words:
         return ()
     ranked = []
@@ -399,6 +413,8 @@ def topic_items(about: str | None, maximum: int = 32) -> tuple[str, ...]:
         for item in story.items:
             title = set(re.findall(r"[a-z0-9]+", item.title.lower()))
             score = 10 * len(words & topic) + len(words & title)
+            if item.kind in requested_kinds and score:
+                score += 6
             if score:
                 ranked.append((-score, item.key, item.title))
     return tuple(row[2] for row in sorted(ranked)[:maximum])
