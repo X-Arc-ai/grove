@@ -7,6 +7,14 @@ from pathlib import Path
 
 SOURCE = Path(__file__).resolve().parents[2] / "grove"
 AUTHORITY = SOURCE / "authority"
+INACTIVE_WRITER = frozenset(
+    {
+        "authority_records.py",
+        "authority_outcomes.py",
+        "authority_adapter.py",
+        "authority_forget.py",
+    }
+)
 
 
 def test_package_has_only_the_frozen_component_modules():
@@ -32,9 +40,13 @@ def test_package_has_only_the_frozen_component_modules():
 
 def test_no_runtime_source_imports_or_registers_authority():
     for path in SOURCE.rglob("*.py"):
-        if AUTHORITY in path.parents:
+        if AUTHORITY in path.parents or (
+            path.parent == SOURCE / "writer" and path.name in INACTIVE_WRITER
+        ):
             continue
         assert "grove.authority" not in path.read_text(), path.relative_to(SOURCE)
+        for name in INACTIVE_WRITER:
+            assert name.removesuffix(".py") not in path.read_text(), path.relative_to(SOURCE)
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.ImportFrom):
                 assert node.module != "authority", path.relative_to(SOURCE)
@@ -109,4 +121,18 @@ def test_plain_package_import_does_not_import_submodules():
         check=True,
         capture_output=True,
         timeout=5,
+    )
+
+
+def test_no_runtime_module_imports_or_constructs_authority_writer():
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import grove.writer.api; "
+            "assert not any(n.startswith('grove.writer.authority_') for n in sys.modules)",
+        ],
+        check=True,
+        capture_output=True,
+        timeout=10,
     )
