@@ -10,8 +10,13 @@ source baseline, deployed service revisions, and open acceptance.
 
 The documented source snapshot at 2026-11-04 19:04 UTC is `c145cf8b450f3ae7ab43989cf07969ee5b493057`.
 It includes the published UI repair in PR #60, materials in PR #61, and the separate
-source helper in PR #63. The recorded API serves PR #60. Request18 remains FAILED;
-Request19 closure has no completed receipt in this snapshot. Published source does not prove deployed acceptance.
+source helper in PR #63. Published source does not prove deployed acceptance.
+
+Release evidence update: 2026-11-04 at 19:04:34 UTC. Request19 closure and separate
+verification PASSED. The recorded API and `deployed.sha` match PR #60; the runner/gateway
+revisions remain distinct. Request18 remains FAILED. This was operational closure with no
+rebuild, restart, migration, seed, or runtime data write, not a new code deployment.
+See [the dated receipt facts](docs/submission-status.md#request19-release-evidence-update) and remaining acceptance limits.
 
 ## What is here
 

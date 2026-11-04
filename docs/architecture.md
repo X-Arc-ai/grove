@@ -3,7 +3,8 @@
 Source baseline: `c145cf8b450f3ae7ab43989cf07969ee5b493057`, recorded on 2026-11-04 at 19:04 UTC.
 The recorded API serves PR #60, `564cc99b9c8a718f163503cc23227a8f2908fcd1`.
 The runner and gateway remain on `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e`.
-Request18 remains FAILED. Request19 closure has no completed receipt in this snapshot.
+Release evidence update: 2026-11-04 at 19:04:34 UTC. Request19 closure and separate
+verification PASSED. Request18 remains FAILED. This was not a new code deployment.
 These are distinct revisions and outcomes. [Submission status](submission-status.md) records evidence limits.
 
 ## Component map
@@ -108,9 +109,14 @@ See [models](models.md).
 Neo4j dumps. The Request18 diagnosis at 2026-11-04 18:54:49 UTC confirmed all 20 runtime
 paths and five policy controls. Four `web/checks` paths were correctly excluded from the image.
 The wrapper expected those absent paths, so Request18 remains FAILED. Root separately recorded
-`/healthz` HTTP 200 at exact PR60. The old `deployed.sha` value from Request17 is not the served API.
-Request19 preparation is complete, and Root later granted one closure attempt; this snapshot
-contains no completed closure receipt. PR #63 changes the source helper, not the served application.
+`/healthz` HTTP 200 at exact PR60.
+
+The release evidence update at 2026-11-04 19:04:34 UTC records completed Request19 closure
+and separate verification, both with natural exit 0. `deployed.sha` now matches the PR60 API;
+`previous.sha` retains Request17. The failed barrier is archived and inactive. The closure
+receipt and terminal record passed verification, and all locks were free at that verification.
+No rebuild, restart, migration, seed, or runtime data write occurred. PR #63 changes the
+source helper, not the served application. See [the receipt facts](submission-status.md#request19-release-evidence-update).
 Health and synthetic backend results do not certify owner login, Muse, live provider consent,
 complete worker behavior, or complete erasure. No new runtime checks ran for this document refresh.
 
