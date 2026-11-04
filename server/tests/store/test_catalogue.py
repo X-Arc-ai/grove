@@ -18,6 +18,7 @@ from grove.store.catalogue import (
 )
 from grove.store.enums import ENUMS
 from grove.store.primitives import KIND_BELIEF, PRIMITIVE_IDS, PRIMITIVE_WORLD
+from tests.writer.migration_forms import is_generation_initializer
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "migrations"
 
@@ -449,6 +450,8 @@ def test_verifications_hold_the_columns_of_line_985():
 
 def schema_name(statement):
     """Check the form of one statement and return its schema name."""
+    if is_generation_initializer(statement):
+        return None
     words = statement.split()
     assert words[0] == "CREATE", statement
     size = STATEMENT_FORMS[words[1]]
@@ -481,7 +484,7 @@ def test_relationship_statements_use_the_relationship_form():
 
 
 def test_catalogue_names_equal_migration_names():
-    in_files = [schema_name(s) for _, s in statements()]
+    in_files = [name for _, s in statements() if (name := schema_name(s)) is not None]
     assert len(in_files) == len(set(in_files))
     assert set(in_files) == catalogue_schema_names()
 

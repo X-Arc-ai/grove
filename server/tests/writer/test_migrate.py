@@ -30,6 +30,7 @@ from grove.writer.migrate import (
     split_statements,
 )
 from grove.writer.testing import plant_node
+from tests.writer.migration_forms import is_generation_initializer
 
 HARMLESS = "RETURN 1;\nRETURN 2 AS two;\n"
 
@@ -328,3 +329,17 @@ def test_no_stray_schema_on_an_exclusive_store(driver, migrated):
     expected_indexes |= {index.name for index in FULLTEXT_INDEXES}
     assert set(constraints) == expected_constraints
     assert set(indexes) == expected_indexes
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "MATCH (w:Item) WHERE w.read_generation IS NULL SET w.read_generation = 0",
+        "MATCH (w:World) WHERE w.next_sequence IS NULL SET w.next_sequence = 0",
+        "MATCH (w:World) WHERE w.read_generation IS NULL SET w.read_generation = 1",
+        "MATCH (w:World) SET w.read_generation = 0",
+        "MATCH (w:World) WHERE w.read_generation IS NULL SET w.read_generation = 0 RETURN w",
+    ],
+)
+def test_only_the_exact_generation_initializer_is_allowed(statement):
+    assert not is_generation_initializer(statement)
