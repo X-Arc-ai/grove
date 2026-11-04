@@ -155,7 +155,7 @@ def typed_changes(run) -> list[dict]:
         if not found or found[0]["kind"] != KIND_BELIEF:
             raise ValueError("a belief trigger must name a belief in this world")
         if change.get("derivation") in ("inferred", "rolled_up"):
-            change["source_type"] = "said"
+            change["source_type"] = min((change["source_type"], "said"), key=RANK.__getitem__)
         changes.append(change)
     return changes
 
@@ -290,6 +290,8 @@ def apply_cascade(run) -> None:
         run.tx, sorted({c["item_id"] for c in changes}), now=run.at, registry=run.registry
     )
     proposed = plan(held, changes)
+    for change in changes:
+        _marker(run, change["item_id"], "cascade_trigger", change)
     suggestions = list(proposed.proposals)
     failed_downstream = set()
     for ending in proposed.endings:

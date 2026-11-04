@@ -50,6 +50,8 @@ SUCCESSOR_MEANINGS = (MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY)
 CASCADE_MARKERS = frozenset(
     {
         "cascade_mark",
+        "cascade_trigger",
+        "cascade_review",
         "cascade_proposal",
         "cascade_end",
         "cascade_disposition",

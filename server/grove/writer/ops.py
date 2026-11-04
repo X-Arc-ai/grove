@@ -273,8 +273,29 @@ OPS.update(
         "guard_consolidation": OpSpec(
             _callers("K"),
             ("op_id", "run_id", "contradiction_ids", "support_change_refs", "reason"),
-            (),
+            ("cascade_review_refs", "cascade_proposal_refs"),
             "*",
+        ),
+        "review_cascade": OpSpec(
+            _callers("K"),
+            (
+                "op_id",
+                "trigger",
+                "target",
+                "cause_change_id",
+                "review_token",
+                "disposition",
+                "checked_source_ids",
+                "reason",
+            ),
+            ("operation_ids", "gap_reason"),
+            "*",
+        ),
+        "question_proposal": OpSpec(
+            _callers("K"),
+            ("op_id", "proposal", "question", "options", "checked_source_ids", "reason"),
+            ("version",),
+            "?",
         ),
     }
 )
@@ -293,6 +314,8 @@ BELIEF_OPS = frozenset(
         "resolve_contradiction",
         "resolve_support_change",
         "guard_consolidation",
+        "review_cascade",
+        "question_proposal",
     }
 )
 MAX_PIECES = 50
@@ -725,7 +748,34 @@ def _belief_fields(name: str, op: dict[str, Any]) -> None:
         _enum(op["disposition"], "disposition", ("still_holding", "revised", "dismissed"))
         if type(op["cause_change_id"]) is not int or op["cause_change_id"] < 1:
             raise Refused("invalid_arguments", "type", "cause_change_id is a positive sequence", {})
+    if name == "review_cascade":
+        _text(op["trigger"], "trigger")
+        _text(op["review_token"], "review_token")
+        _enum(op["disposition"], "disposition", ("still_holding", "revised", "queued"))
+        if type(op["cause_change_id"]) is not int or op["cause_change_id"] < 1:
+            raise Refused("invalid_arguments", "type", "cause_change_id is a positive sequence", {})
     if name == "guard_consolidation":
+        for key in ("cascade_review_refs", "cascade_proposal_refs"):
+            if key in op and (
+                not isinstance(op[key], list)
+                or len(op[key]) > MAX_OPS
+                or any(not isinstance(row, dict) for row in op[key])
+            ):
+                raise Refused(
+                    "invalid_arguments",
+                    "type",
+                    "cascade references are a bounded list of objects",
+                    {},
+                )
+        for row in op.get("cascade_review_refs", []):
+            for key in ("trigger", "target"):
+                _text(row.get(key), key)
+            if type(row.get("cause_change_id")) is not int or row["cause_change_id"] < 1:
+                raise Refused("invalid_arguments", "type", "a review names its cause sequence", {})
+        for row in op.get("cascade_proposal_refs", []):
+            _text(row.get("id"), "id")
+            if type(row.get("version")) is not int or row["version"] < 1:
+                raise Refused("invalid_arguments", "type", "a proposal has a positive version", {})
         rows = op["support_change_refs"]
         if not isinstance(rows, list):
             raise Refused("invalid_arguments", "type", "support_change_refs is a list", {})

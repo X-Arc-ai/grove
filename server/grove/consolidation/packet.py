@@ -10,7 +10,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from grove import clock
+from grove.consolidation.cascades import pending_proposals, pending_reviews
 from grove.prompts import DataBlock, render_blocks
+from grove.store.current import read_rows
 from grove.store.primitives import MEANING_DESCRIBES
 from grove.store.query import WorldQuery
 
@@ -25,9 +27,10 @@ class PacketTooLarge(ValueError):
 
 
 def successful_cursor(query: WorldQuery) -> datetime:
-    rows = query.read(
+    rows = read_rows(
+        query,
         "MATCH (r:RunRecord {agent: 'connector', outcome: 'ok'}) "
-        "RETURN r.started AS started ORDER BY r.started DESC LIMIT 1"
+        "RETURN r.started AS started ORDER BY r.started DESC LIMIT 1",
     )
     return rows[0]["started"] if rows else EPOCH
 
@@ -96,12 +99,23 @@ def work(driver: Any, world_id: str) -> dict[str, Any]:
             )
             if any(row["episode"] not in counted for row in rows):
                 drift.append(belief_id)
+    reviews = pending_reviews(query, since=since, now=now)
+    proposals = pending_proposals(query)
     changed_items = [row["id"] for row in changed if row["type"] == "item"]
     triggers = []
     if contradictions:
         triggers.append({"kind": "contradiction", "refs": [row["id"] for row in contradictions]})
-    if len(changed_items) >= CHANGED_ITEMS:
-        triggers.append({"kind": "revisions", "refs": changed_items})
+    if len(changed_items) >= CHANGED_ITEMS or reviews or proposals:
+        triggers.append(
+            {
+                "kind": "revisions",
+                "refs": sorted(
+                    set(changed_items)
+                    | {r["trigger"] for r in reviews}
+                    | {p["target_item"] for p in proposals}
+                ),
+            }
+        )
     drift_refs = sorted(set(drift) | {row["belief_id"] for row in support})
     if drift_refs:
         triggers.append({"kind": "drift", "refs": drift_refs})
@@ -111,6 +125,8 @@ def work(driver: Any, world_id: str) -> dict[str, Any]:
         "since": since,
         "now": now,
         "changed": changed,
+        "cascade_reviews": reviews,
+        "cascade_proposals": proposals,
         "contradictions": contradictions,
         "support_changed": support,
         "beliefs": beliefs,
@@ -125,6 +141,10 @@ def job_trigger(pending: dict[str, Any]) -> str:
     """A failed job is not recreated until its input changes. Time passing alone is no retry."""
     value = {
         "changed": pending["changed"],
+        "cascade_reviews": pending["cascade_reviews"],
+        "cascade_proposals": [
+            {"id": p["id"], "version": p.get("version", 1)} for p in pending["cascade_proposals"]
+        ],
         "contradictions": [
             {key: row.get(key) for key in ("id", "version", "detected_at")}
             for row in pending["contradictions"]
@@ -207,21 +227,19 @@ def packet(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str, Any]
     for row in links:
         selected.update((row["from_id"], row["to_id"]))
         block("item", row["l"]["id"], row["l"])
-    # The safety-net packet includes incoming dependents even when a meaning's consequence
-    # flag is wrong. A recorded re-judgment can report the gap instead of trusting that flag.
-    dependents = []
-    for row in query.read(
-        "MATCH (a:Item)-[l:LINK]->(b:Item) WHERE b.id IN $ids "
-        "AND l.active_key IS NOT NULL RETURN a.id AS dependent, b.id AS changed, l",
-        ids=[row["id"] for row in pending["changed"] if row["type"] == "item"],
-    ):
-        selected.update((row["dependent"], row["l"]["id"]))
-        dependents.append(
+    dependents = pending["cascade_reviews"]
+    for row in dependents:
+        selected.update((row["trigger"], row["target"]))
+        selected.update(row["path"])
+    proposals = []
+    for row in pending["cascade_proposals"]:
+        selected.add(row["target_item"])
+        proposals.append(
             {
-                "dependent": row["dependent"],
-                "changed": row["changed"],
-                "link_id": row["l"]["id"],
-                "block": block("item", row["l"]["id"], row["l"]),
+                "proposal_id": row["id"],
+                "version": row.get("version", 1),
+                "target": row["target_item"],
+                "block": block("item", row["id"], row),
             }
         )
     histories = []
@@ -291,6 +309,8 @@ def packet(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str, Any]
             for row in pending["support_changed"]
         ],
         "changed": pending["changed"],
+        "cascade_reviews": pending["cascade_reviews"],
+        "cascade_proposals": proposals,
         "dependents": dependents,
         "beliefs": beliefs,
         "histories": histories,
