@@ -729,3 +729,75 @@ def test_rendering_never_calls_store_clock_or_live_excerpt(monkeypatch):
     monkeypatch.setattr("grove.models.verify_judge.excerpt", forbidden)
     monkeypatch.setattr("grove.clock.now", forbidden)
     assert card()["newest_evidence"]["excerpt"] == "Current proof"
+
+
+def test_evidence_expansion_preserves_default_and_all_active_polarities_in_source_order():
+    data = rows(
+        evidence=[
+            proof("proof", source_time=NOW - 2 * HOUR),
+            proof("contra", source_time=NOW, polarity="contradicts", locator="line:3"),
+            proof("support", source_time=NOW - HOUR, locator="line:1"),
+            proof("ended", source_time=NOW + HOUR, active=False),
+        ]
+    )
+    held = renderer(data)
+    default = held.render_item("subject")
+    expanded = held.render_item("subject", include_evidence=True)
+    assert "evidence" not in default.card
+    assert {key: value for key, value in expanded.card.items() if key != "evidence"} == default.card
+    assert expanded.link_ids == default.link_ids
+    assert [entry["id"] for entry in expanded.card["evidence"]] == ["contra", "support", "proof"]
+    assert [entry["polarity"] for entry in expanded.card["evidence"]] == [
+        "contradicts",
+        "supports",
+        "supports",
+    ]
+    assert expanded.card["evidence"][0]["excerpt"] == "Tail"
+    assert expanded.card["newest_evidence"] == expanded.card["evidence"][0]
+    assert expanded.card["provenance"] == expanded.card["evidence"][-1]
+    assert held.render_item("subject", include_evidence=False) == default
+    expanded.card["evidence"][0]["excerpt"] = "Changed output"
+    assert (
+        held.render_item("subject", include_evidence=True).card["evidence"][0]["excerpt"] == "Tail"
+    )
+
+
+def test_evidence_expansion_uses_the_same_deterministic_source_time_ties():
+    data = rows(evidence=[proof("tie-a"), proof("proof"), proof("tie-b")])
+    held = renderer(data)
+    result = held.render_item("subject", include_evidence=True).card
+    assert [entry["id"] for entry in result["evidence"]] == ["tie-b", "tie-a", "proof"]
+    assert result["evidence"][0] == result["newest_evidence"]
+
+
+def test_empty_evidence_expansion_is_explicit_and_keeps_inactive_provenance_separate():
+    held = renderer(rows(evidence=[proof(active=False)]))
+    result = held.render_item("subject", include_evidence=True).card
+    assert result["evidence"] == []
+    assert result["newest_evidence"] is None
+    assert result["provenance"]["id"] == "proof"
+
+
+def test_evidence_expansion_refuses_the_whole_card_above_the_byte_bound():
+    values = [
+        proof(
+            "proof" if index == 0 else f"proof-{index}",
+            locator="whole",
+            source_time=NOW - index * HOUR,
+        )
+        for index in range(20)
+    ]
+    held = renderer(
+        rows(evidence=values, sources=[row("source", connector_id="connector", content="x" * 6000)])
+    )
+    default = held.render_item("subject")
+    assert len(encode(default.card)) <= MAX_CARD_BYTES
+    with pytest.raises(PacketError, match="^item_card_too_large$"):
+        held.render_item("subject", include_evidence=True)
+    assert held.render_item("subject") == default
+
+
+@pytest.mark.parametrize("value", [None, "evidence", 1])
+def test_evidence_expansion_requires_an_explicit_boolean(value):
+    with pytest.raises(PacketError, match="^invalid_packet_inputs$"):
+        renderer().render_item("subject", include_evidence=value)
