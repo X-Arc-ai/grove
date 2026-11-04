@@ -2192,6 +2192,39 @@ Indexes: `forget_approvals_world_id_idx` (world_id).
 | (none) | `expires_at` | `instant` | ruling | short approval lifetime |
 | (none) | `used_at` | `instant` | ruling | consumed atomically with the cascade |
 
+### material_revisions
+
+`:MaterialRevision`, node. Scope world. Restore group snapshot. Owner materials.
+
+Keys: `material_revisions_id_unique` (id); `material_revisions_world_id_material_id_revision_unique` (world_id, material_id, revision); `material_revisions_world_id_request_key_hash_unique` (world_id, request_key_hash).
+
+Indexes: `material_revisions_world_id_state_kind_created_at_idx` (world_id, state, kind, created_at); `material_revisions_world_id_material_id_idx` (world_id, material_id).
+
+Screened text lives only in Sources. Deleted metadata prevents idempotent resurrection.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `material_id` | `id` | ruling | Material revision metadata; no source text |
+| (none) | `revision` | `int` | ruling | Material revision metadata; no source text |
+| (none) | `kind` | `code` | ruling | Material revision metadata; no source text |
+| (none) | `format` | `code` | ruling | Material revision metadata; no source text |
+| (none) | `state` | `code` | ruling | Material revision metadata; no source text |
+| (none) | `title_source_id` | `id` | ruling | Material revision metadata; no source text |
+| (none) | `source_ids` | `ids` | ruling | Material revision metadata; no source text |
+| (none) | `episode_id` | `id` | ruling | Material revision metadata; no source text |
+| (none) | `request_id` | `id` | ruling | Material revision metadata; no source text |
+| (none) | `request_key_hash` | `code` | ruling | Material revision metadata; no source text |
+| (none) | `input_digest` | `code` | ruling | Material revision metadata; no source text |
+| (none) | `input_bytes` | `int` | ruling | Material revision metadata; no source text |
+| (none) | `retained_characters` | `int` | ruling | Material revision metadata; no source text |
+| (none) | `part_count` | `int` | ruling | Material revision metadata; no source text |
+| (none) | `held_count` | `int` | ruling | Material revision metadata; no source text |
+| (none) | `created_at` | `instant` | ruling | Material revision metadata; no source text |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+
 ### learner_work
 
 `:LearnerWork`, node. Scope world. Restore group snapshot. Owner D10.

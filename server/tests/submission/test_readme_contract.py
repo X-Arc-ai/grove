@@ -53,7 +53,8 @@ def test_current_release_docs_distinguish_general_tools_from_restricted_demo():
     """An empty general registry does not mean the deployed demo pair is absent."""
     registry = ast.parse((ROOT / "server/grove/mcp/tools.py").read_text())
     demo = next(
-        node for node in registry.body
+        node
+        for node in registry.body
         if isinstance(node, ast.FunctionDef) and node.name == "demo_tools"
     )
     names = {
@@ -74,9 +75,10 @@ def test_current_release_docs_distinguish_general_tools_from_restricted_demo():
     assert "Cedar" in readme
     assert "Runs on the prepared account" in readme
     assert "the merged snapshot has no upload endpoint" not in readme
-    assert "[Pipedream](pipedream.md) imports no content." in (
-        ROOT / "docs/architecture.md"
-    ).read_text()
+    assert (
+        "[Pipedream](pipedream.md) imports no content."
+        in (ROOT / "docs/architecture.md").read_text()
+    )
 
 
 def test_documents_agree_with_the_readme_on_prepared_account_muse():
