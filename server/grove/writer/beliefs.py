@@ -11,7 +11,7 @@ from grove.store.normalise import normalise_phrase
 from grove.store.primitives import KIND_BELIEF, MEANING_DESCRIBES, MEANING_SUPERSEDED_BY
 from grove.writer import apply as ap
 from grove.writer import verify
-from grove.writer.clocks import UNKNOWN, Clock, clock_columns, parse_clock, parse_instant
+from grove.writer.clocks import UNKNOWN, Clock, clock_columns, parse_clock, parse_instant, sort_key
 from grove.writer.errors import Refused
 from grove.writer.history import compact, row_json
 from grove.writer.provenance import _relay, connector_type_of
@@ -133,14 +133,22 @@ def _stage_change(
         default={},
     )
     original = strongest.get("source_type", "said")
-    derivation = strongest.get("derivation", "inferred")
+    original_derivation = strongest.get("derivation", "inferred")
+    # Evidence can be an observed fact while the regularity inferred from it remains an
+    # inference. Only a validated personal correction carries that person's own authority.
+    derivation = original_derivation if person_correction else "inferred"
+    effective = original if derivation == "observed" else min((original, "said"), key=rank.get)
+    world_time = (
+        sort_key(parse_clock(end_clock)) if end_clock is not None else strongest.get("source_time")
+    )
     run.cache.setdefault("belief_cascade_changes", []).append(
         {
             "item_id": belief_id,
             "change_set_id": run.stamp.change_set_id,
-            "world_time": strongest.get("source_time"),
-            "source_type": original if derivation == "observed" else "said",
+            "world_time": world_time,
+            "source_type": effective,
             "original_source_type": original,
+            "original_derivation": original_derivation,
             "derivation": derivation,
             "terminal": after == "superseded",
             "reopened": before == "superseded" and after != before,
@@ -174,8 +182,15 @@ def _transition(run, belief, state, rows, reason_id):
         changes["person_change_notice"] = True
     previous_state = belief["state"]
     set_fields(run, belief, changes, reason_id, evidence_id=rows[-1]["id"] if rows else None)
+    trigger_rows = [row for row in rows if row["episode_id"] in fresh]
     _stage_change(
-        run, belief["item_id"], previous_state, state, rows, reason_id, cause="evidence_transition"
+        run,
+        belief["item_id"],
+        previous_state,
+        state,
+        trigger_rows,
+        reason_id,
+        cause="evidence_transition",
     )
 
 
@@ -542,6 +557,7 @@ def end(run, index, op):
     item, belief = get(run, op["target"], live=True)
     ap._check_version(op, belief)
     plans = ap._plans(run, op["evidence_refs"])
+    ap._settle(run, plans, item["id"])
     rows = [{**plan.columns, "id": plan.id} for plan in plans]
     if any(plan.polarity != "supports" for plan in plans):
         refuse("belief_contradiction_gate", "an ending cannot bypass the contradiction judge gate")
@@ -597,6 +613,8 @@ def correct(run, index, op):
     item, belief = get(run, op["target"])
     ap._check_version(op, belief)
     plans = ap._plans(run, op["evidence_refs"])
+    # Event provenance must use the retained row ID when this citation is already known.
+    ap._settle(run, plans, item["id"])
     person = _person_rows(run, plans, correction=True)
     reason_id = run.text(op["reason"])
     held = min(run.at, max(row["source_time"] for row in person))
