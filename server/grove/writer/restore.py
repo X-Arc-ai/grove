@@ -243,6 +243,7 @@ def load_snapshot(driver: Driver, world_id: str, snapshot: Mapping[str, Any]) ->
             for chunk in _chunks(rows):
                 tx.run(statement, rows=chunk)
         # :World is a platform row: the scoped transaction refuses its label by design.
+        # Restore only the D3 position. The common finalizer advances the live read generation.
         done = tx.unscoped().run(_SET_NEXT_SEQUENCE, world_id=world_id, sequence=last).single()
         if done is None:
             raise UnknownWorld(world_id)

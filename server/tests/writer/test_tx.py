@@ -40,6 +40,7 @@ def world_row(driver, world):
 
 
 def test_created_nodes_and_links_carry_the_world(driver, world):
+    plant_node(driver, world, "World", next_sequence=0)
     a, b, link = new_id(), new_id(), new_id()
 
     def work(tx):
@@ -63,6 +64,7 @@ def test_created_nodes_and_links_carry_the_world(driver, world):
 
 
 def test_merge_stamps_and_finds_the_same_row(driver, world):
+    plant_node(driver, world, "World", next_sequence=0)
     item = new_id()
 
     def work(tx):
@@ -77,6 +79,7 @@ def test_merge_stamps_and_finds_the_same_row(driver, world):
 
 def test_an_update_reaches_only_the_own_world(driver, make_world):
     a, b = make_world(), make_world()
+    plant_node(driver, a, "World", next_sequence=0)
     plant_node(driver, a, "Item", title="same")
     other = plant_node(driver, b, "Item", title="same")
 
@@ -90,6 +93,7 @@ def test_an_update_reaches_only_the_own_world(driver, make_world):
 
 def test_a_writer_cannot_touch_the_other_worlds_link(driver, make_world):
     a, b = make_world(), make_world()
+    plant_node(driver, a, "World", next_sequence=0)
     first = plant_node(driver, b, "Item")["id"]
     second = plant_node(driver, b, "Item")["id"]
     link = plant_link(driver, b, first, second)
@@ -103,6 +107,8 @@ def test_a_writer_cannot_touch_the_other_worlds_link(driver, make_world):
 
 
 def test_a_failed_work_function_rolls_the_whole_batch_back(driver, world):
+    plant_node(driver, world, "World", next_sequence=0)
+
     def work(tx):
         tx.run("CREATE (:Item {id: $id})", id=new_id())
         tx.run("CREATE (:Item {id: $id})", id=new_id())
@@ -115,6 +121,8 @@ def test_a_failed_work_function_rolls_the_whole_batch_back(driver, world):
 
 
 def test_a_refused_statement_rolls_the_batch_back(driver, world):
+    plant_node(driver, world, "World", next_sequence=0)
+
     def work(tx):
         tx.run("CREATE (:Item {id: $id})", id=new_id())
         tx.run("MATCH (i:Item) SET i.world_id = 'elsewhere'")
@@ -126,6 +134,7 @@ def test_a_refused_statement_rolls_the_batch_back(driver, world):
 
 
 def test_a_broken_constraint_rolls_the_batch_back(driver, world):
+    plant_node(driver, world, "World", next_sequence=0)
     same = new_id()
 
     def work(tx):
@@ -140,6 +149,7 @@ def test_a_broken_constraint_rolls_the_batch_back(driver, world):
 
 
 def test_a_caller_world_id_is_refused(driver, world):
+    plant_node(driver, world, "World", next_sequence=0)
     with pytest.raises(ScopeError):
         WorldWriter(driver, world).transaction(
             lambda tx: tx.run("CREATE (:Item {id: $id})", id=new_id(), world_id="elsewhere")
@@ -148,6 +158,7 @@ def test_a_caller_world_id_is_refused(driver, world):
 
 
 def test_a_nested_world_id_in_a_row_map_is_refused(driver, world):
+    plant_node(driver, world, "World", next_sequence=0)
     item = plant_node(driver, world, "Item")["id"]
     with pytest.raises(ScopeError):
         WorldWriter(driver, world).transaction(
@@ -163,6 +174,7 @@ def test_a_nested_world_id_in_a_row_map_is_refused(driver, world):
 
 def test_a_write_results_guard_sees_another_world(driver, make_world):
     a, b = make_world(), make_world()
+    plant_node(driver, a, "World", next_sequence=0)
     start = plant_node(driver, a, "Item")["id"]
     end = plant_node(driver, b, "Item")["id"]
     plant_link(driver, a, start, end, to_world=b)
@@ -345,6 +357,7 @@ def _snapshot(driver, ids):
 @pytest.mark.parametrize("cypher", WRITE_REPROS)
 def test_a_hidden_write_clause_is_refused_and_changes_nothing(driver, make_world, cypher):
     a, b = make_world(), make_world()
+    plant_node(driver, a, "World", next_sequence=0)
     mine = plant_node(driver, a, "Item", title="own", n=1)["id"]
     theirs = plant_node(driver, b, "Item", title="theirs", n=1)["id"]
     plant_link(driver, b, theirs, plant_node(driver, b, "Item")["id"])
@@ -364,6 +377,7 @@ def test_a_hidden_write_clause_is_refused_and_changes_nothing(driver, make_world
 
 def test_the_keywords_still_write_in_the_own_world_only(driver, make_world):
     a, b = make_world(), make_world()
+    plant_node(driver, a, "World", next_sequence=0)
     plant_node(driver, a, "Item", title="own heron", n=1)
     theirs = plant_node(driver, b, "Item", title="own heron", n=1)["id"]
 

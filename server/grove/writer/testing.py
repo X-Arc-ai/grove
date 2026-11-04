@@ -43,7 +43,7 @@ def plant_node(
     # Every label is checked against the catalogue, so splicing it into the text is safe.
     labels = label.split(":")
     if labels == [_WORLD_LABEL]:
-        row = {**props, "id": world_id}
+        row = {"read_generation": 0, **props, "id": world_id}
     elif set(labels) <= WORLD_LABELS:
         row = {"id": new_id(world_id), **props, "world_id": world_id}
         if primitive:
@@ -96,7 +96,7 @@ _SESSION_LIFETIME = timedelta(hours=1)
 # key of the uniqueness constraint, so two calls for one world find one row.
 _OWN_WORLD = (
     "CYPHER 25 MERGE (w:World {id: $world_id}) "
-    "ON CREATE SET w.created_at = $at, w.next_sequence = 0 "
+    "ON CREATE SET w.created_at = $at, w.next_sequence = 0, w.read_generation = 0 "
     "SET w.owner_user_id = $user_id"
 )
 _PLANT_USER = (
