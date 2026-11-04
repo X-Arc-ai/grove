@@ -2,6 +2,8 @@
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,6 +13,7 @@ from neo4j.exceptions import TransientError
 
 from grove.ids import new_id
 from grove.store.connection import DATABASE
+from grove.writer import migrate as migrate_module
 from grove.writer import tx as tx_module
 from grove.writer.migrate import MigrationDrift, run_migrations
 from grove.writer.restore import load_snapshot, rebuild_in_place, take_snapshot
@@ -285,3 +288,162 @@ def test_snapshot_load_never_restores_an_older_generation(driver, world):
     after = world_properties(driver, world)
     assert after["next_sequence"] == old_sequence
     assert after["read_generation"] == before["read_generation"] + 1
+
+
+class _GenerationResult:
+    def __init__(self, rows=()):
+        self.rows = rows
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def consume(self):
+        return None
+
+
+class _GenerationTransaction:
+    def __init__(self, driver):
+        self.driver = driver
+        self.worlds = deepcopy(driver.worlds)
+        self.scans = 0
+        self.committed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        if not self.committed:
+            self.driver.rollbacks += 1
+
+    def run(self, query):
+        self.driver.queries.append(query)
+        if query == "CYPHER 25 MATCH (w:World) RETURN w.read_generation AS generation":
+            self.scans += 1
+            if self.scans == 2 and self.driver.post_repair_failure:
+                raise RuntimeError("synthetic final scan failure")
+            return _GenerationResult(
+                [{"generation": world.get("read_generation")} for world in self.worlds]
+            )
+        assert query == (
+            "CYPHER 25 MATCH (w:World) WHERE w.read_generation IS NULL SET w.read_generation = 0"
+        )
+        self.driver.repairs += 1
+        for world in self.worlds:
+            if world.get("read_generation") is None:
+                world["read_generation"] = 0
+        if self.driver.post_repair_null:
+            self.worlds[0]["read_generation"] = None
+        if self.driver.post_repair_extra_world:
+            self.worlds.append({"read_generation": 0})
+        return _GenerationResult()
+
+    def commit(self):
+        self.driver.commits += 1
+        if self.driver.commit_failure:
+            raise RuntimeError("synthetic uncertain commit")
+        self.driver.worlds = self.worlds
+        self.committed = True
+
+
+class _GenerationDriver:
+    def __init__(self, worlds):
+        self.worlds = deepcopy(worlds)
+        self.queries = []
+        self.transactions = 0
+        self.repairs = 0
+        self.commits = 0
+        self.rollbacks = 0
+        self.post_repair_failure = False
+        self.post_repair_null = False
+        self.post_repair_extra_world = False
+        self.commit_failure = False
+
+    def session(self, *, database):
+        assert database == DATABASE
+        return nullcontext(self)
+
+    def begin_transaction(self, *, timeout):
+        assert timeout == 60.0
+        self.transactions += 1
+        return _GenerationTransaction(self)
+
+    def execute_write(self, *args, **kwargs):
+        pytest.fail("reconciliation must not use managed transaction retries")
+
+
+def test_quiescent_reconciliation_repairs_null_after_recorded_migration(tmp_path, monkeypatch):
+    name = "0014_read_generation.cypher"
+    text = (Path(__file__).resolve().parents[2] / "migrations" / name).read_text()
+    (tmp_path / name).write_text(text)
+    ledger = {f"grove/{name}": migrate_module.checksum(text)}
+    monkeypatch.setattr(migrate_module, "_ledger", lambda *args: ledger.copy())
+    monkeypatch.setattr(
+        migrate_module, "_apply", lambda *args: pytest.fail("recorded migration ran again")
+    )
+    driver = _GenerationDriver([{"read_generation": 19, "next_sequence": 7}])
+    assert run_migrations(driver, tmp_path) == {"applied": [], "skipped": [name]}
+    # An old writer creates this world after 0014 already has a matching ledger row.
+    driver.worlds.append({"next_sequence": 3})
+    assert run_migrations(driver, tmp_path) == {"applied": [], "skipped": [name]}
+    assert "read_generation" not in driver.worlds[1]
+    assert migrate_module.reconcile_generations(driver) == {
+        "worlds": 2,
+        "initialized": 1,
+        "missing": 0,
+    }
+    assert driver.worlds == [
+        {"read_generation": 19, "next_sequence": 7},
+        {"read_generation": 0, "next_sequence": 3},
+    ]
+    assert ledger == {f"grove/{name}": migrate_module.checksum(text)}
+
+
+def test_quiescent_reconciliation_preserves_valid_counters_and_repeats():
+    worlds = [{"read_generation": value, "next_sequence": 9} for value in [0, 19, 2**63 - 2]]
+    driver = _GenerationDriver([*worlds, {"read_generation": None, "next_sequence": 4}])
+    assert migrate_module.reconcile_generations(driver)["initialized"] == 1
+    expected = [*worlds, {"read_generation": 0, "next_sequence": 4}]
+    assert driver.worlds == expected
+    assert migrate_module.reconcile_generations(driver) == {
+        "worlds": 4,
+        "initialized": 0,
+        "missing": 0,
+    }
+    assert driver.worlds == expected
+    assert driver.commits == driver.transactions == 2
+
+
+@pytest.mark.parametrize("value", [-1, True, False, "0", 0.0, 1.5, [], 2**63 - 1, 2**63])
+def test_quiescent_reconciliation_refuses_invalid_counters_before_repair(value):
+    original = [{"next_sequence": 0}, {"read_generation": value, "next_sequence": 7}]
+    driver = _GenerationDriver(original)
+    with pytest.raises(migrate_module.CutoverRefused, match="invalid or exhausted"):
+        migrate_module.reconcile_generations(driver)
+    assert driver.worlds == original
+    assert driver.repairs == driver.commits == 0
+    assert driver.transactions == driver.rollbacks == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["post_repair_failure", "post_repair_null", "post_repair_extra_world", "commit_failure"],
+)
+def test_quiescent_reconciliation_rolls_back_failure_without_retry(failure):
+    original = [{"next_sequence": 3}, {"read_generation": 19}]
+    driver = _GenerationDriver(original)
+    setattr(driver, failure, True)
+    with pytest.raises(RuntimeError):
+        migrate_module.reconcile_generations(driver)
+    assert driver.worlds == original
+    assert driver.transactions == driver.rollbacks == driver.repairs == 1
+    assert driver.commits == (1 if failure == "commit_failure" else 0)
+
+
+def test_quiescent_reconciliation_accepts_empty_store():
+    driver = _GenerationDriver([])
+    assert migrate_module.reconcile_generations(driver) == {
+        "worlds": 0,
+        "initialized": 0,
+        "missing": 0,
+    }
+    assert driver.commits == 1
