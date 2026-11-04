@@ -58,8 +58,14 @@ restores a weakening belief or moves its confirmation clock; it does not promote
 regularity. A contrary re-test weakens and preserves last confirmed. A disagreement writes no
 evidence or state change; it opens the contradiction queue with the source and both verdicts.
 Every completed check refreshes the horizon, so the next pass resolves the queue instead of
-repeating a due-read requirement. Unanimous complements or not-about-claim verdicts retain
-no Evidence and leave state and last confirmed unchanged. `last_retest_outcome`,
+repeating a due-read requirement. A pair containing only complements and not-about-claim
+verdicts retains no Evidence and leaves state and last confirmed unchanged, including a mixed
+pair. Its completed outcome is
+`complements` if either judge says complements, otherwise `not_about_claim`. Both judgment IDs
+and the original recorded verdicts remain unchanged. A complement paired with supports or
+contradicts is a substantive disagreement and enters the bound contradiction queue. Opening
+a conflict refuses a wholly neutral pair for both new observations and existing Evidence.
+`last_retest_outcome`,
 `last_retested_at`, `last_retest_reason`, and source/judgment ID lists preserve each completed
 check and its legwork through history; receipts show its outcome. The item remains inferred.
 

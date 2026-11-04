@@ -18,6 +18,7 @@ from grove.writer.provenance import _relay, connector_type_of
 
 _GET = "MATCH (b:Belief {item_id: $id}) RETURN b"
 _SET = "MATCH (b:Belief {item_id: $id}) SET b += $columns"
+_NEUTRAL_VERDICTS = frozenset({"complements", "not_about_claim"})
 _EVIDENCE = (
     "MATCH (e:Evidence {target_id: $id, active: true}) RETURN e ORDER BY e.source_time, e.id"
 )
@@ -844,12 +845,18 @@ def retest(run, index, op):
     verdicts.update(j["verdict"] for piece in pieces for j in piece.second)
     if not verdicts <= {"supports", "contradicts", "complements", "not_about_claim"}:
         refuse("belief_retest_unrelated", "the re-test must judge the declared regularity")
-    disagreement = len(verdicts) > 1
-    outcome = "disagreement" if disagreement else next(iter(verdicts))
+    neutral = verdicts <= _NEUTRAL_VERDICTS
+    disagreement = len(verdicts) > 1 and not neutral
+    if neutral:
+        outcome = "complements" if "complements" in verdicts else "not_about_claim"
+    else:
+        outcome = "disagreement" if disagreement else next(iter(verdicts))
     for piece in pieces:
         if not piece.second:
             refuse("second_judge_required", "a belief re-test needs the recorded second opinion")
-        _judge_pair([piece.judgment, *piece.second], None if disagreement else piece.verdict)
+        # Different neutral labels agree about absence of support or contradiction. Keep the
+        # original verdicts and validate the same distinct-call/role perimeter as every check.
+        _judge_pair([piece.judgment, *piece.second], None if len(verdicts) > 1 else piece.verdict)
     accepted = []
     records = (
         run.tx.run("MATCH (r:RunRecord {id: $id}) RETURN r.started AS started", id=run.stamp.run_id)
@@ -965,6 +972,15 @@ def open_contradiction(run, index, op):
         fresh = ap._existing_evidence(run, op["fresh_evidence_id"])
     else:
         fresh = run.observation(op["ev_id"])
+    judgments = ap._judgments(run, op.get("judgment_ids") or [])
+    if judgments:
+        if {row["verdict"] for row in judgments} <= _NEUTRAL_VERDICTS:
+            refuse("belief_complement", "neutral readings do not enter the contradiction queue")
+        for row in judgments:
+            if row.get("subject") not in (f"belief:{target}", f"item:{target}"):
+                refuse("judgment_subject", "the judgment names another claim")
+            if not verify._matches(row, op.get("fresh_evidence_id"), fresh):
+                refuse("judgment_evidence", "the judgment names another source or locator")
     prior = run.tx.run(
         "MATCH (c:Contradiction {target: $target, status: 'open'}) "
         "WHERE c.fresh_source_id = $source AND c.fresh_locator = $locator RETURN c",
@@ -976,20 +992,6 @@ def open_contradiction(run, index, op):
         if op.get("temp_id"):
             run.temps[op["temp_id"]] = ("contradiction", prior[0]["c"]["id"])
         return
-    if not op.get("fresh_evidence_id"):
-        judgments = ap._judgments(run, op.get("judgment_ids") or [])
-        if judgments:
-            if {row["verdict"] for row in judgments} == {"complements"}:
-                refuse("belief_complement", "a complement does not enter the contradiction queue")
-            for row in judgments:
-                if row.get("subject") not in (f"belief:{target}", f"item:{target}"):
-                    refuse("judgment_subject", "the judgment names another claim")
-                if row.get("verdict") == "complements":
-                    refuse(
-                        "belief_complement", "a complement does not enter the contradiction queue"
-                    )
-                if not verify._matches(row, None, fresh):
-                    refuse("judgment_evidence", "the judgment names another source or locator")
     changes = run.tx.run(
         "MATCH (e:ChangeEntry {entity_id: $id}) RETURN max(e.sequence) AS n", id=target
     )
