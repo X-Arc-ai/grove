@@ -188,7 +188,7 @@ def run(shots):
         context = browser.new_context(viewport={"width": 1440, "height": 900})
         identity = server.bind(context, "owner-a")
         context.add_init_script(
-            "localStorage.setItem('grove-minimal-codex-v3', JSON.stringify({version:3, account:'owner-a', pendingExports:{grok:{requestedAt:'old-local'}}}));"
+            "if (window.top === window && !localStorage.getItem('grove-minimal-codex-v3')) localStorage.setItem('grove-minimal-codex-v3', JSON.stringify({version:3, account:'owner-a', pendingExports:{grok:{requestedAt:'old-local'}}}));"
         )
         page = context.new_page()
         errors = []

@@ -296,24 +296,25 @@ def test_partial_refused_or_malformed_results_keep_reminder(store, monkeypatch, 
     assert pending_exports(store, SESSION_A) == expected
 
 
-def test_generation_is_captured_before_body_and_new_request_survives(store, monkeypatch):
-    request(store)
+@pytest.mark.parametrize("lumen", [False, True])
+def test_generation_is_captured_before_body_and_new_request_survives(store, monkeypatch, lumen):
+    request(store, "claude_ai")
     original = uploads._spool_body
 
     async def body_after_new_request(*args):
-        request(store)
+        request(store, "claude_ai")
         return await original(*args)
 
     monkeypatch.setattr(uploads, "_spool_body", body_after_new_request)
-    setup_import(monkeypatch)
+    setup_import(monkeypatch, lumen=lumen)
     response = client(store).post(
-        "/v1/sources/upload?provider=chatgpt",
-        content=b"{}",
+        "/v1/sources/upload?provider=claude_ai",
+        content=lumen_fixture() if lumen else b"{}",
         headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 200
     assert response.json()["reminder"]["snapshot"]["revision"] == 2
-    assert "chatgpt" in pending_exports(store, SESSION_A)["pending_exports"]
+    assert "claude_ai" in pending_exports(store, SESSION_A)["pending_exports"]
 
 
 @pytest.mark.parametrize("lumen", [False, True])
