@@ -24,7 +24,9 @@ Every stored belief remains `inferred`, with the automated speaker, regardless o
 `retire_belief` requires evidence and a reason. An automatic ending requires newer evidence
 of equal or higher source rank; an inferred row cannot replace observed evidence. Its evidence
 is retained. A person-held belief changes only on newer observed confirmed evidence and then
-sets `person_change_notice`. Views can show that field beside the change's undo control.
+passes the D4 capability resolver before it sets `person_change_notice`. Views can show that
+field beside the change's undo control. A confirmed source without capability cannot override
+the person.
 
 The four corrections are `right`, `not_any_more`, `wrong`, and `restate`. Host authority comes
 from the Request that stored the cited Source: correction relay, verbatim flag, and message ID.

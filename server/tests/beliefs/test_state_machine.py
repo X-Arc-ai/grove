@@ -297,16 +297,16 @@ def test_person_word_outweighs_new_said_but_new_confirmed_changes_it(driver, see
     _, said = data(driver, w, 6)
     attach(driver, w, belief, said, "contradicts", judgment_ids=judges(driver, w, belief, said))
     assert state(driver, w, belief)["state"] == "established"
-    # A real retained artifact is confirmed by the source-type mapping.
-    source = make_source(driver, w, "git", ["commit abcdef123: River stopped the quiet service"])
+    # A live service page can prove this lasting claim; a commit proves only that code exists.
+    source = make_source(driver, w, "web_pages", ["River stopped the quiet service"])
     artifact = observation(
         source,
-        "git",
+        "page",
         1,
-        locator="key:abcdef123",
-        statement_class="report_happened",
+        locator="whole",
+        statement_class="report_state",
         at=T0 + timedelta(hours=7),
-        message_key="git-commit",
+        message_key="service-page",
     )
     attach(
         driver, w, belief, artifact, "contradicts", judgment_ids=judges(driver, w, belief, artifact)
