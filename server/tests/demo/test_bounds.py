@@ -27,7 +27,13 @@ from grove.views.registry import Kind, Meaning, Registry
 def test_topic_capture_is_scoped_before_bounded_materialization():
     scoped = scope_cypher(_TOPIC_CAPTURE, "read")
     assert "e.message_key IN $message_keys" in scoped
-    assert scoped.index("e.message_key IN $message_keys") < scoped.index("LIMIT $item_cap")
+    cedar_limit = scoped.index("LIMIT $item_cap")
+    cedar_collect = scoped.index("collect(i.id) AS cedar_ids")
+    rich_match = scoped.index("e.message_key IN $message_keys[..rich_capacity]")
+    item_limit = scoped.index("LIMIT $item_cap", cedar_limit + 1)
+    assert cedar_limit < cedar_collect < rich_match < item_limit
+    assert "$item_cap - 1 - size(cedar_ids)" in scoped
+    assert "i.id IN cedar_ids" in scoped
     assert "WITH DISTINCT i" in scoped
     assert scoped.count("world_id") >= 10
 
