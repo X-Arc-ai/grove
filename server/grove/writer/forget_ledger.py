@@ -162,21 +162,27 @@ def checked_under_lock(root: Path, world_id: str, database_rows: list[dict]) -> 
 
 
 @contextmanager
-def material_request_guard(driver, world_id: str, request_ids: list[str] | None = None):
+def material_request_guard(
+    driver, world_id: str, request_ids: list[str] | None = None, *, due_at: datetime | None = None
+):
     """Serialize material Request work with canonical erasure, before any World lock.
 
     Request source identities are immutable. A claim supplies its exact candidate ids;
     a pass supplies its frozen input ids. Ordinary nonmaterial Requests need no ledger.
+    Only start preflight supplies due_at; completed or deferred material is not its work.
     The caller keeps this context through its read or writer transaction.
     """
     from grove.store.query import WorldQuery
+    from grove.writer.requests import _DUE
 
     query = WorldQuery(driver, world_id)
+    due_filter = " AND (" + _DUE + ")" if due_at is not None else ""
     material = query.read(
         "MATCH (r:Request), (s:Source) WHERE r.source_id = s.id "
         "AND s.parser_version = 'material.note.v1' "
-        "AND ($ids IS NULL OR r.id IN $ids) RETURN r.id AS id LIMIT 1",
+        "AND ($ids IS NULL OR r.id IN $ids)" + due_filter + " RETURN r.id AS id LIMIT 1",
         ids=request_ids,
+        now=due_at,
     )
     if not material:
         yield
