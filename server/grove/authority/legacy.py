@@ -37,6 +37,11 @@ DELETE_KEYS = MappingProxyType(
             "contradictions questions checks audit_runs findings curator_legwork".split(),
             (frozenset({"id"}),),
         ),
+        "material_revisions": (
+            frozenset({"id"}),
+            frozenset({"material_id", "revision"}),
+            frozenset({"request_key_hash"}),
+        ),
         "links": (frozenset({"id"}), frozenset({"active_key"})),
         "kinds": (frozenset({"id"}), frozenset({"name"})),
         "meanings": (frozenset({"id"}), frozenset({"name"})),
@@ -102,9 +107,13 @@ _DELETE = _object(
     {
         "table": _S,
         "key": _object(
-            dict.fromkeys(
-                set().union(*(keys for variants in DELETE_KEYS.values() for keys in variants)), _S
-            ),
+            {
+                **dict.fromkeys(
+                    set().union(*(keys for variants in DELETE_KEYS.values() for keys in variants)),
+                    _S,
+                ),
+                "revision": _N,
+            },
             (),
         ),
     }
@@ -419,8 +428,12 @@ def _validate_plan(plan):
             or frozenset(part["key"]) not in DELETE_KEYS[part["table"]]
         ):
             refuse("unknown_field")
-        for value in part["key"].values():
-            _identifier(value)
+        for key, value in part["key"].items():
+            if part["table"] == "material_revisions" and key == "revision":
+                if type(value) is not int or not 1 <= value <= 2**31 - 1:
+                    refuse("scalar")
+            else:
+                _identifier(value)
     for key in ("history_fields", "item_fields", "evidence_values"):
         allowed = {"active", "end_reason", "ended_at"} if key == "evidence_values" else ITEM_FIELDS
         for part in plan[key]:
@@ -511,7 +524,7 @@ def _row(parser, world_id):
     _identifier(row["id"])
     if row.get("world_id", world_id) != world_id:
         refuse("identity")
-    if row["target_type"] not in {"item", "field_value", "named_value", "source_span"}:
+    if row["target_type"] not in {"item", "field_value", "named_value", "source_span", "material"}:
         refuse("unsupported_variant")
     _date(row.get("approved_at"), instant=True)
     _date(row.get("backups_clear_after"))

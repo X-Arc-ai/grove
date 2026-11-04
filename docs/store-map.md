@@ -2548,3 +2548,11 @@ Inactive immutable irreversible approval-use facts, at most 32768 rows per world
 | `grove_value_index` | `Item`, `Alias`, `HistoryValue`, `Kind`, `Meaning`, `PropertyName`, `RunRecord` | `world_id`, `title`, `summary`, `body`, `property_values`, `search_terms`, `phrase`, `normalised_phrase`, `value`, `name`, `proposed_operations` | `standard-folding` |
 
 <!-- generated:end -->
+
+## Material revision metadata
+
+Migration 0019 adds `MaterialRevision`, a World-scoped snapshot table. It stores only closed
+codes, IDs, SHA-256 values, counts and receipt instants. The title is a screened Source with
+`material.title.v1`; this parser cannot supply evidence. Body Sources are separate. Revisions
+retain the original key hash after deletion to prevent resurrection. Logical restores validate
+same-World references and revision order, then replay the latest external forget ledger.

@@ -305,3 +305,16 @@ Explicit typed selectors match whole message keys. Full-batch validation include
 nonmatches, duplicates, Unicode, a 1,000-row limit and a 4,000,000-byte canonical record
 limit. Only this budget view serializes `at` as null or canonical UTC seconds; it does not
 change Source JSON. These helpers do not authenticate intent or perform erasure.
+
+## Browser materials
+
+`/v1/materials` provides session-only file and note retention. Supported files are UTF-8 text,
+Markdown, textual PDF, DOCX and PPTX. Readers reject unsupported embedded content instead of
+silently omitting it. Titles and body text pass the mandatory upload Screener before storage.
+Original binaries are never retained. File timestamps and authors remain unknown; the source
+facts retain the original digest and byte, page or office block positions. Files have no Request
+and report `held_provenance` until the typed admission prerequisite is complete.
+
+A note uses the actual submission instant and person source classification. Its body enters one
+ordinary Request and one Episode in the same transaction as the material revision. Edits create
+new submissions. Deletion erases every revision through the ordinary D14 approval and ledger.

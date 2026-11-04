@@ -38,6 +38,7 @@ from grove.store.query import WorldQuery
 from grove.store.scope import check_world_id
 from grove.writer import BatchDeclined, apply_batch, apply_request, finish_request
 from grove.writer import runs as run_rows
+from grove.writer.forget_ledger import LedgerUnavailable
 from grove.writer.receipts import Receipt, render_receipt
 from grove.writer.requests import check_request_id
 
@@ -140,6 +141,8 @@ async def runner_start(request: Request, auth: Service) -> JSONResponse:
             )
         except PassBusy:
             return "busy"
+        except LedgerUnavailable:
+            raise unavailable("the material ledger requires recovery") from None
 
     grant = await run_in_threadpool(start)
     if grant == "busy":
@@ -185,6 +188,8 @@ def brain_pass(request: Request, live: Pass) -> dict[str, Any]:
         return brain.pass_input(request.app.state.driver, live.world_id, live.record)
     except PacketTooLarge as refused:
         raise unavailable(str(refused)) from None
+    except LedgerUnavailable:
+        raise unavailable("the material ledger requires recovery") from None
 
 
 def _curator_guard(live: LivePass) -> None:
@@ -326,6 +331,8 @@ async def brain_propose(request: Request, live: Pass) -> JSONResponse:
             _still_held(driver, live, own)
             try:
                 state = apply_request(driver, live.world_id, caller, own, batch, run_id=run_id)
+            except LedgerUnavailable:
+                raise unavailable("the material ledger requires recovery") from None
             except BatchDeclined as error:
                 run_rows.note_proposal(
                     driver,
@@ -410,6 +417,8 @@ async def brain_finish(request: Request, live: Pass) -> dict[str, Any]:
             )
         except BatchDeclined as error:
             raise ApiError(409, "invalid_arguments", error.refusals[0].message) from None
+        except LedgerUnavailable:
+            raise unavailable("the material ledger requires recovery") from None
         return state.to_api()
 
     return await run_in_threadpool(finish)

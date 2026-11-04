@@ -314,3 +314,41 @@ def test_internal_tuple_whitelist_is_exact_and_matches_locator_variant():
             check_text_transport(identity, facts(), None)
     with pytest.raises(ValueError):
         check_text_transport(WHATSAPP_TEXT, facts(), None)
+
+
+def test_material_office_facts_roundtrip_and_legacy_bytes_unchanged():
+    import json
+    from dataclasses import asdict
+
+    from grove.source_facts import SourceLocator, SourceTimeFacts, TextSourceFacts
+
+    for locator in (
+        SourceLocator("block", block=1),
+        SourceLocator("slide_block", block=2, slide=1),
+    ):
+        facts = TextSourceFacts("a" * 64, locator, SourceTimeFacts("absent"))
+        assert TextSourceFacts.from_json(facts.canonical_json()) == facts
+    facts = TextSourceFacts(
+        "b" * 64, SourceLocator("bytes", byte_start=0, byte_end=10), SourceTimeFacts("absent")
+    )
+    row = asdict(facts)
+    del row["locator"]["block"]
+    del row["locator"]["slide"]
+    assert facts.canonical_json() == json.dumps(
+        row, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+
+
+def test_material_locator_nonobject_is_a_controlled_refusal():
+    import json
+
+    import pytest
+
+    from grove.source_facts import SourceLocator, SourceTimeFacts, TextSourceFacts
+
+    row = TextSourceFacts(
+        "a" * 64, SourceLocator("block", block=1), SourceTimeFacts("absent")
+    ).as_row()
+    row["locator"] = []
+    with pytest.raises(ValueError):
+        TextSourceFacts.from_json(json.dumps(row))

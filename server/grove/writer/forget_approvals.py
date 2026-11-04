@@ -65,6 +65,13 @@ def validate_target(target: Any) -> dict[str, Any]:
             and len(value) <= 512
             and not any(ord(char) < 32 or 0xD800 <= ord(char) <= 0xDFFF for char in value)
         )
+    elif kind == "material":
+        valid = (
+            keys == {"type", "material_id", "revision"}
+            and _opaque(target.get("material_id"))
+            and type(target.get("revision")) is int
+            and 1 <= target["revision"] <= 2**31 - 1
+        )
     elif kind == "source_span":
         locator = target.get("locator")
         valid = (
@@ -114,7 +121,15 @@ class MintedApproval:
     expires_at: datetime
 
 
-def mint_approval(driver: Driver, world_id: str, actor: str, target: Any) -> MintedApproval:
+def mint_approval(
+    driver: Driver,
+    world_id: str,
+    actor: str,
+    target: Any,
+    *,
+    material_session=None,
+    session_hash=None,
+) -> MintedApproval:
     digest = target_digest(target)
     token = "gfa_" + secrets.token_urlsafe(32)
     now = clock.now(world_id)
@@ -130,9 +145,29 @@ def mint_approval(driver: Driver, world_id: str, actor: str, target: Any) -> Min
     def work(tx: WorldTx) -> None:
         tx.lock_world()
         _require_owner(tx, actor)
+        if target.get("type") == "material":
+            from grove.writer.materials import check_revision, check_session
+
+            if material_session is None or session_hash is None:
+                raise _refused()
+            check_session(tx, material_session, session_hash)
+            check_revision(tx, target)
         tx.run("CREATE (a:ForgetApproval) SET a += $row", row=row)
 
-    WorldWriter(driver, world_id).transaction(work)
+    if target.get("type") == "material":
+        from grove.writer.forget_ledger import checked_under_lock, locked_ledger
+
+        with locked_ledger(None) as root:
+
+            def checked_work(tx):
+                checked_under_lock(
+                    root, world_id, [r["f"] for r in tx.run("MATCH (f:ForgetLedger) RETURN f")]
+                )
+                work(tx)
+
+            WorldWriter(driver, world_id).transaction(checked_work)
+    else:
+        WorldWriter(driver, world_id).transaction(work)
     return MintedApproval(row["id"], token, row["expires_at"])
 
 

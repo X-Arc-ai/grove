@@ -38,6 +38,15 @@ On a shared development machine, coordinate the test window and use the configur
 test lock. If the lock is busy, stop rather than queue.
 Do not install dependencies, start another store, or run a broad suite during another task's window.
 
+## Materials and release evidence
+
+The 2026-11-04 19:04 UTC source snapshot includes PR #61 materials and PR #63 source helpers.
+Document checks do not execute material routes or prove runtime acceptance. Preserve the
+`held_provenance` file boundary, ordinary note Requests, and the canonical external ledger contract.
+A materials release requires migration `0019_material_revisions.cypher` and coordinated API/runner
+source. Keep that release separate from the recorded PR60 API and Request19 closure.
+See [the material boundary](docs/architecture.md#browser-material-boundary).
+
 ## Review and provenance
 
 Every repaired defect needs a regression test in the same PR. Preserve the original failure
