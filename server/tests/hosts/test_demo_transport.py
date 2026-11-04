@@ -93,14 +93,19 @@ def test_real_mcp_store_saved_receipt_and_recall(driver, demo, hosts_plant):
         result = queued.json()["result"]["structuredContent"]
         assert result["state"] == "saving"
         context = ToolContext(
-            driver, demo.world_id, demo.user_id, token.client_id,
-            frozenset({"grove.read", "grove.write"}), token.grant_id,
+            driver,
+            demo.world_id,
+            demo.user_id,
+            token.client_id,
+            frozenset({"grove.read", "grove.write"}),
+            token.grant_id,
         )
         complete(context, result["request_id"], title=DEMO_TEXT)
         saved = web.post("/mcp", json=call, headers=bearer(token.access))
         assert saved.json()["result"]["structuredContent"]["state"] == "saved"
         recalled = web.post(
-            "/mcp", json=rpc("tools/call", {"name": "recall", "arguments": {"about": "Cedar"}}),
+            "/mcp",
+            json=rpc("tools/call", {"name": "recall", "arguments": {"about": "Cedar"}}),
             headers=bearer(token.access),
         )
         packet = recalled.json()["result"]["structuredContent"]
@@ -142,9 +147,7 @@ def test_release_guard_covers_final_asgi_body_in_another_process(driver, demo, h
 
     def revoke():
         entered.set()
-        return revoke_grant(
-            driver, grant_id=token.grant_id, world_id=demo.world_id, at=clock.now()
-        )
+        return revoke_grant(driver, grant_id=token.grant_id, world_id=demo.world_id, at=clock.now())
 
     async def run():
         sent = []
@@ -325,8 +328,13 @@ def test_designated_world_refuses_connection_sync(driver, demo):
 
 def test_connection_authorization_refuses_but_safe_cleanup_remains(driver, demo, hosts_plant):
     held = plant_node(
-        driver, demo.world_id, "Connector", provider="git", connection_status="connected",
-        sync_owner="old-reader", credential_ciphertext="sealed-fixture",
+        driver,
+        demo.world_id,
+        "Connector",
+        provider="git",
+        connection_status="connected",
+        sync_owner="old-reader",
+        credential_ciphertext="sealed-fixture",
     )["id"]
     with pytest.raises(InvalidRecord):
         consume_state(driver, demo.world_id, held, "fixture-state")
