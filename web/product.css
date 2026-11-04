@@ -239,3 +239,7 @@ body.gp-logout-open #canvas,body.gp-logout-open #gp-motion { visibility:hidden }
 
 /* The phone tour keeps the live worker panel below its explanatory card. */
 @media(max-width:700px){body.gp-tour-workers.hood-on aside.hood-score.hood-live{top:var(--grove-tour-card-bottom,270px)}}
+
+/* Keep completed Claude progress visible while the other setup steps continue. */
+.gp-source-choice[data-source-choice="claude"].is-added:not(.is-learning) .gp-source-check{background:#16a34a;color:#fff}
+.gp-complete-check{display:grid;place-items:center;position:absolute;right:-2px;bottom:-1px;width:17px;height:17px;border:1px solid var(--bg);border-radius:50%;background:#16a34a;color:#fff;font:600 11px/1 var(--gp-font)}
