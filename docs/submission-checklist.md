@@ -35,7 +35,8 @@ with no file Request. Notes use ordinary Requests; deployed material acceptance 
 
 ## Rehearse only when the paused manual flow is released
 
-The manual account/Muse flow remains stopped. Real prepared-account Muse use remains **NOT RUN**.
+At the dated snapshot, real prepared-account Muse use was **NOT RUN**.
+The [later Muse update](submission-status.md#prepared-account-muse-update) records the run.
 A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC:
 one source, one episode, and two kept messages; the exact repeat added zero new records.
 The upload did not change the graph. This dated upload result does not complete the rehearsal below.

@@ -79,6 +79,23 @@ def test_current_release_docs_distinguish_general_tools_from_restricted_demo():
     ).read_text()
 
 
+def test_documents_agree_with_the_readme_on_prepared_account_muse():
+    """The README says Muse runs on the prepared account, so no document may deny it now."""
+    assert "Runs on the prepared account" in (ROOT / "README.md").read_text()
+    status = (ROOT / "docs/submission-status.md").read_text()
+    assert "## Prepared-account Muse update" in status
+    assert "This repository holds no receipt for that run." in status
+    for relative in (
+        "HACKATHON.md",
+        "docs/architecture.md",
+        "docs/submission-checklist.md",
+        "docs/submission-status.md",
+    ):
+        text = " ".join((ROOT / relative).read_text().split())
+        assert "prepared-account Muse use remains" not in text, relative
+        assert "#prepared-account-muse-update" in text, relative
+
+
 def test_readme_states_the_event_dates_not_the_commit_dates():
     """The event dates come from the participant guide, not the first and last commit."""
     text = " ".join((ROOT / "README.md").read_text().split())
