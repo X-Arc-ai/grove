@@ -374,6 +374,10 @@ def _write_evidence(
         )
         run.created_evidence.append(row)
         written.append(plan.id)
+    if written and target_type == "belief":
+        from grove.writer.beliefs import evidence_changed
+
+        evidence_changed(run, target_id, reason_id)
     if written:
         run.recompute[target_id] = "link" if target_type == "link" else "item"
     return written
@@ -647,7 +651,13 @@ def _record_pairs(
 
 def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     registry = run.registry
-    kind = registry.resolve_kind(op["kind"])
+    kind = (
+        registry.kind(KIND_BELIEF)
+        if op["kind"] == KIND_BELIEF and run.cache.get("belief_internal")
+        else registry.resolve_kind(op["kind"])
+    )
+    if kind["id"] == KIND_BELIEF and not run.cache.get("belief_internal"):
+        raise Refused("invalid_arguments", "belief_transition", "use mint_belief for a belief", {})
     run.summaries[index] = f"item {op.get('temp_id') or '(new)'} ({kind['name']})"
     became = parse_clock(op["became_true"])
     status = role = None
@@ -677,7 +687,11 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
                 f"kind {kind['name']!r} requires {name}",
                 {"field": name},
             )
-    pairs, overridden = _near_duplicates(run, kind, op["title"], op.get("distinct_from") or [])
+    pairs, overridden = (
+        ([], [])
+        if kind["id"] == KIND_BELIEF
+        else _near_duplicates(run, kind, op["title"], op.get("distinct_from") or [])
+    )
     stopped = None
     if role in TERMINAL_ROLES:
         # A terminal status at create carries its end time: no later than the evidence.
@@ -724,7 +738,9 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         reason_id=reason_id,
         evidence_id=provenance,
     )
-    created = _write_evidence(run, plans, "item", item_id, reason_id)
+    created = _write_evidence(
+        run, plans, "belief" if kind["id"] == KIND_BELIEF else "item", item_id, reason_id
+    )
     ontology.note_written(
         run,
         item_id,
@@ -751,6 +767,8 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     item_id = run.ref(op["item"], "item")
     run.summaries[index] = f"item {run.label(op['item'])}"
     item = _lock_item(run, item_id)
+    if item.get("kind") == KIND_BELIEF:
+        raise Refused("invalid_arguments", "belief_transition", "use the belief operations", {})
     kind = run.registry.kind(item["kind"])
     _check_version(op, item)
     fields = op["fields"]
@@ -862,7 +880,9 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             run.changed_claims.add(item_id)
     else:
         reason_id = run.text(op["reason"])
-    created = _write_evidence(run, plans, "item", item_id, reason_id)
+    created = _write_evidence(
+        run, plans, "belief" if kind["id"] == KIND_BELIEF else "item", item_id, reason_id
+    )
     if any(name == "properties" for name, *_ in changes):
         ontology.note_written(run, item_id, item["kind"], written, created)
     run.touch(item_id, index)
@@ -983,6 +1003,8 @@ def _change_status(run: _Run, index: int, op: dict[str, Any]) -> None:
     item_id = run.ref(op["item"], "item")
     run.summaries[index] = f"item {run.label(op['item'])}"
     item = _lock_item(run, item_id)
+    if item.get("kind") == KIND_BELIEF:
+        raise Refused("invalid_arguments", "belief_transition", "use the belief operations", {})
     kind = run.registry.kind(item["kind"])
     _check_version(op, item)
     _not_a_record(kind, "a record has no status")
@@ -1076,6 +1098,8 @@ def _end_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     item_id = run.ref(op["item"], "item")
     run.summaries[index] = f"item {run.label(op['item'])}"
     item = _lock_item(run, item_id)
+    if item.get("kind") == KIND_BELIEF:
+        raise Refused("invalid_arguments", "belief_transition", "use the belief operations", {})
     kind = run.registry.kind(item["kind"])
     _check_version(op, item)
     _not_a_record(kind, "a record is retired or refuted, never ended")
@@ -1107,6 +1131,8 @@ def _reopen_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     item_id = run.ref(op["item"], "item")
     run.summaries[index] = f"item {run.label(op['item'])}"
     item = _lock_item(run, item_id)
+    if item.get("kind") == KIND_BELIEF:
+        raise Refused("invalid_arguments", "belief_transition", "use the belief operations", {})
     kind = run.registry.kind(item["kind"])
     _check_version(op, item)
     _not_a_record(kind, "a record is not reopened")
@@ -1438,7 +1464,8 @@ def _judgments(run: _Run, judgment_ids: list[str]) -> list[dict[str, Any]]:
         "MATCH (j:Judgment) WHERE j.id IN $ids "
         "OPTIONAL MATCH (c:ModelCall {id: j.model_call_id}) "
         "RETURN j.id AS id, j.verdict AS verdict, c.model AS model, j.subject AS subject, "
-        "j.role AS role, j.evidence_id AS evidence_id",
+        "j.role AS role, j.evidence_id AS evidence_id, j.model_call_id AS model_call_id, "
+        "j.correlated AS correlated, j.source_id AS source_id, j.locator AS locator, j.at AS at",
         ids=judgment_ids,
     )
     found = {row["id"]: row for row in rows}
@@ -1497,30 +1524,9 @@ def _judged_this(
 
 
 def _two_judges(judgments: list[dict[str, Any]]) -> None:
-    """D9: a row that contradicts a belief needs two recorded judges, of two models, agreeing."""
-    models = {row["model"] for row in judgments if row["model"]}
-    if len(judgments) < 2 or len(models) < 2:
-        raise Refused(
-            "second_judge_required",
-            "two_models",
-            "a contradiction of a belief cites two recorded judgments from two models",
-            {},
-        )
-    verdicts = {row["verdict"] for row in judgments}
-    if len(verdicts) > 1:
-        raise Refused(
-            "judges_disagree",
-            "judges_disagree",
-            "the two judges disagree: open a contradiction instead",
-            {"verdicts": sorted(v for v in verdicts if v)},
-        )
-    if verdicts != {"contradicts"}:
-        raise Refused(
-            "judge_not_supports",
-            "judge_not_contradicts",
-            "the judges do not say the row contradicts the belief",
-            {"verdicts": sorted(v for v in verdicts if v)},
-        )
+    from grove.writer.beliefs import _judge_pair
+
+    _judge_pair(judgments, "contradicts")
 
 
 def _attach_evidence(run: _Run, index: int, op: dict[str, Any]) -> None:
@@ -1540,6 +1546,13 @@ def _attach_evidence(run: _Run, index: int, op: dict[str, Any]) -> None:
     if target_type == "belief" and op["polarity"] == "contradicts":
         _judged_this(run, judgments, target_id, op.get("evidence_id"))
         _two_judges(judgments)
+        from grove.writer.verify import _matches
+
+        if any(not _matches(judge, op.get("evidence_id"), plans[0].columns) for judge in judgments):
+            raise Refused(
+                "unrecorded_verdict", "judgment_evidence", "the judge read another source", {}
+            )
+        plans[0].columns = {**plans[0].columns, "judgment_ids": sorted(set(op["judgment_ids"]))}
     _settle(run, plans, target_id)
     if all(plan.known for plan in plans):
         # The row is in the store already: a reason text would be a value no entry names.
@@ -1566,6 +1579,10 @@ def _end_evidence(run: _Run, index: int, op: dict[str, Any]) -> None:
         evidence_id=evidence_id,
     )
     run.recompute[row["target_id"]] = "link" if row.get("target_type") == "link" else "item"
+    if row.get("target_type") == "belief":
+        from grove.writer.beliefs import evidence_changed
+
+        evidence_changed(run, row["target_id"], reason_id)
 
 
 _HANDLERS = {
@@ -1719,6 +1736,9 @@ def _recompute(run: _Run, target_id: str, target_type: str) -> None:
         fields = {key: fields[key] for key in ("derived_source_type", "derivation")}
         run.tx.run(_SET_LINK, id=target_id, columns=fields)
     else:
+        items = run.tx.run(_READ_ITEM, id=target_id)
+        if items and items[0]["i"].get("kind") == KIND_BELIEF:
+            fields.update(derivation="inferred", speaker="automated")
         run.tx.run(_SET_ITEM, id=target_id, columns=fields)
 
 
@@ -1818,6 +1838,9 @@ def _finish(run: _Run, ops: list[Any]) -> None:
         for target_id, target_type in run.recompute.items():
             _recompute(run, target_id, target_type)
         ontology.count_usage(run)
+        from grove.writer.beliefs import queue_support_changes
+
+        queue_support_changes(run)
 
 
 def apply_ops(
@@ -1836,10 +1859,13 @@ def apply_ops(
     apply_batch passes before_commit=False and calls the seam itself, after the request's
     `saved`, so a kill there leaves both written and nothing committed."""
     # The composite operations import this module, so they join the table at the first batch.
+    from grove.writer.beliefs import HANDLERS as BELIEFS
     from grove.writer.composite import HANDLERS as COMPOSITE
 
-    handlers = {**_HANDLERS, **COMPOSITE}
+    handlers = {**_HANDLERS, **COMPOSITE, **BELIEFS}
     run = _Run(tx, stamp, observations, caller_kind)
+    run.cache["all_ops"] = ops
+    run.cache["done_ops"] = {}
     for index, op in enumerate(ops):
         if index in pre_refused:
             run.refused[index] = pre_refused[index]
@@ -1851,6 +1877,7 @@ def apply_ops(
                 if temp in run.declined_temps:
                     raise _depends(temp)
             handlers[op["op"]](run, index, op)
+            run.cache["done_ops"][op["op_id"]] = op
         except Refused as refused:
             run.refuse(index, op, refused)
     _finish(run, ops)
