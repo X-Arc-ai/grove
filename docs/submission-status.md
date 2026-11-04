@@ -2,8 +2,15 @@
 
 Documentation release snapshot: 2026-11-04 at 20:06:46 UTC. Repository: **PRIVATE**.
 This package records accepted source and dated release evidence. It does not report a new
-host check, complete product acceptance, or external submission. The manual account/Muse flow
-remains stopped. Real prepared-account Muse use remains **NOT RUN**.
+host check, complete product acceptance, or external submission. At this snapshot, the manual
+account/Muse flow was stopped and real prepared-account Muse use was **NOT RUN**. The
+[later Muse update](#prepared-account-muse-update) replaces that state.
+
+## Prepared-account Muse update
+
+After the snapshot above, the team confirmed on 2026-11-04 that Muse ran against the prepared
+account and answered from Grove. This repository holds no receipt for that run. The dated records
+below stay as written, and each one states what was true at its own time.
 
 ## Source and deployed revisions
 
@@ -47,7 +54,7 @@ A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC. It retained
 one source, one episode, and two kept messages. The exact repeat added zero new records.
 The upload did not change the graph. This proves that import and duplicate handling for
 the tested archive and release, not graph extraction or real prepared-account Muse use.
-The manual account/Muse flow remains stopped and real prepared-account Muse use remains **NOT RUN**.
+At that time, the manual account/Muse flow was stopped and real prepared-account Muse use was **NOT RUN**.
 
 Materials and their deployment prerequisites are merged but not deployed. Operation A inventory
 returned **HOLD** with no mutation. Riverlight source is uncommitted and unverified, and it was
@@ -129,7 +136,7 @@ Historical Request17 recorded 24 public smoke checks, including 15 exact assets.
 These are historical receipt values, not fresh counts. The complete 40-story corpus remains
 incomplete. Four richer topics passed an earlier backend read; Pebble remains INCOMPLETE.
 The Request18 diagnosis did not repeat corpus, core-data, or public-route proof.
-The natural Muse questions and automatic Grove use remain unverified. Backend recall is not a Muse rehearsal.
+At that time, the natural Muse questions and automatic Grove use were unverified. Backend recall is not a Muse rehearsal.
 
 ## Capability boundaries
 
