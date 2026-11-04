@@ -64,6 +64,7 @@ _NETWORK = re.compile(r"[a-zA-Z0-9_.-]{1,128}")
 _LOG_PREFIX = "${config:server.directories.logs}"
 _DELAYED_LOG_PREFIX = "$" + _LOG_PREFIX
 _ROTATION_BASENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.%(?:0?[1-9][0-9]?)?i")
+_LOG_TARGET_KINDS = {"filename": "fileName", "filepattern": "filePattern"}
 _INSPECT = (
     '{"id":{{json .Id}},"image":{{json .Config.Image}},'
     '"image_id":{{json .Image}},"networks":{{json .NetworkSettings.Networks}},'
@@ -770,12 +771,12 @@ class Drill:
             for element in config.iter():
                 # File names and rotation patterns must resolve under measured logs.
                 candidates = [
-                    (key, element.attrib[key])
-                    for key in ("fileName", "filePattern")
-                    if key in element.attrib
+                    (kind, value)
+                    for key, value in element.attrib.items()
+                    if (kind := _LOG_TARGET_KINDS.get(key.rsplit("}", 1)[-1].lower()))
                 ]
-                if element.tag.lower() in {"filename", "filepattern"} and element.text:
-                    kind = "fileName" if element.tag.lower() == "filename" else "filePattern"
+                kind = _LOG_TARGET_KINDS.get(element.tag.rsplit("}", 1)[-1].lower())
+                if kind and element.text:
                     candidates.append((kind, element.text))
                 for attribute, candidate in candidates:
                     self._check_log_target(

@@ -1226,3 +1226,55 @@ def test_invalid_log_xml_never_skips_target_measurement(log_service, content):
     with pytest.raises(Refused, match="^service_log_config_unmeasured$"):
         drill.discover_service_surfaces()
     assert not any(tag == "service_log_identity" for tag, _ in calls)
+
+
+@pytest.mark.parametrize("config_index", [0, 1])
+@pytest.mark.parametrize("kind", ["fileName", "filePattern"])
+@pytest.mark.parametrize("form", ["attribute_case", "element_namespace"])
+@pytest.mark.parametrize("accepted", [False, True])
+def test_every_recognized_xml_target_is_checked(log_service, config_index, kind, form, accepted):
+    drill, configs, calls, record = log_service
+    target = ("/logs/" if accepted else "/outside/") + "synthetic.log"
+    if kind == "filePattern":
+        target = (
+            "$${config:server.directories.logs}/synthetic.log.%02i"
+            if accepted
+            else target + ".%02i"
+        )
+    layout = '<PatternLayout pattern="%m%n"/>'
+    policies = '<Policies><SizeBasedTriggeringPolicy size="1 MB"/></Policies>'
+    tag = "File" if kind == "fileName" else "RollingFile"
+    companion = "" if kind == "fileName" else ' fileName="/logs/synthetic.log"'
+    tail = layout + ("" if kind == "fileName" else policies)
+    if form == "attribute_case":
+        later = f'<{tag} name="later"{companion} {kind.lower()}="{target}">{tail}</{tag}>'
+        namespace = ""
+    else:
+        later = f'<{tag} name="later"{companion}><{kind}>{target}</{kind}>{tail}</{tag}>'
+        namespace = ' xmlns="https://logging.apache.org/xml/ns"'
+    good = '<File name="first" fileName="/logs/safe.log">' + layout + "</File>"
+    configs[:] = ["<Configuration><Appenders>" + good + "</Appenders></Configuration>"] * 2
+    configs[config_index] = (
+        "<Configuration"
+        + namespace
+        + "><Appenders>"
+        + good
+        + later
+        + '</Appenders><Loggers><Root level="info"><AppenderRef ref="later"/></Root>'
+        + "</Loggers></Configuration>"
+    )
+    if accepted:
+        drill.discover_service_surfaces()
+        assert calls[-1][0] == "service_log_identity"
+        assert drill.docker_log == Path(record["log"])
+    else:
+        with pytest.raises(Refused, match="^service_log_path_unmeasured$"):
+            drill.discover_service_surfaces()
+        assert not any(tag == "service_log_identity" for tag, _ in calls)
+        assert drill.log_target_context == {
+            "configuration": "server" if config_index == 0 else "user",
+            "attribute": kind,
+            "candidate_index": 1 if kind == "fileName" else 2,
+            "token_form": "absolute",
+            "failed_predicate": "outside_logs",
+        }
