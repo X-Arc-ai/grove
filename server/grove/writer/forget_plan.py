@@ -18,6 +18,7 @@ from typing import Any
 from uuid import UUID
 
 from grove.store.catalogue import TABLES, table
+from grove.store.material_snapshot import material_counts
 from grove.store.normalise import normalise_phrase
 from grove.store.replay import FORGOTTEN_MARKER, ReplayRefused
 from grove.writer.errors import InvalidRecord
@@ -1058,23 +1059,17 @@ def transform(inventory: dict, plan: dict, at: datetime) -> tuple[dict, dict]:
             existing.clear()
             existing.update(desired)
             counts["support_changed"] += 1
-    forgotten_sources = {
-        r["id"] for r in result.get("sources", []) if r.get("forget_state") == "forgotten"
-    }
+    material_sources = {r["id"]: r for r in result.get("sources", [])}
     for row in result.get("material_revisions", []):
-        refs = {row["title_source_id"], *row.get("source_ids", [])}
-        if (
-            locator_key("material:" + row["material_id"]) in plan["locators"]
-            or refs <= forgotten_sources
-        ):
-            if row.get("state") != "deleted":
-                row.update(
-                    state="deleted",
-                    part_count=0,
-                    retained_characters=0,
-                    held_count=0,
-                    version=row.get("version", 0) + 1,
-                    touched_at=at,
-                )
-                counts["material_revisions"] += 1
+        # A source-span erasure does not erase its material family or sibling Sources.
+        # Keep immutable references and revision order; counts follow retained messages.
+        desired = (
+            {"state": "deleted", "part_count": 0, "retained_characters": 0, "held_count": 0}
+            if row["state"] == "deleted"
+            or locator_key("material:" + row["material_id"]) in plan["locators"]
+            else material_counts(row, material_sources)
+        )
+        if any(row.get(key) != value for key, value in desired.items()):
+            row.update(desired, version=row.get("version", 0) + 1, touched_at=at)
+            counts["material_revisions"] += 1
     return result, dict(counts)

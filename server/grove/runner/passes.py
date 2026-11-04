@@ -32,6 +32,7 @@ from grove.store.query import PlatformQuery, WorldQuery
 from grove.writer import Caller, claim_next_request, fail_request, record_episode
 from grove.writer import runs as run_rows
 from grove.writer.clocks import parse_instant
+from grove.writer.forget_ledger import LedgerUnavailable, material_request_guard
 from grove.writer.requests import LEASE_SECONDS
 
 # Appendix C line 3269: ten changed items since the Connector's last pass, or a new contradiction.
@@ -295,6 +296,11 @@ def start_pass(
         raise ValueError("unknown agent")
     if agent != "learner" and is_demo_world(driver, world_id):
         return None
+    if agent == "learner":
+        # Refuse an already pending intent before creating a run or issuing tokens.
+        # Each claim repeats the check under the ledger lock through its World transaction.
+        with material_request_guard(driver, world_id):
+            pass
     catalog = load_catalog()
     _, job = AGENTS[agent]
     job_spec = catalog.job(job)
@@ -319,14 +325,29 @@ def start_pass(
     job_id: str | None = None
     if agent == "learner":
         caller = caller_for(agent)
-        for _ in range(settings.learner_requests):
-            claimed = claim_next_request(
-                driver, world_id, caller, worker=run_id, lease_seconds=settings.lease_seconds
+        try:
+            for _ in range(settings.learner_requests):
+                claimed = claim_next_request(
+                    driver, world_id, caller, worker=run_id, lease_seconds=settings.lease_seconds
+                )
+                if claimed is None:
+                    break
+                input_ids.append(claimed.id)
+                _ensure_episode(driver, world_id, claimed.source_id, run_id, started["started"])
+        except LedgerUnavailable:
+            # A deletion can start after the preflight. Keep Requests recoverable and
+            # end this unissued run as a failure, never as a successful empty pass.
+            run_rows.set_run_inputs(driver, world_id, run_id, input_ids)
+            run_rows.finish_run(
+                driver,
+                world_id,
+                run_id,
+                outcome="failed",
+                tokens_in=0,
+                tokens_cached=0,
+                tokens_out=0,
             )
-            if claimed is None:
-                break
-            input_ids.append(claimed.id)
-            _ensure_episode(driver, world_id, claimed.source_id, run_id, started["started"])
+            raise
     else:
         claimed_job = run_rows.claim_job(driver, world_id, agent=agent, worker=run_id)
         if claimed_job is not None:

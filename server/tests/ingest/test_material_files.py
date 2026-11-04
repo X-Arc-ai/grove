@@ -2,6 +2,11 @@
 
 import pytest
 
+from tests.views import test_materials_api
+
+material_world = test_materials_api.material_world
+material_client = test_materials_api.material_client
+
 
 def test_text_material_retains_exact_unknown_provenance():
     from grove.ingest.material_files import parse_file
@@ -154,3 +159,107 @@ def test_office_xml_depth_is_bounded():
     data = office([("word/document.xml", "<x>" * 65 + "<p><t>Text</t></p>" + "</x>" * 65)])
     with pytest.raises(MaterialInvalid):
         parse_file(data, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+
+
+def template_presentation(layout="", master="", *, placeholder=False):
+    """A slide linked to a layout and master, with distinct visible text."""
+    rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+    def shape(text):
+        marker = "<p:ph type='title'/>" if placeholder else ""
+        return (
+            "<p:sp><p:nvSpPr><p:cNvPr id='2' name='Text'/><p:cNvSpPr/>"
+            f"<p:nvPr>{marker}</p:nvPr></p:nvSpPr><p:spPr/>"
+            f"<p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>{text}</a:t>"
+            "</a:r></a:p></p:txBody></p:sp>"
+        )
+
+    def part(tag, text):
+        return (
+            f"<p:{tag} xmlns:p='http://schemas.openxmlformats.org/presentationml/2006/main' "
+            "xmlns:a='http://schemas.openxmlformats.org/drawingml/2006/main'>"
+            f"<p:cSld><p:spTree>{shape(text)}</p:spTree></p:cSld></p:{tag}>"
+        )
+
+    return office(
+        [
+            (
+                "ppt/presentation.xml",
+                f"<p:presentation xmlns:p='urn:p' xmlns:r='{rel}'>"
+                "<p:sldIdLst><p:sldId r:id='slide'/></p:sldIdLst></p:presentation>",
+            ),
+            (
+                "ppt/_rels/presentation.xml.rels",
+                "<Relationships><Relationship Id='slide' "
+                "Target='slides/slide1.xml'/></Relationships>",
+            ),
+            ("ppt/slides/slide1.xml", part("sld", "Quarterly plan")),
+            (
+                "ppt/slides/_rels/slide1.xml.rels",
+                "<Relationships><Relationship Id='layout' "
+                "Target='../slideLayouts/slideLayout1.xml'/></Relationships>",
+            ),
+            ("ppt/slideLayouts/slideLayout1.xml", part("sldLayout", layout)),
+            (
+                "ppt/slideLayouts/_rels/slideLayout1.xml.rels",
+                "<Relationships><Relationship "
+                "Id='master' Target='../slideMasters/slideMaster1.xml'/></Relationships>",
+            ),
+            ("ppt/slideMasters/slideMaster1.xml", part("sldMaster", master)),
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    "layout,master",
+    [
+        ("Gate opens at 09:00.", ""),
+        ("", "Meeting ends at 17:00."),
+        ("Gate opens at 09:00.", "Meeting ends at 17:00."),
+    ],
+)
+def test_pptx_static_template_text_refuses(layout, master):
+    from grove.ingest.material_files import MaterialInvalid, parse_file
+
+    with pytest.raises(MaterialInvalid, match="unsupported or unreadable"):
+        parse_file(
+            template_presentation(layout, master),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+
+
+@pytest.mark.parametrize("placeholder", [False, True])
+def test_pptx_empty_templates_and_placeholder_defaults_preserve_slide(placeholder):
+    from grove.ingest.material_files import parse_file
+
+    default = "Click to edit title" if placeholder else ""
+    parsed = parse_file(
+        template_presentation(default, default, placeholder=placeholder),
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
+    assert [part.text for part in parsed.parts] == ["Quarterly plan"]
+
+
+def test_pptx_static_template_http_refuses_before_retention(
+    driver, material_world, material_client
+):
+    from grove.store.query import WorldQuery
+
+    response = material_client.post(
+        "/v1/materials/files",
+        content=template_presentation("Gate opens at 09:00.", "Meeting ends at 17:00."),
+        headers={
+            "Content-Type": (
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            ),
+            "X-Grove-Filename": "plan.pptx",
+        },
+    )
+    assert response.status_code == 422
+    for label in ("MaterialRevision", "Source", "Request", "Episode"):
+        assert (
+            WorldQuery(driver, material_world[0].world_id).read(
+                f"MATCH (n:{label}) RETURN count(n) AS n"
+            )[0]["n"]
+            == 0
+        )
