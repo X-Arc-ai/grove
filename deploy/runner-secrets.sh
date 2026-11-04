@@ -15,6 +15,79 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/lib.sh"
 
 etc=${GROVE_ETC_DIR:-$GROVE_ETC}
+if [ "$#" -eq 1 ] && [ "$1" = --check ]; then
+    # Parse data, never shell code. No initializer path, chmod, or temporary file is reached.
+    # The caller holds the deploy lock. Inspect metadata before reading through the same fd.
+    python3 -I - "$etc" <<'PY'
+import hashlib
+import hmac
+import os
+import re
+import stat
+import sys
+
+
+def refuse(name):
+    print("runner_configuration_invalid " + name, file=sys.stderr)
+    sys.exit(1)
+
+
+def private(info, directory=False):
+    kind = stat.S_ISDIR if directory else stat.S_ISREG
+    return kind(info.st_mode) and info.st_uid == os.geteuid() and not info.st_mode & 0o077
+
+
+def read_value(folder, name, key):
+    try:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | getattr(os, "O_NOATIME", 0)
+        fd = os.open(name, flags, dir_fd=folder)
+        with os.fdopen(fd, "rb") as handle:
+            if not private(os.fstat(handle.fileno())):
+                refuse(name)
+            raw = handle.read(16385)
+        if len(raw) > 16384:
+            refuse(name)
+        values = []
+        for line in raw.decode("ascii").split("\n"):
+            line = line.removesuffix("\r")
+            if not line or line.startswith("#"):
+                continue
+            if not line.startswith(key + "="):
+                refuse(name)
+            values.append(line[len(key) + 1:])
+        if len(values) != 1:
+            refuse(name)
+        value = values[0]
+        # Preserve the initializer's plain-word rule; also exclude Compose interpolation
+        # and escapes, so the token bytes hashed here reach containers unchanged.
+        if not value.isprintable() or set(value) & set(" \"'#$\\") or len(value) < 32:
+            refuse(name)
+        return value
+    except (OSError, UnicodeError):
+        refuse(name)
+
+
+try:
+    directory = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    if not private(os.fstat(directory), directory=True):
+        refuse("configuration_directory")
+except OSError:
+    refuse("configuration_directory")
+try:
+    read_value(directory, "gateway.env", "GROVE_GATEWAY_SECRET")
+    token = read_value(directory, "runner.env", "GROVE_RUNNER_TOKEN")
+    digest = read_value(directory, "runner-auth.env", "GROVE_RUNNER_TOKEN_SHA256")
+    if re.fullmatch(r"[0-9a-f]{64}", digest) is None or not hmac.compare_digest(
+        hashlib.sha256(token.encode("ascii")).hexdigest(), digest
+    ):
+        refuse("runner-auth.env")
+finally:
+    os.close(directory)
+print("runner_configuration_ok")
+PY
+    exit "$?"
+fi
+[ "$#" -eq 0 ] || die "usage: runner-secrets.sh [--check]"
 [ -d "$etc" ] || die "$etc does not exist; run deploy/bootstrap.sh first"
 command -v python3 >/dev/null || die "python3 is not installed"
 umask 077
