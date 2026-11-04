@@ -29,6 +29,7 @@ from grove.screening import Message, ScreenedSource, Screener
 from grove.store.connection import Driver
 from grove.store.query import WorldQuery
 from grove.writer.errors import InvalidRecord
+from grove.writer.forget_sources import ForgottenSource, blocked_message_keys
 from grove.writer.ingest import (
     DeltaMoved,
     EpisodeCut,
@@ -192,7 +193,8 @@ def _take_chat(
     query = WorldQuery(driver, world_id)
     for _ in range(MAX_TRIES):
         stored, _sources = stored_keys(query, connector_id, locator)
-        delta = [message for message in chat.messages if message.key not in stored]
+        blocked = blocked_message_keys(query, locator, (message.key for message in chat.messages))
+        delta = [message for message in chat.messages if message.key not in stored | blocked]
         if not delta:
             return
         screened_parts = []
@@ -228,7 +230,7 @@ def _take_chat(
                 speakers=speakers,
                 sync_owner=sync_owner,
             )
-        except DeltaMoved:
+        except (DeltaMoved, ForgottenSource):
             continue
         if written is None:
             return
