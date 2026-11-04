@@ -1,0 +1,23 @@
+// Completion stays visible after the Claude preview; no provider consent is simulated.
+const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const web=process.env.GROVE_ONBOARDING_WEB||path.resolve(__dirname,'..');
+const source=fs.readFileSync(path.join(web,'product.js'),'utf8');
+const start=source.indexOf('  function updateLive(){'),end=source.indexOf('\n  function ',start+4);
+const classes=new Set(),attributes={},label={};
+const styles={};const choice={dataset:{sourceChoice:'claude'},classList:{toggle(name,on){on?classes.add(name):classes.delete(name);},remove(name){classes.delete(name);}},style:{setProperty(k,v){styles[k]=v;}},querySelector(){return label;},setAttribute(k,v){attributes[k]=v;}};
+const state={conversationPreview:{status:'importing',progress:50},pendingExports:{}};
+const c={live:true,api:{getState:()=>state},document:{getElementById:()=>({innerHTML:''})},progress:{innerHTML:''},root:{querySelectorAll:()=>[choice]},liveSourceAccounts:()=>[],icon:()=>'<svg/>',PROVIDERS:{claude:{label:'Claude'}}};
+vm.createContext(c);vm.runInContext(source.slice(start,end),c);
+c.updateLive();assert(!c.progress.innerHTML.includes('gp-complete-check'));assert(classes.has('is-added'),'The check shows as soon as the upload is accepted');assert(!classes.has('is-learning'));assert.equal(styles['--source-progress'],0.5);
+state.conversationPreview={status:'ready',progress:100};c.updateLive();
+assert(c.progress.innerHTML.includes('gp-complete-check'),'Completion must retain a check in the progress control');
+assert(c.progress.innerHTML.includes('✓'));assert.equal(label.textContent,'');
+assert.equal(attributes['aria-label'],'Claude added');
+assert(classes.has('is-added'));assert(!classes.has('is-learning'));
+state.conversationPreview=null;c.updateLive();assert.equal(c.progress.innerHTML,'');
+const pipedream=fs.readFileSync(path.join(web,'pipedream.js'),'utf8');
+const validator=pipedream.match(/  function slug\(v\)\{[^\n]+/)[0];
+vm.runInContext(validator,c);
+for(const slug of ['_0codekit','_1crm','__1msg','gmail'])assert(c.slug(slug),'Valid Pipedream slug: '+slug);
+for(const slug of ['../gmail','gmail?x=1','gmail/other','a'.repeat(121)])assert(!c.slug(slug));
+console.log('PASS Claude completion check and documented Pipedream identifier shapes');

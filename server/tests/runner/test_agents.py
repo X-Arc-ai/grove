@@ -54,7 +54,9 @@ def test_each_agent_pins_its_model_and_denies_every_tool_but_brain():
         rules = front["permission"]
         assert list(rules)[0] == "*" and rules["*"] == "deny", name
         assert rules["bash"] == BASH, name
-        assert set(rules) <= {"*", "bash", "task"}, name
+        assert set(rules) <= {"*", "bash", "task", "read"}, name
+        # Only the Learner opens added files. OpenCode refuses a path outside its working folder.
+        assert rules.get("read") == ("allow" if name == "learner" else None), name
 
 
 def test_grove_hands_a_pass_only_to_the_three_subagents():

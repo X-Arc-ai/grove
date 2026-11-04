@@ -268,7 +268,7 @@
   function exportPicker(id){
     var p=PROVIDERS[id],state=live?liveUpload(id):{file:ui.uploadFile},ready=canUpload(id);
     var input=live&&ready?'<input type="file" accept="'+p.accept+'" data-pick-export="'+id+'" aria-label="'+p.label+' export file" hidden>':'';
-    return (live&&ready?'<p class="gp-section-copy">Upload export opens a simulation with invented data. Your file will not be uploaded or saved.</p>':'')+input+'<button class="gp-upload-zone" data-action="pick-export"'+(!ready||state.pending?' disabled':'')+'><span>'+icon('notes')+'</span><strong>'+(state.file?esc(state.file.name):id==='notes'?'Choose a file':demo?'Use sample export':'Choose your export')+'</strong><small>'+(state.pending?'Upload in progress':state.file?'Ready to upload':id==='notes'?'Notes and documents':'Your conversations, ready for Grove')+'</small></button>'+(live&&state.pending?'<p class="gp-section-copy" role="status" aria-live="polite">Upload in progress</p>':'')+(live&&state.error?'<p class="gp-section-copy" role="alert">'+esc(state.error)+'</p>':'')+(live?uploadResult(state.result):'');
+    return (live&&ready&&id==='claude'?'<p class="gp-section-copy">The Claude example uses invented conversations. Your file will not be uploaded or saved.</p>':'')+input+'<button class="gp-upload-zone" data-action="pick-export"'+(!ready||state.pending?' disabled':'')+'><span>'+icon('notes')+'</span><strong>'+(state.file?esc(state.file.name):id==='notes'?'Choose a file':demo?'Use sample export':'Choose your export')+'</strong><small>'+(state.pending?'Upload in progress':state.file?'Ready to upload':id==='notes'?'Notes and documents':'Your conversations, ready for Grove')+'</small></button>'+(live&&state.pending?'<p class="gp-section-copy" role="status" aria-live="polite">Upload in progress</p>':'')+(live&&state.error?'<p class="gp-section-copy" role="alert">'+esc(state.error)+'</p>':'')+(live?uploadResult(state.result):'');
   }
   function guide(){
     var id=ui.guide,p=PROVIDERS[id],walk=WALKS[id],upload=ui.guideStage===1||id==='notes';
@@ -337,14 +337,14 @@
   window.addEventListener('grove:theme',function(){if(ui.guide||ui.host)render(true);});
   function info(copy){return '<span class="gp-info" tabindex="0" role="note" aria-label="'+esc(copy)+'">i<span class="gp-tooltip" role="tooltip">'+esc(copy)+'</span></span>';}
   function filesComposer(){
-    if(live)return '<div class="gp-materials" data-materials="'+(api.getState().onboardingComplete?'sources':'onboarding')+'"></div>';
-    var all=live?[]:Object.values(api.getState().files||{}),notes=all.filter(function(f){return f.kind==='note';}),files=all.filter(function(f){return f.kind!=='note';});
+    var editor=ui.noteEditor?'<form class="gp-note-form" data-note-form><label>Title<input name="title" placeholder="A little about me" maxlength="100" value="'+esc(ui.noteDraft.title)+'" required></label><label>Note<textarea name="body" placeholder="What would you like Grove to know?" rows="3" required>'+esc(ui.noteDraft.body)+'</textarea></label><footer><button type="button" class="gp-text" data-action="cancel-note">Cancel</button><button class="gp-small">Add note</button></footer></form>':'';
+    if(live)return '<div class="gp-files-composer"><section class="gp-material-section"><header><div><h2>Your files</h2><p>Documents, slides, PDFs, and more</p></div><button class="gp-small" data-action="choose-files">Add files +</button></header><input type="file" multiple hidden data-agent-file-input><div data-agent-files="file"></div></section><section class="gp-material-section"><header><div><h2>Your notes</h2><p>Your own words, directly to Grove</p></div><button class="gp-small" data-action="write-note">Add note +</button></header>'+editor+'<div data-agent-files="note"></div></section><p class="gp-footnote" role="alert" data-agent-error hidden></p></div>';
+    var all=Object.values(api.getState().files||{}),notes=all.filter(function(f){return f.kind==='note';}),files=all.filter(function(f){return f.kind!=='note';});
     function rows(items){return '<div class="gp-file-added">'+items.map(function(f){var a=api.getState().accountImports[f.id];return '<div><span>'+icon('notes')+'</span><strong>'+esc(f.name)+'</strong><small class="gp-status" data-account-status="'+f.id+'">'+(a&&a.status==='importing'?a.progress+'%':'')+'</small></div>';}).join('')+'</div>';}
     var samples=['About me.md','Project direction.pptx','Research notes.pdf','Reading list.docx','Ideas.txt'];
     var available=samples.filter(function(name){return !files.some(function(f){return f.name===name;});});
-    var picker=!live&&ui.filePicker?'<div class="gp-file-picker"><p class="gp-kicker">Choose files</p><form data-files-form>'+available.map(function(name){return '<label><input type="checkbox" name="file" value="'+name+'" checked><span>'+name+'</span><small>'+name.split('.').pop().toUpperCase()+'</small></label>';}).join('')+(!available.length?'<p class="gp-section-copy">All example files have been added</p>':'')+'<footer><button class="gp-text" type="button" data-action="cancel-files">Cancel</button><button class="gp-small" '+(!available.length?'disabled':'')+'>Add selected</button></footer></form></div>':'';
-    var editor=!live&&ui.noteEditor?'<form class="gp-note-form" data-note-form><label>Title<input name="title" placeholder="A little about me" maxlength="100" value="'+esc(ui.noteDraft.title)+'" required></label><label>Note<textarea name="body" placeholder="What would you like Grove to know?" rows="3" required>'+esc(ui.noteDraft.body)+'</textarea></label><footer><button type="button" class="gp-text" data-action="cancel-note">Cancel</button><button class="gp-small">Add note</button></footer></form>':'';
-    return '<div class="gp-files-composer"><section class="gp-material-section"><header><div><h2>Your files</h2><p>Documents, slides, PDFs, and more</p></div><button class="gp-small" data-action="choose-files"'+(live?' disabled':'')+'>Add files +</button></header>'+picker+rows(files)+(!files.length&&!ui.filePicker?'<p class="gp-material-empty">Bring the things you return to</p>':'')+'</section><section class="gp-material-section"><header><div><h2>Your notes</h2><p>Your own words, directly to Grove</p></div><button class="gp-small" data-action="write-note"'+(live?' disabled':'')+'>Add note +</button></header>'+editor+rows(notes)+(!notes.length&&!ui.noteEditor?'<p class="gp-material-empty">An idea, a preference, or something worth knowing</p>':'')+'</section></div>';
+    var picker=ui.filePicker?'<div class="gp-file-picker"><p class="gp-kicker">Choose files</p><form data-files-form>'+available.map(function(name){return '<label><input type="checkbox" name="file" value="'+name+'" checked><span>'+name+'</span><small>'+name.split('.').pop().toUpperCase()+'</small></label>';}).join('')+(!available.length?'<p class="gp-section-copy">All example files have been added</p>':'')+'<footer><button class="gp-text" type="button" data-action="cancel-files">Cancel</button><button class="gp-small" '+(!available.length?'disabled':'')+'>Add selected</button></footer></form></div>':'';
+    return '<div class="gp-files-composer"><section class="gp-material-section"><header><div><h2>Your files</h2><p>Documents, slides, PDFs, and more</p></div><button class="gp-small" data-action="choose-files">Add files +</button></header>'+picker+rows(files)+(!files.length&&!ui.filePicker?'<p class="gp-material-empty">Bring the things you return to</p>':'')+'</section><section class="gp-material-section"><header><div><h2>Your notes</h2><p>Your own words, directly to Grove</p></div><button class="gp-small" data-action="write-note">Add note +</button></header>'+editor+rows(notes)+(!notes.length&&!ui.noteEditor?'<p class="gp-material-empty">An idea, a preference, or something worth knowing</p>':'')+'</section></div>';
   }
 
   function sourceAccounts(s){if(live)return liveSourceAccounts();return Object.keys(s.accountImports).map(function(id){var a=s.accountImports[id];return Object.assign({},a,{id:id,label:a.kind==='file'?a.label:PROVIDERS[id]?PROVIDERS[id].label:(a.label||id)});});}
@@ -480,10 +480,18 @@
   function setStep(n){ui.step=n;ui.guide=null;if(api.setStep)api.setStep(n);render(true);if(window.GroveView)window.GroveView.fit();}
   function finish(){ui.guide=null;ui.panel=null;var duration=reduceMotion.matches?0:1300;document.body.classList.add('gp-arriving');tourAfter=performance.now()+duration+900;api.completeOnboarding();render(true);if(window.GroveView)window.GroveView.fit(duration);clearTimeout(arrivalTimer);arrivalTimer=setTimeout(function(){document.body.classList.remove('gp-arriving');},duration);setTimeout(maybeTour,duration+950);}
   function importSource(id,file,provider){
-    // Recording release: the chosen file triggers only the isolated invented-data page.
-    // Do not read, serialize, upload, or retain that file. The real API remains unchanged.
-    if(live&&file&&(provider==='claude'||provider==='chatgpt')){
-      window.location.assign('/demo/onboarding?provider='+provider+'&start=1');
+    // The Claude example changes only the graph in page memory. Keep every setup step
+    // and the live session, provider consent, files, and AI connections on this page.
+    if(live&&file&&provider==='claude'){
+      var previewUpload=liveUpload(provider),previewContext=api.pendingExportContext();
+      if(previewUpload.pending)return;
+      previewUpload.pending=true;previewUpload.error='';render(true);
+      window.GroveConversationPreview.start().then(function(){
+        if(!api.isPendingExportContext(previewContext))return;
+        previewUpload.file=null;ui.guide=null;render(true);
+      }).catch(function(error){
+        if(api.isPendingExportContext(previewContext))previewUpload.error=error.message||'The Claude example could not load. Try again.';
+      }).finally(function(){previewUpload.pending=false;if(api.isPendingExportContext(previewContext))render(true);});
       return;
     }
     if(live){
@@ -536,7 +544,8 @@
     },1800);
   }
   function render(force){var s=api.getState(),onboard=!s.auth||!s.onboardingComplete;if(!s.auth&&!ui.authStage)ui.authStage='signin';if(!logoutPage()&&(ui.panel!=='profile'||ui.settingsTab!=='account'))ui.logoutError='';var shape=[onboard,ui.step,ui.panel,ui.guide,ui.guideStep,ui.guideStage,ui.settingsTab,ui.host,ui.authStage,ui.sourceTab,ui.filePicker,ui.noteEditor,ui.confirm&&JSON.stringify(ui.confirm),ui.requestTab,ui.requestId,(s.requests||[]).map(function(r){return r.id+':'+r.status;}).join(','),Object.keys(s.pendingExports).join(','),Object.keys(s.accountImports).map(function(id){return id+':'+s.accountImports[id].status;}).join(','),(s.connectedHosts||[]).join(','),(s.mcpClients||[]).map(function(c){return c.id;}).join(',')].join('|');
-    if(force||shape!==lastShape){lastShape=shape;var content=ui.authStage?signIn():logoutPage()?logoutConfirmation():(live||demo)&&ui.host?hostGuide():ui.guide?guide():onboard?(ui.step===0?welcome():setup()):ui.panel==='profile'?profile():ui.panel==='health'?health():ui.panel==='connections'?connections():ui.panel==='sources'?sourcesPanel():ui.panel==='requests'?requestsPanel():'';if(ui.confirm)content='<div class="gp-confirm-context" inert aria-hidden="true">'+content.replace('aria-modal="true"','aria-modal="false"')+'</div>'+confirmation();modalRoot.innerHTML=content;if(ui.error&&content){var err=document.createElement('p');err.className='gp-footnote';err.setAttribute('role','alert');err.textContent=ui.error;var dialog=modalRoot.querySelector('.gp-auth-form')||modalRoot.querySelector('section');if(dialog)dialog.appendChild(err);}bind();if(ui.confirmScroll!=null){var pane=modalRoot.querySelector('.gp-settings-content');if(pane)pane.scrollTop=ui.confirmScroll;if(!ui.confirm)ui.confirmScroll=null;}fitGuide();positionRequests();if(window.GroveEntryScene)window.GroveEntryScene.mount(modalRoot.querySelector('.gp-entry-canvas'));settleEntrance();if(force&&content){focus(ui.confirm?'#gp-confirm-title':ui.confirmReturn||'#gp-title');if(!ui.confirm)ui.confirmReturn=null;}}
+    var changed=force||shape!==lastShape;
+    if(changed){lastShape=shape;var content=ui.authStage?signIn():logoutPage()?logoutConfirmation():(live||demo)&&ui.host?hostGuide():ui.guide?guide():onboard?(ui.step===0?welcome():setup()):ui.panel==='profile'?profile():ui.panel==='health'?health():ui.panel==='connections'?connections():ui.panel==='sources'?sourcesPanel():ui.panel==='requests'?requestsPanel():'';if(ui.confirm)content='<div class="gp-confirm-context" inert aria-hidden="true">'+content.replace('aria-modal="true"','aria-modal="false"')+'</div>'+confirmation();modalRoot.innerHTML=content;if(ui.error&&content){var err=document.createElement('p');err.className='gp-footnote';err.setAttribute('role','alert');err.textContent=ui.error;var dialog=modalRoot.querySelector('.gp-auth-form')||modalRoot.querySelector('section');if(dialog)dialog.appendChild(err);}bind();if(ui.confirmScroll!=null){var pane=modalRoot.querySelector('.gp-settings-content');if(pane)pane.scrollTop=ui.confirmScroll;if(!ui.confirm)ui.confirmScroll=null;}fitGuide();positionRequests();if(window.GroveEntryScene)window.GroveEntryScene.mount(modalRoot.querySelector('.gp-entry-canvas'));settleEntrance();if(force&&content){focus(ui.confirm?'#gp-confirm-title':ui.confirmReturn||'#gp-title');if(!ui.confirm)ui.confirmReturn=null;}}
     document.body.classList.toggle('gp-onboarding-open',onboard);document.body.classList.toggle('gp-welcome-open',onboard&&ui.step===0&&!ui.authStage);document.body.classList.toggle('gp-auth-open',!!ui.authStage);document.body.classList.toggle('gp-modal-open',(!!ui.panel&&ui.panel!=='requests')||!!ui.guide||!!((live||demo)&&ui.host));document.body.classList.toggle('gp-tour-open',!!ui.tour);
     document.body.classList.toggle('gp-logout-open',!!logoutPage());
     var fullModal=onboard||logoutPage()||!!((live||demo)&&ui.host)||!!ui.guide||['profile','health','connections','sources'].includes(ui.panel);
@@ -548,19 +557,24 @@
     if(chrome.innerHTML!==bottom){chrome.innerHTML=bottom;bindChrome();}
     var rq=document.getElementById('requests-button'),pending=(s.requests||[]).filter(function(r){return r.status==='open';}).length;rq.hidden=onboard;rq.classList.toggle('has-pending',pending>0);rq.setAttribute('aria-label','Grove needs your input'+(pending?', '+pending+(pending===1?' question':' questions'):''));rq.setAttribute('aria-expanded',String(ui.panel==='requests'));
     sessionNote.textContent=ui.offline?SIGNIN_COPY.offline:(ui.reminderError||'');sessionNote.hidden=!sessionNote.textContent;
-    if(live&&window.GroveMaterials)window.GroveMaterials.mount(modalRoot);
+    // Preserve native input focus and file selection during graph-only updates.
+    if(changed&&live&&window.GroveMaterials)window.GroveMaterials.mount(modalRoot);
     updateLive();renderTour();
     if(live)refreshLiveData(false);
   }
   function updateLive(){
     if(live){
-      progress.innerHTML='';document.getElementById('learning-slot').innerHTML='';
-      var state=api.getState();
+      document.getElementById('learning-slot').innerHTML='';
+      var state=api.getState(),preview=state.conversationPreview;
+      var complete=!!preview&&preview.status==='ready';
+      progress.innerHTML=preview?'<span class="gp-account-progress '+(complete?'is-ready':'')+'" role="status" aria-label="'+(complete?'Claude conversation preview complete':'Claude example, '+preview.progress+' percent')+'" style="--progress:'+preview.progress/100+'"><svg class="gp-mini-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18"/></svg><span class="gp-mini-mark">'+icon('claude')+'</span>'+(complete?'<i class="gp-complete-check" aria-hidden="true">✓</i>':'')+'</span>':'';
       root.querySelectorAll('[data-source-choice]').forEach(function(el){
         var id=el.dataset.sourceChoice,added=liveSourceAccounts().some(function(a){return a.id===id&&a.readCount>0;}),pending=!!state.pendingExports[id];
-        el.classList.toggle('is-added',added);el.classList.remove('is-learning');
-        var label=el.querySelector('strong small');if(label)label.textContent=added?'Added':pending?'Upload':'Connect';
-        el.setAttribute('aria-label',(added?'Added ':pending?'Upload ':'Connect ')+(PROVIDERS[id]||{label:id}).label);
+        var example=id==='claude'&&preview;
+        // The check marks the upload itself. The ring follows the graph as it grows.
+        el.classList.toggle('is-added',added||!!example);el.classList.remove('is-learning');el.style.setProperty('--source-progress',example?preview.progress/100:added?1:0);
+        var label=el.querySelector('strong small');if(label)label.textContent=example?'':added?'Added':pending?'Upload':'Connect';
+        el.setAttribute('aria-label',example?'Claude added':(added?'Added ':pending?'Upload ':'Connect ')+(PROVIDERS[id]||{label:id}).label);
       });
       return;
     }
@@ -591,9 +605,9 @@
     else if(action==='cancel-name'){ui.editName=false;render(true);}
     else if(action==='request-prev'||action==='request-next'){var items=api.getState().requests.filter(function(r){return r.status==='open';}),i=items.findIndex(function(r){return r.id===ui.requestId;});var next=Math.max(0,Math.min(items.length-1,i+(action==='request-prev'?-1:1)));if(items[next])ui.requestId=items[next].id;render(true);}
     else if(action==='copy-mcp'){var input=modalRoot.querySelector('#gp-mcp-url');function copied(){ui.mcpCopied=true;var b=modalRoot.querySelector('[data-action="copy-mcp"]');if(b)b.textContent='Copied';}function select(){if(input){input.select();try{if(document.execCommand('copy'))copied();}catch(e){}}}if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(MCP_URL).then(copied,select);else select();}
-    else if(action==='choose-files'){if(live)return;ui.filePicker=true;ui.noteEditor=false;render(true);}
+    else if(action==='choose-files'){if(live){var fileInput=modalRoot.querySelector('[data-agent-file-input]');if(fileInput)fileInput.click();return;}ui.filePicker=true;ui.noteEditor=false;render(true);}
     else if(action==='cancel-files'){ui.filePicker=false;render(true);}
-    else if(action==='write-note'){if(live)return;ui.noteEditor=true;ui.filePicker=false;render(true);}
+    else if(action==='write-note'){ui.noteEditor=true;ui.filePicker=false;render(true);}
     else if(action==='cancel-note'){ui.noteEditor=false;render(true);}
     else if(action==='connections-back'){ui.panel=ui.returnPanel;render(true);}
     else if(action==='source-picker'){ui.panel='sources';ui.settingsTab='sources';ui.guide=null;ui.query='';render(true);}
@@ -661,6 +675,7 @@
     modalRoot.querySelectorAll('[data-retry-asset]').forEach(function(el){el.onclick=function(){var key=el.dataset.retryAsset==='guides'?'guide':'catalog';ui[key+'Error']='';render(true);};});
     bindIntegrations();
     if(live&&window.GrovePipedream)window.GrovePipedream.mount(modalRoot);
+    if(live&&window.GroveAgentFiles)window.GroveAgentFiles.mount(modalRoot);
     var mcpDetails=modalRoot.querySelector('[data-mcp-details]');if(mcpDetails)mcpDetails.ontoggle=function(){ui.mcpOpen=mcpDetails.open;};
     var mcpForm=modalRoot.querySelector('[data-mcp-form]');if(!live&&mcpForm){mcpForm.oninput=function(){ui.mcpDraft=mcpForm.elements.client.value;};mcpForm.onsubmit=function(e){e.preventDefault();var name=mcpForm.elements.client.value.trim();if(!name)return;ui.mcpDraft='';api.addMcpClient(name);render(true);};}
     modalRoot.querySelectorAll('[data-mcp-remove]').forEach(function(el){el.onclick=function(){if(live)return;api.removeMcpClient(el.dataset.mcpRemove);render(true);};});
@@ -681,7 +696,7 @@
     modalRoot.querySelectorAll('[data-remove-file]').forEach(function(el){el.onclick=function(){openConfirmation('file',el.dataset.removeFile);};});
     modalRoot.querySelectorAll('[data-source-value]').forEach(function(el){el.onclick=function(){ui.panel=null;render();if(window.GroveView)window.GroveView.showChanges('nodes',el.dataset.sourceValue);};});
     var filesForm=modalRoot.querySelector('[data-files-form]');if(!live&&filesForm)filesForm.onsubmit=function(e){e.preventDefault();var names=Array.from(filesForm.querySelectorAll('input:checked')).map(function(i){return i.value;});if(!names.length)return;ui.filePicker=false;Promise.all(names.map(function(name){return api.addFile(name);})).then(function(){render(true);if(window.GroveMotion)window.GroveMotion.source('notes');});};
-    var noteForm=modalRoot.querySelector('[data-note-form]');if(noteForm)noteForm.oninput=function(){ui.noteDraft={title:noteForm.elements.title.value,body:noteForm.elements.body.value};};if(!live&&noteForm)noteForm.onsubmit=function(e){e.preventDefault();var name=noteForm.elements.title.value+'.md',body=noteForm.elements.body.value;ui.noteEditor=false;ui.noteDraft={title:'',body:''};api.addFile(name,body,'note').then(function(){render(true);});};
+    var noteForm=modalRoot.querySelector('[data-note-form]');if(noteForm)noteForm.oninput=function(){ui.noteDraft={title:noteForm.elements.title.value,body:noteForm.elements.body.value};};if(live&&noteForm)noteForm.onsubmit=function(e){e.preventDefault();var submit=noteForm.querySelector('button:not([type="button"])');submit.disabled=true;window.GroveAgentFiles.addNote(noteForm.elements.title.value,noteForm.elements.body.value).then(function(saved){if(saved){ui.noteEditor=false;ui.noteDraft={title:'',body:''};render(true);}else submit.disabled=false;});};if(!live&&noteForm)noteForm.onsubmit=function(e){e.preventDefault();var name=noteForm.elements.title.value+'.md',body=noteForm.elements.body.value;ui.noteEditor=false;ui.noteDraft={title:'',body:''};api.addFile(name,body,'note').then(function(){render(true);});};
     var growthFormEl=modalRoot.querySelector('[data-growth-form]');if(growthFormEl)growthFormEl.oninput=function(){var f=growthFormEl.elements;ui.growthDraft={focus:f.focus.value,reading:f.reading.value,avoid:f.avoid.value,confirm:f.confirm.checked};};if(growthFormEl)growthFormEl.onsubmit=function(e){e.preventDefault();var f=growthFormEl.elements;api.saveGrowth({focus:f.focus.value,reading:f.reading.value,avoid:f.avoid.value,confirm:f.confirm.checked});ui.notice=live?'Saved on this browser':'Saved';ui.growthDraft=null;render(true);};
     var form=modalRoot.querySelector('[data-name-form]');if(form){form.oninput=function(){ui.nameDraft=form.elements.name.value;};form.onsubmit=function(e){e.preventDefault();var name=form.elements.name.value.trim();if(!name)return;ui.editName=false;api.setName(name);render(true);};}}
   function maybeTour(){if(performance.now()<tourAfter)return;var s=api.getState();if(s.onboardingComplete&&!s.tourComplete&&!ui.panel&&!ui.guide&&!ui.tour&&s.currentNodeCount){ui.tour=1;ui.tourNode=null;renderTour();}}
@@ -703,6 +718,7 @@
     else{x=r.left;y=r.top-ch-gap;}
     x=Math.max(16,Math.min(w-cw-16,x));y=Math.max(20,Math.min(h-ch-20,y));
     card.style.left=Math.round(x)+'px';card.style.top=Math.round(y)+'px';
+    if(ui.tour===5&&live&&w<=700)document.body.style.setProperty('--grove-tour-card-bottom',Math.round(y+ch+gap)+'px');
   }
   function renderTour(){
     document.body.classList.toggle('gp-tour-open',!!ui.tour&&!ui.panel);

@@ -128,6 +128,7 @@ def _grant(agent: str) -> dict[str, Any]:
         "gateway_token": "g1.test",
         "agent": agent,
         "run_id": "run-test-1",
+        "world_id": "world-test",
         "time_cap_seconds": RUN_TIMEOUT,
     }
 
@@ -392,7 +393,7 @@ def _hosts_lines() -> list[str]:
     return [line for line in lines if line and not line.startswith("#")]
 
 
-def test_write_edit_webfetch_and_read_are_unavailable_and_leave_nothing_behind(rig, model):
+def test_write_edit_and_webfetch_are_unavailable_and_leave_nothing_behind(rig, model):
     canary_url = f"{model.base_url}/webfetch-canary"
     steps = [
         {"tool": "write", "args": {"filePath": str(rig.cwd / "write-canary"), "content": "x"}},
@@ -401,11 +402,10 @@ def test_write_edit_webfetch_and_read_are_unavailable_and_leave_nothing_behind(r
             "args": {"filePath": str(rig.cwd / "edit-canary"), "oldString": "", "newString": "x"},
         },
         {"tool": "webfetch", "args": {"url": canary_url, "format": "text"}},
-        {"tool": "read", "args": {"filePath": "/etc/hosts"}},
     ]
     run = rig.run(steps)
     calls = _learner_calls(run)
-    assert [use.tool for use in calls] == ["write", "edit", "webfetch", "read"]
+    assert [use.tool for use in calls] == ["write", "edit", "webfetch"]
     for use in calls:
         assert use.status == "error", use
         assert UNAVAILABLE in use.error
@@ -417,11 +417,34 @@ def test_write_edit_webfetch_and_read_are_unavailable_and_leave_nothing_behind(r
     assert run.brain_calls == []
 
 
-def test_the_learner_is_offered_only_bash(rig):
+def test_the_learner_reads_its_folder_and_nothing_outside_it(rig):
+    """OpenCode follows a link, so grove.runner.loop.pass_folder refuses a folder that holds one."""
+    (rig.cwd / "plan.txt").write_text("added file text", encoding="utf-8")
+    other = rig.cwd.parent / "other-world"
+    other.mkdir()
+    (other / "secret.txt").write_text("another world's words", encoding="utf-8")
+    run = rig.run(
+        [
+            {"tool": "read", "args": {"filePath": str(rig.cwd / "plan.txt")}},
+            {"tool": "read", "args": {"filePath": str(other / "secret.txt")}},
+            {"tool": "read", "args": {"filePath": "../other-world/secret.txt"}},
+            {"tool": "read", "args": {"filePath": "/etc/hosts"}},
+        ]
+    )
+    inside, *outside = _learner_calls(run)
+    assert inside.status == "completed" and "added file text" in inside.output, inside
+    for use in outside:
+        assert use.status == "error" and use.output == "", use
+    got = "\n".join(run.tool_results.values())
+    assert "another world" not in got
+    assert not [line for line in _hosts_lines() if line in got]
+
+
+def test_the_learner_is_offered_only_bash_and_read(rig):
     run = rig.run([])
     learner = [names for agent, names in run.offers if agent == "learner"]
     grove = [names for agent, names in run.offers if agent == "grove"]
-    assert learner and all(names == ["bash"] for names in learner), run.offers
+    assert learner and all(names == ["bash", "read"] for names in learner), run.offers
     assert grove and all(names == ["bash", "task"] for names in grove), run.offers
     assert {agent for agent, _ in run.offers} == {"grove", "learner"}, run.offers
 

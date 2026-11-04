@@ -20,11 +20,19 @@ from grove.demo_policy import is_demo_world
 from grove.views.session import ViewSession
 
 PREFIX = "/v1/views/pipedream"
-PROVIDERS = {"gmail": "Gmail", "google_calendar": "Google Calendar", "notion": "Notion"}
+PROVIDERS = {
+    "gmail": "Gmail",
+    "google_calendar": "Google Calendar",
+    "notion": "Notion",
+    "slack_v2": "Slack",
+    "linear": "Linear",
+    "dropbox": "Dropbox",
+}
 API_BASE = "https://api.pipedream.com/v1"
 CONNECT_TTL = 600
 MAX_RESPONSE_BYTES = 512_000
 CATALOG_PAGE_SIZE = 30
+LOGO = re.compile(r"https://assets\.pipedream\.net/[A-Za-z0-9_./-]{1,200}")
 ACCOUNT_PAGE_SIZE = 100
 MAX_ACCOUNT_PAGES = 3
 MAX_DISCONNECT_ACCOUNTS = 20
@@ -130,7 +138,7 @@ async def _headers(
 
 
 def _provider(provider: str) -> str:
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,119}", provider):
+    if not re.fullmatch(r"[a-z0-9_][a-z0-9_-]{0,119}", provider):
         raise invalid_arguments("Choose an app from the connection catalog.", "provider")
     return provider
 
@@ -238,18 +246,23 @@ def _app_row(value: Any) -> dict[str, Any]:
     slug, name, auth = value.get("name_slug"), value.get("name"), value.get("auth_type")
     if (
         not isinstance(slug, str)
-        or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,119}", slug)
+        or not re.fullmatch(r"[a-z0-9_][a-z0-9_-]{0,119}", slug)
         or not isinstance(name, str)
         or not 1 <= len(name) <= 200
         or not name.isprintable()
         or auth not in ("oauth", "keys", "none", None)
     ):
         raise unavailable("The connection service returned invalid app metadata.")
+    logo, categories = value.get("img_src"), value.get("categories")
+    category = categories[0] if isinstance(categories, list) and categories else None
     return {
         "provider": slug,
         "name": name,
         "auth_type": auth,
         "connectable": auth in ("oauth", "keys"),
+        # Display only: a bad optional field drops the logo, never the app.
+        "logo": logo if isinstance(logo, str) and LOGO.fullmatch(logo) else None,
+        "category": category if isinstance(category, str) and len(category) <= 60 else None,
     }
 
 
@@ -366,7 +379,12 @@ async def apps(request: Request, session: Session, client: Http) -> dict[str, An
     try:
         async with asyncio.timeout(15):
             headers = await _headers(client, settings, "connect:apps:*")
-            params = {"limit": str(CATALOG_PAGE_SIZE), "sort_key": "name", "sort_direction": "asc"}
+            # Popular apps first: a name sort opens the catalog on apps nobody looks for.
+            params = {
+                "limit": str(CATALOG_PAGE_SIZE),
+                "sort_key": "featured_weight",
+                "sort_direction": "desc",
+            }
             if q:
                 params["q"] = q
             if cursor:
