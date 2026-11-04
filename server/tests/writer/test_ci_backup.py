@@ -993,3 +993,236 @@ def test_service_log_target_cannot_escape_measured_directory(
     else:
         drill.discover_service_surfaces()
         assert drill.service_surfaces["service_logs"] == "/logs"
+
+
+@pytest.fixture
+def log_service(tmp_path, monkeypatch):
+    """A complete synthetic log-discovery boundary, with no service commands."""
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from tests.writer import physical_backup as b
+
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    daemon_log = tmp_path / "daemon.log"
+    daemon_log.write_bytes(b"")
+    configs = ["<Configuration/>", "<Configuration/>"]
+    calls = []
+    record = {
+        "id": drill.identity.service,
+        "log": str(daemon_log),
+        "driver": {"Type": "json-file", "Config": {}},
+    }
+    rows = [
+        {"name": "server.directories.logs", "value": "/logs"},
+        {"name": "server.logs.config", "value": "/conf/server.xml"},
+        {"name": "server.logs.user.config", "value": "/conf/user.xml"},
+    ]
+    session = SimpleNamespace(run=lambda *args, **kwargs: SimpleNamespace(data=lambda: rows))
+    driver = SimpleNamespace(session=lambda **kwargs: nullcontext(session))
+    monkeypatch.setattr("grove.store.connection.open_driver", lambda **kwargs: nullcontext(driver))
+    monkeypatch.setattr(b, "local_capacity", lambda path: b.Capacity(2**40, 2**24))
+
+    def docker(self, tag, *args, **kwargs):
+        calls.append((tag, args))
+        if tag == "resolve_log_surface":
+            return args[-1]
+        if tag == "read_log_config":
+            return configs[0 if args[-1] == "/conf/server.xml" else 1]
+        if tag == "service_log_identity":
+            return json.dumps(record)
+        raise AssertionError(tag)
+
+    def no_subprocess(*args, **kwargs):
+        raise AssertionError("log controls must not execute a subprocess")
+
+    monkeypatch.setattr(Drill, "docker", docker)
+    monkeypatch.setattr(b.subprocess, "Popen", no_subprocess)
+    return drill, configs, calls, record
+
+
+def log_xml(attribute, target, *, element=False):
+    from xml.sax.saxutils import escape, quoteattr
+
+    value = (
+        f"<File><{attribute}>{escape(target)}</{attribute}></File>"
+        if element
+        else f"<File {attribute}={quoteattr(target)}/>"
+    )
+    return f"<Configuration><Appenders>{value}</Appenders></Configuration>"
+
+
+@pytest.mark.parametrize("element", [False, True])
+@pytest.mark.parametrize(
+    "filename", ["debug.log.%02i", "http.log.%02i", "query.log.%02i", "security.log.%02i"]
+)
+def test_release_delayed_rotation_target_is_measured(log_service, element, filename):
+    drill, configs, calls, record = log_service
+    configs[:] = [
+        log_xml("filePattern", "$${config:server.directories.logs}/" + filename, element=element)
+    ] * 2
+    drill.discover_service_surfaces()
+    assert [args[-1] for tag, args in calls if tag == "read_log_config"] == [
+        "/conf/server.xml",
+        "/conf/user.xml",
+    ]
+    assert calls[-1][0] == "service_log_identity"
+    assert drill.docker_log == Path(record["log"])
+
+
+@pytest.mark.parametrize("element", [False, True])
+@pytest.mark.parametrize(
+    "target",
+    [
+        "$$${config:server.directories.logs}/debug.log.%02i",
+        "$${config:server.directories.logs}debug.log.%02i",
+        "$${env:LOGS}/debug.log.%02i",
+        "$${config:server.directories.logs}/${env:NAME}.%02i",
+        "$${config:server.directories.logs}/$extra.%02i",
+        "$${config:server.directories.logs}/nested/debug.log.%02i",
+        "$${config:server.directories.logs}/../outside.%02i",
+        "$${config:server.directories.logs}/debug.log.%d{yyyy-MM-dd}",
+        "$${config:server.directories.logs}/debug.log.%x",
+        "$${config:server.directories.logs}/debug.log.%02i.%02i",
+        "$${config:server.directories.logs}/debug.log",
+        "$${config:server.directories.logs}/debug.log.%02i.gz",
+        "$${config:server.directories.logs}/debug\nlog.%02i",
+        "$${config:server.directories.logs}/debug\rlog.%02i",
+        "/outside/debug.log.%02i",
+        "/logs/${env:NAME}.%02i",
+    ],
+)
+def test_delayed_rotation_requires_exact_prefix_and_numeric_basename(log_service, element, target):
+    drill, configs, calls, _ = log_service
+    configs[0] = log_xml("filePattern", target, element=element)
+    with pytest.raises(Refused, match="^service_log_path_unmeasured$"):
+        drill.discover_service_surfaces()
+    assert not any(tag == "service_log_identity" for tag, _ in calls)
+
+
+@pytest.mark.parametrize("element", [False, True])
+def test_delayed_lookup_is_not_a_file_name(log_service, element):
+    drill, configs, calls, _ = log_service
+    configs[0] = log_xml(
+        "fileName", "$${config:server.directories.logs}/debug.log.%02i", element=element
+    )
+    with pytest.raises(Refused, match="^service_log_path_unmeasured$"):
+        drill.discover_service_surfaces()
+    assert not any(tag == "service_log_identity" for tag, _ in calls)
+
+
+@pytest.mark.parametrize("config_index", [0, 1])
+@pytest.mark.parametrize("element", [False, True])
+def test_every_server_and_user_log_candidate_is_checked(log_service, config_index, element):
+    drill, configs, calls, _ = log_service
+    good = (
+        '<File fileName="/logs/debug.log" '
+        'filePattern="$${config:server.directories.logs}/debug.log.%02i"/>'
+    )
+    bad = (
+        "<Inactive><filePattern>/outside/later.log</filePattern></Inactive>"
+        if element
+        else '<Inactive filePattern="/outside/later.log"/>'
+    )
+    configs[:] = ["<Configuration>" + good + "</Configuration>"] * 2
+    configs[config_index] = "<Configuration>" + good + bad + "</Configuration>"
+    with pytest.raises(Refused, match="^service_log_path_unmeasured$"):
+        drill.discover_service_surfaces()
+    assert drill.log_target_context == {
+        "configuration": "server" if config_index == 0 else "user",
+        "attribute": "filePattern",
+        "candidate_index": 2,
+        "token_form": "absolute",
+        "failed_predicate": "outside_logs",
+    }
+    assert sum(tag == "read_log_config" for tag, _ in calls) == config_index + 1
+    assert not any(tag == "service_log_identity" for tag, _ in calls)
+
+
+@pytest.mark.parametrize(
+    "target,form,predicate",
+    [
+        ("/outside/synthetic-private-value", "absolute", "outside_logs"),
+        ("/logs/../synthetic-private-value", "absolute", "parent_component"),
+        ("synthetic-private-value", "other", "not_absolute"),
+        ("/logs/${env:synthetic-private-value}", "absolute", "unresolved_lookup"),
+        (
+            "$${config:server.directories.logs}/synthetic-private-value.%x",
+            "delayed_configured",
+            "rotation_grammar",
+        ),
+    ],
+)
+def test_log_refusal_receipt_has_only_bounded_context(
+    tmp_path, monkeypatch, capsys, log_service, target, form, predicate
+):
+    drill, configs, _, _ = log_service
+    configs[1] = log_xml("filePattern", target)
+    for key, value in environment(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr("tests.writer.physical_scenario.make_scenario", lambda root: object())
+    monkeypatch.setattr(Drill, "execute", lambda self, scenario: self.discover_service_surfaces())
+    assert main() == 1
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    assert receipt["refusal"] == "service_log_path_unmeasured"
+    assert receipt["log_target_context"] == {
+        "configuration": "user",
+        "attribute": "filePattern",
+        "candidate_index": 0,
+        "token_form": form,
+        "failed_predicate": predicate,
+    }
+    assert receipt["private_files_removed"] is True
+    assert receipt["physical_acceptance"] is False
+    assert receipt["application_reads_released"] is False
+    for private in (target, "synthetic-private-value", "/conf/", "<Configuration", str(tmp_path)):
+        assert private not in output
+    assert len(json.dumps(receipt["log_target_context"])) < 200
+
+
+@pytest.mark.parametrize(
+    "failure,code",
+    [
+        ("hidden", "unmeasured_log_capacity"),
+        ("driver", "unmeasured_log_capacity"),
+        ("rotation", "unmeasured_log_capacity"),
+        ("capacity", "capacity_unavailable"),
+    ],
+)
+def test_recognized_log_target_still_requires_measured_capacity(
+    log_service, monkeypatch, failure, code
+):
+    from tests.writer import physical_backup as b
+
+    drill, configs, calls, record = log_service
+    configs[0] = log_xml("filePattern", "$${config:server.directories.logs}/debug.log.%02i")
+    if failure == "hidden":
+        Path(record["log"]).unlink()
+    elif failure == "driver":
+        record["driver"]["Type"] = "local"
+    elif failure == "rotation":
+        record["driver"]["Config"] = {"max-size": "10m"}
+    else:
+
+        def absent(path):
+            raise Refused("capacity_unavailable")
+
+        monkeypatch.setattr(b, "local_capacity", absent)
+    # Execute the real orchestration; discovery must refuse before seed or stop.
+    monkeypatch.setattr(Drill, "preflight", lambda self: self.discover_service_surfaces())
+    with pytest.raises(Refused, match="^" + code + "$"):
+        drill.execute(object())
+    assert calls[-1][0] == "service_log_identity"
+    assert drill.stage == "preflight"
+    assert drill.dumps == []
+    assert drill.docker_log is None
+
+
+@pytest.mark.parametrize("content", ["<broken", '<File filePattern="/logs/a\x00b"/>'])
+def test_invalid_log_xml_never_skips_target_measurement(log_service, content):
+    drill, configs, calls, _ = log_service
+    configs[0] = content
+    with pytest.raises(Refused, match="^service_log_config_unmeasured$"):
+        drill.discover_service_surfaces()
+    assert not any(tag == "service_log_identity" for tag, _ in calls)

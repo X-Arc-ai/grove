@@ -61,6 +61,9 @@ TX_SETTING = "server.directories.transaction.logs.root"
 _HEX = re.compile(r"[0-9a-f]{64}")
 _NUMBER = re.compile(r"[0-9]{1,24}")
 _NETWORK = re.compile(r"[a-zA-Z0-9_.-]{1,128}")
+_LOG_PREFIX = "${config:server.directories.logs}"
+_DELAYED_LOG_PREFIX = "$" + _LOG_PREFIX
+_ROTATION_BASENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.%(?:0?[1-9][0-9]?)?i")
 _INSPECT = (
     '{"id":{{json .Id}},"image":{{json .Config.Image}},'
     '"image_id":{{json .Image}},"networks":{{json .NetworkSettings.Networks}},'
@@ -515,6 +518,7 @@ class Drill:
         self.docker_log: Path | None = None
         self.docker_log_baseline = 0
         self.last_service_capacity: dict[str, Capacity] = {}
+        self.log_target_context: dict[str, str | int] | None = None
         self._last_monitor = 0.0
 
     def docker(self, tag: str, *args: str, **kwargs: Any) -> str:
@@ -676,6 +680,51 @@ class Drill:
         self._record_capacity(observations, self.charged_usage(), initial=initial)
         self.runner_checkpoint(initial=initial)
 
+    def _check_log_target(
+        self, candidate: str, attribute: str, configuration: str, index: int, logs: str
+    ) -> None:
+        """Classify a target without retaining its path or expanding arbitrary lookups."""
+        delayed = candidate.startswith(_DELAYED_LOG_PREFIX)
+        form = (
+            "delayed_configured"
+            if delayed
+            else "configured"
+            if candidate.startswith(_LOG_PREFIX)
+            else "absolute"
+            if candidate.startswith("/")
+            else "other"
+        )
+        context: dict[str, str | int] = {
+            "configuration": configuration,
+            "attribute": attribute,
+            "candidate_index": index,
+            "token_form": form,
+        }
+        self.log_target_context = context
+
+        def check(condition: bool, predicate: str) -> None:
+            if not condition:
+                context["failed_predicate"] = predicate
+                raise Refused("service_log_path_unmeasured")
+
+        check(not any(char in candidate for char in "\x00\r\n"), "control_character")
+        if delayed:
+            check(attribute == "filePattern", "delayed_file_name")
+            check(candidate.startswith(_DELAYED_LOG_PREFIX + "/"), "rotation_grammar")
+            suffix = candidate[len(_DELAYED_LOG_PREFIX) + 1 :]
+            check("$" not in suffix, "unresolved_lookup")
+            check(".." not in PurePosixPath(suffix).parts, "parent_component")
+            check(_ROTATION_BASENAME.fullmatch(suffix) is not None, "rotation_grammar")
+            resolved = logs + "/" + suffix
+        else:
+            resolved = candidate.replace(_LOG_PREFIX, logs)
+        check("$" not in resolved, "unresolved_lookup")
+        path = PurePosixPath(resolved)
+        check(path.is_absolute(), "not_absolute")
+        check(".." not in path.parts, "parent_component")
+        check(path.is_relative_to(PurePosixPath(logs)), "outside_logs")
+        self.log_target_context = None
+
     def discover_service_surfaces(self) -> None:
         """Resolve only the validated service's actual configuration and log targets."""
         from grove.store.connection import open_driver
@@ -717,24 +766,26 @@ class Drill:
                 config = ET.fromstring(content)
             except ET.ParseError:
                 raise Refused("service_log_config_unmeasured") from None
+            candidate_index = 0
             for element in config.iter():
                 # File names and rotation patterns must resolve under measured logs.
                 candidates = [
-                    element.attrib[key]
+                    (key, element.attrib[key])
                     for key in ("fileName", "filePattern")
                     if key in element.attrib
                 ]
                 if element.tag.lower() in {"filename", "filepattern"} and element.text:
-                    candidates.append(element.text)
-                for candidate in candidates:
-                    resolved = candidate.replace("${config:server.directories.logs}", logs)
-                    require(
-                        "${" not in resolved
-                        and PurePosixPath(resolved).is_absolute()
-                        and ".." not in PurePosixPath(resolved).parts
-                        and PurePosixPath(resolved).is_relative_to(PurePosixPath(logs)),
-                        "service_log_path_unmeasured",
+                    kind = "fileName" if element.tag.lower() == "filename" else "filePattern"
+                    candidates.append((kind, element.text))
+                for attribute, candidate in candidates:
+                    self._check_log_target(
+                        candidate,
+                        attribute,
+                        "server" if index == 0 else "user",
+                        candidate_index,
+                        logs,
                     )
+                    candidate_index += 1
         record = json.loads(
             self.docker(
                 "service_log_identity",
@@ -1170,6 +1221,9 @@ def main() -> int:
         )
     except Refused as error:
         report["refusal"] = error.code
+        if error.code == "service_log_path_unmeasured" and drill is not None:
+            if drill.log_target_context is not None:
+                report["log_target_context"] = drill.log_target_context
     except Exception as error:
         # An assertion may contain the synthetic value. Print only its class.
         report["refusal"] = "unexpected_error"
