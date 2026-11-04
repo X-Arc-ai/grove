@@ -56,6 +56,7 @@ def live():
 @pytest.fixture
 def screen(browser, live):
     context = browser.new_context(base_url=live, viewport={"width": 1280, "height": 900})
+    context.set_default_timeout(5_000)
     page = context.new_page()
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))

@@ -10,9 +10,11 @@ from grove.api import forget as api
 from grove.api.app import create_app
 from grove.api.config import ApiSettings
 from grove.api.errors import unauthenticated
+from grove.store.replay import ReplayRefused
 from grove.views.session import ViewSession
 from grove.writer.errors import InvalidRecord
 from grove.writer.forget_approvals import MintedApproval
+from grove.writer.forget_ledger import LedgerUnavailable
 
 BASE = "https://grove.example"
 TARGET = {"type": "named_value", "value": "Juniper phrase"}
@@ -184,3 +186,26 @@ def test_forget_page_is_served_without_cache(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert "<title>Forget</title>" in response.text
+
+
+@pytest.mark.parametrize(
+    ("error", "status", "code"),
+    [
+        (LedgerUnavailable("private ledger path and contents"), 503, "unavailable"),
+        (ReplayRefused(None, "row_value", "private row contents"), 400, "invalid_arguments"),
+        (ReplayRefused(1, "invalid_row", "private row contents"), 409, "conflict"),
+    ],
+)
+def test_writer_refusals_are_safe_api_errors(boundary, monkeypatch, error, status, code):
+    def refused(*args, **options):
+        raise error
+
+    monkeypatch.setattr(api, "_execute", refused)
+    response = boundary.client.post(
+        "/v1/forget", json={"target": TARGET, "approval_token": "gfa_test-token"}
+    )
+    assert response.status_code == status
+    assert response.json()["error"]["code"] == code
+    assert "private" not in response.text
+    assert TARGET["value"] not in response.text
+    assert response.headers["cache-control"] == "no-store"
