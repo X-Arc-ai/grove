@@ -295,7 +295,11 @@ def _check_rank(run: ap._Run, claim: dict[str, Any], plans: list[ap._Plan]) -> N
         return
     claim_rank = _rank(claim.get("derived_source_type"), claim.get("derivation"))
     best = max(
-        (_rank(plan.columns.get("source_type"), plan.columns.get("derivation")) for plan in plans),
+        (
+            _rank(plan.columns.get("source_type"), plan.columns.get("derivation"))
+            for plan in plans
+            if plan.polarity == "contradicts"
+        ),
         default=-1,
     )
     if best < claim_rank:
@@ -329,21 +333,28 @@ def _refute_item(run: ap._Run, index: int, op: dict[str, Any], item_id: str) -> 
         raise Refused("invalid_arguments", "already_ended", "the item has already ended", {})
     plans = ap._plans(run, op["evidence_refs"])
     ap._settle(run, plans, item_id)
-    from grove.writer.cascade_refutations import defer_refutation, settle_refutation
+    from grove.writer.cascade_refutations import (
+        defer_refutation,
+        refutation_proof,
+        settle_refutation,
+    )
 
     if defer_refutation(run, index, op, item, plans):
         return
     _check_rank(run, item, plans)
-    world_time = ap._world_time(plans)
+    proof = refutation_proof(plans)
+    world_time = proof.source_time
     reason_id = run.text(op["reason"])
     # Refuted: never true, so no world end time is stored (D3, "end classes").
-    _end_item_row(run, item_id, "refuted", world_time, reason_id, _evidence_id(plans))
+    _end_item_row(run, item_id, "refuted", world_time, reason_id, proof.id)
     ap._write_evidence(run, plans, "item", item_id, reason_id)
     settle_refutation(run, item_id, reason_id)
     run.touch(item_id, index)
 
 
 def _refute_link(run: ap._Run, op: dict[str, Any], link_id: str) -> None:
+    from grove.writer.cascade_refutations import refutation_proof
+
     link = ap._one(run, ap._LOCK_LINK, "link", link_id, lock=True)
     if link.get("meaning") in PRIMITIVE_MEANING_IDS:
         raise Refused(
@@ -358,9 +369,10 @@ def _refute_link(run: ap._Run, op: dict[str, Any], link_id: str) -> None:
     plans = ap._plans(run, op["evidence_refs"])
     ap._settle(run, plans, link_id)
     _check_rank(run, link, plans)
-    world_time = ap._world_time(plans)
+    proof = refutation_proof(plans)
+    world_time = proof.source_time
     reason_id = run.text(op["reason"])
-    ap._end_entry(run, "link", link_id, None, "refuted", world_time, reason_id, _evidence_id(plans))
+    ap._end_entry(run, "link", link_id, None, "refuted", world_time, reason_id, proof.id)
     run.tx.run(ap._SET_LINK, id=link_id, columns={"active_key": None, "end_class": "refuted"})
     ap._bump(run, ap._BUMP_LINK, link_id)
     ap._write_evidence(run, plans, "link", link_id, reason_id)

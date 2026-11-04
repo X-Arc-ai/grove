@@ -1,34 +1,56 @@
 """D6's ordinary-item refutation gate. D9 owns the separate belief state machine."""
 
+from grove.writer.errors import Refused
 from grove.writer.history import compact
 from grove.writer.source_types import RANK
+
+
+def refutation_proof(plans):
+    """Bind authority, provenance and world time to the same contradictory proof."""
+    contrary = [plan for plan in plans if plan.polarity == "contradicts"]
+    if not contrary:
+        raise Refused(
+            "missing_provenance",
+            "refute_evidence",
+            "a refutation needs contradictory evidence",
+            {},
+        )
+    return max(
+        contrary,
+        key=lambda plan: (
+            RANK[plan.columns["source_type"]]
+            if plan.columns.get("derivation") == "observed"
+            else -1,
+            plan.source_time,
+        ),
+    )
 
 
 def defer_refutation(run, index, op, item, plans) -> bool:
     """A report attaches its contradiction and proposes an ending; it does not end a claim."""
     from grove.writer import apply as ap
 
-    observed = [p for p in plans if p.columns.get("derivation") == "observed"]
-    if run.caller_kind == "person" or any(
-        p.columns["source_type"] == "confirmed" for p in observed
-    ):
+    proof = refutation_proof(plans)
+    source_type = (
+        proof.columns["source_type"] if proof.columns.get("derivation") == "observed" else "said"
+    )
+    if run.caller_kind == "person" or source_type == "confirmed":
         return False
     item_id = item["id"]
     reason_id = run.text(op["reason"])
-    contrary = [ap._Plan(run.new_id(), "contradicts", p.columns) for p in plans]
-    ap._settle(run, contrary, item_id)
-    ap._write_evidence(run, contrary, "item", item_id, reason_id)
+    contrary = [plan for plan in plans if plan.polarity == "contradicts"]
+    ap._write_evidence(run, plans, "item", item_id, reason_id)
     standing = run.tx.run(
         "MATCH (e:ChangeEntry {entity_type: 'item', entity_id: $id}) "
         "WHERE e.history_only = false RETURN max(e.sequence) AS sequence",
         id=item_id,
     )[0]["sequence"]
-    for proof in contrary:
+    for report in contrary:
         if run.tx.run(
             "MATCH (c:Contradiction {target: $target, fresh_evidence_id: $evidence, "
             "status: 'open'}) RETURN c.id AS id",
             target=item_id,
-            evidence=proof.id,
+            evidence=report.id,
         ):
             continue
         run.tx.run(
@@ -39,7 +61,7 @@ def defer_refutation(run, index, op, item, plans) -> bool:
                     "target": item_id,
                     "standing_target_id": item_id,
                     "standing_change_id": standing,
-                    "fresh_evidence_id": proof.id,
+                    "fresh_evidence_id": report.id,
                     "detected_by": run.stamp.actor,
                     "detected_at": run.at,
                     "request_id": run.stamp.request_id,
@@ -49,14 +71,11 @@ def defer_refutation(run, index, op, item, plans) -> bool:
                 }
             ),
         )
-    source_type = max(
-        (p.columns["source_type"] for p in observed), key=RANK.__getitem__, default="said"
-    )
     run.cache.setdefault("cascade_pending", []).append(
         {
             "item_id": item_id,
             "change_set_id": run.stamp.change_set_id,
-            "world_time": ap._world_time(contrary),
+            "world_time": proof.source_time,
             "source_type": source_type,
             "terminal": True,
             "reopened": False,
