@@ -4,12 +4,16 @@ Status: preparation only. Repository visibility stays **PRIVATE**.
 The recorded baseline and deployment are in [submission status](submission-status.md).
 This checklist does not authorize publication, account actions, or a deployment.
 
-Source snapshot: 2026-11-04 19:04 UTC. PR #60 is the recorded served API. Request18 remains FAILED.
-Release evidence update: 2026-11-04 at 19:04:34 UTC. Request19 closure and separate
-verification PASSED. This was not a new code deployment; `deployed.sha` now matches PR60.
+Recording snapshot: 2026-11-04 20:06:46 UTC. PR #66 source
+`a9da90686d687639a75a154172adbe2bfb4a1ea7` is the recorded served API and `deployed.sha`.
+Its separate develop merge is `7d94266e1512ef9c5815d343518131a18bc6cbd8`.
+The 26 independent anonymous public checks passed, including 15 exact asset hashes.
+Request18 remains FAILED. Historical release evidence: 2026-11-04 at 19:04:34 UTC.
+Request19 closure and separate verification PASSED. That closure was not a new code deployment.
 The [receipt facts](submission-status.md#request19-release-evidence-update) retain the separate
-API and runner/gateway revisions. PR #61 materials and PR #63 source helpers are merged;
-neither changes the recorded served application.
+API and runner/gateway revisions. PR #61 materials and their deployment prerequisites are merged
+but not deployed. Operation A inventory returned HOLD with no mutation. Riverlight source remains
+uncommitted and unverified, and it was not seeded.
 Materials require migration `0019_material_revisions.cypher`, the canonical external ledger,
 and coordinated API/runner source in a future release. Files remain `held_provenance`
 with no file Request. Notes use ordinary Requests; deployed material acceptance remains open.
@@ -18,6 +22,7 @@ with no file Request. Notes use ordinary Requests; deployed material acceptance 
 
 - [ ] Sequence the accepted UI and backend changes through the release owner.
 - [ ] Record the final source commit and the API, runner, and gateway revisions separately.
+- [x] Record the PR #66 recording release and its separate develop merge, without claiming full product acceptance.
 - [x] Record the Request19 closure and separate verification receipts; preserve Request18 as FAILED (2026-11-04 19:04:34 UTC).
 - [ ] Verify material ledger equality, recovery, and coordinated API/runner source before material activation.
 - [ ] Confirm the required migrations and private runtime configuration for that exact release.
@@ -30,8 +35,12 @@ with no file Request. Notes use ordinary Requests; deployed material acceptance 
 
 ## Rehearse only when the paused manual flow is released
 
-Current owner login, upload, logout, provider consent, and Muse rehearsal: **NOT RUN**.
+The manual account/Muse flow remains stopped. Real prepared-account Muse use remains **NOT RUN**.
+A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC:
+one source, one episode, and two kept messages; the exact repeat added zero new records.
+The upload did not change the graph. This dated upload result does not complete the rehearsal below.
 
+- [x] Record the real Claude ZIP import and exact-repeat result on PR60.
 - [ ] Use authorized test accounts and invented data. Keep identifiers and credentials out of the recording.
 - [ ] Follow the README from a fresh browser context; verify first and repeated upload receipts.
 - [ ] State that upload retention does not create the prepared graph.
@@ -64,5 +73,5 @@ deadline, metric, or eligibility decision is inferred from the repository name.
 | X draft | [Local plain-text draft](drafts/x-post.txt), unsent |
 | Final video | Final video: not supplied |
 | Official event source | Not supplied or reviewed |
-| Final release commit | Not selected by this preparation task |
+| Recording release source | PR #66, `a9da90686d687639a75a154172adbe2bfb4a1ea7`; final submission release remains unselected |
 | Submission confirmation | Submission receipt: not supplied |
