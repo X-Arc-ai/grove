@@ -56,6 +56,160 @@ from grove.writer.source_types import RANK, claim_fields
 # What a forget leaves in a history value (D3, D14). It is not JSON, so no value decodes to it.
 FORGOTTEN_MARKER = "[forgotten]"
 
+# Lifecycle state is snapshot data, separate from the D3 graph projections.
+QUESTION_SNAPSHOT_LABELS = {
+    "Question": "questions",
+    "QuestionBinding": "question_bindings",
+    "QuestionWork": "question_work",
+    "QuestionApplication": "question_applications",
+    "QuestionEvent": "question_events",
+    "CuratorLegwork": "curator_legwork",
+    "CuratorEscalation": "curator_escalations",
+    "CuratorRunOrder": "curator_run_order",
+    "Request": "requests",
+}
+
+
+def _question_normal(value):
+    if isinstance(value, Mapping):
+        return {
+            key: _question_normal(child)
+            for key, child in value.items()
+            if child is not None and child != []
+        }
+    if isinstance(value, (tuple, list)):
+        return [_question_normal(child) for child in value]
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return value
+
+
+def rebuild_question_snapshots(events):
+    """Pure reconstruction of the inactive lifecycle's structural snapshots."""
+    result = {}
+    previous_sequence = 0
+    for event in sorted(events, key=lambda row: row["sequence"]):
+        sequence = event["sequence"]
+        if type(sequence) is not int or sequence <= previous_sequence:
+            raise ReplayRefused(sequence, "question_event_order")
+        previous_sequence = sequence
+        raw = event.get("snapshot")
+        if type(raw) is not str or len(raw.encode("utf-8")) > 256 * 1024:
+            raise ReplayRefused(sequence, "question_event_shape")
+        try:
+            payload = json.loads(raw)
+            label, before, after = (payload[key] for key in ("label", "before", "after"))
+            key = (label, after["id"])
+        except (ValueError, KeyError, TypeError):
+            raise ReplayRefused(sequence, "question_event_shape") from None
+        if label not in QUESTION_SNAPSHOT_LABELS or label == "QuestionEvent":
+            raise ReplayRefused(sequence, "question_event_label")
+        if key in result and _question_normal(result[key]) != _question_normal(before):
+            raise ReplayRefused(sequence, "question_event_precondition")
+        result[key] = after
+    return result
+
+
+def validate_question_snapshots(rows):
+    """Refuse mixed lifecycle commit boundaries without executing any pending work.
+
+    Legacy unbound Questions and ordinary Requests need no lifecycle event.
+    Every new lifecycle row and protected Request does. The D3 fingerprint and
+    claim clock reconstruction remain the ordinary graph owner's protocol.
+    """
+    rebuilt = rebuild_question_snapshots(rows.get("question_events", []))
+    indexed = {
+        name: {row["id"]: row for row in rows.get(name, [])}
+        for name in QUESTION_SNAPSHOT_LABELS.values()
+    }
+    for (label, row_id), expected in rebuilt.items():
+        actual = indexed[QUESTION_SNAPSHOT_LABELS[label]].get(row_id)
+        if actual is None or _question_normal(expected) != _question_normal(actual):
+            raise ReplayRefused(None, "question_snapshot_mismatch")
+    for label, table_name in QUESTION_SNAPSHOT_LABELS.items():
+        if label in {"Question", "QuestionEvent"}:
+            continue
+        for row in indexed[table_name].values():
+            if label == "Request" and row.get("protocol") != "question_answer_v1":
+                continue
+            if (label, row["id"]) not in rebuilt:
+                raise ReplayRefused(None, "question_history_missing")
+    for binding in indexed["question_bindings"].values():
+        question = indexed["questions"].get(binding["question_id"])
+        if question is None or question["state"] != binding["state"]:
+            raise ReplayRefused(None, "question_binding_state")
+        if (binding["state"] == "open") != bool(binding.get("open_topic_key")):
+            raise ReplayRefused(None, "question_open_topic")
+    for application in indexed["question_applications"].values():
+        request = indexed["requests"].get(application["request_id"])
+        if (
+            request is None
+            or request.get("application_id") != application["id"]
+            or request.get("answer_state") != "applied"
+            or request.get("status") != "saved"
+            or request.get("commit_id") != application["commit_id"]
+            or request.get("change_set_id") != application["change_set_id"]
+        ):
+            raise ReplayRefused(None, "question_application_request")
+    ordinals = set()
+    run_ids = set()
+    for run in indexed["curator_run_order"].values():
+        ordinal = run["ordinal"]
+        if (
+            type(ordinal) is not int
+            or ordinal < 1
+            or ordinal in ordinals
+            or run["run_id"] in run_ids
+        ):
+            raise ReplayRefused(None, "question_run_order")
+        ordinals.add(ordinal)
+        run_ids.add(run["run_id"])
+    # Snapshot counts cannot prove verification order or reconstruct a streak.
+    # Bind each new ordered verification to its actual retained D3 marker.
+    values = {row["id"]: row.get("value") for row in rows.get("history_values", [])}
+    markers = {}
+    for entry in rows.get("change_entries", []):
+        if entry.get("field") != "verified":
+            continue
+        try:
+            verification_id = json.loads(values[entry["new_value_id"]])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if type(verification_id) is str:
+            markers.setdefault(verification_id, []).append(entry)
+    run_ordinals = {row["run_id"]: row["ordinal"] for row in indexed["curator_run_order"].values()}
+    for verification in rows.get("verifications", []):
+        if verification.get("commit_sequence") is None:
+            continue
+        matches = markers.get(verification["id"], [])
+        if len(matches) != 1:
+            raise ReplayRefused(None, "question_verification_marker")
+        marker = matches[0]
+        if (
+            marker["sequence"] != verification["commit_sequence"]
+            or marker["entity_id"] != verification["claim_id"]
+            or marker["commit_id"] != verification["commit_id"]
+        ):
+            raise ReplayRefused(None, "question_verification_order")
+        if (
+            verification.get("run_ordinal") is not None
+            and run_ordinals.get(verification.get("run_id")) != verification["run_ordinal"]
+        ):
+            raise ReplayRefused(None, "question_verification_run")
+        if verification.get("attempt_kind") == "no_source":
+            if not (
+                verification.get("evidence_pieces") == "[]"
+                and verification.get("agree") == 0
+                and verification.get("disagree") == 0
+                and verification.get("ratio") is None
+                and verification.get("band") == "zero_signal"
+                and verification.get("disposition") == "deferred"
+                and not verification.get("second_judge_judgment_ids")
+            ):
+                raise ReplayRefused(None, "question_no_source_truth")
+    return rebuilt
+
+
 ENTITY_TABLES: dict[str, tuple[str, ...]] = {
     "item": ("items",),
     "link": ("links",),

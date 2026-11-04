@@ -18,19 +18,24 @@ Last confirmed moves to the time the evidence speaks for: the newest admitted su
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
+from grove import clock
+from grove.cleanup.access import Access, CleanupRefused, hold
+from grove.ids import new_id
 from grove.store import capabilities as caps
 from grove.store.current import has_ended
 from grove.store.primitives import KIND_BELIEF
 from grove.writer.clocks import parse_instant
 from grove.writer.errors import Refused
-from grove.writer.history import compact
+from grove.writer.history import Stamp, add_entry, compact, encode
 from grove.writer.provenance import calendar_logged, connector_type_of
+from grove.writer.tx import WorldWriter
 
 if TYPE_CHECKING:
+    from grove.cleanup.legwork import NoSourceDeferralV1
     from grove.writer.apply import _Plan, _Run
 
 # Appendix C: weight 1.0 when newer than the last confirmation, falling to 0.3 at the staleness
@@ -320,10 +325,11 @@ def can_confirm(run: "_Run", row: dict[str, Any], claim_type: str, claim_id: str
 # The verify operation -------------------------------------------------------------------------
 
 
-def _claim(run: "_Run", claim_id: str) -> tuple[str, dict[str, Any]]:
+def _claim(run: "_Run", claim_id: str, *, lock: bool = True) -> tuple[str, dict[str, Any]]:
     from grove.writer import apply
 
-    items = run.tx.run(apply._LOCK_ITEM, id=claim_id, at=run.at)
+    params = {"id": claim_id, **({"at": run.at} if lock else {})}
+    items = run.tx.run(apply._LOCK_ITEM if lock else apply._READ_ITEM, **params)
     if items:
         row = items[0]["i"]
         if row.get("kind") == KIND_BELIEF:
@@ -334,7 +340,7 @@ def _claim(run: "_Run", claim_id: str) -> tuple[str, dict[str, Any]]:
                 {"claim": claim_id},
             )
         return "item", row
-    links = run.tx.run(apply._LOCK_LINK, id=claim_id, at=run.at)
+    links = run.tx.run(apply._LOCK_LINK if lock else apply._READ_LINK, **params)
     if links:
         return "link", links[0]["l"]
     raise Refused("not_found", "claim_not_found", f"no item or link {claim_id}", {})
@@ -599,9 +605,13 @@ def verify_op(run: "_Run", index: int, op: dict[str, Any]) -> None:
 
     claim_id = run.ref(op["claim"], "any")
     run.summaries[index] = f"verify {run.label(op['claim'])}"
-    claim_type, claim = _claim(run, claim_id)
+    # WorldWriter already holds the world lock. Read without a touched_at write until
+    # the oscillation guard passes; a refused resolution must have no new effect.
+    claim_type, claim = _claim(run, claim_id, lock=False)
     subject = f"{claim_type}:{claim_id}"
     disposition = op["disposition"]
+    if run.caller_kind == "cleanup" and disposition in _RESOLUTIONS:
+        _refuse_recent_resolution(run.tx, claim_type, claim_id, run.stamp.run_id)
     pieces = _pieces(run, op, subject, run.caller_kind)
     correlated = _second(run, op, subject, pieces)
     ended = has_ended(claim) if claim_type == "item" else not claim.get("active_key")
@@ -684,6 +694,12 @@ def verify_op(run: "_Run", index: int, op: dict[str, Any]) -> None:
             {"previous": claim["recheck_by"].isoformat()},
         )
 
+    ordinal = (
+        accepted_curator_run(run.tx, run.stamp.run_id, run.at, stamp=run.stamp)
+        if run.caller_kind == "cleanup" and run.stamp.run_id is not None
+        else None
+    )
+    _claim(run, claim_id)
     # Writes. The evidence first: a piece that supports or contradicts becomes a row on the claim.
     plans = []
     for piece in pieces:
@@ -701,6 +717,12 @@ def verify_op(run: "_Run", index: int, op: dict[str, Any]) -> None:
     row = compact(
         {
             "id": verification_id,
+            "attempt_kind": "scored",
+            "attempt_id": verification_id,
+            "claim_type": claim_type,
+            "claim_version": claim.get("version"),
+            "run_ordinal": ordinal,
+            "change_set_id": run.stamp.change_set_id,
             "claim_id": claim_id,
             "run_id": run.stamp.run_id,
             "at": run.at,
@@ -768,6 +790,18 @@ def verify_op(run: "_Run", index: int, op: dict[str, Any]) -> None:
         world_time=world_time,
         reason_id=reason_id,
     )
+    _set_verification_sequence(run.tx, verification_id)
+    if run.caller_kind == "cleanup" and disposition == "deferred":
+        _pending_escalation(
+            run.tx,
+            run.stamp,
+            claim_type,
+            claim_id,
+            verification_id,
+            verification_streak(run.tx, claim_type, claim_id),
+            reason_id=reason_id,
+            person_only=False,
+        )
     if columns:
         setter = apply._SET_ITEM if claim_type == "item" else apply._SET_LINK
         bump = apply._BUMP_ITEM if claim_type == "item" else apply._BUMP_LINK
@@ -1023,3 +1057,566 @@ def plan_horizon(values: list[Any]) -> datetime | None:
     if not instants:
         return None
     return min(instants) + PLAN_MARGIN
+
+
+# Inactive Curator command. The owner must supply an Access lease; there is no
+# production default. All helpers below operate under the same WorldWriter lock.
+_RESOLUTIONS = frozenset({"confirmed", "moved", "retired"})
+_STRUCTURAL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/@+~=-]{0,127}\Z")
+
+
+def _identifier(value):
+    if type(value) is not str or _STRUCTURAL_ID.fullmatch(value) is None:
+        raise CleanupRefused("curator_reference_invalid")
+    return value
+
+
+def accepted_curator_run(tx, run_id: str, at: datetime, *, stamp=None) -> int:
+    """Allocate one ordinal for accepted work, never for a mere started run.
+
+    RunRecord is deliberately not required here: legacy scored callers use
+    synthetic run identities. The protected no-source entry validates its run
+    separately. A rollback also rolls back this allocation.
+    """
+    _identifier(run_id)
+    if not isinstance(at, datetime) or at.utcoffset() is None:
+        raise CleanupRefused("curator_time_invalid")
+    tx.lock_world()
+    rows = tx.run("MATCH (r:CuratorRunOrder {run_id: $id}) RETURN r", id=run_id)
+    if rows:
+        ordinal = rows[0]["r"]["ordinal"]
+        if len(rows) != 1 or type(ordinal) is not int or ordinal < 1:
+            raise CleanupRefused("curator_run_order_invalid")
+        return ordinal
+    rows = tx.run("MATCH (r:CuratorRunOrder) RETURN coalesce(max(r.ordinal), 0) AS ordinal")
+    previous = rows[0]["ordinal"]
+    if type(previous) is not int or not 0 <= previous < 2**63 - 1:
+        raise CleanupRefused("curator_run_order_exhausted")
+    row = {
+        "id": new_id(tx.world_id),
+        "world_id": tx.world_id,
+        "run_id": run_id,
+        "ordinal": previous + 1,
+        "accepted_at": at,
+        "version": 1,
+        "touched_at": at,
+    }
+    tx.run("CREATE (r:CuratorRunOrder) SET r += $row", row=row)
+    stamp = stamp or Stamp(
+        tx.world_id, at, "curator", new_id(tx.world_id), new_id(tx.world_id), run_id=run_id
+    )
+    _question_event(tx, stamp, "run_accepted", "CuratorRunOrder", None, row)
+    return previous + 1
+
+
+def _ordered_verifications(tx, claim_type: str, claim_id: str) -> list[dict]:
+    """Use the verified ChangeEntry, including for rows before this extension.
+
+    A wall-clock tie, reordered snapshot, or duplicate attempt cannot affect the
+    streak. Refuse inconsistent history rather than inventing an order.
+    """
+    rows = tx.run(
+        "MATCH (v:Verification {claim_id: $id}), "
+        "(e:ChangeEntry {entity_id: $id, entity_type: $kind, field: 'verified'}), "
+        "(h:HistoryValue) WHERE e.new_value_id = h.id AND e.commit_id = v.commit_id "
+        "RETURN v, e.sequence AS sequence, h.value AS value ORDER BY e.sequence",
+        id=claim_id,
+        kind=claim_type,
+    )
+    ordered, seen = [], {}
+    for row in rows:
+        verification, sequence = row["v"], row["sequence"]
+        if row["value"] != encode(verification["id"]):
+            continue
+        if (
+            type(sequence) is not int
+            or sequence < 1
+            or verification.get("claim_type", claim_type) != claim_type
+            or verification.get("commit_sequence", sequence) != sequence
+        ):
+            raise CleanupRefused("curator_verification_history_invalid")
+        identity = verification.get("attempt_id") or verification["id"]
+        if identity in seen:
+            if seen[identity] != verification:
+                raise CleanupRefused("curator_attempt_history_conflict")
+            continue
+        seen[identity] = verification
+        ordered.append({**verification, "commit_sequence": sequence})
+    return ordered
+
+
+def verification_streak(tx, claim_type: str, claim_id: str) -> tuple[dict, ...]:
+    """Trailing unique deferred attempts, oldest first, from durable history."""
+    if claim_type not in {"item", "link"}:
+        raise CleanupRefused("curator_claim_type_invalid")
+    _identifier(claim_id)
+    streak = []
+    for row in _ordered_verifications(tx, claim_type, claim_id):
+        if row["disposition"] in _RESOLUTIONS:
+            streak.clear()
+        elif row["disposition"] == "deferred":
+            streak.append(row)
+        else:
+            raise CleanupRefused("curator_verification_history_invalid")
+    return tuple(streak)
+
+
+def _recent_resolution(tx, claim_type, claim_id, run_id):
+    if run_id is None:
+        return None
+    # Include the three latest accepted runs, including the current run if it
+    # already accepted other work. Merely starting this run does not age history.
+    recent = tx.run(
+        "MATCH (r:CuratorRunOrder) RETURN r.run_id AS run_id ORDER BY r.ordinal DESC LIMIT 3"
+    )
+    ids = {row["run_id"] for row in recent}
+    for row in reversed(_ordered_verifications(tx, claim_type, claim_id)):
+        if row["disposition"] in _RESOLUTIONS and row.get("run_id") in ids:
+            return row
+    return None
+
+
+def _refuse_recent_resolution(tx, claim_type, claim_id, run_id):
+    prior = _recent_resolution(tx, claim_type, claim_id, run_id)
+    if prior is not None:
+        raise Refused(
+            "invalid_arguments",
+            "curator_oscillation",
+            "a recent Curator resolution needs an open oscillation finding",
+            {
+                "resolution_id": prior["id"],
+                "run_id": prior["run_id"],
+                "prerequisite": "record_no_source_deferral",
+            },
+        )
+
+
+def guard_scored_resolutions(tx, stamp: Stamp, ops: list[dict]) -> None:
+    """Preflight for the shared writer seam, before any batch graph operation.
+
+    The API owner must call this before apply_ops. In particular, moved/retired
+    operations otherwise precede verify in the batch. verify_op repeats the guard
+    and ordinary batch rollback remains mandatory on every refusal.
+    """
+    from grove.writer import apply
+    from grove.writer.errors import BatchDeclined
+    from grove.writer.ops import op_label
+
+    if stamp.caller_kind != "cleanup" or stamp.run_id is None:
+        return
+    refusals = []
+    for op in ops:
+        if (
+            not isinstance(op, dict)
+            or op.get("op") != "verify"
+            or op.get("disposition") not in _RESOLUTIONS
+            or not isinstance(op.get("claim"), str)
+        ):
+            continue
+        for kind, query in (("item", apply._READ_ITEM), ("link", apply._READ_LINK)):
+            if tx.run(query, id=op["claim"]):
+                try:
+                    _refuse_recent_resolution(tx, kind, op["claim"], stamp.run_id)
+                except Refused as error:
+                    refusals.append(error.refusal(*op_label(op)))
+                break
+    if refusals:
+        raise BatchDeclined(refusals, batch_size=len(ops), request_id=stamp.request_id)
+
+
+def _set_verification_sequence(tx, verification_id):
+    found = tx.run(
+        "MATCH (v:Verification {id: $id}), (e:ChangeEntry {field: 'verified'}), "
+        "(h:HistoryValue) WHERE e.new_value_id = h.id AND h.value = $value "
+        "AND e.entity_id = v.claim_id AND e.commit_id = v.commit_id "
+        "RETURN e.sequence AS sequence",
+        id=verification_id,
+        value=encode(verification_id),
+    )
+    if len(found) != 1:
+        raise CleanupRefused("curator_verification_marker_missing")
+    sequence = found[0]["sequence"]
+    tx.run(
+        "MATCH (v:Verification {id: $id}) SET v.commit_sequence = $sequence",
+        id=verification_id,
+        sequence=sequence,
+    )
+    return sequence
+
+
+def _question_event(
+    tx, stamp, event, label, before, after, *, work_id=None, reason=None, finding=None
+):
+    payload = {"label": label, "before": before, "after": after}
+    if finding is not None:
+        payload["finding"] = finding
+    snapshot = encode(payload)
+    if len(snapshot.encode("utf-8")) > 256 * 1024:
+        raise CleanupRefused("question_history_bound")
+    tx.run(
+        "CREATE (e:QuestionEvent) SET e += $row",
+        row=compact(
+            {
+                "id": new_id(tx.world_id),
+                "question_id": after.get("question_id"),
+                "work_id": work_id,
+                "event": event,
+                "commit_id": stamp.commit_id,
+                "change_set_id": stamp.change_set_id,
+                "sequence": tx.next_sequence(),
+                "at": stamp.at,
+                "reason": reason,
+                "version": 1,
+                "touched_at": stamp.at,
+                "snapshot": snapshot,
+            }
+        ),
+    )
+
+
+def _checked_legwork(tx, command):
+    from grove.cleanup.legwork import LegworkAttemptV1
+    from grove.cleanup.question_lifecycle import canonical_json, decode_json
+
+    if not command.legwork_ids:
+        raise CleanupRefused("no_source_checked_legwork_required")
+    attempts = []
+    for legwork_id in command.legwork_ids:
+        found = tx.run("MATCH (l:CuratorLegwork {id: $id}) RETURN l", id=legwork_id)
+        if len(found) != 1:
+            raise CleanupRefused("no_source_checked_legwork_required")
+        row = found[0]["l"]
+        # Decode through the same closed codec used by the authorized producer.
+        attempt = decode_json(LegworkAttemptV1, row["attempt"])
+        if (
+            attempt.attempt_id != legwork_id
+            or attempt.work_id != command.work_id
+            or attempt.run_id != command.run_id
+            or attempt.target != command.target
+            or row.get("work_id") != attempt.work_id
+            or row.get("run_id") != attempt.run_id
+            or row.get("result") != attempt.result
+            or row.get("target") != canonical_json(attempt.target)
+            or row.get("reason") != attempt.reason_value_id
+        ):
+            raise CleanupRefused("no_source_legwork_binding_invalid")
+        if attempt.result not in {"no_match", "no_eligible_source", "person_only"}:
+            raise CleanupRefused("no_source_legwork_incomplete")
+        attempts.append(attempt)
+    return attempts
+
+
+def _pending_escalation(
+    tx, stamp, claim_type, claim_id, attempt_id, streak, *, reason_id, person_only, work_id=None
+):
+    if len(streak) < 3:
+        return None
+    start = streak[0].get("attempt_id") or streak[0]["id"]
+    existing = tx.run(
+        "MATCH (e:CuratorEscalation {claim_type: $kind, claim_id: $id, "
+        "streak_start: $start}) RETURN e",
+        kind=claim_type,
+        id=claim_id,
+        start=start,
+    )
+    if existing:
+        return existing[0]["e"]["id"]
+    destination = "question" if person_only else "retirement_proposal"
+    row = {
+        "id": new_id(tx.world_id),
+        "world_id": tx.world_id,
+        "claim_id": claim_id,
+        "claim_type": claim_type,
+        "streak_start": start,
+        "attempt_id": attempt_id,
+        "destination": destination,
+        "state": "pending",
+        "prerequisite": "bound_question_plan" if person_only else "retirement_proposal_owner",
+        "created_at": stamp.at,
+        "version": 1,
+        "touched_at": stamp.at,
+    }
+    tx.run("CREATE (e:CuratorEscalation) SET e += $row", row=row)
+    _question_event(
+        tx,
+        stamp,
+        "escalation_pending",
+        "CuratorEscalation",
+        None,
+        row,
+        work_id=work_id,
+        reason=reason_id,
+    )
+    return row["id"]
+
+
+def record_no_source_deferral(
+    driver, world_id: str, caller, command: "NoSourceDeferralV1", *, access: Access | None = None
+) -> str:
+    """Record one checked failed source check; return its durable Verification ID.
+
+    Exact retries return the original row under current authority. A recent
+    resolution records an oscillation event and pending work without moving any
+    claim clock. Pending escalations are intents, never invented destinations.
+    """
+    from grove.cleanup.legwork import NoSourceDeferralV1
+    from grove.cleanup.question_lifecycle import canonical_json
+    from grove.store import lane
+    from grove.writer import apply
+    from grove.writer.cleanup import _caller, _ordinary
+
+    _caller(caller, {"cleanup"})
+    if type(command) is not NoSourceDeferralV1:
+        raise CleanupRefused("no_source_command_invalid")
+    encoded = canonical_json(command)
+
+    def work(tx):
+        _ordinary(tx)
+        # Access covers replay disclosure, including references held by legwork.
+        attempts = _checked_legwork(tx, command)
+        with hold(
+            access,
+            world_id,
+            command.run_id,
+            "no_source_legwork",
+            *(a.authority_id for a in attempts),
+            *(ref for a in attempts for ref in a.scope_ids),
+            *(
+                ref
+                for a in attempts
+                for source in a.source_refs
+                for ref in (source.source_id, source.episode_id)
+            ),
+        ):
+            return commit(tx, attempts)
+
+    def commit(tx, attempts):
+        previous = tx.run(
+            "MATCH (v:Verification {attempt_id: $id}) RETURN v", id=command.attempt_id
+        )
+        if previous:
+            row = previous[0]["v"]
+            if (
+                len(previous) != 1
+                or row.get("attempt_kind") != "no_source"
+                or row.get("command") != encoded
+            ):
+                raise CleanupRefused("idempotency_conflict")
+            history = _ordered_verifications(tx, command.target.kind, command.target.id)
+            if not any(v["id"] == row["id"] for v in history):
+                raise CleanupRefused("curator_verification_marker_missing")
+            return row["id"]
+        at = clock.now(world_id)
+        runs = tx.run("MATCH (r:RunRecord {id: $id}) RETURN r", id=command.run_id)
+        if (
+            len(runs) != 1
+            or runs[0]["r"].get("agent") != "curator"
+            or runs[0]["r"].get("outcome") != "running"
+            or runs[0]["r"].get("started") is None
+            or runs[0]["r"]["started"] > at
+        ):
+            raise CleanupRefused("no_source_run_invalid")
+        if command.next_check <= at:
+            raise CleanupRefused("no_source_recheck_not_future")
+        # D4 has no calibrated maximum horizon: retain its explicit-instant
+        # policy and never synthesize a default from a retry or a run timestamp.
+        parse_instant(command.next_check.isoformat())
+        reason = tx.run(
+            "MATCH (h:HistoryValue {id: $id}) RETURN h.value AS value",
+            id=command.reason_value_id,
+        )
+        if (
+            len(reason) != 1
+            or not isinstance(reason[0]["value"], str)
+            or not reason[0]["value"].strip()
+            or len(reason[0]["value"]) > 2000
+            or reason[0]["value"] == "[forgotten]"
+        ):
+            raise CleanupRefused("no_source_reason_invalid")
+        stamp = Stamp(
+            world_id,
+            at,
+            caller.actor,
+            new_id(world_id),
+            new_id(world_id),
+            run_id=command.run_id,
+            caller_kind=caller.kind,
+        )
+        run = apply._Run(tx, stamp, {}, caller.kind)
+        kind, claim = _claim(run, command.target.id, lock=False)
+        if kind != command.target.kind or command.target.slot != "claim":
+            raise CleanupRefused("no_source_target_invalid")
+        if claim.get("version") != command.target.version:
+            raise CleanupRefused("no_source_target_stale")
+        if has_ended(claim) or (kind == "link" and not claim.get("active_key")):
+            raise CleanupRefused("no_source_target_ended")
+
+        class TransactionRead:
+            def read(self, query, **parameters):
+                return tx.run(query, **parameters)
+
+        if not any(
+            d.claim_type == kind and d.claim_id == claim["id"]
+            for d in lane.pool(TransactionRead(), at=at)
+        ):
+            raise CleanupRefused("no_source_target_not_due")
+        found = tx.run("MATCH (w:QuestionWork {id: $id}) RETURN w", id=command.work_id)
+        before = found[0]["w"] if found else None
+        target = canonical_json(command.target)
+        if before and (
+            before.get("target") != target
+            or before.get("state") in {"resolved", "cancelled"}
+            or (before.get("lease_owner") not in {None, command.run_id})
+        ):
+            raise CleanupRefused("no_source_work_conflict")
+        prior = _recent_resolution(tx, kind, claim["id"], command.run_id)
+        ordinal = accepted_curator_run(tx, command.run_id, at, stamp=stamp)
+        verification_id = new_id(world_id)
+        row = compact(
+            {
+                "id": verification_id,
+                "claim_id": claim["id"],
+                "claim_type": kind,
+                "claim_version": command.target.version,
+                "run_id": command.run_id,
+                "run_ordinal": ordinal,
+                "at": at,
+                "attempt_kind": "no_source",
+                "attempt_id": command.attempt_id,
+                "work_id": command.work_id,
+                "legwork_ids": list(command.legwork_ids),
+                "command": encoded,
+                "change_set_id": stamp.change_set_id,
+                "commit_id": stamp.commit_id,
+                "evidence_pieces": "[]",
+                "agree": 0.0,
+                "disagree": 0.0,
+                "band": ZERO_SIGNAL,
+                "loadbearing": load_bearing(run, kind, claim),
+                "disposition": "deferred",
+                "reason": command.reason_value_id,
+                "recheck_by_before": claim.get("recheck_by"),
+                "recheck_by_after": claim.get("recheck_by") if prior else command.next_check,
+            }
+        )
+        tx.run("CREATE (v:Verification) SET v += $row", row=row)
+        columns = {}
+        if prior is None:
+            columns["recheck_by"] = command.next_check
+            if command.recheck_how is not None:
+                columns["recheck_how"] = json.dumps(command.recheck_how, sort_keys=True)
+            columns = {key: value for key, value in columns.items() if value != claim.get(key)}
+            for key, value in columns.items():
+                old = claim.get(key)
+                # D3 stores the semantic JSON value, not its serialized column.
+                if key == "recheck_how":
+                    old = json.loads(old) if old is not None else None
+                    value = json.loads(value)
+                add_entry(
+                    tx,
+                    stamp,
+                    entity_type=kind,
+                    entity_id=claim["id"],
+                    field=key,
+                    old=old,
+                    new=value,
+                    world_time=None,
+                    reason_id=command.reason_value_id,
+                )
+            if columns:
+                tx.run(
+                    apply._SET_ITEM if kind == "item" else apply._SET_LINK,
+                    id=claim["id"],
+                    columns={**columns, "touched_at": at},
+                )
+                tx.run(apply._BUMP_ITEM if kind == "item" else apply._BUMP_LINK, id=claim["id"])
+        add_entry(
+            tx,
+            stamp,
+            entity_type=kind,
+            entity_id=claim["id"],
+            field="verified",
+            new=verification_id,
+            world_time=None,
+            reason_id=command.reason_value_id,
+        )
+        _set_verification_sequence(tx, verification_id)
+        after = {
+            **(before or {}),
+            "id": command.work_id,
+            "world_id": world_id,
+            "group_id": (before or {}).get("group_id", command.work_id),
+            "target": target,
+            "state": "pending" if prior else "deferred",
+            "retry_at": command.next_check,
+            "reason": command.reason_value_id,
+            "version": (before or {}).get("version", 0) + 1,
+            "touched_at": at,
+        }
+        if columns:
+            after["target"] = canonical_json(
+                replace(command.target, version=command.target.version + 1)
+            )
+        after.pop("lease_owner", None)
+        after.pop("lease_until", None)
+        if before:
+            tx.run(
+                "MATCH (w:QuestionWork {id: $id}) SET w += $row",
+                id=command.work_id,
+                row={**{key: None for key in before if key not in after}, **after},
+            )
+        else:
+            tx.run("CREATE (w:QuestionWork) SET w += $row", row=after)
+        _question_event(
+            tx,
+            stamp,
+            "no_source_deferred",
+            "QuestionWork",
+            before,
+            after,
+            work_id=command.work_id,
+            reason=command.reason_value_id,
+        )
+        if prior:
+            # This event is a structural finding, not a successful resolution.
+            _question_event(
+                tx,
+                stamp,
+                "oscillation",
+                "QuestionWork",
+                after,
+                after,
+                work_id=command.work_id,
+                reason=command.reason_value_id,
+                finding={
+                    "resolution_id": prior["id"],
+                    "resolution_run": prior["run_id"],
+                    "flag_attempt": command.attempt_id,
+                    "flag_run": command.run_id,
+                    "target": command.target.to_json(),
+                },
+            )
+        _pending_escalation(
+            tx,
+            stamp,
+            kind,
+            claim["id"],
+            command.attempt_id,
+            verification_streak(tx, kind, claim["id"]),
+            work_id=command.work_id,
+            reason_id=command.reason_value_id,
+            person_only=any(a.result == "person_only" for a in attempts),
+        )
+        return verification_id
+
+    with hold(
+        access,
+        world_id,
+        command.run_id,
+        "record_no_source_deferral",
+        command.target.id,
+        command.work_id,
+        command.reason_value_id,
+        *command.legwork_ids,
+    ):
+        return WorldWriter(driver, world_id).transaction(work)

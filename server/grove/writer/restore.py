@@ -42,6 +42,7 @@ from grove.store.replay import (
     ReplayRefused,
     read_history,
     rebuild,
+    validate_question_snapshots,
 )
 from grove.writer.tx import UnknownWorld, WorldTx, WorldWriter
 
@@ -175,6 +176,14 @@ def take_snapshot(driver: Driver, world_id: str) -> dict[str, Any]:
                 for row in found
             ]
             rows[name] = sorted(exported, key=lambda row: json.dumps(row, sort_keys=True))
+        validate_question_snapshots(
+            {
+                name: [
+                    {key: _untag(value) for key, value in row["properties"].items()} for row in held
+                ]
+                for name, held in rows.items()
+            }
+        )
         measures = {
             row_id: {key: _tag(value) for key, value in sorted(held.items())}
             for row_id, held in sorted(_measures(reader.read).items())
@@ -212,12 +221,20 @@ def _snapshot_rows(world_id: str, snapshot: Mapping[str, Any]) -> dict[tuple[str
             if properties.get("world_id", world_id) != world_id:
                 raise ValueError(f"a row of {name} is of another world")
             groups.setdefault(labels, []).append(_stored(properties))
+    validate_question_snapshots(
+        {
+            name: [{key: _untag(value) for key, value in row["properties"].items()} for row in rows]
+            for name, rows in snapshot["rows"].items()
+        }
+    )
     return groups
 
 
 def _last_sequence(snapshot: Mapping[str, Any]) -> int:
     sequences = [
-        row["properties"].get("sequence") for row in snapshot["rows"].get("change_entries", [])
+        row["properties"].get("sequence")
+        for name in ("change_entries", "question_events")
+        for row in snapshot["rows"].get(name, [])
     ]
     return max((sequence for sequence in sequences if isinstance(sequence, int)), default=0)
 
@@ -571,6 +588,7 @@ def restore_loaded(
     from grove.writer.forget import inventory_fingerprint, read_inventory, validate_ledger_rows
     from grove.writer.forget_plan import transform
 
+    _snapshot_rows(world_id, snapshot)
     ledger = validate_ledger_rows(world_id, ledger_rows)
     recorded = snapshot["fingerprint"]
     history = {"last_sequence": recorded["last_sequence"], "entries": recorded["entries"]}
@@ -666,6 +684,7 @@ def restore(
     """Validate the manifest and complete ledger, load the logical snapshot, then run D3."""
     from grove.writer.forget import validate_ledger_rows
 
+    _snapshot_rows(world_id, snapshot)
     ledger = validate_ledger_rows(world_id, ledger_rows)
     recorded = snapshot["fingerprint"]
     history = {"last_sequence": recorded["last_sequence"], "entries": recorded["entries"]}
