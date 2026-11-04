@@ -6,19 +6,103 @@
 (function () {
   'use strict';
 
-  // The accepted API has no worker timeline yet. Keep the panel and toggle,
-  // but never synthesize work, freshness, or graph mutations in a live account.
+  // Live accounts show stored run metadata only. The display never starts work.
   if (window.GroveSimulation && window.GroveSimulation.isLive && window.GroveSimulation.isLive()) {
-    var livePanel=document.createElement('aside');
-    livePanel.className='hood-score';livePanel.setAttribute('aria-label','Your Grove workers');
-    livePanel.innerHTML='<div class="hood-panel-heading"><span>Your Grove workers</span></div>'+[['U','Learner','learner'],['L','Curator','curator'],['O','Connector','connector']].map(function(w){return '<button class="hood-score-row" data-a="'+w[0]+'" disabled><span class="hood-score-dot gp-worker-'+w[2]+'"></span><span class="hood-score-description"><strong>'+w[1]+'</strong><span class="hood-score-counts">Activity unavailable</span></span><span class="hood-follow-label">Follow</span></button>';}).join('')+'<div class="hood-legend-slot"><span>Freshness unavailable</span></div>';
+    var liveApi=window.GroveLive, liveState=window.GroveSimulation;
+    var livePanel=document.createElement('aside'), liveToggle=document.getElementById('agents-toggle');
+    var liveOwner=null, liveRequest=0, liveStatus='unavailable', liveSnapshot=null;
+    var workerNames={learner:'Learner',curator:'Curator',connector:'Connector',unknown:'Unknown worker'};
+    var activityText={recorded_running:'Run recorded as active',stale:'Last run needs a status update',idle:'No active run recorded',unknown:'Activity is unknown'};
+    var policyText={ordinary_world_policy:'Allowed for this account',demo_learner_only:'Demo requests only',demo_autonomous_disabled:'Off in this demo'};
+    var capabilityText={legacy_learner_only:'Limited import support',curator_authority_unavailable:'Not available yet',legacy_connector_only:'Limited connection support'};
+    var outcomeText={running:'Recorded as active',ok:'Completed',failed:'Failed',killed:'Stopped',timeout:'Time limit reached',stopped:'Stopped',preempted:'Interrupted',budget:'Work limit reached',abandoned:'No completion recorded',unknown:'Unknown outcome'};
+    livePanel.className='hood-score hood-live';livePanel.id='grove-worker-panel';
+    livePanel.setAttribute('aria-label','Your Grove workers');
     document.body.appendChild(livePanel);
-    var liveToggle=document.getElementById('agents-toggle');
+    liveToggle.setAttribute('aria-controls',livePanel.id);
+    liveToggle.setAttribute('aria-label','Show worker activity');
+    liveToggle.closest('label').title='Show recorded worker activity';
     liveToggle.checked=false;document.body.classList.remove('hood-on');
-    liveToggle.addEventListener('change',function(){document.body.classList.toggle('hood-on',liveToggle.checked);});
-    window.addEventListener('grove:change',function(){if(!window.GroveSimulation.getState().onboardingComplete){liveToggle.checked=false;document.body.classList.remove('hood-on');}});
-    window.GroveCare={summary:function(){return {updated:null,connections:null,tended:null,fresh:null,areas:null,working:null,enabled:liveToggle.checked,running:false};}};
+
+    function safeText(value){return String(value).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
+    function ownerNow(){var state=liveState.getState();return state.auth&&state.onboardingComplete&&state.account||null;}
+    function keys(value,names){return !!value&&typeof value==='object'&&!Array.isArray(value)&&Object.keys(value).sort().join(',')===names.slice().sort().join(',');}
+    function member(value,choices){return typeof value==='string'&&Object.prototype.hasOwnProperty.call(choices,value);}
+    function timestamp(value){return typeof value==='string'&&value.length<=40&&/^\d{4}-\d{2}-\d{2}T[0-9:.]+(?:Z|[+-]\d{2}:\d{2})$/.test(value)&&Number.isFinite(Date.parse(value));}
+    function count(value){return Number.isInteger(value)&&value>=0&&value<=2147483647;}
+    function validPayload(body){
+      if(!keys(body,['schema','observed_at','observation_kind','service_state','service_reason','agents','recent_runs','recent_limit','recent_has_more'])||
+        body.schema!=='grove.worker-activity.v1'||body.observation_kind!=='stored_run_records'||body.service_state!=='unknown'||body.service_reason!=='no_process_heartbeat'||
+        !timestamp(body.observed_at)||body.recent_limit!==20||typeof body.recent_has_more!=='boolean'||!Array.isArray(body.agents)||body.agents.length!==3||
+        !Array.isArray(body.recent_runs)||body.recent_runs.length>20||JSON.stringify(body).length>32768)return false;
+      var order=['learner','curator','connector'];
+      return body.agents.every(function(row,i){
+        return keys(row,['agent','policy','capability','activity'])&&row.agent===order[i]&&
+          keys(row.policy,['state','reason'])&&member(row.policy.reason,policyText)&&
+          ({ordinary_world_policy:'allowed',demo_learner_only:'limited',demo_autonomous_disabled:'disabled'})[row.policy.reason]===row.policy.state&&
+          keys(row.capability,['state','reason'])&&member(row.capability.reason,capabilityText)&&
+          ({legacy_learner_only:'limited',curator_authority_unavailable:'unavailable',legacy_connector_only:'limited'})[row.capability.reason]===row.capability.state&&
+          keys(row.activity,['state','running_records','stale_records'])&&member(row.activity.state,activityText)&&count(row.activity.running_records)&&count(row.activity.stale_records);
+      })&&body.recent_runs.every(function(row){return keys(row,['agent','outcome','started_at','finished_at'])&&member(row.agent,workerNames)&&member(row.outcome,outcomeText)&&
+        (row.started_at===null||timestamp(row.started_at))&&(row.finished_at===null||timestamp(row.finished_at));});
+    }
+    function displayTime(value){return value===null?'Time unavailable':new Date(value).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'});}
+    function summaries(){
+      var values={};
+      ['learner','curator','connector'].forEach(function(name,i){
+        var row=liveSnapshot&&liveSnapshot.agents[i];
+        values[name]=row?activityText[row.activity.state]+' · '+(row.policy.state==='disabled'?policyText[row.policy.reason]:capabilityText[row.capability.reason]):liveStatus==='loading'?'Checking status…':'Activity unavailable';
+      });
+      return values;
+    }
+    function renderLive(){
+      liveToggle.setAttribute('aria-expanded',String(liveToggle.checked));
+      var buttonText=liveStatus==='loading'?'Refresh again':liveStatus==='error'?'Retry':'Refresh';
+      var content='<div class="hood-panel-heading"><h2>Your Grove workers</h2><button type="button" class="hood-live-refresh" data-worker-refresh>'+buttonText+'</button></div>';
+      content+='<p class="hood-live-intro">Stored activity. This view does not start workers.</p>';
+      if(liveStatus==='loading')content+='<p role="status" class="hood-live-message">Checking worker status…</p>';
+      else if(liveStatus==='error'||!liveSnapshot)content+='<p role="status" class="hood-live-message">Worker status is unavailable. Try again.</p>';
+      else{
+        content+='<p class="hood-live-observed" role="status">Last checked '+safeText(displayTime(liveSnapshot.observed_at))+'</p>';
+        content+=liveSnapshot.agents.map(function(row){return '<section class="hood-live-worker" data-worker="'+row.agent+'"><div class="hood-live-worker-head"><span class="hood-score-dot gp-worker-'+row.agent+'" aria-hidden="true"></span><h3>'+workerNames[row.agent]+'</h3><button type="button" disabled title="Following a worker is not available">Follow</button></div><p class="hood-live-activity">'+activityText[row.activity.state]+'</p><p class="hood-live-policy">'+policyText[row.policy.reason]+'</p><p class="hood-live-capability">'+capabilityText[row.capability.reason]+'</p></section>';}).join('');
+        content+='<details class="hood-live-recent"><summary>Recent activity'+(liveSnapshot.recent_has_more?' · latest 20':'')+'</summary>';
+        content+=liveSnapshot.recent_runs.length?'<ol>'+liveSnapshot.recent_runs.map(function(row){return '<li><strong>'+workerNames[row.agent]+' · '+outcomeText[row.outcome]+'</strong><span>Started '+safeText(displayTime(row.started_at))+'</span><span>'+(row.finished_at===null?'No finish time recorded':'Finished '+safeText(displayTime(row.finished_at)))+'</span></li>';}).join('')+'</ol>':'<p>No recent activity recorded.</p>';
+        content+='</details><p class="hood-live-note">Process status is unavailable. A stored run does not confirm that a worker is still active.</p>';
+      }
+      var focused=livePanel.contains(document.activeElement)&&document.activeElement.hasAttribute('data-worker-refresh');
+      livePanel.innerHTML=content;
+      livePanel.querySelector('[data-worker-refresh]').addEventListener('click',refreshWorkers);
+      if(focused)livePanel.querySelector('[data-worker-refresh]').focus();
+      window.dispatchEvent(new CustomEvent('grove:worker-status'));
+    }
+    function clearWorkers(nextOwner){
+      liveRequest++;liveOwner=nextOwner||null;liveSnapshot=null;liveStatus='unavailable';
+      liveToggle.checked=false;document.body.classList.remove('hood-on');renderLive();
+    }
+    function refreshWorkers(){
+      var account=ownerNow();
+      if(!account){clearWorkers(null);return Promise.resolve();}
+      if(document.hidden)return Promise.resolve();
+      if(liveOwner!==account){liveRequest++;liveOwner=account;liveSnapshot=null;}
+      var request=++liveRequest;liveStatus='loading';liveSnapshot=null;renderLive();
+      function current(){return request===liveRequest&&account===liveOwner&&account===ownerNow()&&!document.hidden;}
+      return liveApi.workers().then(function(res){
+        if(!current()||res.stale)return;
+        if(!res.ok||!validPayload(res.body)){liveStatus='error';liveSnapshot=null;}else{liveStatus='ready';liveSnapshot=res.body;}
+        renderLive();
+      }).catch(function(){if(current()){liveStatus='error';liveSnapshot=null;renderLive();}});
+    }
+    liveToggle.addEventListener('change',function(){
+      document.body.classList.toggle('hood-on',liveToggle.checked);
+      liveToggle.setAttribute('aria-expanded',String(liveToggle.checked));
+      if(liveToggle.checked)refreshWorkers();else{liveRequest++;if(liveStatus==='loading'){liveStatus='unavailable';renderLive();}}
+    });
+    window.addEventListener('grove:change',function(){var account=ownerNow();if(account!==liveOwner)clearWorkers(account);});
+    ['grove:unauthenticated','grove:session-changed','grove:graph-cleared'].forEach(function(name){window.addEventListener(name,function(){clearWorkers(null);});});
+    document.addEventListener('visibilitychange',function(){if(document.hidden){liveRequest++;if(liveStatus==='loading'){liveStatus='unavailable';renderLive();}}});
+    window.GroveCare={refresh:refreshWorkers,summary:function(){return {updated:null,connections:null,tended:null,fresh:null,areas:null,working:null,enabled:liveToggle.checked,running:false,workers:summaries()};}};
     window.__hood={agents:function(){return {};},at:function(){return {t:0,total:0,turn:null,cycle:0,ready:false};},turns:function(){return [];},score:function(){return {};},following:function(){return null;}};
+    renderLive();
     return;
   }
 

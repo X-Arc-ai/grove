@@ -165,7 +165,45 @@
     return { positions: out, placed: placed };
   }
 
-  var api = { placeNew: placeNew };
+  // A display-only map derived from actual adjacency. It never reads or writes stored
+  // coordinates. Semantic hubs seed communities; their connected records fill unequal
+  // regions through the centre instead of forming one rim around an empty centre.
+  function organicView(nodes, edges) {
+    var list=(nodes||[]).filter(function(n){return n&&typeof n.id==='string';}).slice().sort(function(a,b){return a.id.localeCompare(b.id);});
+    var byId=Object.create(null),near=Object.create(null),groups=Object.create(null),positions={},primary={};
+    list.forEach(function(n){byId[n.id]=n;near[n.id]=[];});
+    (edges||[]).forEach(function(e){if(e&&byId[e.source]&&byId[e.target]&&e.source!==e.target){near[e.source].push(e.target);near[e.target].push(e.source);}});
+    Object.keys(near).forEach(function(id){near[id]=Array.from(new Set(near[id])).sort();});
+    if(!list.length)return {positions:positions,primary:primary};
+    function rank(a,b){return near[b.id].length-near[a.id].length||a.id.localeCompare(b.id);}
+    var hubs=list.filter(function(n){return n.id!=='grove-self'&&['company','project','organisation','plan'].includes(n.type);}).sort(rank);
+    if(!hubs.length)hubs=list.filter(function(n){return n.id!=='grove-self';}).sort(rank).slice(0,Math.max(1,Math.min(8,Math.round(Math.sqrt(list.length)/3))));
+    if(!hubs.length)hubs=list.slice(0,1);
+    var queue=[];
+    hubs.forEach(function(n){primary[n.id]=n.id;groups[n.id]=[];queue.push(n.id);});
+    for(var q=0;q<queue.length;q++)near[queue[q]].forEach(function(id){if(id==='grove-self'||primary[id])return;primary[id]=primary[queue[q]];queue.push(id);});
+    list.forEach(function(n){if(n.id==='grove-self')return;if(!primary[n.id]){primary[n.id]=n.id;groups[n.id]=[];hubs.push(n);}groups[primary[n.id]].push(n);});
+    hubs.sort(function(a,b){return groups[b.id].length-groups[a.id].length||rank(a,b);});
+    var centers={},golden=2.399963229728653;
+    hubs.forEach(function(h,i){var angle=i*golden,radial=170*Math.sqrt(i)*(0.92+(i%3)*0.07);centers[h.id]={x:Math.cos(angle)*radial*1.25,y:Math.sin(angle)*radial*0.88};});
+    // Actual inter-community edges pull related regions together, with a bounded shift.
+    var start=JSON.parse(JSON.stringify(centers));
+    hubs.forEach(function(h){var links=Object.create(null);groups[h.id].forEach(function(n){near[n.id].forEach(function(id){var other=primary[id];if(other&&other!==h.id)links[other]=(links[other]||0)+1;});});var total=0,x=0,y=0;Object.keys(links).sort().forEach(function(id){if(!start[id])return;var w=Math.sqrt(links[id]);total+=w;x+=start[id].x*w;y+=start[id].y*w;});if(total){centers[h.id].x=start[h.id].x*.82+x/total*.18;centers[h.id].y=start[h.id].y*.82+y/total*.18;}});
+    function hash(id){var h=2166136261;for(var i=0;i<id.length;i++){h^=id.charCodeAt(i);h=Math.imul(h,16777619);}return h>>>0;}
+    var discs=new Discs(150);
+    hubs.forEach(function(h,index){
+      var c=centers[h.id],members=groups[h.id].slice().sort(function(a,b){return (a.id===h.id?-1:b.id===h.id?1:rank(a,b));});
+      members.forEach(function(n,i){var phase=(hash(n.id)%1000)/1000,angle=i*golden+index*.71,r=i?22*Math.sqrt(i)*(0.8+phase*.4):0;
+        var target={x:c.x+Math.cos(angle)*r*(1.0+(index%3)*.15),y:c.y+Math.sin(angle)*r*(.82+(index%2)*.15)};
+        var room=n.id===h.id?45:['person','instance','place'].includes(n.type)?22:9;
+        var spot=freeSpot(discs,target,room);positions[n.id]=spot;discs.add(spot.x,spot.y,room);
+      });
+    });
+    if(byId['grove-self']){var self=freeSpot(discs,{x:0,y:0},65);positions['grove-self']=self;primary['grove-self']=null;}
+    return {positions:positions,primary:primary};
+  }
+
+  var api = { placeNew: placeNew, organicView: organicView };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   if (root) root.GroveLayoutKeep = api;
 })(typeof window !== 'undefined' ? window : null);
