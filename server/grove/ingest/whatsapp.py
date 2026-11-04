@@ -95,9 +95,14 @@ class ExportTime:
         if self.offset_minutes is None or None in values or len(values) != 1:
             return None
         local = values.pop()
-        return local.replace(tzinfo=timezone(timedelta(minutes=self.offset_minutes))).astimezone(
-            UTC
-        )
+        try:
+            return local.replace(
+                tzinfo=timezone(timedelta(minutes=self.offset_minutes))
+            ).astimezone(UTC)
+        except OverflowError:
+            # A valid local calendar date can fall outside datetime's UTC range after
+            # applying its source offset. This is malformed input for this reader.
+            raise NotAnExport("the source timestamp is outside the supported UTC range") from None
 
     @property
     def uncertainties(self) -> tuple[str, ...]:

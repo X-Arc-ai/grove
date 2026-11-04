@@ -399,3 +399,41 @@ def test_malformed_timestamp_header_cannot_be_swallowed_as_a_continuation():
                 "13/04/2026, 10:00 - Orla: A note.\n13/04/2026, 100:00 - Cai: A malformed message."
             )
         )
+
+
+@pytest.mark.parametrize(
+    ("local", "offset"),
+    [(datetime(1, 1, 1, 0, 0), 60), (datetime(9999, 12, 31, 23, 59), -60)],
+)
+def test_export_time_utc_overflow_is_a_generic_typed_refusal(local, offset):
+    candidate = whatsapp.LocalTimeCandidate(
+        "ymd",
+        f"{local.year:04d}",
+        local.month,
+        local.day,
+        local.hour,
+        local.minute,
+        local.second,
+    )
+    time = whatsapp.ExportTime("synthetic-private-stamp", (candidate,), offset)
+    with pytest.raises(NotAnExport, match="outside the supported UTC range") as raised:
+        _ = time.at
+    assert "synthetic-private-stamp" not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01, 00:00+01:00", "9999-12-31, 23:59-01:00"])
+def test_parse_export_refuses_unrepresentable_utc_source_time(stamp):
+    with pytest.raises(NotAnExport, match="outside the supported UTC range") as raised:
+        parse_export(upload(f"{stamp} - Orla: A synthetic note."))
+    assert stamp not in str(raised.value)
+    assert "Orla" not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert raised.value.__suppress_context__
+
+
+@pytest.mark.parametrize("stamp", ["0001-01-01, 00:00Z", "9999-12-31, 23:59Z"])
+def test_representable_utc_boundary_remains_accepted(stamp):
+    result = parse_export(upload(f"{stamp} - Orla: A synthetic note."))
+    assert result.messages[0].time.at is not None
