@@ -17,7 +17,7 @@ from grove.writer.api import prepare_batch
 from grove.writer.errors import BatchDeclined
 from grove.writer.forget_sources import ForgottenSource, locator_key
 from grove.writer.registry import Registry
-from grove.writer.testing import plant_node
+from grove.writer.testing import plant_node, set_self_item
 from grove.writer.tx import WorldWriter
 from grove.writer.worlds import create_world, load_starter_set
 
@@ -26,7 +26,11 @@ from grove.writer.worlds import create_world, load_starter_set
 def designated(driver, world, monkeypatch):
     hashed, owner = "a" * 64, new_id()
     monkeypatch.setenv("GROVE_DEMO_EMAIL_HASH", hashed)
-    create_world(driver, world, owner_user_id=owner)
+    created = create_world(driver, world, owner_user_id=owner)
+    own = plant_node(
+        driver, world, "Item", kind=created["kinds"]["person"], title="Synthetic owner", version=1
+    )
+    set_self_item(driver, world, own["id"])
     with driver.session(database=DATABASE) as session:
         session.run(
             "CYPHER 25 CREATE (u:User) SET u = $row",
@@ -62,7 +66,7 @@ def test_native_first_story_real_history_receipt_and_repeat(driver, designated):
     }
     query = WorldQuery(driver, world)
     counts = query.read("MATCH (i:Item) RETURN count(i) AS n")[0]["n"]
-    assert counts == 52
+    assert counts == 53
     receipt = query.read("MATCH (r:Request) RETURN r.receipt AS receipt")[0]["receipt"]
     assert len(json.loads(receipt)["lines"]) == 208
     generation = _generation(driver, world)
@@ -122,6 +126,37 @@ def test_pure_corrupt_boolean_version_is_refused():
         demo_seed._matches({"version": True}, {"version": 1})
 
 
+def test_pure_bridge_touch_changes_no_claim_and_cannot_hide_content_changes():
+    original = {
+        "table": "items",
+        "row": {
+            "title": "Synthetic plan",
+            "summary": "Fixed text",
+            "recorded": corpus.SOURCE_TIME,
+            "touched_at": corpus.SOURCE_TIME,
+        },
+    }
+    current = {
+        "table": "items",
+        "row": {**original["row"], "touched_at": "2026-10-21T12:00:00+00:00"},
+    }
+    demo_seed._check_creation("item", original, current)
+    current["row"]["summary"] = "Unapproved change"
+    with pytest.raises(DemoDenied):
+        demo_seed._check_creation("item", original, current)
+
+
+def test_pure_own_item_guard_requires_a_live_person():
+    class Reader:
+        def read(self, *args, **kwargs):
+            return [{"id": "own", "kind": "event", "end_class": None}]
+
+    with pytest.raises(DemoDenied):
+        demo_seed._own_item(Reader(), {"self_item_id": None})
+    with pytest.raises(DemoDenied):
+        demo_seed._own_item(Reader(), {"self_item_id": "own"})
+
+
 def test_native_final_designation_recheck_rolls_back_the_whole_story(
     driver, designated, monkeypatch
 ):
@@ -139,7 +174,7 @@ def test_native_final_designation_recheck_rolls_back_the_whole_story(
     with pytest.raises(DemoDenied):
         demo_seed.seed_story(driver, hashed, corpus.stories()[0].key)
     assert _generation(driver, world) == before
-    assert WorldQuery(driver, world).read("MATCH (i:Item) RETURN count(i) AS n")[0]["n"] == 0
+    assert WorldQuery(driver, world).read("MATCH (i:Item) RETURN count(i) AS n")[0]["n"] == 1
     assert demo_seed.resolve_target(driver, hashed)["demo_version"] == DEMO_VERSION
 
 
@@ -200,7 +235,8 @@ def test_native_unrelated_collision_and_forgotten_source_preserve_existing_data(
         demo_seed.seed_story(driver, hashed, story.key)
     assert any(row.rule == "near_duplicate" for row in refused.value.refusals)
     query = WorldQuery(driver, world)
-    assert query.read("MATCH (i:Item) RETURN i.id AS id") == [{"id": planted["id"]}]
+    items = query.read("MATCH (i:Item) RETURN i.id AS id")
+    assert len(items) == 2 and {"id": planted["id"]} in items
     assert query.read("MATCH (s:Source) RETURN count(s) AS n")[0]["n"] == 0
     assert _generation(driver, world) == before
     plant_node(driver, world, "ForgetLedger", locators=[locator_key("synthetic:" + story.key)])
@@ -219,6 +255,26 @@ def test_native_second_story_bridge_has_real_endpoints(driver, designated):
     before = _generation(driver, world)
     assert demo_seed.seed_story(driver, hashed, second.key)["replayed"] is True
     assert _generation(driver, world) == before
+
+
+@pytest.mark.parametrize("pointer", [None, "absent", "wrong-kind"])
+def test_native_missing_or_corrupt_own_item_refuses_before_writes(driver, designated, pointer):
+    world, hashed, _ = designated
+    if pointer == "absent":
+        pointer = new_id()
+    elif pointer == "wrong-kind":
+        kind = Registry.load(WorldQuery(driver, world)).resolve_kind("event")["id"]
+        pointer = plant_node(driver, world, "Item", kind=kind, title="Synthetic event", version=1)[
+            "id"
+        ]
+    set_self_item(driver, world, pointer)
+    before = _generation(driver, world)
+    with pytest.raises(DemoDenied):
+        demo_seed.resolve_target(driver, hashed)
+    with pytest.raises(DemoDenied):
+        demo_seed.seed_story(driver, hashed, corpus.stories()[0].key)
+    assert _generation(driver, world) == before
+    assert WorldQuery(driver, world).read("MATCH (s:Source) RETURN count(s) AS n")[0]["n"] == 0
 
 
 def test_native_owner_lock_serializes_designation_mutation(driver, designated):
