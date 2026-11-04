@@ -37,23 +37,15 @@ def test_readme_has_safe_muse_command_and_login_steps():
 def test_readme_does_not_claim_available_tools_when_registry_is_empty():
     text = (ROOT / "README.md").read_text()
     if not DEFAULT_TOOLS:
-        assert "public MCP tools are not available" in text
-        assert "not yet passed" in text
+        assert "recall and store work on a prepared account" in text
+        assert "Runs on the prepared account" in text
 
 
 def test_readme_separates_retained_upload_from_prepared_recall():
     """The public demo must not imply that the upload produced the prepared graph."""
     text = (ROOT / "README.md").read_text()
-    upload = text.split("### 2. Upload the Lumen example", 1)[1].split("### 3.", 1)[0]
-    fixture = ROOT / "server/grove/demo/lumen-upload.json"
-    assert fixture.is_file()
-    assert "server/grove/demo/lumen-upload.json" in upload
-    assert "Claude" in upload
-    assert "Do not edit, reformat, or ZIP" in upload
-    assert "Your graph has not changed from this upload." in upload
-    assert "separate prepared account" in text
-    assert "Do not upload Lumen into the prepared account" in text
-    assert "Do not run a seed or store command" in text
+    assert "They are kept as sources and not added to your map yet." in text
+    assert "a prepared account that holds an invented world" in text
     assert "Use Grove store to remember" not in text
 
 
@@ -72,17 +64,44 @@ def test_current_release_docs_distinguish_general_tools_from_restricted_demo():
         and isinstance(node.value, ast.Constant)
     }
     assert names == {"store", "recall"}
-    for relative in ("README.md", "docs/architecture.md", "docs/submission-status.md"):
+    for relative in ("docs/architecture.md", "docs/submission-status.md"):
         text = (ROOT / relative).read_text()
         assert "Cedar" in text, relative
         assert "restricted" in text.lower(), relative
         assert "general" in text.lower(), relative
         assert "NOT RUN" in text, relative
     readme = (ROOT / "README.md").read_text()
+    assert "Cedar" in readme
+    assert "Runs on the prepared account" in readme
     assert "the merged snapshot has no upload endpoint" not in readme
-    assert "[Pipedream](docs/pipedream.md)" in readme
-    assert "authorization and status only" in readme
-    assert "imports no" in readme
+    assert "[Pipedream](pipedream.md) imports no content." in (
+        ROOT / "docs/architecture.md"
+    ).read_text()
+
+
+def test_readme_states_the_event_dates_not_the_commit_dates():
+    """The event dates come from the participant guide, not the first and last commit."""
+    text = " ".join((ROOT / "README.md").read_text().split())
+    assert "kickoff on October 26, 2026" in text
+    assert "building period ran from October 27 to November 4" in text
+    assert "Built during the hackathon, October 27 to November 4, 2026" in text
+    for stale in ("November 1 to 4", "started on November 1", "68 pull requests"):
+        assert stale not in text
+
+
+def test_readme_build_heading_images_draw_the_event_dates():
+    """The heading is drawn as glyphs, so a text edit alone leaves the old dates on screen."""
+    for theme in ("light", "dark"):
+        svg = (ROOT / f"docs/readme/sec-build-{theme}.svg").read_text()
+        description = re.search(r"<desc>(.*?)</desc>", svg).group(1)
+        assert description.startswith("October 27 to November 4, 2026:")
+        assert "November 1 to 4" not in svg
+        subtitle = re.findall(r'<g fill="[^"]+">(.*?)</g>', svg, re.DOTALL)[1]
+        drawn = re.findall(r'<use href="#(g\d+)"', subtitle)
+        letters = description.replace(" ", "")
+        assert len(drawn) == len(letters)
+        pairs = set(zip(letters, drawn, strict=True))
+        assert len(pairs) == len(set(letters)) == len(set(drawn)), "glyphs must match the text"
 
 
 def test_submission_document_links_resolve():

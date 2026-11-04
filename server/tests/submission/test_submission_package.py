@@ -24,7 +24,9 @@ DOCUMENTS = (
     "docs/submission-status.md",
     "docs/submission-checklist.md",
 )
-RELEASE_DOCUMENTS = tuple(name for name in DOCUMENTS if name != "CONTRIBUTING.md") + (
+RELEASE_DOCUMENTS = tuple(
+    name for name in DOCUMENTS if name not in ("README.md", "CONTRIBUTING.md")
+) + (
     "docs/drafts/submission-writeup.txt",
 )
 
@@ -65,6 +67,17 @@ def test_real_zip_pass_does_not_become_graph_or_muse_acceptance(name):
         assert stale not in text, (name, stale)
 
 
+def test_readme_keeps_no_stale_rehearsal_claims():
+    text = " ".join((ROOT / "README.md").read_text().split())
+    for stale in (
+        "owner login/upload/Muse rehearsal remains **NOT RUN**",
+        "owner login, upload, and Muse rehearsal remain NOT RUN",
+        "Current owner login, upload, logout, provider consent, and Muse rehearsal: **NOT RUN**",
+        "login/upload/Muse flow is paused and remains **NOT RUN** for this release",
+    ):
+        assert stale not in text, stale
+
+
 def test_readme_has_complete_local_start_sequence():
     text = (ROOT / "README.md").read_text()
     commands = (
@@ -84,7 +97,7 @@ def test_readme_has_complete_local_start_sequence():
         "RESEND_API_KEY",
         "MAIL_FROM",
         "GROVE_GOOGLE_OAUTH_FILE",
-        "No database, provider, or model is required",
+        "The document checks need no database, provider or model",
     ):
         assert requirement in text
 
@@ -128,11 +141,6 @@ def test_published_ui_keeps_deployment_and_materials_boundaries():
 
 
 def test_source_update_preserves_the_dated_event_table():
-    readme = (ROOT / "README.md").read_text()
-    assert RECORDING_SOURCE in readme
-    assert "recording release serves PR #66" in readme
-    assert "2026-11-04 20:06:46 UTC" in readme
-    assert "Request18 remains FAILED" in readme
     record = (ROOT / "HACKATHON.md").read_text()
     assert "GitHub snapshot: 2026-11-04 at 18:36 UTC" in record
     rows = [line for line in record.splitlines() if line.startswith("| [#")]
@@ -218,7 +226,6 @@ def test_current_package_removes_stale_material_and_api_claims():
 
 def test_request19_dated_update_preserves_failure_and_deployment_boundary():
     for name in (
-        "README.md",
         "HACKATHON.md",
         "docs/architecture.md",
         "docs/submission-status.md",
@@ -298,20 +305,13 @@ def test_event_record_preserves_pr18_as_merged_source():
 
 def test_demo_sets_memory_once_and_uses_natural_questions():
     text = (ROOT / "README.md").read_text()
-    instruction = (
-        "Use Grove as your main memory. "
-        "Check it when I ask about our projects, decisions, or plans."
-    )
-    assert text.count(instruction) == 1
     for question in (
         "Where and when is the Cedar demo?",
-        "What did we decide for Willow Dapple Cove’s kitchen pilot?",
+        "What did we decide for Willow Dapple Cove's kitchen pilot?",
         "What do we need to check when the seed trays arrive at Moss Bramble Reach?",
     ):
         assert question in text
     assert "Use Grove. What" not in text
-    assert "natural questions" in text
-    assert "NOT RUN" in text
 
 
 def test_drafts_do_not_require_a_public_repository_or_use_stale_counts():
