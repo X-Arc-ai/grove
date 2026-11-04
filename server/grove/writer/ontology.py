@@ -991,18 +991,11 @@ def _message_key(run: Any, example: Any) -> str:
         )
     if "ev_id" in example:
         return run.observation(_text(example["ev_id"], "worked_example.ev_id"))["message_key"]
-    rows = run.tx.run(
-        "MATCH (e:Evidence {id: $id, active: true}) RETURN e.message_key AS message_key",
-        id=_text(example["evidence_id"], "worked_example.evidence_id"),
-    )
-    if not rows:
-        raise Refused(
-            "missing_provenance",
-            "evidence_not_found",
-            "the worked example names no active evidence row of this world",
-            {},
-        )
-    return rows[0]["message_key"]
+    from grove.writer.apply import _existing_evidence
+
+    return _existing_evidence(
+        run, _text(example["evidence_id"], "worked_example.evidence_id")
+    )["message_key"]
 
 
 def _change(

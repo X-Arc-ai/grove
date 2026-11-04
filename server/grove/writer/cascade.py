@@ -12,6 +12,7 @@ from grove.store.primitives import KIND_BELIEF, MEANING_AFFECTED_BY
 from grove.writer.clocks import Clock, clock_columns, parse_clock, sort_key
 from grove.writer.errors import Refused
 from grove.writer.history import compact, encode, row_json
+from grove.writer.message_binding import check_reused_evidence
 from grove.writer.registry import Registry
 from grove.writer.source_types import RANK
 
@@ -94,6 +95,9 @@ def _changes(run) -> list[dict]:
                 proofs.append(run.observation(ref["ev_id"]))
             else:
                 rows = run.tx.run("MATCH (e:Evidence {id: $id}) RETURN e", id=ref["evidence_id"])
+                if not rows:
+                    raise Refused("missing_provenance", "evidence_not_found", "no active evidence")
+                check_reused_evidence(run, [row["e"] for row in rows])
                 proofs.extend(row["e"] for row in rows)
         proof = max(
             proofs,

@@ -14,6 +14,7 @@ from typing import Any
 
 from grove.writer.clocks import parse_instant
 from grove.writer.errors import Refused
+from grove.writer.message_binding import check_evidence_graph, check_observation_binding
 from grove.writer.source_types import RowFacts, derive_row_source_type, weakest
 from grove.writer.tx import WorldTx
 
@@ -251,6 +252,11 @@ def resolve_observation(
             {"ev_id": observation["ev_id"]},
         )
     connector_type = connector_type_of(connector)
+    retained = check_observation_binding(
+        tx, observation, source=source, connector=connector, episode=episode
+    )
+    if observation.get("premises"):
+        check_evidence_graph(tx, [observation])
     check_locator(
         observation["locator"], content=source.get("content"), connector_type=connector_type
     )
@@ -286,6 +292,12 @@ def resolve_observation(
     # Speaker and modality come from metadata first (D5): the connector's code stored them on the
     # source, and they win over the caller's classification.
     meta = _speaker_meta(source, observation["message_key"])
+    if retained is not None and not meta:
+        meta = {
+            "kind": retained.get("speaker_kind"),
+            "locator": observation["locator"],
+            "sender": retained.get("sender"),
+        }
     if meta and meta.get("locator") != observation["locator"]:
         # The metadata names where its message sits in the source; a row that borrows the key
         # for another place would take another message's speaker (S51).
