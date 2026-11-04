@@ -189,6 +189,14 @@ def read_receipt(
         for line in lines
         if not (line.symbol == "*" and line.field == "recheck_by" and line.entity_id in verified)
     ]
+    belief_ids = {
+        line.entity_id for line in lines if line.entity_type == "belief" and line.symbol == "+"
+    }
+    lines = [
+        line
+        for line in lines
+        if not (line.entity_type == "item" and line.symbol == "+" and line.entity_id in belief_ids)
+    ]
     return Receipt("saved", commit_id, change_set_id, request_id, tuple(lines))
 
 
@@ -209,7 +217,13 @@ def _line(
             entity_id,
             value_id=values.get(value_id),
         )
-    if entity_type in ("item", "belief"):
+    if entity_type == "belief":
+        if name == "row":
+            return ReceiptLine("+", "belief", entity_id)
+        if name in ("state", "held_by_the_person", "person_change_notice", "successor"):
+            return ReceiptLine("*", "belief", entity_id, field=name, value_id=value_id)
+        return None
+    if entity_type == "item":
         if name == "row":
             return ReceiptLine("+", "item", entity_id)
         if name == "reopened":

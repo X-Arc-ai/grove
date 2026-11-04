@@ -175,6 +175,107 @@ OPS: dict[str, OpSpec] = {
         "o",
     ),
 }
+# D9: belief operations share the batch and provenance contract.
+OPS.update(
+    {
+        "mint_belief": OpSpec(
+            _callers("UKP"),
+            ("op_id", "title", "subject_refs", "evidence_refs", "reason"),
+            (
+                "temp_id",
+                "body",
+                "generalisation",
+                "externally_testable",
+                "retest_how",
+                "recheck_by",
+                "judgment_ids",
+                "field_subject",
+            ),
+            "+",
+        ),
+        **{
+            name: OpSpec(
+                _callers(callers), ("op_id", "target", "evidence_refs", "reason"), ("version",), "*"
+            )
+            for name, callers in (
+                ("promote_belief", "K"),
+                ("weaken_belief", "WK"),
+                ("restore_belief", "WK"),
+            )
+        },
+        "supersede_belief": OpSpec(
+            _callers("KP"),
+            ("op_id", "target", "successor", "evidence_refs", "end_class", "reason"),
+            ("stopped_being_true", "version"),
+            "x",
+        ),
+        "retire_belief": OpSpec(
+            _callers("KP"),
+            ("op_id", "target", "evidence_refs", "end_class", "reason"),
+            ("version",),
+            "x",
+        ),
+        "merge_beliefs": OpSpec(
+            _callers("KP"),
+            ("op_id", "survivor", "absorbed", "judgment_ids", "reason"),
+            ("evidence_refs",),
+            "*",
+        ),
+        "correct_belief": OpSpec(
+            _callers("PH"),
+            ("op_id", "target", "correction", "evidence_refs", "reason"),
+            ("title", "body", "stopped_being_true", "version"),
+            "*",
+        ),
+        "retest_belief": OpSpec(
+            _callers("K"),
+            ("op_id", "target", "pieces", "recheck_by", "reason"),
+            ("second_judge", "recheck_how"),
+            "v",
+        ),
+        "open_contradiction": OpSpec(
+            _callers("UCK"),
+            ("op_id", "target", "reason"),
+            ("fresh_evidence_id", "ev_id", "judgment_ids", "temp_id"),
+            "c",
+        ),
+        "resolve_contradiction": OpSpec(
+            _callers("KP"),
+            ("op_id", "contradiction", "outcome", "operation_ids", "reason"),
+            ("question", "options", "checked_source_ids"),
+            "c",
+        ),
+        "resolve_support_change": OpSpec(
+            _callers("K"),
+            ("op_id", "target", "cause_change_id", "disposition", "reason", "judgment_ids"),
+            ("gap_reason", "operation_ids"),
+            "*",
+        ),
+        "guard_consolidation": OpSpec(
+            _callers("K"),
+            ("op_id", "run_id", "contradiction_ids", "support_change_refs", "reason"),
+            (),
+            "*",
+        ),
+    }
+)
+BELIEF_OPS = frozenset(
+    {
+        "mint_belief",
+        "promote_belief",
+        "weaken_belief",
+        "restore_belief",
+        "supersede_belief",
+        "retire_belief",
+        "merge_beliefs",
+        "correct_belief",
+        "retest_belief",
+        "open_contradiction",
+        "resolve_contradiction",
+        "resolve_support_change",
+        "guard_consolidation",
+    }
+)
 MAX_PIECES = 50
 _PIECE_KEYS = frozenset({"ev_id", "evidence_id", "judgment_id", "answer"})
 # An answer option the person chose is its own verdict (D4); every other verdict is a judgment.
@@ -227,6 +328,7 @@ REF_FIELDS = (
     "absorbed",
     "record",
     "lesson",
+    "contradiction",
 )
 
 # Keys no caller may send, wherever they sit (not inside properties, which are the item's data).
@@ -503,7 +605,11 @@ def _check_fields(name: str, op: dict[str, Any]) -> None:
     if "version" in op:
         _version(op["version"])
     if "end_class" in op:
-        _enum(op["end_class"], "end_class", LINK_END_CLASSES)
+        _enum(
+            op["end_class"],
+            "end_class",
+            ENUMS["belief_end_class"] if name in BELIEF_OPS else LINK_END_CLASSES,
+        )
     if "end_reason" in op:
         _enum(op["end_reason"], "end_reason", ENUMS["evidence_end_reason"])
     if "polarity" in op:
@@ -514,9 +620,10 @@ def _check_fields(name: str, op: dict[str, Any]) -> None:
         raise Refused("invalid_arguments", "temp_id", f"a temp id starts with {TEMP_PREFIX!r}", {})
     if name == "update_item":
         _update_fields(op["fields"])
-    if name == "verify":
+    if name in ("verify", "retest_belief"):
         _pieces(op.get("pieces"))
-        _enum(op.get("disposition"), "disposition", ENUMS["disposition"])
+        if name == "verify":
+            _enum(op.get("disposition"), "disposition", ENUMS["disposition"])
         if "second_judge" in op:
             _string_list(op["second_judge"], "second_judge")
         if op.get("override_reason") is not None:
@@ -529,6 +636,56 @@ def _check_fields(name: str, op: dict[str, Any]) -> None:
         )
     if name in ("propose_word", "promote_word"):
         _word_op_fields(name, op)
+    if name in BELIEF_OPS:
+        _belief_fields(name, op)
+
+
+def _belief_fields(name: str, op: dict[str, Any]) -> None:
+    for key in (
+        "subject_refs",
+        "operation_ids",
+        "options",
+        "checked_source_ids",
+        "contradiction_ids",
+    ):
+        if key in op:
+            _string_list(op[key], key)
+    for key in ("field_subject", "fresh_evidence_id", "question", "gap_reason", "run_id"):
+        if key in op:
+            _text(op[key], key)
+    for key in ("generalisation", "externally_testable"):
+        if key in op and not isinstance(op[key], bool):
+            raise Refused("invalid_arguments", "type", f"{key} is a boolean", {})
+    if "retest_how" in op:
+        _recheck_how(op["retest_how"])
+    if name == "correct_belief":
+        _enum(op["correction"], "correction", ("right", "not_any_more", "wrong", "restate"))
+    if name == "resolve_contradiction":
+        _enum(
+            op["outcome"], "outcome", ("standing_holds", "fresh_wins", "complement", "to_question")
+        )
+    if name == "open_contradiction" and ("ev_id" in op) == ("fresh_evidence_id" in op):
+        raise Refused(
+            "invalid_arguments", "missing_field", "name a fresh evidence row or observation", {}
+        )
+    if name == "resolve_support_change":
+        _enum(op["disposition"], "disposition", ("still_holding", "revised", "dismissed"))
+        if type(op["cause_change_id"]) is not int or op["cause_change_id"] < 1:
+            raise Refused("invalid_arguments", "type", "cause_change_id is a positive sequence", {})
+    if name == "guard_consolidation":
+        rows = op["support_change_refs"]
+        if not isinstance(rows, list):
+            raise Refused("invalid_arguments", "type", "support_change_refs is a list", {})
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {"target", "cause_change_id"}:
+                raise Refused(
+                    "invalid_arguments", "type", "a support ref names target and cause", {}
+                )
+            _text(row["target"], "target")
+            if type(row["cause_change_id"]) is not int or row["cause_change_id"] < 1:
+                raise Refused(
+                    "invalid_arguments", "type", "cause_change_id is a positive sequence", {}
+                )
 
 
 def _word_op_fields(name: str, op: dict[str, Any]) -> None:
@@ -685,13 +842,15 @@ def check_observation(observation: Any) -> None:
 
 def cited_ev_ids(op: dict[str, Any]) -> list[str]:
     cited = [ref["ev_id"] for ref in op.get("evidence_refs") or [] if "ev_id" in ref]
-    if op.get("op") == "verify" and isinstance(op.get("pieces"), list):
+    if op.get("op") in ("verify", "retest_belief") and isinstance(op.get("pieces"), list):
         cited.extend(
             piece["ev_id"]
             for piece in op["pieces"]
             if isinstance(piece, dict) and isinstance(piece.get("ev_id"), str)
         )
-    if op.get("op") == "attach_evidence" and isinstance(op.get("ev_id"), str):
+    if op.get("op") in ("attach_evidence", "open_contradiction") and isinstance(
+        op.get("ev_id"), str
+    ):
         cited.append(op["ev_id"])
     example = op.get("worked_example") if op.get("op") == "propose_word" else None
     if isinstance(example, dict) and isinstance(example.get("ev_id"), str):
@@ -702,6 +861,7 @@ def cited_ev_ids(op: dict[str, Any]) -> list[str]:
 def temp_refs(op: dict[str, Any]) -> list[str]:
     """Every temp id an operation reads (not the one it declares)."""
     found = [op[key] for key in REF_FIELDS if is_temp(op.get(key))]
+    found.extend(value for value in op.get("subject_refs", []) if is_temp(value))
     for entry in op.get("distinct_from") or []:
         if isinstance(entry, dict) and is_temp(entry.get("item")):
             found.append(entry["item"])
