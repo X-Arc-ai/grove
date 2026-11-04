@@ -1,6 +1,7 @@
 """Account UI against a local, synthetic HTTP contract; no provider or database acceptance."""
 
 import copy
+import json
 import os
 import socket
 import subprocess
@@ -899,6 +900,10 @@ def test_fidelity_organic_graph_and_controls_at_each_viewport(context, width, he
                         "verb": "FOLLOWS",
                     }
                 )
+    # This is an already-placed graph. The display projection must not overwrite
+    # any server coordinate. The insert-only first-visit path has its own check.
+    for index, node in enumerate(nodes):
+        node.update(x=1000 + index * 7, y=-500 + index * 3)
     writes = []
     page.on(
         "request",
@@ -977,3 +982,260 @@ def test_fidelity_whatsapp_device_films_pause_and_keep_settings(context, device)
     shot(page, "fidelity-whatsapp-" + device)
     page.get_by_role("button", name="Play guide", exact=True).click()
     assert "animation-play-state:paused" not in frame.get_attribute("srcdoc")
+
+
+def test_fidelity_mobile_worker_header_actions_remain_reachable(context):
+    page = context.new_page()
+    page.set_viewport_size({"width": 375, "height": 667})
+    page.goto("/login")
+    login(page, "worker-header@example.test")
+    finish(page)
+    page.locator("#agents-toggle").check()
+    page.locator(".hood-live-recent summary").click()
+    for identity in [
+        "agents-toggle",
+        "active-only",
+        "health-link",
+        "profile-button",
+        "refresh-data",
+        "theme-toggle",
+    ]:
+        assert page.locator("#" + identity).evaluate("""el => {
+          const r=el.getBoundingClientRect();
+          const hit=document.elementFromPoint(r.x+r.width/2,r.y+r.height/2);
+          return el===hit || el.contains(hit);
+        }"""), identity
+    page.locator("#agents-toggle").uncheck(timeout=1500)
+    page.locator("#agents-toggle").check()
+    page.locator("#theme-toggle").click()
+    page.locator("#refresh-data").click()
+    page.locator("#profile-button").click()
+    page.locator(".gp-settings-layout").wait_for(state="visible")
+
+
+@pytest.mark.parametrize("provider", ["iphone", "android", "muse", "chatgpt", "claude"])
+def test_fidelity_pause_has_one_complete_frame(context, provider):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "pause-" + provider + "@example.test")
+    finish(page)
+    page.locator("#profile-button").click()
+    if provider in ("iphone", "android"):
+        page.locator('[data-settings-tab="sources"]').click()
+        page.locator('[data-add-group="chats"]').click()
+        page.locator('[data-guide="chats"]').click()
+        page.locator('[data-guide-device="' + provider + '"]').click()
+    else:
+        page.locator('[data-settings-tab="connections"]').click()
+        page.locator('[data-host-inline="' + provider + '"]').click()
+    frame = page.locator(".gp-app-frame iframe")
+    frame.wait_for(state="visible")
+    # Exercise the wrap boundary and an interior point without a long real-time wait.
+    for elapsed in [0.01, 3.8]:
+        frame.evaluate(
+            """(el, seconds) => {
+              el.dataset.started=String(performance.now()-seconds*1000);
+              el.dataset.elapsed='0';
+            }""",
+            elapsed,
+        )
+        page.get_by_role("button", name="Pause guide", exact=True).click()
+        page.wait_for_timeout(150)
+        inner = frame.element_handle().content_frame()
+        opacity = inner.locator(".film-frame").evaluate_all(
+            "els => els.map(el => Number(getComputedStyle(el).opacity))"
+        )
+        assert sum(value > 0.01 for value in opacity) == 1, opacity
+        assert max(opacity) == 1
+        first = opacity[:]
+        page.wait_for_timeout(200)
+        assert (
+            inner.locator(".film-frame").evaluate_all(
+                "els => els.map(el => Number(getComputedStyle(el).opacity))"
+            )
+            == first
+        )
+        page.get_by_role("button", name="Play guide", exact=True).click()
+    shot(page, "repaired-guide-" + provider)
+
+
+def test_fidelity_dark_owner_canvas_label_uses_readable_ink(context):
+    page = context.new_page()
+    page.add_init_script("""(() => {
+      const original=CanvasRenderingContext2D.prototype.fillText;
+      window.ownerInk=[];
+      CanvasRenderingContext2D.prototype.fillText=function(text,...rest){
+        if(text==='Synthetic owner') window.ownerInk.push(this.fillStyle);
+        return original.call(this,text,...rest);
+      };
+    })();""")
+    page.goto("/login")
+    login(page, "owner-ink@example.test")
+    finish(page)
+    for theme in ("light", "dark", "light"):
+        if page.locator("html").get_attribute("data-theme") != theme:
+            page.locator("#theme-toggle").click()
+        page.evaluate("ownerInk=[]")
+        page.locator("#refresh-data").click()
+        page.wait_for_function("ownerInk.length > 0")
+        expected = page.evaluate("""() => {
+          const context=document.createElement('canvas').getContext('2d');
+          context.fillStyle=getComputedStyle(document.documentElement).getPropertyValue('--text');
+          return context.fillStyle;
+        }""")
+        assert page.evaluate("ownerInk[ownerInk.length-1]") == expected
+
+
+def test_fidelity_pipedream_catalog_connect_and_confirmed_disconnect(context):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "catalog@example.test")
+    finish(page)
+    owner = page.evaluate("GroveSimulation.getState().account")
+    actions = []
+    state = {"connected": False}
+
+    def route(request):
+        path = request.request.url.split("/v1/views/pipedream/", 1)[1]
+        actions.append((request.request.method, path, request.request.post_data))
+        if path.startswith("apps"):
+            body = {
+                "account": owner,
+                "configured": True,
+                "apps": [
+                    {
+                        "provider": "slack",
+                        "name": "Slack",
+                        "auth_type": "oauth",
+                        "connectable": True,
+                    },
+                    {
+                        "provider": "public_weather",
+                        "name": "Public Weather",
+                        "auth_type": "none",
+                        "connectable": False,
+                    },
+                ],
+                "next_cursor": None,
+                "total": 2,
+            }
+        elif path.startswith("accounts"):
+            body = {
+                "account": owner,
+                "configured": True,
+                "providers": [
+                    {
+                        "provider": "slack",
+                        "name": "Slack",
+                        "status": "connected" if state["connected"] else "not_connected",
+                    }
+                ],
+            }
+        elif path == "slack/connect":
+            body = {
+                "account": owner,
+                "provider": "slack",
+                "connect_url": "https://pipedream.com/connect/test",
+                "expires_at": "2026-11-04T20:00:00Z",
+            }
+        elif path == "slack/disconnect":
+            assert json.loads(request.request.post_data) == {"confirm": True}
+            state["connected"] = False
+            body = {
+                "account": owner,
+                "provider": "slack",
+                "status": "not_connected",
+                "disconnected": 1,
+            }
+        else:
+            raise AssertionError(path)
+        request.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+
+    page.route("**/v1/views/pipedream/**", route)
+    page.evaluate(
+        "window.open=()=>({opener:null,location:{href:''},closed:false,close(){this.closed=true}})"
+    )
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="sources"]').click()
+    page.locator('[data-add-group="apps"]').click()
+    page.locator('[data-pipedream-select="slack"]').click()
+    page.locator('[data-pipedream-connect="slack"]').click()
+    page.get_by_text("Complete authorization in the new tab", exact=False).wait_for()
+    assert not page.locator("[data-pipedream-disconnect]").count()
+    state["connected"] = True
+    page.locator("[data-pipedream-refresh]").click()
+    page.locator('[data-pipedream-disconnect="slack"]').click()
+    assert not any(path == "slack/disconnect" for _, path, _ in actions)
+    page.get_by_role("button", name="Cancel", exact=True).click()
+    assert not any(path == "slack/disconnect" for _, path, _ in actions)
+    page.locator('[data-pipedream-disconnect="slack"]').click()
+    page.get_by_role("button", name="Disconnect Slack", exact=True).click()
+    page.locator('[data-pipedream-connect="slack"]').wait_for()
+    assert sum(path == "slack/disconnect" for _, path, _ in actions) == 1
+    assert any(path.startswith("apps") for _, path, _ in actions)
+    assert any(path == "accounts?provider=slack" for _, path, _ in actions)
+
+
+def test_fidelity_pipedream_demo_refusal_is_not_a_connection_error(context):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "catalog-demo@example.test")
+    finish(page)
+    page.route(
+        "**/v1/views/pipedream/**",
+        lambda route: route.fulfill(
+            status=403,
+            content_type="application/json",
+            body=json.dumps(
+                {
+                    "error": {
+                        "code": "scope_denied",
+                        "message": "This account cannot connect external apps.",
+                    }
+                }
+            ),
+        ),
+    )
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="sources"]').click()
+    page.locator('[data-add-group="apps"]').click()
+    page.get_by_text(
+        "Connections are disabled for this prepared demo account.", exact=False
+    ).first.wait_for()
+    assert not page.locator("[data-pipedream-connect]").count()
+
+
+def test_fidelity_pipedream_search_and_session_discard_old_results(context):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "catalog-race@example.test")
+    finish(page)
+    page.evaluate("""() => {
+      window.catalogReads=[];const old=GroveLive.getJSON;
+      GroveLive.getJSON=function(url){
+        if(url.startsWith('/v1/views/pipedream/apps'))
+          return new Promise(resolve=>catalogReads.push({url,resolve}));
+        if(url.startsWith('/v1/views/pipedream/accounts'))return Promise.resolve({ok:true,
+          body:{account:GroveSimulation.getState().account,configured:true,providers:[]}});
+        return old.apply(this,arguments);
+      };
+      window.catalogAnswer=function(index,id){catalogReads[index].resolve({ok:true,body:{account:GroveSimulation.getState().account,configured:true,apps:[{provider:id,name:id,auth_type:'oauth',connectable:true}],next_cursor:null,total:1}});};
+    }""")
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="sources"]').click()
+    page.locator('[data-add-group="apps"]').click()
+    page.wait_for_function("catalogReads.length===1")
+    page.locator("[data-pipedream-search]").fill("notion")
+    page.wait_for_function("catalogReads.length===2")
+    page.evaluate("catalogAnswer(1,'notion')")
+    page.locator('[data-pipedream-select="notion"]').wait_for()
+    page.evaluate("catalogAnswer(0,'slack')")
+    page.wait_for_timeout(50)
+    assert not page.locator('[data-pipedream-select="slack"]').count()
+    page.locator("[data-pipedream-search]").fill("linear")
+    page.wait_for_function("catalogReads.length===3")
+    page.evaluate(
+        "window.dispatchEvent(new Event('grove:session-changed'));catalogAnswer(2,'linear')"
+    )
+    page.wait_for_timeout(50)
+    assert not page.locator('[data-pipedream-select="linear"]').count()

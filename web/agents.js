@@ -58,7 +58,7 @@
     function renderLive(){
       liveToggle.setAttribute('aria-expanded',String(liveToggle.checked));
       var buttonText=liveStatus==='loading'?'Refresh again':liveStatus==='error'?'Retry':'Refresh';
-      var content='<div class="hood-panel-heading"><h2>Your Grove workers</h2><button type="button" class="hood-live-refresh" data-worker-refresh>'+buttonText+'</button></div>';
+      var content='<div class="hood-panel-heading"><h2>Your Grove workers</h2><button type="button" class="hood-live-refresh" data-worker-refresh>'+buttonText+'</button><button type="button" class="hood-live-close" data-worker-close aria-label="Close worker activity">×</button></div>';
       content+='<p class="hood-live-intro">Stored activity. This view does not start workers.</p>';
       if(liveStatus==='loading')content+='<p role="status" class="hood-live-message">Checking worker status…</p>';
       else if(liveStatus==='error'||!liveSnapshot)content+='<p role="status" class="hood-live-message">Worker status is unavailable. Try again.</p>';
@@ -72,6 +72,7 @@
       var focused=livePanel.contains(document.activeElement)&&document.activeElement.hasAttribute('data-worker-refresh');
       livePanel.innerHTML=content;
       livePanel.querySelector('[data-worker-refresh]').addEventListener('click',refreshWorkers);
+      livePanel.querySelector('[data-worker-close]').addEventListener('click',function(){liveToggle.checked=false;liveToggle.dispatchEvent(new Event('change',{bubbles:true}));liveToggle.focus();});
       if(focused)livePanel.querySelector('[data-worker-refresh]').focus();
       window.dispatchEvent(new CustomEvent('grove:worker-status'));
     }

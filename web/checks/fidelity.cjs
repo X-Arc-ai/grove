@@ -24,4 +24,22 @@ assert.ok(Math.max(...radius)-Math.min(...radius)>100,'hubs must not remain on o
 assert.deepEqual(layout.organicView([],[]).positions,{});
 const kept=layout.placeNew({'hub-0':{x:42,y:51}},nodes,edges,first.positions,8);
 assert.deepEqual(kept.positions['hub-0'],{x:42,y:51},'the existing saved-map contract remains exact');
+const connectedNodes=[],connectedEdges=[];
+for(let group=0;group<5;group++){
+  const root='organisation-'+group;
+  connectedNodes.push({id:root,type:'organisation'});
+  for(let plan=0;plan<4;plan++){
+    const id=root+'-plan-'+plan;
+    connectedNodes.push({id,type:'plan'});
+    connectedEdges.push({source:root,target:id});
+    for(let leaf=0;leaf<6;leaf++){
+      const key=id+'-'+leaf;
+      connectedNodes.push({id:key,type:'task'});
+      connectedEdges.push({source:id,target:key},{source:root,target:key});
+    }
+  }
+  if(group)connectedEdges.push({source:'organisation-'+(group-1),target:root});
+}
+const related=layout.organicView(connectedNodes,connectedEdges);
+assert.ok(new Set(Object.values(related.primary)).size<=7,'related plans must share regions rather than each forming an isolated large hub');
 console.log('fidelity layout: deterministic, bounded, complete, source-preserving controls passed');

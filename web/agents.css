@@ -239,6 +239,7 @@ body.gp-onboarding-open .hood-bar,body.gp-onboarding-open .hood-legend,body.gp-o
 body.hood-on aside.hood-score.hood-live{width:360px;min-width:0;max-width:calc(100vw - 24px);max-height:calc(100dvh - 150px);overflow:auto;padding:18px;right:24px;bottom:24px;user-select:text}
 .hood-live .hood-panel-heading{gap:12px;margin:0 0 10px}
 .hood-live .hood-panel-heading h2{font:500 13px/1.5 var(--gp-font);margin:0}
+.hood-live .hood-live-close{border:0;background:none;color:var(--text);padding:6px;font:18px/1 var(--gp-font);cursor:pointer}
 .hood-live .hood-live-refresh{flex:none;border:1px solid var(--border);border-radius:5px;padding:6px 9px;background:var(--surface);color:var(--text);font:inherit;font-size:11px;cursor:pointer}
 .hood-live button:focus-visible,.hood-live summary:focus-visible{outline:2px solid var(--text);outline-offset:3px}
 .hood-live p{font-size:11px;line-height:1.6;margin:4px 0;color:var(--text-secondary)}
@@ -256,4 +257,4 @@ body.hood-on aside.hood-score.hood-live{width:360px;min-width:0;max-width:calc(1
 .hood-live li strong,.hood-live li span{display:block;font-size:10px;font-weight:400}
 .hood-live li strong{color:var(--text)}
 .hood-live .hood-live-note{margin-top:14px;font-size:10px;color:var(--text-muted)}
-@media(max-width:700px){body.hood-on aside.hood-score.hood-live{right:12px;bottom:88px;max-height:calc(100dvh - 150px);padding:16px}}
+@media(max-width:700px){body.hood-on aside.hood-score.hood-live{right:12px;top:calc(var(--grove-toolbar-bottom,110px) + 48px);bottom:12px;max-height:none;padding:16px}}

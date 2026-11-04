@@ -279,11 +279,13 @@
       cream: v('--cream'),
       accent: v('--accent'),
       edge: v('--edge'),
+      liveEdge: v('--edge-live'),
       edgeBright: v('--edge-bright'),
       edgeFaded: v('--edge-faded'),
       edgeLabel: v('--edge-label'),
       labelHalo: v('--label-halo'),
       hubText: '#1a1a1a',   // dark ink reads on the cream hub disk in both themes
+      ownerText: v('--text'),
       ring: ring,
       ringInactive: ringInactive,
     };
@@ -436,6 +438,7 @@
   var livePlaced = {}, liveSaving = {};
   var SELF_R_FAR = 90;
   function prepareLiveLayout(payload) {
+    keepStoredLayout(payload);
     var el=payload.elements,all=el.nodes.map(function(w){return Object.assign({},w.data);});
     adoptKinds(all);
     var es=el.edges.map(function(w){return w.data;});
@@ -443,8 +446,46 @@
     var view=window.GroveLayoutKeep.organicView(all,es);
     layoutCache={};
     var x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
-    all.forEach(function(n){var p=view.positions[n.id];layoutCache[n.id]=Object.assign({},metadata.cache[n.id]||{},p,{_primaryHubId:view.primary[n.id]===n.id?null:view.primary[n.id]});x0=Math.min(x0,p.x);x1=Math.max(x1,p.x);y0=Math.min(y0,p.y);y1=Math.max(y1,p.y);});
+    all.forEach(function(n){var p=view.positions[n.id];layoutCache[n.id]=Object.assign({},metadata.cache[n.id]||{},p,{_primaryHubId:view.primary[n.id]===n.id?null:view.primary[n.id],_hubR:view.radii[n.id],_demoted:false});x0=Math.min(x0,p.x);x1=Math.max(x1,p.x);y0=Math.min(y0,p.y);y1=Math.max(y1,p.y);});
     stableFrame=all.length?{x0:x0-65,x1:x1+65,y0:y0-65,y1:y1+65}:metadata.frame;
+  }
+  // Retain the original insert-only map independently of the visual projection.
+  function keepStoredLayout(payload) {
+    var el = (payload && payload.elements) || { nodes: [], edges: [] };
+    var serverStored = {};
+    el.nodes.forEach(function (w) {
+      var d = w.data;
+      if (typeof d.x === 'number' && typeof d.y === 'number' && isFinite(d.x) && isFinite(d.y)) serverStored[d.id] = { x: d.x, y: d.y };
+    });
+    var all = JSON.parse(JSON.stringify(el.nodes)).map(function (w) { return w.data; });
+    adoptKinds(all);
+    var ns = all.filter(function (n) { return n.id !== 'grove-self'; });
+    var es = el.edges.map(function (w) { return w.data; }).filter(function (e) { return e.source !== 'grove-self' && e.target !== 'grove-self'; });
+    var laid = simLayout(ns, es);
+    var seed = {}, items = [];
+    all.forEach(function (n) {
+      var c = laid.cache[n.id] || {};
+      seed[n.id] = { x: c.x, y: c.y };
+      // A new leaf re-anchors on the hub its seed sits around. The primary hub can be one hop
+      // away while the seed sits at the centre, and its offset would throw the leaf far off.
+      items.push({ id: n.id, type: n.type, _primaryHubId: c._seedHubId || null, _hubR: c._hubR || null, _demoted: !!c._demoted });
+    });
+    var edges = el.edges.map(function (w) { return { source: w.data.source, target: w.data.target }; });
+    // The room a node takes here is the collide force's radius, and never less than the largest
+    // disc the node can draw. A placed item never moves, while a hub's disc grows with its mass
+    // (and from 18 to its full size when an ended hub comes back), and the identity node's disc
+    // keeps its size on screen, so it is largest on the map when the camera is far out.
+    var room = function (n) {
+      var r = nodeRadius(n) * (DENSE ? 1.45 : 1.6) + (DENSE ? 6 : 8);
+      if (n.id === 'grove-self') return Math.max(r, SELF_R_FAR);
+      return isHub(n) ? Math.max(r, HUB_R_MAX) : r;
+    };
+    var kept = window.GroveLayoutKeep.placeNew(Object.assign({}, livePlaced, serverStored), items, edges, seed, room);
+    all.forEach(function (n) {
+      var p = kept.positions[n.id];
+      livePlaced[n.id] = { x: p.x, y: p.y };
+    });
+    saveNewPositions(all.filter(function (n) { return !serverStored[n.id]; }).map(function (n) { return n.id; }), kept.positions);
   }
   function saveNewPositions(ids, positions) {
     var S = window.GroveSimulation, G = window.GroveLive;
@@ -1574,7 +1615,7 @@
       ctx.globalAlpha=1;ctx.fillStyle=THEME.cream;ctx.beginPath();ctx.arc(node.x,node.y,r,0,Math.PI*2);ctx.fill();
       ctx.strokeStyle=THEME.ring.person;ctx.lineWidth=2/scale;ctx.stroke();
       ctx.globalAlpha=.8;drawPersonGlyph(ctx,node.x,node.y,r,THEME.ring.person);
-      ctx.globalAlpha=1;ctx.fillStyle=THEME.hubText;ctx.font='500 '+(10/scale)+'px "JetBrains Mono",monospace';ctx.textAlign='center';ctx.textBaseline='top';
+      ctx.globalAlpha=1;ctx.fillStyle=THEME.ownerText;ctx.font='500 '+(10/scale)+'px "JetBrains Mono",monospace';ctx.textAlign='center';ctx.textBaseline='top';
       ctx.lineWidth=4/scale;ctx.strokeStyle=THEME.cream;ctx.strokeText(node.title,node.x,node.y+r+8/scale);ctx.fillText(node.title,node.x,node.y+r+8/scale);return;
     }
     // Orbit mode: hub disks size continuously by cluster mass (_hubR, area ∝
@@ -1650,7 +1691,7 @@
     else if (tier === 4) ringW = 2.0;
     else if (tier === 5) ringW = 1.4;
     else ringW = 1.2; // tier 6 — event/observation/status_change
-    ctx.lineWidth = ringW / Math.max(scale, 0.85);
+    ctx.lineWidth = (window.GROVE_FIXTURE ? ringW : ringW*.48) / Math.max(scale, 0.85);
     ctx.strokeStyle = ringColor;
     ctx.stroke();
 
@@ -1939,6 +1980,7 @@
     // density. Dense lever 2: edgeRest sits above edgeFaded so the connective
     // tissue is visible at rest (edgeRest == edgeFaded when the flag is off;
     // interaction dimming states above keep edgeFaded either way).
+    if (!window.GROVE_FIXTURE) return THEME.liveEdge;
     if (l.inactive) return THEME.edgeRest;
     return THEME.edge;
   }
@@ -1956,7 +1998,7 @@
     }
 
     if (hoverNode && (hoverNode.id === s || hoverNode.id === t)) return 1.4;
-    return ALWAYS_LABELED_VERBS[l.verb] ? 0.9 : 0.5;
+    return window.GROVE_FIXTURE ? (ALWAYS_LABELED_VERBS[l.verb] ? 0.9 : 0.5) : 0.55;
   }
 
   // ---------------- interaction ----------------
