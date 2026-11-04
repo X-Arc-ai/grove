@@ -16,17 +16,10 @@ from tests.writer.helpers import make_source, seeded  # noqa: F401
 pytestmark = pytest.mark.live
 
 
-def test_live_two_judges_recognize_synthetic_counterexample(driver, seeded, request):  # noqa: F811
-    w = seeded["world_id"]
-    target = plant_node(
-        driver, w, "Item", kind=KIND_BELIEF, title="Kestrel ferries never run on Sunday", version=1
-    )["id"]
-    source = make_source(
-        driver,
-        w,
-        "web_pages",
-        ["Kestrel ferry log: on Sunday, the ferry departed pier 3 at noon with passengers."],
-    )
+def run_live_case(driver, seed, request, title, text, expected):
+    w = seed["world_id"]
+    target = plant_node(driver, w, "Item", kind=KIND_BELIEF, title=title, version=1)["id"]
+    source = make_source(driver, w, "web_pages", [text])
     with ModelLayer(driver, settings=live_settings()) as layer:
         answer = judge_belief(
             layer,
@@ -47,4 +40,27 @@ def test_live_two_judges_recognize_synthetic_counterexample(driver, seeded, requ
             json.dumps(answer, indent=2) + "\n", encoding="utf-8"
         )
     assert len(set(answer["model_call_ids"])) == 2
-    assert answer["verdicts"] == ["contradicts", "contradicts"]
+    assert answer["verdicts"] == [expected, expected]
+
+
+def test_live_two_judges_recognize_synthetic_counterexample(driver, seeded, request):  # noqa: F811
+    run_live_case(
+        driver,
+        seeded,
+        request,
+        "Kestrel ferries never run on Sunday",
+        "Kestrel ferry log: on Sunday, the ferry departed pier 3 at noon with passengers.",
+        "contradicts",
+    )
+
+
+def test_live_two_judges_distinguish_a_compatible_second_dog(driver, seeded, request):  # noqa: F811
+    run_live_case(
+        driver,
+        seeded,
+        request,
+        "The Vale household walks their dog Buddy each evening",
+        "The Vale household adopted a second dog named Scout. Buddy remains with the household. "
+        "This note reports no change to either dog's walking routine.",
+        "complements",
+    )

@@ -18,8 +18,10 @@ from grove.runner.shell import Refused, parse
 from grove.screening import Screener, ScreeningConfig
 from grove.store.primitives import KIND_BELIEF
 from grove.store.query import WorldQuery
+from grove.writer import BatchDeclined
 from grove.writer.runs import enqueue_job
 from grove.writer.testing import plant_node
+from tests.beliefs.test_state_machine import attach, fixture, state
 from tests.models.test_judge import Provider, frozen, glimmer, settings, spark  # noqa: F401
 from tests.runner.helpers import FAST, new_auth
 from tests.writer.helpers import make_source, seeded  # noqa: F401
@@ -132,6 +134,37 @@ def test_unrelated_world_or_caller_verdict_makes_no_provider_call(driver, seeded
                 run_id="test",
             )
     assert provider.requests == []
+
+
+def test_complement_verdict_cannot_become_contradiction_evidence(driver, seeded):  # noqa: F811
+    from tests.beliefs.test_state_machine import data
+
+    w = seeded["world_id"]
+    target, _, _, _, _ = fixture(driver, w)
+    before = state(driver, w, target)
+    _, observation = data(driver, w, 4)
+    provider = Provider(spark(verdict("complements")), glimmer(verdict("complements")))
+    with layer(driver, provider) as models:
+        answer = judge_belief(
+            models,
+            driver,
+            w,
+            {
+                "mode": "evidence",
+                "belief_id": target,
+                "source_id": observation["source_id"],
+                "locator": observation["locator"],
+            },
+            run_id="complement-test",
+        )
+    assert answer["verdicts"] == ["complements", "complements"]
+    with pytest.raises(BatchDeclined) as error:
+        attach(driver, w, target, observation, "contradicts", judgment_ids=answer["judgment_ids"])
+    assert any(row.rule == "judge_not_contradicts" for row in error.value.refusals)
+    assert state(driver, w, target) == before
+    query = WorldQuery(driver, w)
+    assert query.read("MATCH (c:Contradiction) RETURN c") == []
+    assert query.read("MATCH (e:Evidence {polarity: 'contradicts'}) RETURN e") == []
 
 
 def test_unavailable_second_provider_records_a_distinct_correlated_call(driver, seeded):  # noqa: F811
