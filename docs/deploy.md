@@ -12,7 +12,7 @@ runs the compose project `grove` from `deploy/compose.yml`.
 | Service | What it is | Network | Runs as |
 |---|---|---|---|
 | `neo4j` | Neo4j Community, the pin of `docker-compose.dev.yml`. Heap 1 GB, page cache 512 MB, Cypher 25 by default. Data in the volume `grove-neo4j-data`. | `store` (internal) | the image's user |
-| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body. The lane that builds an upload route adds its own nginx location, with its limit and `proxy_request_buffering off`. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
+| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body; only `/v1/sources/upload` takes up to 256 MiB, with no request buffering (uploads, below). Read-only root file system; `/tmp` is a tmpfs of 320 MiB. A memory limit of 4 GB, with no swap past it. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
 | `gateway` | The model gateway, `python -m grove.models.gateway` from the API's image (`docs/models.md`, the gateway). It holds the model keys and `GROVE_GATEWAY_SECRET`, and writes each call to `model_calls`. It listens on port 18300 of its networks (`GROVE_GATEWAY_HOST=0.0.0.0`, since the runner's container cannot reach a loopback address) and publishes no port; every call needs a run token signed with `GROVE_GATEWAY_SECRET`. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
 | `runner` | The runner loop, `python -m grove.runner`: it asks the API for due work and runs each pass in OpenCode 1.18.32 against the gateway (`GROVE_GATEWAY_URL=http://gateway:18300/v1`), with the config and the agents of the repo's `runner/` folder (`/opt/grove/runner` in the image). OpenCode is checked against its release checksum, runs with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`, and has no plugin. | `runner` (internal) | uid 10002 `grove-runner` |
 
@@ -38,6 +38,7 @@ any client.
 | `GET /signin` | The built page of the views, which shows the sign-in card. |
 | `GET /privacy` | The privacy page. `web/build.py` makes its table from `docs/data-flow.md`, the one file of `docs/` that reaches the image. |
 | `/v1/auth/*` | Sign-in and logout. `docs/signin.md` has the routes. nginx limits `/v1/auth/email/` per address to 10 requests a minute with a burst of 10, and answers 429 above that. |
+| `POST /v1/sources/upload` | One export of past AI conversations as the raw body, screened in code before anything is stored (`docs/ingest.md`). The session cookie or an upload-only token. 503 `unavailable` while a screening file is absent (uploads, below). `GET /v1/sources/connectors` lists the coverage of the world's connectors. |
 | `GET /healthz` | `{"status": "ok", "store": "ok", "build": "<sha>"}`, or 503 with `"store": "unreachable"`. No sign-in. D13's health views are `/v1/health/person` and `/v1/health/operator`, built later. |
 | `GET /.well-known/oauth-protected-resource` and `/.well-known/oauth-protected-resource/mcp` | The protected-resource metadata (RFC 9728): `resource` is `<base>/mcp`, the authorization server is `<base>`, and the scopes of A.3. |
 | `GET /.well-known/oauth-authorization-server`, `/.well-known/oauth-authorization-server/mcp` and `/.well-known/openid-configuration` | The authorization server metadata (RFC 8414): the issuer `<base>` and its endpoints. |
@@ -54,6 +55,7 @@ endpoint, the consent page, the exact `WWW-Authenticate` headers, and how a host
 | `/opt/grove/src` | The checkout. It pulls from GitHub with the box's deploy key `/root/.ssh/grove_deploy`, which GitHub holds as read-only. | root |
 | `/etc/grove/*.env` | The secret files below. | 600, root |
 | `/etc/grove/google-oauth.json` | Google's Web client file, mounted read-only into the API at `/run/grove/google-oauth.json` (`GROVE_GOOGLE_OAUTH_FILE`). | 400, uid 10001 |
+| `/etc/grove/screening/` | The screening files `rename.json` and `denylist.txt`. The folder is mounted read-only into the API at `/run/grove/screening` (uploads, below). | 500, files 400, uid 10001 |
 | `/var/lib/grove/deployed.sha`, `previous.sha` | The sha the box runs, and the last different sha it replaced. | root |
 | `/var/log/grove/deploy.log`, `backup.log` | A start line for each deploy that reaches its build, and a result line (`served, smoke ok`, `served, smoke FAILED` or `runs, services NOT healthy`) for each that reaches its service start. One line per dump, per removed dump, per failed backup, and per restore check that reaches a match, a mismatch or a named failure. | 640, root |
 | `/var/backups/grove/` | `grove-<UTC stamp>.dump`, its `.fingerprint.json` and its `.dump.sha256`. | 700, files 600 |
@@ -73,6 +75,8 @@ endpoint, the consent page, the exact `WWW-Authenticate` headers, and how a host
 | `runner-auth.env` | `GROVE_RUNNER_TOKEN_SHA256` | The sha256 of the runner token, computed again from `runner.env` by each run of `deploy/runner-secrets.sh`. The API reads it. |
 | `gateway.env` | `GROVE_GATEWAY_SECRET` | Generated on the box by `deploy/runner-secrets.sh`, never printed. The API (it mints the gateway run token and the pass token of each pass) and the gateway read it. Without it, or without `runner-auth.env`, the API's runner routes answer 503. |
 | `glimmer.env` | `GROVE_GLIMMER_BASE_URL`, `GROVE_GLIMMER_KEY` | The Modal server's URL and proxy token (`docs/models.md`). The API and the gateway read it. Optional until Glimmer is used. |
+| `screening/rename.json` | the rename map; the API finds it through `GROVE_RENAME_MAP` | The operator's own file of names and their replacements. Optional for a deploy (uploads, below). |
+| `screening/denylist.txt` | the denylist, one term a line; the API finds it through `GROVE_DENYLIST` | The operator's own file. Optional for a deploy (uploads, below). |
 
 Copy a file from the operator's machine through ssh standard input, so no value is on a command line
 and no file is pushed with `scp` or `rsync`:
@@ -134,7 +138,7 @@ On the box, `deploy/deploy.sh <sha>`:
 2. fetches `develop` from GitHub and refuses a sha that is not on it, and a checkout with local
    changes or ignored files;
 3. checks out the sha and hands over to that commit's own `deploy/apply.sh`, which
-4. refuses to go on if a secret file is missing or readable by group or others, if an env file has another owner, or if `/etc/grove` is open to group or others;
+4. refuses to go on if a secret file is missing or readable by group or others, if an env file has another owner, if `/etc/grove` is open to group or others, or if a screening file is open to group or others or is a link. It makes `/etc/grove/screening` when it is absent and hands the screening files that are there to uid 10001;
 5. installs the host files of that commit (`deploy/install-host.sh`): the nginx sites, the
    certificate on first use (certbot, webroot), the backup units, the certbot reload hook and log
    rotation. If `nginx -t` refuses the new sites, the old ones go back and the deploy stops;
@@ -162,6 +166,72 @@ deploy/smoke.sh https://app.grove.x-arc.ai <sha>
 They check that `/healthz` answers ok for that build, that `/`, `/signin` and `/privacy` each answer with a page, that both metadata paths name
 `<base>/mcp` (also for `meta-webindexer/1.1`), and that an unauthenticated `/mcp` call gets 401 with
 the metadata URL.
+
+## Uploads and the screening files
+
+`POST /v1/sources/upload` takes one export of past AI conversations as the raw body: Claude Code
+sessions, Codex rollouts, ChatGPT and claude.ai exports (`docs/ingest.md` has the contract).
+Screening runs in code on the box before anything is stored. It reads two files that only the box
+holds:
+
+| On the box | In the API | Variable |
+|---|---|---|
+| `/etc/grove/screening/rename.json` | `/run/grove/screening/rename.json` | `GROVE_RENAME_MAP` |
+| `/etc/grove/screening/denylist.txt` | `/run/grove/screening/denylist.txt` | `GROVE_DENYLIST` |
+
+compose mounts the folder read-only, not the two files, so a deploy works while a file is absent.
+`apply.sh` makes the folder when it is absent. The box is in one of two states:
+
+- **A screening file is absent.** The upload answers 503 `unavailable` and stores nothing.
+  Sign-in, the views and every other path serve as before. The deploy does not fail: `apply.sh`
+  logs one line, `uploads answer 503 until both screening files are placed; absent: <file names>`.
+- **Both files are in `/etc/grove/screening` at 600.** `apply.sh` hands each file to uid 10001 at
+  400, and the folder at 500, and uploads are screened with them. A file that is open to group or
+  others, or a link, stops the deploy before any chown: place it at 600 and deploy again.
+
+The API reads both files at each upload. A file that it cannot read, that is open to group or
+others, or that does not parse, also makes the upload answer 503.
+
+Copy a file from the operator's machine as the other secret files: through ssh standard input,
+with umask 077. Write it to a new name and rename it, so that an upload never reads half a file:
+
+```
+ssh root@app.grove.x-arc.ai 'umask 077; mkdir -p /etc/grove/screening; cat > /etc/grove/screening/denylist.txt.new && mv /etc/grove/screening/denylist.txt.new /etc/grove/screening/denylist.txt' < <local denylist file>
+```
+
+Do the same for `rename.json`. The new file is root's at 600, which uid 10001 cannot read, so
+uploads answer 503 until the next deploy hands it over. To hand it over now, deploy the sha in
+`/var/lib/grove/deployed.sha` again.
+
+**nginx.** `location = /v1/sources/upload` takes a body up to 256 MiB (`client_max_body_size
+256m`). That is the API's own cap: `GROVE_UPLOAD_MAX_BYTES`, 268435456 bytes, which compose sets to
+the code's default. `proxy_request_buffering off` streams the body to the API, so nginx keeps no
+copy of it on disk. The read and send timeouts are 600 s, as a large export takes minutes to parse
+and screen. Every other path keeps the 10 MB limit. To change the cap, change
+`GROVE_UPLOAD_MAX_BYTES` and the nginx limit together. The API spools a body past 8 MiB to `/tmp`,
+a tmpfs of 320 MiB: room for the one upload that runs at a time, at the cap. A second upload
+while one runs answers 429 `rate_limited` with `retry_after_seconds`.
+
+**Memory.** Archive expansion, lines, chats, messages and text have separate limits
+(`docs/ingest.md`). Synthetic macOS parse-and-screen probes measured up to 1,409 MiB of peak
+RSS growth; they did not include store writes or establish a universal maximum. compose gives
+the api `mem_limit: 4g` with no swap past it, the tmpfs inside it. If an upload passes the limit,
+the kernel stops the api and docker starts it again (`restart: unless-stopped`); the limit
+contains that memory use to the api container.
+
+**Upload-only tokens.** A script that uploads without the session cookie uses an upload-only token
+for one world (`docs/ingest.md`). The operator mints it inside the running `api` container. compose
+reads `GROVE_BUILD_SHA` in the file, so the command sets it as `deploy/lib.sh` does:
+
+```
+ssh -n root@app.grove.x-arc.ai 'GROVE_BUILD_SHA=$(cat /var/lib/grove/deployed.sha) docker compose --project-name grove --file /opt/grove/src/deploy/compose.yml exec -T api python -m grove.ingest token mint --world <world id>'
+```
+
+`token mint` prints `{id, token, world_id, expires_at}` once, as one JSON line: the raw token is
+nowhere else. `--minutes N` sets its life, from 1 to 1440 minutes, 60 by default. In the same
+command, `token revoke --id <id>` revokes a token by the id that mint printed, and `token list
+--world <world id>` lists a world's tokens by id and time. `exec` runs in the live container, not
+in a one-off container, so it needs no box lock. While the nightly backup stops the API, it fails.
 
 ## Backups
 
@@ -232,6 +302,7 @@ ledger, compare).
    user, `neo4j.env`, `api.env` and an empty `runner.env`, then installs the host files and asks for
    the certificate. Set `GROVE_ACME_EMAIL` to give certbot a contact address for a new account; with
    no variable, it registers with no address.
-5. Copy the other secret files (above).
+5. Copy the other secret files (above), and the two screening files (uploads, above). A deploy
+   also works without the screening files; uploads then answer 503.
 6. Deploy a sha.
 7. Run `deploy/runner-secrets.sh` and deploy the same sha again (the runner's secrets, above).
