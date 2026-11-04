@@ -2,8 +2,8 @@
 public homepage (home.html), privacy, consent and forget pages.
 
 Standard library only; runs under the Mac's /usr/bin/python3 (3.9) and under 3.12.
-The views load no fixture. The checks inject a synthetic one into the unbundled sources
-(window.GROVE_FIXTURE); the bundle compiles that hook out, so it always runs live.
+The ordinary views load no fixture. Their bundle compiles the fixture hook out.
+Only demo-onboarding.html carries the tracked invented fixture and page-memory state.
 The privacy generator writes docs/data-flow.md; the page includes every generated table row.
 The consent page is a template: the API fills its two marks at each /authorize (grove.oauth.consent).
 """
@@ -73,14 +73,21 @@ def css(match):
     return "<style>\n" + text + "\n</style>"
 
 
-def script(match):
-    text = (ROOT / match[1].removeprefix("./")).read_text(encoding="utf-8")
+def script(match, demo=False):
     name = Path(match[1]).name
+    if demo and name in {"live.js", "pipedream.js"}:
+        return ""
+    text = (ROOT / match[1].removeprefix("./")).read_text(encoding="utf-8")
     if name in DEFERRED:
         url = emit_asset(text.encode("utf-8"), ".js", "text/javascript")
         return "<script>GroveDeferred.register(" + json.dumps(DEFERRED[name]) + "," + json.dumps(url) + ");</script>"
-    # The bundle never reads a fixture: the hook becomes undefined, so the page runs live.
-    text = text.replace(FIXTURE_HOOK, "undefined")
+    # The ordinary bundle never reads a fixture; the explicit demo is separate.
+    if not demo:
+        text = text.replace(FIXTURE_HOOK, "undefined")
+    elif name in {"simulation.js", "native-app.js", "agents.js"}:
+        # These existing modules keep preferences. The demo gives them page memory,
+        # without changing the browser's storage or the ordinary app's modules.
+        text = "(function(localStorage){\n" + text + "\n})(window.GroveDemo.storage);"
     return "<script>\n" + text.replace("</script", "<\\/script") + "\n</script>"
 
 
@@ -140,8 +147,22 @@ def bundle(name):
     return html
 
 
+def demo_bundle():
+    """The explicit demo is the only artifact that carries invented graph data."""
+    html = (ROOT / "index.html").read_text(encoding="utf-8")
+    fixture = json.loads((ROOT / "demo.synthetic.json").read_text(encoding="utf-8"))
+    bootstrap = "<script>window.GROVE_FIXTURE=" + json.dumps(fixture).replace("<", "\\u003c") + ";</script>"
+    html = html.replace('<script src="./simulation.js"></script>',
+                        bootstrap + '<script src="./demo-onboarding.js"></script><script src="./simulation.js"></script>')
+    html = re.sub(r'<link (?:href="([^"]+)" rel="stylesheet"|rel="stylesheet" href="([^"]+)")\s*/?>',
+                  lambda m: css([None, m[1] or m[2]]), html)
+    html = re.sub(r'<script src="([^"]+)"></script>', lambda m: script(m, demo=True), html)
+    return html.replace('href="./favicon.svg"', 'href="' + asset_url("favicon.svg", ROOT) + '"')
+
+
 generate_data_flow()
 pages = {name: bundle(name) for name in ("index.html", "home.html", "privacy.html", "consent.html", "forget.html")}
+pages["demo-onboarding.html"] = demo_bundle()
 for mark in CONSENT_MARKS:
     if pages["consent.html"].count(mark) != 1:
         raise SystemExit("build.py: consent.html must hold the mark " + mark + " exactly once")
