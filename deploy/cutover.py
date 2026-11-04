@@ -29,10 +29,14 @@ if not CLOCK_SOURCE.is_file():
 _clock_spec = importlib.util.spec_from_file_location("grove_cutover_clock", CLOCK_SOURCE)
 clock = importlib.util.module_from_spec(_clock_spec)
 _clock_spec.loader.exec_module(clock)
+PREFLIGHT_SOURCE = Path(__file__).with_name("grove-materials-preflight.py")
+if not PREFLIGHT_SOURCE.is_file():
+    PREFLIGHT_SOURCE = Path(__file__).with_name("materials_preflight.py")
 
 WRITERS = ("runner", "gateway", "api")
 UNITS = ("grove-services.service", "grove-backup.service")
 SHA = re.compile(r"[0-9a-f]{40}")
+SEED_OWNER = (10001, 10001)
 
 
 class Refused(RuntimeError):
@@ -148,8 +152,10 @@ class Commands:
 
 def install():
     p = paths()
+    preflight = PREFLIGHT_SOURCE.read_bytes()
     durable_directory(p["state"])
     atomic(p["installed"].with_name("grove-clock.py"), CLOCK_SOURCE.read_bytes(), 0o600)
+    atomic(p["installed"].with_name("grove-materials-preflight.py"), preflight, 0o600)
     atomic(p["installed"], Path(__file__).read_bytes(), 0o700)
     # Drop-ins survive the old parent's install-host.sh fallback. ExecStopPost
     # needs its own guard: systemd still calls it when ExecStart is refused.
@@ -194,8 +200,273 @@ def host_lock_held():
         raise Refused("host_lock_required") from None
 
 
+def unique_manifest_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise Refused("baseline_manifest_duplicate_key")
+        result[key] = value
+    return result
+
+
+@contextlib.contextmanager
+def baseline_file(path):
+    raw = str(path)
+    path = Path(raw)
+    if not path.is_absolute() or raw != str(path) or ".." in path.parts or path == Path("/"):
+        raise Refused("baseline_path_invalid")
+    with contextlib.ExitStack() as stack:
+        fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        stack.callback(os.close, fd)
+        chain = []
+        for part in path.parts[1:-1]:
+            parent = fd
+            fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent)
+            stack.callback(os.close, fd)
+            chain.append((parent, part, fd))
+        parent = fd
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        stack.callback(os.close, fd)
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise Refused("baseline_file_not_regular")
+        yield fd, before
+        named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
+        fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_uid",
+            "st_gid",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if any(
+            getattr(before, key) != getattr(info, key)
+            for info in (os.fstat(fd), named)
+            for key in fields
+        ):
+            raise Refused("baseline_file_changed")
+        for parent, part, child in chain:
+            named, opened = os.stat(part, dir_fd=parent, follow_symlinks=False), os.fstat(child)
+            if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+                raise Refused("baseline_path_changed")
+
+
+@contextlib.contextmanager
+def private_baseline_file(path):
+    with baseline_file(path) as (fd, info):
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise Refused("baseline_file_not_private")
+        yield fd, info
+
+
+def container_snapshot(row):
+    return {
+        **{
+            key: row[key]
+            for key in (
+                "id",
+                "name",
+                "project",
+                "service",
+                "image",
+                "running",
+                "status",
+                "health",
+                "restart",
+                "restart_count",
+            )
+        },
+        "oneoff": row["oneoff"].lower(),
+        "networks": sorted(row["networks"]),
+    }
+
+
+class BaselineManifest:
+    """Exact observation binding, never a deployment grant or service allowlist."""
+
+    def __init__(self, path, digest, *, target, baseline, request, smoke_hash, seed, state):
+        if not path or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise Refused("baseline_manifest_binding_required")
+        self.path, self.digest = path, digest
+        self.data = json.loads(self.read(), object_pairs_hook=unique_manifest_object)
+        data = self.data
+        expected = {
+            "version",
+            "target",
+            "baseline",
+            "request",
+            "smoke_sha256",
+            "locks",
+            "services",
+            "retained",
+        }
+        if (
+            not isinstance(data, dict)
+            or set(data) != expected
+            or type(data["version"]) is not int
+            or data["version"] != 1
+            or (data["target"], data["baseline"], data["request"], data["smoke_sha256"])
+            != (target, baseline, request, smoke_hash)
+        ):
+            raise Refused("baseline_manifest_request_mismatch")
+        self.lock_paths = {
+            "host": os.environ.get("GROVE_LOCK_FILE", "/run/grove/deploy.lock"),
+            "admission": str(state / "cutover-admission.lock"),
+            "seed": str(seed),
+        }
+        if not isinstance(data["locks"], dict) or set(data["locks"]) != set(self.lock_paths):
+            raise Refused("baseline_manifest_locks_invalid")
+        if not isinstance(data["services"], dict) or set(data["services"]) != {*WRITERS, "neo4j"}:
+            raise Refused("baseline_manifest_services_invalid")
+        if not isinstance(data["retained"], list) or len(data["retained"]) > 32:
+            raise Refused("baseline_manifest_retained_invalid")
+        all_rows = []
+        for name, binding in data["services"].items():
+            if not isinstance(binding, dict) or set(binding) != {"revision", "container"}:
+                raise Refused("baseline_manifest_service_invalid")
+            revision, row = binding["revision"], binding["container"]
+            self.validate_snapshot(row)
+            if row["service"] != name or row["oneoff"] != "false":
+                raise Refused("baseline_manifest_service_invalid")
+            if name == "neo4j":
+                if revision is not None or not row["running"] or row["health"] != "healthy":
+                    raise Refused("baseline_manifest_store_invalid")
+            elif not isinstance(revision, str) or not SHA.fullmatch(revision):
+                raise Refused("baseline_manifest_revision_invalid")
+            all_rows.append(row)
+        for row in data["retained"]:
+            self.validate_snapshot(row)
+            if (
+                row["oneoff"] != "true"
+                or row["running"]
+                or row["status"] != "exited"
+                or row["restart"] != {"Name": "no", "MaximumRetryCount": 0}
+            ):
+                raise Refused("baseline_manifest_retained_not_stopped")
+            all_rows.append(row)
+        for key in ("id", "name"):
+            if len({row[key] for row in all_rows}) != len(all_rows):
+                raise Refused("baseline_manifest_duplicate_container")
+        self.retained = {row["id"]: row for row in data["retained"]}
+        self.verify_locks()
+
+    @staticmethod
+    def validate_snapshot(row):
+        keys = {
+            "id",
+            "name",
+            "project",
+            "service",
+            "image",
+            "running",
+            "status",
+            "health",
+            "restart",
+            "restart_count",
+            "oneoff",
+            "networks",
+        }
+        if not isinstance(row, dict) or set(row) != keys:
+            raise Refused("baseline_manifest_container_invalid")
+        if (
+            not isinstance(row["id"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", row["id"])
+            or not isinstance(row["image"], str)
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", row["image"])
+            or not isinstance(row["name"], str)
+            or not re.fullmatch(r"/[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}", row["name"])
+            or row["project"] != "grove"
+            or row["service"] not in (*WRITERS, "neo4j")
+            or type(row["running"]) is not bool
+            or row["status"] not in ("running", "exited", "created")
+            or row["running"] != (row["status"] == "running")
+            or row["health"] not in (None, "healthy", "unhealthy", "starting")
+            or row["oneoff"] not in ("true", "false")
+            or type(row["restart_count"]) is not int
+            or row["restart_count"] < 0
+        ):
+            raise Refused("baseline_manifest_container_invalid")
+        policy, networks = row["restart"], row["networks"]
+        if (
+            not isinstance(policy, dict)
+            or set(policy) != {"Name", "MaximumRetryCount"}
+            or policy["Name"] not in ("no", "always", "unless-stopped", "on-failure")
+            or type(policy["MaximumRetryCount"]) is not int
+            or policy["MaximumRetryCount"] < 0
+            or not isinstance(networks, list)
+            or len(networks) > 16
+            or any(
+                not isinstance(name, str) or not re.fullmatch(r"[a-zA-Z0-9_.-]{1,128}", name)
+                for name in networks
+            )
+            or networks != sorted(set(networks))
+        ):
+            raise Refused("baseline_manifest_container_invalid")
+
+    def read(self):
+        with private_baseline_file(self.path) as (fd, info):
+            if not 0 < info.st_size <= 65536:
+                raise Refused("baseline_manifest_size_invalid")
+            with os.fdopen(os.dup(fd), "rb") as stream:
+                data = stream.read(65537)
+            if len(data) != info.st_size or hashlib.sha256(data).hexdigest() != self.digest:
+                raise Refused("baseline_manifest_hash_mismatch")
+        return data
+
+    def verify_locks(self):
+        identities = set()
+        operator = (os.geteuid(), os.getegid())
+        roles = {
+            "host": (operator, (0o600, 0o644)),
+            "admission": (operator, (0o600,)),
+            "seed": (SEED_OWNER, (0o600,)),
+        }
+        for name, path in self.lock_paths.items():
+            binding = self.data["locks"][name]
+            if (
+                not isinstance(binding, dict)
+                or set(binding) != {"path", "device", "inode", "uid", "gid", "mode"}
+                or binding["path"] != path
+                or any(
+                    type(binding[key]) is not int or binding[key] < 0
+                    for key in ("device", "inode", "uid", "gid", "mode")
+                )
+            ):
+                raise Refused("baseline_manifest_lock_mismatch")
+            owner, modes = roles[name]
+            if (binding["uid"], binding["gid"]) != owner or binding["mode"] not in modes:
+                raise Refused("baseline_manifest_lock_unsafe")
+            with baseline_file(path) as (_, info):
+                identity = (info.st_dev, info.st_ino)
+                observed = (*identity, info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
+                expected = tuple(binding[key] for key in ("device", "inode", "uid", "gid", "mode"))
+                if observed != expected or identity in identities:
+                    raise Refused("baseline_manifest_lock_mismatch")
+                identities.add(identity)
+
+    def verify(self):
+        self.read()
+        self.verify_locks()
+
+
 class Cutover:
-    def __init__(self, target, baseline, request, seed, smoke, smoke_hash, commands=None):
+    def __init__(
+        self,
+        target,
+        baseline,
+        request,
+        seed,
+        smoke,
+        smoke_hash,
+        commands=None,
+        *,
+        baseline_manifest=None,
+        baseline_manifest_sha256=None,
+    ):
         if not SHA.fullmatch(target) or not SHA.fullmatch(baseline):
             raise Refused("full_sha_required")
         if not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", request):
@@ -217,6 +488,19 @@ class Cutover:
             "images": {},
         }
         self.override = self.p["state"] / "cutover-compose.json"
+        self.manifest = None
+        if baseline_manifest is not None or baseline_manifest_sha256 is not None:
+            self.manifest = BaselineManifest(
+                baseline_manifest,
+                baseline_manifest_sha256,
+                target=target,
+                baseline=baseline,
+                request=request,
+                smoke_hash=smoke_hash,
+                seed=self.seed,
+                state=self.p["state"],
+            )
+            self.data["baseline_manifest_sha256"] = self.manifest.digest
 
     def save(self, stage=None):
         if stage:
@@ -243,6 +527,7 @@ class Cutover:
         # Never retrieve Config.Env. This projection contains no credentials.
         template = (
             '{"id":{{json .Id}},"image":{{json .Image}},'
+            '"name":{{json .Name}},"restart_count":{{json .RestartCount}},'
             '"project":{{json (index .Config.Labels "com.docker.compose.project")}},'
             '"service":{{json (index .Config.Labels "com.docker.compose.service")}},'
             '"oneoff":{{json (index .Config.Labels "com.docker.compose.oneoff")}},'
@@ -263,6 +548,8 @@ class Cutover:
         return identifier
 
     def inventory(self, *, migration=False):
+        if self.manifest:
+            self.manifest.verify()
         identifiers = set(
             self.run(
                 "docker",
@@ -280,8 +567,14 @@ class Cutover:
                 ).split()
             )
         found = {}
+        retained = set()
         for identifier in sorted(identifiers):
             row = self.inspect(identifier)
+            if self.manifest and row["id"] in self.manifest.retained:
+                if container_snapshot(row) != self.manifest.retained[row["id"]]:
+                    raise Refused("retained_container_changed")
+                retained.add(row["id"])
+                continue
             if migration and row["id"] == self.data.get("migration_id"):
                 continue
             service = row["service"]
@@ -295,7 +588,27 @@ class Cutover:
             found[service] = row
         if set(found) != {*WRITERS, "neo4j"}:
             raise Refused("incomplete_container_inventory")
+        if self.manifest:
+            if retained != set(self.manifest.retained):
+                raise Refused("retained_container_missing")
+            if (
+                container_snapshot(found["neo4j"])
+                != self.manifest.data["services"]["neo4j"]["container"]
+            ):
+                raise Refused("store_identity_changed")
         return found
+
+    def verify_baseline(self, rows):
+        for service in WRITERS:
+            row = rows[service]
+            revision = self.data["baseline"]
+            if self.manifest:
+                binding = self.manifest.data["services"][service]
+                revision = binding["revision"]
+                if container_snapshot(row) != binding["container"]:
+                    raise Refused("baseline_identity_mismatch")
+            if row["image"] != self.image(service, revision):
+                raise Refused("baseline_identity_mismatch")
 
     def helpers_idle(self):
         for unit in UNITS:
@@ -335,6 +648,8 @@ class Cutover:
                 row["running"]
                 or row["status"] not in ("exited", "created")
                 or row["restart"]["Name"] != "no"
+                or row["id"] != self.data["writers"][service]["id"]
+                or row["image"] != self.data["writers"][service]["image"]
             ):
                 raise Refused("writer_not_excluded")
         if not rows["neo4j"]["running"] or rows["neo4j"]["health"] != "healthy":
@@ -346,6 +661,8 @@ class Cutover:
         rows = self.inventory(migration=True)
         for service in WRITERS:
             row = rows[service]
+            if self.manifest and self.data["target_writers"].get(service, row["id"]) != row["id"]:
+                raise Refused("target_identity_mismatch")
             self.data["target_writers"][service] = row["id"]
             if (
                 row["image"] != self.data["images"][service]
@@ -388,11 +705,15 @@ class Cutover:
     def execute(self):
         guard()
         self.verify_smoke()
+        if self.manifest:
+            self.manifest.verify()
         base = os.environ.get("GROVE_CUTOVER_PUBLIC_BASE_URL", "")
         if not re.fullmatch(r"https://[a-z0-9.-]+", base):
             raise Refused("public_base_required")
         with (
-            file_lock(self.p["state"] / "cutover-admission.lock"),
+            file_lock(
+                self.p["state"] / "cutover-admission.lock", existing=self.manifest is not None
+            ),
             file_lock(self.seed, existing=True),
         ):
             guard()
@@ -401,10 +722,9 @@ class Cutover:
             if not rows["neo4j"]["running"] or rows["neo4j"]["health"] != "healthy":
                 raise Refused("store_not_healthy")
             self.data["store_id"] = rows["neo4j"]["id"]
+            self.verify_baseline(rows)
             for service in WRITERS:
                 row = rows[service]
-                if row["image"] != self.image(service, self.data["baseline"]):
-                    raise Refused("baseline_identity_mismatch")
                 policy = row["restart"]
                 if policy["Name"] not in (
                     "no",
@@ -422,6 +742,10 @@ class Cutover:
             self.data["images"] = {
                 service: self.image(service, self.data["target"]) for service in WRITERS
             }
+            # A build can take minutes. Bind the last observation before service changes too.
+            if self.manifest:
+                self.helpers_idle()
+                self.verify_baseline(self.inventory())
             override = {
                 "services": {
                     service: {"restart": "no", "image": image}
@@ -570,6 +894,18 @@ class Cutover:
                     self.run("docker", "update", "--restart=" + value, identifier)
                     if self.inspect(identifier)["restart"] != policy:
                         raise Refused("restart_restore_failed")
+                if self.manifest:
+                    final = self.inventory(migration=True)
+                    for service in WRITERS:
+                        row = final[service]
+                        if (
+                            row["id"] != self.data["target_writers"][service]
+                            or row["image"] != self.data["images"][service]
+                            or not row["running"]
+                            or row["status"] != "running"
+                            or row["restart"] != self.data["writers"][service]["restart"]
+                        ):
+                            raise Refused("target_identity_mismatch")
                 if self.data["baseline"] != self.data["target"]:
                     atomic(
                         self.p["state"] / "previous.sha",
@@ -591,8 +927,35 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("install", "check", "recover", "run", "launch"))
     parser.add_argument("arguments", nargs="*")
+    parser.add_argument("--baseline-manifest")
+    parser.add_argument("--baseline-manifest-sha256")
     args = parser.parse_args(argv)
     try:
+        if args.action == "install":
+            if args.baseline_manifest is not None or args.baseline_manifest_sha256 is not None:
+                raise Refused("baseline_manifest_binding_required")
+            # apply.sh invokes this child with the request's environment. An
+            # installer has no baseline request to validate. Drop only its own
+            # inherited copies; the parent retains both for the later run.
+            os.environ.pop("GROVE_CUTOVER_BASELINE_MANIFEST", None)
+            os.environ.pop("GROVE_CUTOVER_BASELINE_SHA256", None)
+        else:
+            if args.baseline_manifest is None:
+                args.baseline_manifest = os.environ.get("GROVE_CUTOVER_BASELINE_MANIFEST")
+            if args.baseline_manifest_sha256 is None:
+                args.baseline_manifest_sha256 = os.environ.get("GROVE_CUTOVER_BASELINE_SHA256")
+        manifest_supplied = (
+            args.baseline_manifest is not None or args.baseline_manifest_sha256 is not None
+        )
+        if manifest_supplied:
+            if (
+                args.action not in ("run", "launch")
+                or not args.baseline_manifest
+                or not args.baseline_manifest_sha256
+            ):
+                raise Refused("baseline_manifest_binding_required")
+            os.environ["GROVE_CUTOVER_BASELINE_MANIFEST"] = args.baseline_manifest
+            os.environ["GROVE_CUTOVER_BASELINE_SHA256"] = args.baseline_manifest_sha256
         if args.action == "check":
             guard()
         elif args.action == "install":
@@ -605,11 +968,37 @@ def main(argv=None):
             guard()
             if len(args.arguments) != 1 or not SHA.fullmatch(args.arguments[0]):
                 raise Refused("full_sha_required")
+            # The installed copy runs before even a retained old deploy parent.
+            # Its failure cannot reach that parent's automatic installer fallback.
+            spec = importlib.util.spec_from_file_location(
+                "grove_materials_preflight", PREFLIGHT_SOURCE
+            )
+            preflight = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(preflight)
+            if preflight.main() != 0:
+                return 78
             os.environ["GROVE_DEPLOY_WAIT_SECONDS"] = "30"
-            launcher = Commands()
+            launcher = Commands(2900)
             # The inner deadline leaves 100 seconds for cleanup before this
             # outer watchdog. Neither timeout permits a container retry.
             os.environ["GROVE_CUTOVER_DEADLINE"] = str(clock.monotonic() + 2800)
+            if manifest_supplied:
+                # Validate the binding and the observed baseline before even
+                # an old parent can reach its installer or fallback. This is
+                # read-only; run revalidates under its existing locks later.
+                bound = Cutover(
+                    args.arguments[0],
+                    (paths()["state"] / "deployed.sha").read_text().strip(),
+                    os.environ.get("GROVE_CUTOVER_REQUEST", ""),
+                    os.environ.get("GROVE_CUTOVER_SEED_LOCK", ""),
+                    os.environ.get("GROVE_CUTOVER_SMOKE_SCRIPT", ""),
+                    os.environ.get("GROVE_CUTOVER_SMOKE_SHA256", ""),
+                    launcher,
+                    baseline_manifest=args.baseline_manifest,
+                    baseline_manifest_sha256=args.baseline_manifest_sha256,
+                )
+                bound.verify_smoke()
+                bound.verify_baseline(bound.inventory())
             launcher.run(
                 [paths()["src"] / "deploy/deploy.sh", args.arguments[0]],
                 2900,
@@ -629,10 +1018,12 @@ def main(argv=None):
                 os.environ.get("GROVE_CUTOVER_SEED_LOCK", ""),
                 os.environ.get("GROVE_CUTOVER_SMOKE_SCRIPT", ""),
                 os.environ.get("GROVE_CUTOVER_SMOKE_SHA256", ""),
+                baseline_manifest=args.baseline_manifest,
+                baseline_manifest_sha256=args.baseline_manifest_sha256,
             )
             signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(Refused("terminated")))
             cutover.execute()
-    except (Refused, OSError, ValueError, KeyError):
+    except (Refused, OSError, ValueError, KeyError, TypeError, RecursionError):
         print(
             "cutover_refused; preserve maintenance and inspect private state",
             file=sys.stderr,

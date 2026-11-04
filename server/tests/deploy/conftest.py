@@ -545,6 +545,16 @@ class Box:
 def box(tmp_path: Path) -> Box:
     root = tmp_path / "box"
     shutil.copytree(DEPLOY, root / "src" / "deploy")
+    journal = root.resolve() / "journal"
+    journal.mkdir(mode=0o700)
+    (journal / ".lock").touch(mode=0o600)
+    # The scratch copy runs with the test process's UID. Do not add a production
+    # environment bypass or replace the actual preflight behavior.
+    preflight = root / "src/deploy/materials_preflight.py"
+    if preflight.exists():
+        source = preflight.read_text()
+        assert source.count("API_UID = 10001\n") == 1
+        preflight.write_text(source.replace("API_UID = 10001\n", f"API_UID = {os.getuid()}\n"))
     clock_source = root / "src/server/grove/clock.py"
     clock_source.parent.mkdir(parents=True)
     shutil.copy2(REPO / "server/grove/clock.py", clock_source)
@@ -607,6 +617,7 @@ def box(tmp_path: Path) -> Box:
         "GROVE_SRC": str(root / "src"),
         "GROVE_ETC": str(root / "etc"),
         "GROVE_STATE": str(root / "state"),
+        "GROVE_FORGET_LEDGER_HOST_DIR": str(journal),
         "GROVE_LOG_DIR": str(root / "log"),
         "GROVE_BACKUP_DIR": str(root / "backups"),
         "GROVE_LOCK_FILE": str(root / "lock" / "grove-deploy.lock"),

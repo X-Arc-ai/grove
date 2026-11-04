@@ -71,7 +71,15 @@ services:
       GROVE_DENYLIST: /run/grove/screening/denylist.txt
       # The API's own default, written out so nginx's limit for the upload path can match it.
       GROVE_UPLOAD_MAX_BYTES: "268435456"
+      GROVE_FORGET_LEDGER_DIR: /run/grove/forget-ledger
     volumes:
+      # Operator-selected existing journal. Docker must never bootstrap an empty one.
+      - type: bind
+        source: ${GROVE_FORGET_LEDGER_HOST_DIR:?set the existing private journal directory}
+        target: /run/grove/forget-ledger
+        read_only: false
+        bind:
+          create_host_path: false
       - type: bind
         source: /etc/grove/google-oauth.json
         target: /run/grove/google-oauth.json

@@ -12,7 +12,7 @@ runs the compose project `grove` from `deploy/compose.yml`.
 | Service | What it is | Network | Runs as |
 |---|---|---|---|
 | `neo4j` | Neo4j Community, the pin of `docker-compose.dev.yml`. Heap 1 GB, page cache 512 MB, Cypher 25 by default. Data in the volume `grove-neo4j-data`. | `store` (internal) | the image's user |
-| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body; only `/v1/sources/upload` takes up to 256 MiB, with no request buffering (uploads, below). Read-only root file system; `/tmp` is a tmpfs of 320 MiB. A memory limit of 4 GB, with no swap past it. | `store`, `runner_v2`, `egress` | uid 10001 `grove-api` |
+| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in. Export and material mutations have explicit streaming body limits (uploads, below). Read-only root file system; `/tmp` is a tmpfs of 320 MiB. The external erasure journal has its own writable bind. A memory limit of 4 GB, with no swap past it. | `store`, `runner_v2`, `egress` | uid 10001 `grove-api` |
 | `gateway` | The model gateway, `python -m grove.models.gateway` from the API's image (`docs/models.md`, the gateway). It holds the model keys and `GROVE_GATEWAY_SECRET`, and writes each call to `model_calls`. It listens on port 18300 of its networks (`GROVE_GATEWAY_HOST=0.0.0.0`, since the runner's container cannot reach a loopback address) and publishes no port; every call needs a run token signed with `GROVE_GATEWAY_SECRET`. Read-only root file system. | `store`, `runner_v2`, `egress` | uid 10001 `grove-api` |
 | `runner` | The runner loop, `python -m grove.runner`: it asks the API for due work and runs each pass in OpenCode 1.18.32 against the gateway (`GROVE_GATEWAY_URL=http://gateway:18300/v1`), with the config and the agents of the repo's `runner/` folder (`/opt/grove/runner` in the image). OpenCode is checked against its release checksum, runs with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`, and has no plugin. | `runner_v2` (internal) | uid 10002 `grove-runner` |
 
@@ -147,6 +147,46 @@ The request names the full published `develop` SHA, current baseline, existing s
 additional smoke script and its SHA256, and every permitted host operation. Do not run a seed
 through this protocol. Seed and account actions need their own released contract.
 
+### Existing durable erasure journal
+
+The operator must set `GROVE_FORGET_LEDGER_HOST_DIR` to the existing private durable journal
+directory. There is no checked-in host path or fallback. Compose binds that directory to
+`/run/grove/forget-ledger` in the API and sets `GROVE_FORGET_LEDGER_DIR` to that container path.
+The bind is writable and has `create_host_path: false`. The gateway and runner receive neither
+the directory nor the variable. The runner still has no store credential or store network.
+
+Provide the host variable to **every** Compose caller, including the authorized deploy wrapper
+and the systemd recovery/backup environments. An API `env_file` value alone does not supply
+Compose interpolation. Provisioning those environments belongs to the separate host release;
+this source change does not install an operator-specific path or alter a journal.
+
+`apply.sh` first runs `python3 deploy/materials_preflight.py`, before secret preflight, screening
+directory creation, permission changes, host installation, image build, or service changes.
+The standalone helper uses the same host variable. It requires:
+
+- An absolute canonical path, with no symlink at any level, and an existing directory owned
+  by API UID 10001, mode 0700.
+- An existing regular `.lock`, UID 10001, mode 0600, one hard link. It acquires a nonblocking
+  shared lock; contention refuses immediately. It never creates or truncates the lock.
+- Only regular `<sha256-of-world-id>.json` journal files with the same owner, mode 0600,
+  and one hard link. Unknown entries, incomplete temporary files, and symlinks refuse.
+- Bounded JSON envelopes with the existing format, exact count, unique row IDs, matching
+  filename, and canonical row checksum. Duplicate JSON keys and non-finite values refuse.
+- At most 256 journal files, 16,000,000 bytes per file, 32,000,000 total bytes, and 32,768 rows.
+  File identity and metadata must remain unchanged during the check.
+
+An existing lock-only directory is structurally valid, but does not prove that historical
+intents are absent from the database. This helper checks filesystem prerequisites only.
+It does not contact the database, create an empty substitute, call `locked_ledger` or `_root`,
+repair permissions, erase intents, or perform recovery. Reads may update filesystem access times.
+It emits a fixed refusal reason or `materials_preflight_ok: filesystem_only`, never journal data.
+
+The separate authorized readiness check must establish complete canonical equality between the
+external journal and committed ForgetLedger rows before release. Missing historical intents,
+pending intents, or differing canonical rows remain a refusal. The application's canonical
+checks stay in force. A missing journal needs a separately reviewed bootstrap/recovery decision;
+do not resolve it with `mkdir`, an empty JSON file, or a permission repair during deployment.
+
 ### First-upgrade bootstrap
 
 The currently served parent can keep its old shell program after Git replaces the checkout.
@@ -163,15 +203,17 @@ install -d -m 700 /var/lib/grove/cutover-bootstrap
 umask 077
 git -C /opt/grove/src show "$TARGET:deploy/cutover.py" > /var/lib/grove/cutover-bootstrap/cutover.py
 git -C /opt/grove/src show "$TARGET:server/grove/clock.py" > /var/lib/grove/cutover-bootstrap/grove-clock.py
+git -C /opt/grove/src show "$TARGET:deploy/materials_preflight.py" > /var/lib/grove/cutover-bootstrap/materials_preflight.py
 python3 /var/lib/grove/cutover-bootstrap/cutover.py install
 ```
 
-Run the bootstrap as a fail-fast shell. Verify both fetched file hashes against the release
+Run the bootstrap as a fail-fast shell. Verify all three fetched file hashes against the release
 source before execution. Python 3.12 is required. Installation writes these files atomically
 and fsyncs each file and each newly created parent directory:
 
 - `/usr/local/libexec/grove-cutover.py`, mode 0700;
 - `/usr/local/libexec/grove-clock.py`, mode 0600, the same application clock provider;
+- `/usr/local/libexec/grove-materials-preflight.py`, mode 0600, the same read-only journal preflight;
 - `/etc/systemd/system/grove-services.service.d/90-cutover.conf`;
 - `/etc/systemd/system/grove-backup.service.d/90-cutover.conf`.
 
@@ -204,9 +246,83 @@ The extra smoke script must return failure for any missing acceptance result. Ke
 and output free of credentials and personal data. The normal public smoke runs first; both
 smoke programs share a 120-second limit.
 
+### Optional exact mixed baseline
+
+Without a baseline manifest, the original strict behavior remains: all writer images must match
+the single baseline SHA, and any retained one-off refuses the cutover.
+
+For an approved mixed baseline, supply both `GROVE_CUTOVER_BASELINE_MANIFEST` and
+`GROVE_CUTOVER_BASELINE_SHA256`. The first names an existing absolute, private, regular JSON
+file; the second binds its exact bytes. Alternatively, pass `--baseline-manifest` and
+`--baseline-manifest-sha256` to `launch` or `run`. `launch` passes this binding through the
+environment to the target `apply.sh`. A manifest by itself grants no host or deployment action.
+The internal `install` child discards its inherited manifest variables: installation is not a
+cutover request. The parent retains both values for the later `run` call. Explicit manifest
+options on `install` still refuse. Do not persist these attempt-specific variables in recovery
+or backup environments.
+
+Before it starts the parent, `launch` checks the journal, then the manifest hash, request,
+target, served baseline, smoke hash, lock metadata, exact container inventory, and each writer's
+image/revision. A mismatch refuses before checkout, installer, fallback, or service changes.
+This check is read-only and shares the launch deadline. `run` repeats its existing checks
+under the host/admission/seed locks and after image build. The separately authorized release
+wrapper must still hold its operator lock and establish complete journal/database equality.
+Installation can reload nginx after the launch check and before `run` starts.
+
+The file must have mode 0600, the operator UID, one hard link, no symlink ancestors, and at most
+65,536 bytes. Its exact schema is:
+
+| Field | Required value |
+| --- | --- |
+| `version` | Integer `1` |
+| `request`, `target`, `baseline`, `smoke_sha256` | Exact values of this cutover request |
+| `locks` | Exactly `host`, `admission`, `seed`; each has `path`, `device`, `inode`, `uid`, `gid`, `mode` |
+| `services` | Exactly `api`, `runner`, `gateway`, `neo4j`; each has `revision`, `container` |
+| `retained` | At most 32 exact container snapshots; no service-name allowlist |
+
+The three lock files must already exist, have distinct identities and one hard link, and match
+every bound metadata field. UID, GID, device, inode, and mode are nonnegative JSON integers;
+`mode` encodes permission bits numerically (384 for 0600, 420 for 0644). The host lock belongs
+to the operator UID/GID and allows 0600 or 0644. The admission lock belongs to the operator
+UID/GID and requires 0600. The seed lock belongs to API UID/GID 10001 and requires 0600.
+No lock is chmodded, chowned, recreated, or replaced to fit these rules. Paths must match the
+host-lock configuration, the state directory's `cutover-admission.lock`, and the request's
+seed path, without symlinks. The existing host-lock descriptor check remains mandatory.
+No absent admission lock is created in manifest mode. The manifest file itself remains private
+to the operator at 0600; the host lock's broader read permission does not apply to it.
+
+Each writer's `revision` is its own full 40-character source SHA. The API, runner, and gateway
+image tags are resolved separately and must match both the observed immutable image and the
+manifest. Neo4j uses `revision: null`; its exact container/image and healthy state stay unchanged.
+
+Each `container` and each retained entry has exactly these fields: `id` (full 64-character ID),
+`name` (Docker name including the leading slash), `project` (`grove`), `service`, `image`
+(`sha256:` plus 64 hexadecimal characters), `running` (boolean), `status`, `health`, `restart`
+(`Name` and `MaximumRetryCount`), `restart_count` (integer), `oneoff` (lowercase string `true`
+or `false`), and `networks` (sorted unique network names). IDs and names cannot repeat.
+Service snapshots require `oneoff: "false"`. Retained snapshots require `oneoff: "true"`,
+`running: false`, `status: "exited"`, and restart policy `{"Name":"no","MaximumRetryCount":0}`.
+No active or automatically restarting historical helper is accepted.
+
+The manifest hash and lock identities are rechecked with every inventory. Every retained
+container must remain present and exactly match its snapshot. Unknown containers, missing
+services, changed images, restart counts, lock identities, and active/queued recovery helpers
+refuse. The complete baseline is rechecked after image build and before service changes.
+The durable attempt receipt records `baseline_manifest_sha256`; historical containers remain
+untouched. The original barrier, migration bounds, failure cleanup, and no-retry rules remain.
+
 ```sh
 python3 /usr/local/libexec/grove-cutover.py launch "$TARGET"
 ```
+
+The installed launcher checks the existing journal before it starts even an older deploy parent.
+The target `apply.sh` checks it again before mutation. Journal preflight refusal returns status
+78; the current parent preserves that result and does not restore the checkout or run its
+installer fallback. The checkout can therefore remain at the refused target while services
+remain unchanged. A later apply failure with status 78 is normalized to ordinary failure status
+1, so it cannot suppress the existing failure behavior. Other failure and maintenance rules
+remain in force. Direct invocation of a historical deploy parent bypasses the installed precheck
+and is not the supported release entrypoint.
 
 Keep the existing operator lock around bootstrap and this one invocation. Do not wrap `launch`
 in another host `flock`: `deploy.sh` owns `/run/grove/deploy.lock`, with a 30-second acquisition
@@ -234,7 +350,7 @@ Configuration checks and host installation precede the cutover. The protocol the
 
 1. Excludes recovery helpers and holds the existing seed lock. It requires a complete owned
    container inventory and exact baseline image IDs. Active or queued legacy helpers, unexplained
-   containers, and old one-offs refuse the attempt. Neo4j must already be healthy.
+   containers, and unbound old one-offs refuse the attempt. Neo4j must already be healthy.
 2. Builds the target images and records their immutable image IDs. It does not restart or replace
    Neo4j. It records non-secret request, baseline, target, container and original restart-policy
    data in root-private `/var/lib/grove/cutover.json`.
@@ -273,10 +389,16 @@ still needs explicit helper/container reconciliation. After migration starts, an
 requires separate schema compatibility acceptance. After target writes or demo enrichment, only an
 accepted compatible release may recover service; never purge data to make an old reader work.
 
-The next deployment refuses a retained migration one-off, even after success. Its new request must
-explicitly authorize removal of the **exact** prior container only after the archived complete receipt,
-image ID, terminal state and transaction completion agree. A failed or uncertain container remains.
-No generic stale-one-off cleanup may remove migration evidence.
+The next deployment still refuses a retained migration one-off by default. Its new request may
+bind that exact stopped container in the optional manifest, preserving it without mutation.
+Any removal requires separate explicit authority for the exact container, after the archived
+receipt, image ID, terminal state, and transaction completion agree. A failed or uncertain
+container remains. No generic stale-one-off cleanup may remove migration evidence.
+
+After material writes, an older API cannot be presumed compatible with material revisions and
+erasure replay. Partial migration remains possible even without a Migration ledger row.
+Preserve every failed attempt; do not retry, erase journal intents, drop schema, or remove
+material data to restore an older release. Compatibility and recovery require a new exact grant.
 
 The source regressions use synthetic containers, command doubles, real local process termination,
 and filesystem locks. They do not prove a real reboot, power-loss durability, native Compose behavior,
@@ -350,10 +472,20 @@ uploads answer 503 until the next deploy hands it over. To hand it over now, dep
 256m`). That is the API's own cap: `GROVE_UPLOAD_MAX_BYTES`, 268435456 bytes, which compose sets to
 the code's default. `proxy_request_buffering off` streams the body to the API, so nginx keeps no
 copy of it on disk. The read and send timeouts are 600 s, as a large export takes minutes to parse
-and screen. Every other path keeps the 10 MB limit. To change the cap, change
+and screen. Material mutation limits are listed below; other paths keep the 10 MB limit. To change the cap, change
 `GROVE_UPLOAD_MAX_BYTES` and the nginx limit together. The API spools a body past 8 MiB to `/tmp`,
 a tmpfs of 320 MiB: room for the one upload that runs at a time, at the cap. A second upload
 while one runs answers 429 `rate_limited` with `retry_after_seconds`.
+
+**Materials.** nginx disables request buffering on every material mutation route. The inherited
+upstream HTTP/1.1 setting also supports streaming chunked request bodies. File creation accepts
+at most 16 MiB (16,777,216 bytes); note creation and editing accept at most 70 KiB (71,680 bytes)
+of JSON, including field overhead; deletion confirmation and deletion accept 4,096 bytes.
+These are the API body limits, not new content-length promises. The API retains its independent
+stream/body checks, content limits, session/origin checks, and canonical journal protections.
+The 10–16 MiB file range therefore reaches the API without an nginx temporary request file.
+An oversized body still refuses. The source-upload route, host headers, and internal 404 remain.
+Source configuration tests do not prove native nginx behavior or live material acceptance.
 
 **Memory.** Archive expansion, lines, chats, messages and text have separate limits
 (`docs/ingest.md`). Synthetic macOS parse-and-screen probes measured up to 1,409 MiB of peak
