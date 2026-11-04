@@ -1,5 +1,7 @@
 """D6 cache and request writes. Provider calls happen before these transactions."""
 
+from datetime import timedelta
+
 from neo4j import Driver
 
 from grove import clock
@@ -10,8 +12,68 @@ from grove.models.explain_break import Explanation, _one_sentence
 from grove.screening import Screener, ScreeningConfig
 from grove.store.query import WorldQuery
 from grove.writer.history import Stamp, add_entry, add_text
-from grove.writer.runs import enqueue_job
+from grove.writer.runs import (
+    JOB_CLAIMED,
+    JOB_FAILED,
+    JOB_MAX_ATTEMPTS,
+    _put_back,
+    _set_job,
+    claim_job,
+    enqueue_job,
+)
 from grove.writer.tx import WorldTx, WorldWriter
+
+EXPLANATION_LEASE_SECONDS = 1800
+
+
+def claim_explanation_job(driver: Driver, world_id: str, *, worker: str) -> dict | None:
+    """Recover only expired explanation claims, then take a claim with a unique holder token.
+
+    The lease is renewed between model calls. A late holder cannot end a newer claim, even
+    when both dispatcher processes use the same worker name. Cache writes remain idempotent
+    if an individual model request exceeds the lease and both holders finish it.
+    """
+
+    def recover(tx: WorldTx) -> None:
+        tx.lock_world()
+        now = clock.now(world_id)
+        expired = tx.run(
+            "MATCH (j:Job {agent_or_job_type: $agent, state: $claimed}) "
+            "WHERE j.claimed_at IS NULL OR j.claimed_at <= $before "
+            "RETURN j.id AS id, j.attempts AS attempts",
+            agent=JOB,
+            claimed=JOB_CLAIMED,
+            before=now - timedelta(seconds=EXPLANATION_LEASE_SECONDS),
+        )
+        for job in expired:
+            attempts = job["attempts"] or 0
+            if attempts >= JOB_MAX_ATTEMPTS:
+                _set_job(tx, job["id"], state=JOB_FAILED, now=now)
+            else:
+                _put_back(tx, job["id"], JOB, attempts=attempts, run_after=now, now=now)
+
+    WorldWriter(driver, world_id).transaction(recover)
+    return claim_job(driver, world_id, agent=JOB, worker=f"{worker}:{new_id(world_id)}")
+
+
+def renew_explanation_job(driver: Driver, world_id: str, job_id: str, *, worker: str) -> bool:
+    """Renew this holder only. False means a replacement holder owns any remaining work."""
+
+    def work(tx: WorldTx) -> bool:
+        tx.lock_world()
+        rows = tx.run(
+            "MATCH (j:Job {id: $id, agent_or_job_type: $agent, state: $claimed, "
+            "claimed_by: $worker}) SET j.claimed_at = $now, "
+            "j.version = j.version + 1, j.touched_at = $now RETURN j.id AS id",
+            id=job_id,
+            agent=JOB,
+            claimed=JOB_CLAIMED,
+            worker=worker,
+            now=clock.now(world_id),
+        )
+        return bool(rows)
+
+    return WorldWriter(driver, world_id).transaction(work)
 
 
 def request_explanation(driver: Driver, world_id: str, mark_id: str) -> str | None:

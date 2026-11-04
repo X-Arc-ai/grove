@@ -14,8 +14,9 @@ from grove.store.asof import decode_value
 from grove.store.connection import Driver
 from grove.store.current import read_rows
 from grove.store.d3_fingerprint import read_once
+from grove.store.errors import ScopeError
 from grove.store.primitives import MEANING_AFFECTED_BY
-from grove.store.query import WorldQuery
+from grove.store.query import PlatformQuery, WorldQuery
 
 JOB = "explain_break"
 _GENERIC = "This item is affected by a change to another item."
@@ -268,6 +269,27 @@ def read_explanation(
     )
 
 
+def worlds_with_pending_explanations(driver: Driver) -> tuple[str, ...]:
+    """Read-only dispatcher inventory; all per-world reads still use WorldQuery scope."""
+    pending = []
+    for world in PlatformQuery(driver).read("MATCH (w:World) RETURN w.id AS id ORDER BY w.id"):
+        try:
+            query = WorldQuery(driver, world["id"])
+        except ScopeError:
+            continue
+        jobs = query.read(
+            "MATCH (j:Job {agent_or_job_type: $agent}) WHERE j.state IN ['queued', 'claimed'] "
+            "RETURN j.id AS id LIMIT 1",
+            agent=JOB,
+        )
+        if jobs or query.read(
+            "MATCH (m:Impact) WHERE m.proposal_id IS NOT NULL AND m.explanation IS NULL "
+            "AND m.state <> 'undone' RETURN m.link_id AS id LIMIT 1"
+        ):
+            pending.append(world["id"])
+    return tuple(pending)
+
+
 def explain_pending(
     layer: ModelLayer,
     driver: Driver,
@@ -278,12 +300,17 @@ def explain_pending(
     screener: Screener | None = None,
 ) -> ExplanationReport:
     """Run after commit: requested jobs first, then proposal marks; no model call holds a lock."""
-    from grove.writer.cascade_explanations import cache_explanation
-    from grove.writer.runs import claim_job, end_job
+    from grove.writer.cascade_explanations import (
+        cache_explanation,
+        claim_explanation_job,
+        renew_explanation_job,
+    )
+    from grove.writer.runs import end_job
 
     if type(limit) is not int or not 1 <= limit <= 100:
         raise ValueError("explanation limit must be from 1 to 100")
-    job = claim_job(driver, world_id, agent=JOB, worker=worker)
+    job = claim_explanation_job(driver, world_id, worker=worker)
+    holder = job["claimed_by"] if job else None
     requested = json.loads(job.get("input_references") or "[]") if job else []
     if requested:
         pending = {
@@ -305,6 +332,8 @@ def explain_pending(
     saved = failed = stale = 0
     failed_requested = False
     for mark_id in selected:
+        if job and not renew_explanation_job(driver, world_id, job["id"], worker=holder):
+            break
         loaded = read_once(
             driver, world_id, lambda source, mark_id=mark_id: load_explanation(source, mark_id)
         )
@@ -334,7 +363,7 @@ def explain_pending(
             driver,
             world_id,
             job["id"],
-            worker=worker,
+            worker=holder,
             done=not (remaining or failed_requested),
             requeue=remaining and not failed_requested,
         )
