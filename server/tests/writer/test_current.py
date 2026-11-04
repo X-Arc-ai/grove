@@ -35,6 +35,7 @@ from grove.writer import BatchDeclined
 from grove.writer import apply as apply_module
 from grove.writer.testing import plant_link, plant_node
 from grove.writer.tx import WorldTx, WorldWriter
+from tests.writer import helpers
 from tests.writer.helpers import (
     NoStore,
     apply,
@@ -43,7 +44,6 @@ from tests.writer.helpers import (
     create_link,
     created_id,
     iso,
-    make_source,
     new_op_id,
     observation,
     read,
@@ -61,6 +61,29 @@ AUGUST = datetime(2027, 8, 2, 9, 0, tzinfo=UTC)
 FLIGHT = "2027-07-12"
 MOVED = "2027-07-19"
 RECHECK = "2027-07-14T00:00:00+00:00"
+
+# Every source here is read after the last time a test cites: an export or a fetch comes after
+# the messages it holds, and a row may not speak for a time after its source's read (S51).
+READ_LATE = datetime(2027, 9, 1, 9, 0, tzinfo=UTC)
+
+
+def make_source(driver, world_id: str, connector_type: str, lines: list[str], **connector: Any):
+    provider = clock._provider
+    if not isinstance(provider, TestClock):
+        return helpers.make_source(driver, world_id, connector_type, lines, **connector)
+    before = provider.now()
+    provider.set(READ_LATE)
+    try:
+        return helpers.make_source(driver, world_id, connector_type, lines, **connector)
+    finally:
+        provider.set(before)
+
+
+@pytest.fixture
+def chat(driver, seeded, frozen):
+    """The shared chat fixture, read late like every source here, on the frozen clock."""
+    return make_source(driver, seeded["world_id"], "whatsapp", helpers.CHAT_LINES)
+
 
 CALENDAR_LINES = [
     "Flight to Velmora, Ilse Okonkwo, 12 July",
@@ -708,9 +731,16 @@ def test_an_inferred_row_never_confirms(driver, seeded, chat, frozen):
     inferred = observation(
         chat, "i1", 4, at=JULY_13, derivation="inferred", premises=[premise["id"]]
     )
-    trip = create_item(
+    # D5 rule 2 (S55): an inferred row cannot give the trip its start, so that write is refused.
+    started = create_item(
         "trip", "Ilse's trip to Velmora", "i1", became_true=day(JULY_12), recheck_by=RECHECK
     )
+    with pytest.raises(BatchDeclined) as refused:
+        apply(driver, w, [started], [inferred])
+    assert [(r.code, r.rule) for r in refused.value.refusals] == [
+        ("terminal_needs_confirmation", "period_start_needs_confirmation")
+    ]
+    trip = create_item("trip", "Ilse's trip to Velmora", "i1")
     trip_id = created_id(apply(driver, w, [trip], [inferred]))
     row = item_row(driver, w, trip_id)
     assert (row["derived_source_type"], row["derivation"]) == ("confirmed", "inferred")
@@ -718,7 +748,17 @@ def test_an_inferred_row_never_confirms(driver, seeded, chat, frozen):
         found = read_at(frozen, at, driver, w, [trip_id])[trip_id]
         assert (found.state, found.reason) == ("planned", "inferred")
 
-    apply(driver, w, [attach(trip_id, "p2")], [page(pages, "p2", 2, JULY_13)])
+    # An observed page that shows the trip took place gives it its start, in its own batch.
+    start = {
+        "op": "update_item",
+        "op_id": new_op_id(),
+        "item": trip_id,
+        "version": item_row(driver, w, trip_id)["version"],
+        "fields": {"became_true": day(JULY_12), "recheck_by": RECHECK},
+        "evidence_refs": [{"ev_id": "p2", "polarity": "supports"}],
+        "reason": "the page shows the trip took place",
+    }
+    apply(driver, w, [start], [page(pages, "p2", 2, JULY_13)])
     assert read_at(frozen, JULY_13, driver, w, [trip_id])[trip_id].state == "current"
 
 

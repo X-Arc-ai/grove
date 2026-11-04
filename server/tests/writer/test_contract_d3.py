@@ -5,7 +5,10 @@ undo and retire_record. Each test names the line it checks. All names are invent
 """
 
 from datetime import timedelta
+from types import SimpleNamespace
 from typing import Any
+
+import pytest
 
 from grove.store.asof import item_as_of
 from grove.store.current import current_items, standings
@@ -14,7 +17,8 @@ from grove.store.primitives import MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY
 from grove.store.query import WorldQuery
 from grove.store.replay import _NO_VERSION, read_history, rebuild
 from grove.writer import Caller, render_receipt
-from grove.writer.composite import STILL_MARKERS
+from grove.writer.composite import STILL_MARKERS, _successor_clock
+from grove.writer.errors import Refused
 from tests.writer.helpers import (
     LEARNER,
     PERSON,
@@ -298,7 +302,16 @@ def test_a_successor_link_never_takes_effect_in_the_future(driver, seeded, chat)
         correct(record, head, "e9"),
     ]
     refusal = one(refused(driver, w, ops, [ev]), "invalid_arguments")
-    assert refusal.rule == "successor_in_future"
+    # D5 rejects this evidence before the composite operation can use its time.
+    assert refusal.rule == "future_evidence"
+    assert successor_links(driver, w, record, MEANING_CORRECTED_BY) == []
+
+
+def test_successor_clock_itself_refuses_a_future_instant():
+    # Keep the D3 guard directly covered even though D5 now rejects the batch earlier.
+    with pytest.raises(Refused) as caught:
+        _successor_clock(SimpleNamespace(at=T0), T0 + timedelta(days=1))
+    assert caught.value.rule == "successor_in_future"
 
 
 def test_an_ended_record_is_not_corrected(driver, seeded, chat):
