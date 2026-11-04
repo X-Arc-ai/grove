@@ -5,10 +5,10 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
-from grove.demo_policy import DEMO_TEXT
 
 from grove import clock
 from grove.api.errors import ApiError
+from grove.demo_policy import DEMO_TEXT
 from grove.ids import new_id
 from grove.mcp.store import _digest
 from grove.mcp.tools import ToolContext
