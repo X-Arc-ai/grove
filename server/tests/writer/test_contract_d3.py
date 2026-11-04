@@ -360,8 +360,8 @@ def test_refute_a_link_removes_it_from_the_active_set(driver, seeded, chat):
     assert row["l"]["end_class"] == "refuted" and row["l"].get("active_key") is None
 
 
-def test_refute_needs_evidence_at_the_claims_rank_unless_the_person_says_it(driver, seeded, chat):
-    """B.2: evidence at or above the claim's rank (D9); the person's own word outranks all."""
+def test_report_cannot_refute_confirmed_claim_but_person_correction_can(driver, seeded, chat):
+    """D6 records a weaker report without refuting; the person's own correction outranks all."""
     w = seeded["world_id"]
     git = make_source(driver, w, "git", GIT_LINES)
     receipt = apply(
@@ -373,14 +373,18 @@ def test_refute_needs_evidence_at_the_claims_rank_unless_the_person_says_it(driv
     item = created_id(receipt)
     assert item_row(driver, w, item)["derived_source_type"] == "confirmed"
     said = observation(chat, "e9", 9, statement_class="report_happened")
-    refusal = one(
-        refused(driver, w, [refute(item, contradicts("e9"))], [said], caller=LEARNER),
-        "invalid_arguments",
+    apply(driver, w, [refute(item, contradicts("e9"))], [said], caller=LEARNER)
+    held = item_row(driver, w, item)
+    assert held["derived_source_type"] == "confirmed" and not held.get("end_class")
+    contradictions = read(
+        driver, w, "MATCH (c:Contradiction {target: $id, status: 'open'}) RETURN c", id=item
     )
-    assert refusal.rule == "refute_rank"
-    assert refusal.details == {"claim": "confirmed", "evidence": "reported_done"}
+    assert len(contradictions) == 1
     apply(driver, w, [refute(item, contradicts("e9"))], [said], caller=PERSON)
     assert item_row(driver, w, item)["end_class"] == "refuted"
+    assert not read(
+        driver, w, "MATCH (c:Contradiction {target: $id, status: 'open'}) RETURN c", id=item
+    )
 
 
 def test_a_successor_link_is_not_refuted_by_hand(driver, seeded, chat):

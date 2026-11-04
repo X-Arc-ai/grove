@@ -310,6 +310,10 @@ def test_a_world_seeded_before_the_property_names_gets_them_once(driver, world, 
     assert count(driver, world, "Kind") == kinds_before
     assert count(driver, world, "ChangeEntry") == entries_before + PROPERTY_COUNT
     assert world_row(driver, world)["seed_version"] == load_starter_set()["seed_version"]
+    assert all(
+        row["version"] == 1 and row["touched_at"] == AT
+        for row in nodes(driver, world, "HistoryValue")
+    )
 
 
 def test_counts_per_label(driver, seeded):
@@ -550,6 +554,7 @@ def test_seeded_rows_carry_the_test_clock_and_not_the_system_clock(driver, seede
         "Alias": ("minted_at", "touched_at", "added_at"),
         "PropertyName": ("minted_at", "touched_at"),
         "ChangeEntry": ("recorded_at", "world_time"),
+        "HistoryValue": ("touched_at",),
     }
     for label, fields in expected.items():
         for row in nodes(driver, world, label):
@@ -856,3 +861,10 @@ def test_a_world_writer_cannot_stamp_the_primitive_world(driver, seeded):
         )
     with pytest.raises(ScopeError):
         writer.transaction(lambda tx: tx.run("MATCH (m:Meaning) SET m.world_id = ''"))
+
+
+def test_seed_history_values_start_with_version_and_touch_time(driver, seeded):
+    world, _ = seeded
+    values = nodes(driver, world, "HistoryValue")
+    assert len(values) == HISTORY_VALUES
+    assert all(value["version"] == 1 and value["touched_at"] == AT for value in values)

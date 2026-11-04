@@ -134,6 +134,94 @@ def test_apply_refuses_to_run_without_the_lock(box):
     assert not box.calls()
 
 
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("gateway.env", None),
+        ("runner.env", None),
+        ("runner-auth.env", None),
+        ("gateway.env", "GROVE_GATEWAY_SECRET=\n"),
+        ("gateway.env", "GROVE_GATEWAY_SECRET=too-short\n"),
+        ("runner.env", "GROVE_RUNNER_TOKEN=\n"),
+        ("runner-auth.env", "GROVE_RUNNER_TOKEN_SHA256=" + "0" * 64 + "\n"),
+    ],
+)
+def test_apply_configuration_preflight_preserves_all_state_before_any_mutation(box, name, value):
+    revisions = box.network_revisions()
+    shutil.copytree(revisions / SHA / "deploy", box.src / "deploy", dirs_exist_ok=True)
+    (box.root / "fake" / "HEAD").write_text(SHA)
+    (box.state / "previous.sha").write_text("a" * 40 + "\n")
+    path = box.etc / name
+    if value is None:
+        path.unlink()
+    else:
+        path.write_text(value)
+    before = {
+        str(p.relative_to(box.root)): (
+            p.read_bytes(),
+            p.stat().st_mode,
+            p.stat().st_mtime_ns,
+            p.stat().st_ctime_ns,
+        )
+        for folder in (box.etc, box.state, box.nginx)
+        for p in folder.rglob("*")
+        if p.is_file()
+    }
+    network = box.network_state()
+    done = box.run("apply.sh", SHA, "develop", GROVE_LOCK_HELD="1")
+    assert done.returncode != 0
+    assert done.stderr == f"runner_configuration_invalid {name}\n"
+    assert box.calls() == ["git rev-parse HEAD"]
+    assert not (box.etc / "screening").exists()
+    assert box.network_state() == network
+    after = {
+        str(p.relative_to(box.root)): (
+            p.read_bytes(),
+            p.stat().st_mode,
+            p.stat().st_mtime_ns,
+            p.stat().st_ctime_ns,
+        )
+        for folder in (box.etc, box.state, box.nginx)
+        for p in folder.rglob("*")
+        if p.is_file()
+    }
+    assert after == before
+
+
+def test_gateway_fixture_refuses_health_without_configuration_even_without_preflight(box):
+    revisions = box.network_revisions()
+    apply = revisions / SHA / "deploy/apply.sh"
+    apply.write_text(
+        apply.read_text().replace(
+            'GROVE_ETC_DIR="$GROVE_ETC" "$here/runner-secrets.sh" --check\n', ""
+        )
+    )
+    (box.etc / "gateway.env").unlink()
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "synthetic gateway configuration unavailable" in done.stderr
+    assert not box.network_state()["containers"]["gateway"]["healthy"]
+    assert "runs, services NOT healthy" in box.log_text("deploy.log")
+
+
+def test_deploy_configuration_refusal_preserves_legacy_services_and_both_markers(box):
+    box.network_revisions()
+    assert box.run("install-host.sh").returncode == 0
+    (box.etc / "gateway.env").unlink()
+    (box.state / "previous.sha").write_text("a" * 40 + "\n")
+    network = box.network_state()
+    markers = {p.name: p.read_bytes() for p in box.state.iterdir()}
+    start = len(box.calls())
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "runner_configuration_invalid gateway.env" in done.stderr
+    assert box.network_state() == network
+    assert {p.name: p.read_bytes() for p in box.state.iterdir()} == markers
+    assert not any(call.startswith("docker ") for call in box.calls()[start:])
+    assert (box.root / "fake" / "HEAD").read_text() == OTHER_SHA
+    assert "synthetic legacy revision" in (box.nginx / "sites-enabled/grove-https.conf").read_text()
+
+
 def test_apply_refuses_when_a_secret_file_is_missing(box):
     (box.etc / "google-oauth.json").unlink()
     done = box.run("deploy.sh", SHA)
@@ -905,7 +993,7 @@ def test_apply_refuses_a_secret_folder_open_to_others(box):
     box.etc.chmod(0o750)
     done = box.run("deploy.sh", SHA)
     assert done.returncode != 0
-    assert "open to group or others" in done.stderr
+    assert "runner_configuration_invalid configuration_directory" in done.stderr
     assert not [call for call in box.calls() if call.startswith("docker")]
 
 
@@ -1277,16 +1365,24 @@ def test_the_services_script_fails_when_only_the_gateway_is_unhealthy(box):
     box.index("ps --quiet gateway", box.index("start api gateway runner"))
 
 
-def test_a_backup_stops_the_gateway_before_its_first_fingerprint(box):
+@pytest.mark.parametrize("source_folder", ["source", "gateway-source"])
+def test_a_backup_stops_the_gateway_before_its_first_fingerprint(box, source_folder):
     # The gateway writes a model_calls row for each call: a row written between the two
     # fingerprints fails the backup with "the store changed across the dump".
+    # A source path may contain a service name; it is not a service argument.
+    source = box.root / source_folder
+    source.symlink_to(box.src, target_is_directory=True)
+    box.env["GROVE_SRC"] = str(source)
     box.deployed()
     done = box.run("backup.sh")
     assert done.returncode == 0, done.stderr
     stop = box.index("stop runner gateway api")
     first = box.index("grove.store.dump_fingerprint")
     assert stop < first
-    assert not [
-        call for call in box.calls()[stop:first] if " start " in f" {call} " and "gateway" in call
+    early_starts = [
+        call.rsplit(" start ", 1)[1].split()
+        for call in box.calls()[stop:first]
+        if " start " in call
     ]
+    assert all("gateway" not in services for services in early_starts)
     box.index("start api gateway runner", box.index(f"--expect {FP}", first))

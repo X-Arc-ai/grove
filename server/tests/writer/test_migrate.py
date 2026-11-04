@@ -148,6 +148,50 @@ def test_a_file_that_sorts_before_the_newest_applied_one_still_applies(driver, t
     assert result == {"applied": ["0001_a.cypher"], "skipped": ["0002_b.cypher"]}
 
 
+def test_independent_reserved_migrations_apply_once_after_a_lower_number_arrives(
+    driver, tmp_path, scope, monkeypatch
+):
+    higher = "0013_independent.cypher"
+    lower = "0011_additive.cypher"
+    contents = {higher: "RETURN 13 AS independent;", lower: "RETURN 11 AS additive;"}
+    applied = []
+    real_apply = migrate._apply
+
+    def record_apply(driver, statements, row):
+        applied.append(row["name"])
+        return real_apply(driver, statements, row)
+
+    monkeypatch.setattr(migrate, "_apply", record_apply)
+    (tmp_path / higher).write_text(contents[higher])
+    assert run_migrations(driver, tmp_path, scope=scope) == {"applied": [higher], "skipped": []}
+    higher_row = ledger_rows(driver, scope)[0]
+    assert higher_row["checksum"] == checksum(contents[higher])
+
+    (tmp_path / lower).write_text(contents[lower])
+    assert run_migrations(driver, tmp_path, scope=scope) == {
+        "applied": [lower],
+        "skipped": [higher],
+    }
+    rows = ledger_rows(driver, scope)
+    assert rows[1] == higher_row
+    assert [(row["name"], row["checksum"]) for row in rows] == [
+        (f"{scope}/{name}", checksum(contents[name])) for name in (lower, higher)
+    ]
+    assert run_migrations(driver, tmp_path, scope=scope) == {
+        "applied": [],
+        "skipped": [lower, higher],
+    }
+    assert applied == [f"{scope}/{higher}", f"{scope}/{lower}"]
+    assert ledger_rows(driver, scope) == rows
+
+    # A late lower file must not bypass drift detection on the already applied higher file.
+    (tmp_path / higher).write_text("RETURN 99 AS changed;")
+    with pytest.raises(MigrationDrift):
+        run_migrations(driver, tmp_path, scope=scope)
+    assert applied == [f"{scope}/{higher}", f"{scope}/{lower}"]
+    assert ledger_rows(driver, scope) == rows
+
+
 def test_drift_stops_before_anything_runs(driver, tmp_path, scope):
     (tmp_path / "0002_b.cypher").write_text("RETURN 2;")
     run_migrations(driver, tmp_path, scope=scope)

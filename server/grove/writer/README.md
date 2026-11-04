@@ -114,6 +114,32 @@ with successors then, which stays with them on its standing.
 | `live_fingerprint(driver, world_id, *, forgotten=())` and `fingerprint(rows, history, tables, *, forgotten=())` | D3's fingerprint: every projection row's id, clocks, `recheck_by`, status, end class and version (and `active` on evidence), the history's last sequence and entry count, and each snapshot table's count and newest id. No text, and no `touched_at`. |
 | `take_snapshot`, `load_snapshot`, `rebuild_in_place`, `replay_ledger`, `restore` | D3's one restore procedure, in its four steps; `restore` raises `RestoreMismatch` and the store must not go live when the fingerprint does not match the snapshot's, recomputed without the ids the ledger forgot since. The word rows keep D8's measures, which no entry holds (S47). `replay_ledger` refuses a `field_value` or `named_value` row that names a row entry's value (`ReplayRefused`, rule `row_value`) before it marks anything. The writers are stopped for the whole restore. `python -m grove.writer.restore fingerprint|rebuild --world <id>` runs it on a store loaded from a dump. |
 
+### Authenticated erasure (D14)
+
+The API mints an exact-target, one-use approval through `/v1/forget/approve` in the person's
+session. `/v1/forget` calls `grove.writer.forget.forget`; OAuth additionally requires the
+sensitive-write scope. The writer consumes the approval and applies the cascade in one world
+transaction. It first persists an opaque intent in `GROVE_FORGET_LEDGER_DIR`, a private directory
+outside snapshots. A missing or invalid external ledger refuses the operation. A database
+rollback may leave an approved intent for recovery; it cannot leave committed erasure without one.
+
+`build_plan` selects all text copies and affected references, including the exact column in a
+create value. `transform` is the same idempotent cascade for live writes and restore. ChangeEntry
+rows remain unchanged. A malformed primary identity that contains the target text refuses before
+mutation. Receipts contain counts, a backup-clear date, and the downloaded-export limit.
+
+For a loaded physical dump, call `restore_loaded(driver, world_id, snapshot_manifest, latest_rows)`.
+For a logical snapshot, call `restore` with the same newest external ledger. Both validate the
+complete ledger, reject changed or omitted stored intents, check the original D3 fingerprint,
+apply the approved cascade, and compare the resulting fingerprint. Keep all application readers
+and writers stopped until success. The legacy `row_value` refusal remains for legacy rows;
+modern plans can redact just one content column. The CLI's bare `rebuild` command is not the
+complete D14 restore procedure.
+
+`tests/writer/test_forget_drill.py` uses the same scenario as the isolated physical CI drill but
+only logical snapshots locally. The physical command is CI-only; it never uses a local second
+store. Deployment of the separate ledger and a production clean-backup process remain separate.
+
 ### The resolver
 
 ```python
@@ -330,7 +356,7 @@ these operations (rule `belief_transition`): the beliefs lane moves beliefs by D
 
 The remaining operations belong to later lanes: capability rows from the item page (`views-c`);
 beliefs and contradictions (`beliefs`); proposals and marks (`walk`); questions, holds and
-mentions (`cleanup`, `ingest-b`); forget (`forget`). D8's merge, split, rename, retire and undo are
+mentions (`cleanup`, `ingest-b`). D8's merge, split, rename, retire and undo are
 P1 (Appendix D, P1 item 3): the change log stores the inverse each of them will need.
 
 Two B.2 clauses of the operations above wait for the `walk` lane, because no walk and no R1 ending

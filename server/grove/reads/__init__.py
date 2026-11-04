@@ -1,1 +1,1 @@
-"""D7's model-free read path, shared by host and runner adapters."""
+"""Model-free read components and explicitly bounded public adapters."""

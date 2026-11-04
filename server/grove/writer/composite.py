@@ -21,6 +21,7 @@ from grove.store.asof import replay
 from grove.store.normalise import normalise_phrase
 from grove.store.primitives import (
     KIND_BELIEF,
+    MEANING_AFFECTED_BY,
     MEANING_CORRECTED_BY,
     MEANING_SUPERSEDED_BY,
     PRIMITIVE_MEANING_IDS,
@@ -45,7 +46,19 @@ from grove.writer.source_types import ORDER, RANK
 
 SUCCESSOR_MEANINGS = (MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY)
 # Entry fields that mark an event and hold no column (D3, S47).
-MARKERS = frozenset({"reopened", "merged_into", "restated", "no_head_update", "verified"})
+CASCADE_MARKERS = frozenset(
+    {
+        "cascade_mark",
+        "cascade_proposal",
+        "cascade_end",
+        "cascade_disposition",
+        "cascade_explanation",
+    }
+)
+MARKERS = (
+    frozenset({"reopened", "merged_into", "restated", "no_head_update", "verified"})
+    | CASCADE_MARKERS
+)
 _CLOCK_FIELDS = ("became_true", "stopped_being_true")
 _INSTANT_FIELDS = frozenset({"status_since", "recheck_by", "last_confirmed"})
 _JSON_FIELDS = frozenset({"recheck_how"})
@@ -80,7 +93,7 @@ _ENTRIES_OF_SET = "MATCH (e:ChangeEntry {change_set_id: $id}) RETURN e ORDER BY 
 _UNDONE = "MATCH (e:ChangeEntry {inverse_of: $id}) RETURN e.sequence AS sequence LIMIT 1"
 # The markers that leave their row as it was (S47): no version moves with them, so no undo
 # conflicts on them. grove.store.replay._NO_VERSION is the same set (a test holds the two equal).
-STILL_MARKERS = frozenset({"restated", "no_head_update", "verified"})
+STILL_MARKERS = frozenset({"restated", "no_head_update", "verified"}) | CASCADE_MARKERS
 _LATER_MOVES = (
     "MATCH (e:ChangeEntry) WHERE e.sequence > $after AND e.entity_id IN $ids "
     "AND e.history_only = false AND NOT e.field IN $still "
@@ -215,6 +228,7 @@ def _end_item_row(
     ap._end_entry(run, "item", item_id, None, end_class, world_time, reason_id, evidence_id)
     run.tx.run(ap._SET_ITEM, id=item_id, columns={"end_class": end_class, **(extra or {})})
     ap._bump(run, ap._BUMP_ITEM, item_id)
+    run.changed_claims.add(item_id)
 
 
 # correct --------------------------------------------------------------------------------------
@@ -274,16 +288,13 @@ def _rank(source_type: str | None, derivation: str | None) -> int:
     return RANK[source_type]
 
 
-def _check_rank(run: ap._Run, claim: dict[str, Any], plans: list[ap._Plan]) -> None:
-    """B.2: evidence at or above the claim's rank. The person's own word outranks every source
-    (D9 rule 1), so a person caller passes."""
+def _check_rank(run: ap._Run, claim: dict[str, Any], proof: ap._Plan) -> None:
+    """B.2: the recorded proof must meet the claim's rank. The person's own word outranks
+    every source (D9 rule 1), so a person caller passes."""
     if run.caller_kind == "person":
         return
     claim_rank = _rank(claim.get("derived_source_type"), claim.get("derivation"))
-    best = max(
-        (_rank(plan.columns.get("source_type"), plan.columns.get("derivation")) for plan in plans),
-        default=-1,
-    )
+    best = _rank(proof.columns.get("source_type"), proof.columns.get("derivation"))
     if best < claim_rank:
         raise Refused(
             "invalid_arguments",
@@ -315,16 +326,28 @@ def _refute_item(run: ap._Run, index: int, op: dict[str, Any], item_id: str) -> 
         raise Refused("invalid_arguments", "already_ended", "the item has already ended", {})
     plans = ap._plans(run, op["evidence_refs"])
     ap._settle(run, plans, item_id)
-    _check_rank(run, item, plans)
-    world_time = ap._world_time(plans)
+    from grove.writer.cascade_refutations import (
+        defer_refutation,
+        refutation_proof,
+        settle_refutation,
+    )
+
+    if defer_refutation(run, index, op, item, plans):
+        return
+    proof = refutation_proof(plans)
+    _check_rank(run, item, proof)
+    world_time = proof.source_time
     reason_id = run.text(op["reason"])
     # Refuted: never true, so no world end time is stored (D3, "end classes").
-    _end_item_row(run, item_id, "refuted", world_time, reason_id, _evidence_id(plans))
+    _end_item_row(run, item_id, "refuted", world_time, reason_id, proof.id)
     ap._write_evidence(run, plans, "item", item_id, reason_id)
+    settle_refutation(run, item_id, reason_id)
     run.touch(item_id, index)
 
 
 def _refute_link(run: ap._Run, op: dict[str, Any], link_id: str) -> None:
+    from grove.writer.cascade_refutations import refutation_proof
+
     link = ap._one(run, ap._LOCK_LINK, "link", link_id, lock=True)
     if link.get("meaning") in PRIMITIVE_MEANING_IDS:
         raise Refused(
@@ -338,10 +361,13 @@ def _refute_link(run: ap._Run, op: dict[str, Any], link_id: str) -> None:
         raise Refused("invalid_arguments", "already_ended", "the link has already ended", {})
     plans = ap._plans(run, op["evidence_refs"])
     ap._settle(run, plans, link_id)
-    _check_rank(run, link, plans)
-    world_time = ap._world_time(plans)
+    # Link refutation follows B.2's inherited source rank. Item cascades additionally
+    # require observed confirmation; both paths authorize the exact proof they record.
+    proof = refutation_proof(plans, rank=_rank)
+    _check_rank(run, link, proof)
+    world_time = proof.source_time
     reason_id = run.text(op["reason"])
-    ap._end_entry(run, "link", link_id, None, "refuted", world_time, reason_id, _evidence_id(plans))
+    ap._end_entry(run, "link", link_id, None, "refuted", world_time, reason_id, proof.id)
     run.tx.run(ap._SET_LINK, id=link_id, columns={"active_key": None, "end_class": "refuted"})
     ap._bump(run, ap._BUMP_LINK, link_id)
     ap._write_evidence(run, plans, "link", link_id, reason_id)
@@ -859,6 +885,10 @@ class _Undo:
             self.bump("item", entity_id)
             run.touch(entity_id, self.index)
         elif entity_type == "link":
+            link = ap._one(run, ap._READ_LINK, "link", entity_id, lock=False)
+            if link.get("meaning") == MEANING_AFFECTED_BY:
+                # D6 retains the mark link as history; the snapshot disposition becomes undone.
+                return
             link = ap._one(run, ap._LOCK_LINK, "link", entity_id, lock=True)
             if link.get("end_class") == "refuted":
                 return
@@ -1003,6 +1033,9 @@ def _undo(run: ap._Run, index: int, op: dict[str, Any]) -> None:
         undo.invert(entry, values)
     undo.finish()
     ontology.mark_undone(run, entries, change_set)
+    from grove.writer.cascade import undo_marks
+
+    undo_marks(run, change_set)
     # Later operations and end-of-batch usage must see the registry that this undo wrote.
     run.registry = Registry.load(run.tx)
 

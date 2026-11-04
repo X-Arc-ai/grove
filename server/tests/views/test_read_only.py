@@ -7,6 +7,7 @@ nothing else, so a write path of any kind fails the request.
 import ast
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from grove.api.app import create_app
@@ -59,6 +60,7 @@ def test_every_view_read_runs_in_read_mode_only(driver, world):
         create_app(driver=guarded), raise_server_exceptions=False, cookies={SESSION_COOKIE: token}
     )
     for path in (
+        "/v1/privacy",
         "/v1/views/session",
         "/v1/views/graph",
         "/v1/views/graph?as_of=2026-10-01T00:00:00Z&known_as_of=2026-10-01T00:00:00Z",
@@ -111,17 +113,58 @@ def test_the_views_package_never_imports_the_writer():
         assert not any(name.startswith("grove.writer") for name in imports_of(path)), path.name
 
 
-def test_the_api_reaches_the_writer_only_for_positions_sign_in_oauth_and_the_brain_cli():
+def assert_api_writer_boundary(files):
     allowed = {
+        # The app maps the shared refusal type without opening a writer operation.
+        "app.py": {"grove.writer.errors"},
         "views.py": {"grove.writer.positions"},
         "auth.py": {"grove.writer.accounts", "grove.writer.errors"},
         "oauth.py": {"grove.writer.oauth"},
+        # D14 remains an explicit authenticated API, never an import from the view package.
+        "forget.py": {
+            "grove.writer.forget",
+            "grove.writer.forget_approvals",
+            "grove.writer.forget_ledger",
+            "grove.writer.errors",
+        },
+        # D6's explicit explanation POST uses only its explanation writer.
+        "cascade.py": {"grove.writer.cascade_explanations"},
+        # Authenticated connector consent/settings/sync use only their connection writer.
+        "connectors.py": {"grove.writer.connectors", "grove.writer.errors"},
         # brain propose and brain finish of a live pass (runner): the writer's public API, the
         # run record's account of a proposal, a receipt for the agent, the request id check.
         "internal.py": {"grove.writer", "grove.writer.receipts", "grove.writer.requests"},
     }
-    files = sorted((SERVER / "grove" / "api").glob("*.py"))
     assert files
     for path in files:
         writer = {name for name in imports_of(path) if name.startswith("grove.writer")}
         assert writer <= allowed.get(path.name, set()), path.name
+
+
+def test_api_writer_imports_stay_within_the_explicit_route_boundary():
+    assert_api_writer_boundary(sorted((SERVER / "grove" / "api").glob("*.py")))
+
+
+def test_api_app_can_import_the_shared_writer_error_type(tmp_path):
+    app = tmp_path / "app.py"
+    app.write_text("from grove.writer.errors import InvalidRecord")
+    assert_api_writer_boundary([app])
+
+
+@pytest.mark.parametrize(
+    ("route", "source"),
+    [
+        ("app.py", "from grove.writer.accounts import create_account"),
+        ("cascade.py", "from grove.writer.accounts import create_account"),
+        ("unapproved.py", "from grove.writer.connectors import connection"),
+        ("connectors.py", "from grove.writer.accounts import create_account"),
+        ("views.py", "import grove.writer.connectors"),
+        ("app.py", "from grove.writer.accounts import create_account"),
+        ("forget.py", "from grove.writer.connectors import connection"),
+    ],
+)
+def test_api_writer_boundary_rejects_unapproved_routes_and_imports(tmp_path, route, source):
+    planted = tmp_path / route
+    planted.write_text(source)
+    with pytest.raises(AssertionError, match=route):
+        assert_api_writer_boundary([planted])
