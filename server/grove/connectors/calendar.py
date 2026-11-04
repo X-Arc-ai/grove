@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from urllib.parse import quote
@@ -200,6 +201,7 @@ def read_calendar(
     versions: dict[str, dict] | None = None,
     base_url: str = API_BASE,
     namespace: str | None = None,
+    authorize: Callable[[], None] | None = None,
 ) -> CalendarRead:
     """Read only the selected calendar. A 410 restarts once; no old evidence is deleted.
 
@@ -222,12 +224,16 @@ def read_calendar(
         )
         try:
             for _ in range(MAX_PAGES):
+                if authorize is not None:
+                    authorize()
                 body = _json(
                     http,
                     f"{base_url}/calendars/{quote(calendar_id, safe='')}/events",
                     access_token,
                     params,
                 )
+                if authorize is not None:
+                    authorize()
                 events = body.get("items")
                 zone = body.get("timeZone")
                 if not isinstance(events, list) or (zone is not None and not isinstance(zone, str)):

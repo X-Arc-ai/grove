@@ -20,6 +20,7 @@ from grove import clock
 from grove.ids import new_id
 from grove.screening import ScreenedSource
 from grove.store.enums import ENUMS
+from grove.writer.connectors import ConnectionBusy, require_sync
 from grove.writer.errors import InvalidRecord
 from grove.writer.history import compact
 from grove.writer.sources import write_screened_source
@@ -38,7 +39,7 @@ _ADD_CONNECTOR = "CREATE (c:Connector) SET c += $row"
 _LOCK_CONNECTOR = (
     "MATCH (c:Connector {id: $id}) SET c.lock_marker = true REMOVE c.lock_marker "
     "RETURN c.watermark AS watermark, c.oldest_unprocessed_item AS oldest, "
-    "c.read_count AS read_count"
+    "c.read_count AS read_count, c.provider AS provider"
 )
 _STORED = (
     "MATCH (s:Source {connector_id: $connector, external_locator: $locator}) "
@@ -168,6 +169,7 @@ def write_chat_delta(
     newest_at: datetime | None,
     calendar_events: dict[str, dict] | None = None,
     speakers: dict[str, dict] | None = None,
+    sync_owner: str | None = None,
 ) -> dict[str, Any] | None:
     """One chat's new messages, in one transaction: its source parts and receipts, its episodes
     and the connector's watermark and coverage. Raises DeltaMoved when another upload stored any of
@@ -222,9 +224,13 @@ def write_chat_delta(
         _aware(newest_at, "newest_at")
 
     def work(tx: WorldTx) -> dict[str, Any] | None:
+        if sync_owner is not None:
+            require_sync(tx, connector_id, sync_owner)
         locked = tx.run(_LOCK_CONNECTOR, id=connector_id)
         if not locked:
             raise InvalidRecord("not_found", "connector_not_found", "no such connector here")
+        if locked[0]["provider"] in ("google_calendar", "git") and sync_owner is None:
+            raise ConnectionBusy()
         stored, sources = stored_keys(tx, connector_id, locator)
         if stored & keys:
             raise DeltaMoved()

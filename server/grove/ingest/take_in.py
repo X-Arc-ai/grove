@@ -184,6 +184,7 @@ def _take_chat(
     chat: ParsedChat,
     screener: Screener,
     result: TakeInResult,
+    sync_owner: str | None = None,
 ) -> None:
     """Screen bounded source parts, cut episodes over the whole delta, then commit atomically.
     Source storage limits must not inflate the episode count used by evidence thresholds."""
@@ -225,6 +226,7 @@ def _take_chat(
                 newest_at=max(moments) if moments else None,
                 calendar_events=events or None,
                 speakers=speakers,
+                sync_owner=sync_owner,
             )
         except DeltaMoved:
             continue
@@ -277,6 +279,7 @@ def take_parsed(
     screener: Screener,
     attempted_at: datetime | None = None,
     record_coverage: bool = True,
+    sync_owner: str | None = None,
 ) -> TakeInResult:
     """Apply a code-owned connector read through the same screened, atomic ingest path.
 
@@ -304,7 +307,7 @@ def take_parsed(
     result.chats = len(chats)
     for chat in chats:
         try:
-            _take_chat(driver, world_id, spec, connector_id, chat, screener, result)
+            _take_chat(driver, world_id, spec, connector_id, chat, screener, result, sync_owner)
         except (KeyChanged, DeltaMoved, InvalidRecord):
             result.failed_chats += 1
     if result.messages_kept:

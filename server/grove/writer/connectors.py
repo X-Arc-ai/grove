@@ -27,7 +27,7 @@ _FIELDS = frozenset(
 
 
 class ConnectionBusy(Exception):
-    """A connection has an active sync lease."""
+    """A connection is busy, or a reader no longer has current sync authority."""
 
 
 def connection(driver, world: str, connection_id: str) -> dict:
@@ -151,6 +151,34 @@ def start_sync(driver, world: str, connection_id: str) -> tuple[dict, str]:
     return WorldWriter(driver, world).transaction(work)
 
 
+def require_sync(tx: WorldTx, connection_id: str, owner: str) -> None:
+    """Fence a source transaction against revocation under the same lock as disconnect.
+
+    Take the world lock before any connector lock. The check and the source commit must
+    share this transaction; a prior check cannot authorize a later commit.
+    """
+    row = _locked(tx, connection_id)
+    until = row.get("sync_until")
+    if (
+        not owner
+        or row.get("sync_owner") != owner
+        or row.get("connection_status") != "connected"
+        or not until
+        or until <= clock.now(tx.world_id)
+    ):
+        raise ConnectionBusy()
+
+
+def check_sync(driver, world: str, connection_id: str, owner: str) -> None:
+    """Admit one request (or accept its response) in database order with disconnect.
+
+    The committed admission is the request's start, not its first network byte. A request
+    admitted before revocation can finish, but its response needs a fresh check and every
+    later source transaction must call require_sync. No network I/O runs in this retried unit.
+    """
+    WorldWriter(driver, world).transaction(lambda tx: require_sync(tx, connection_id, owner))
+
+
 def finish_sync(
     driver,
     world: str,
@@ -167,8 +195,10 @@ def finish_sync(
 
     def work(tx: WorldTx):
         row = _locked(tx, connection_id)
-        if row.get("sync_owner") != owner:
+        if row.get("sync_owner") != owner or row.get("connection_status") != "connected":
             raise ConnectionBusy()
+        if outcome not in ("failed", "denied"):
+            require_sync(tx, connection_id, owner)
         columns = {"sync_owner": None, "sync_until": None, "last_outcome": outcome}
         if outcome in ("failed", "denied"):
             field = "denied_count" if outcome == "denied" else "failed_count"
