@@ -11,6 +11,7 @@ dependencies = [
     "jsonschema>=4.25",
     "neo4j>=6.4,<7",
     "uvicorn>=0.38",
+    "zstandard>=0.23,<0.26",
 ]
 
 [project.scripts]
