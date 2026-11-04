@@ -5,7 +5,11 @@ from grove.writer.history import compact
 from grove.writer.source_types import RANK
 
 
-def refutation_proof(plans):
+def _observed_rank(source_type, derivation):
+    return RANK.get(source_type, -1) if derivation == "observed" else -1
+
+
+def refutation_proof(plans, *, rank=_observed_rank):
     """Bind authority, provenance and world time to the same contradictory proof."""
     contrary = [plan for plan in plans if plan.polarity == "contradicts"]
     if not contrary:
@@ -18,9 +22,7 @@ def refutation_proof(plans):
     return max(
         contrary,
         key=lambda plan: (
-            RANK[plan.columns["source_type"]]
-            if plan.columns.get("derivation") == "observed"
-            else -1,
+            rank(plan.columns.get("source_type"), plan.columns.get("derivation")),
             plan.source_time,
         ),
     )
