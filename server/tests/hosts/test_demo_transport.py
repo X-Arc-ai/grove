@@ -35,7 +35,7 @@ from grove.writer.connectors import (
 )
 from grove.writer.errors import InvalidRecord
 from grove.writer.oauth import revoke_grant
-from grove.writer.testing import plant_node
+from grove.writer.testing import plant_node, purge_test_account
 from tests.hosts.conftest import Person
 from tests.hosts.test_mcp_transport import BASE, bearer, issue
 from tests.hosts.test_store_component import complete
@@ -50,7 +50,10 @@ def demo(driver, make_world, monkeypatch, tmp_path):
     monkeypatch.setenv("GROVE_DEMO_GUARD_FILE", str(path))
     world = make_world()
     account = ensure_demo_account(driver, email_hash(address), world_id_for=lambda _: world)
-    return Person(account.user_id, account.world_id, "unused", account.self_item_id, "You")
+    try:
+        yield Person(account.user_id, account.world_id, "unused", account.self_item_id, "You")
+    finally:
+        purge_test_account(driver, email_hash(address))
 
 
 def rpc(method, params=None):

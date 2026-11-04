@@ -1,6 +1,7 @@
 """Exact invented bytes keep real screening active with absent global policy files."""
 
 from datetime import timedelta
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -85,7 +86,7 @@ def test_other_upload_inputs_keep_the_configuration_refusal(
 
 
 def test_cedar_world_refuses_lumen_upload(driver, demo, missing_globals):
-    session_token = "invented-demo-session"
+    session_token = "invented-demo-session-" + uuid4().hex
     create_session(
         driver, demo.user_id, token_hash(session_token), method="email",
         expires_at=clock.now() + timedelta(minutes=5),
