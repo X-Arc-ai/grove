@@ -15,7 +15,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 
-from grove.api import health, mcp, oauth, wellknown
+from grove.api import health, mcp, oauth, uploads, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
@@ -33,7 +33,14 @@ from grove.views.session import SESSION_COOKIE
 __all__ = ["WEB_DIST_ENV", "create_app"]
 
 # Answers the person's data or a secret: no cache may keep a copy.
-NO_STORE_PATHS = (PREFIX, AUTH_PREFIX, INTERNAL_PREFIX, *OAUTH_PATHS, "/.well-known/")
+NO_STORE_PATHS = (
+    PREFIX,
+    AUTH_PREFIX,
+    INTERNAL_PREFIX,
+    uploads.PREFIX,
+    *OAUTH_PATHS,
+    "/.well-known/",
+)
 # A store that is down must not hold a probe for the driver's default 30 s.
 DRIVER_OPTIONS = {"connection_timeout": 5.0, "connection_acquisition_timeout": 10.0}
 
@@ -121,7 +128,7 @@ def create_app(
     async def no_store(
         request: Request, call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
-        """The views, sign-in and OAuth answer with the person's data or a secret."""
+        """The views, sign-in, sources and OAuth answer with the person's data or a secret."""
         response = await call_next(request)
         if request.url.path.startswith(NO_STORE_PATHS):
             response.headers["Cache-Control"] = "no-store"
@@ -132,6 +139,7 @@ def create_app(
     app.include_router(oauth.router)
     app.include_router(mcp.router)
     app.include_router(router)
+    app.include_router(uploads.router)
     app.include_router(auth_router)
     app.include_router(internal_router)
     folder = os.environ.get(WEB_DIST_ENV)
