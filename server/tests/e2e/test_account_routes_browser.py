@@ -229,6 +229,37 @@ def test_direct_account_route_survives_reload(context, route, title):
     shot(page, title.lower().replace(" ", "-") + "-mobile")
 
 
+def test_root_enters_login_and_signup_without_an_intermediate_page(context):
+    page = context.new_page()
+    response = page.goto("/")
+    assert response.status == 200
+    assert page.url.endswith("/login")
+    page.get_by_role("heading", name="Log in", exact=True).wait_for()
+    assert not page.locator(".gp-welcome").count()
+    shot(page, "root-login-desktop")
+    page.get_by_role("link", name="New to Grove? Create account", exact=True).click()
+    page.get_by_role("heading", name="Create account", exact=True).wait_for()
+    assert page.url.endswith("/signup")
+    page.set_viewport_size({"width": 390, "height": 844})
+    assert page.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
+    shot(page, "root-signup-mobile")
+
+
+def test_authenticated_root_preserves_onboarding_and_graph(context, controlled):
+    page = context.new_page()
+    page.goto("/")
+    login(page, "root-owner@example.test")
+    page.goto("/")
+    page.get_by_role("button", name="Get Started").wait_for()
+    assert page.url.endswith("/")
+    controlled[1]["accounts"]["root-owner@example.test"]["items"] = True
+    finish(page)
+    page.goto("/")
+    page.locator("#profile-button").wait_for(state="visible")
+    assert page.url.endswith("/")
+    assert not page.locator(".gp-auth-form").count()
+
+
 def test_signup_verifies_then_enters_onboarding_and_preserves_account(context, controlled):
     page = context.new_page()
     page.goto("/signup")
