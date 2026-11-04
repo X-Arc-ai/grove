@@ -120,15 +120,26 @@ class Commands:
                 row.update(id="migration-id", running=True, status="running")
                 self.rows[tail[tail.index("--name") + 1]] = row
             elif command == "create":
+                # Compose 5.6.1 rejects this flag before any container operation.
+                if "--no-deps" in tail:
+                    raise cutover.Refused("compose_unknown_flag_no_deps")
+                raise AssertionError(joined)
+            elif command == "up":
                 assert self.migration_applied and self.generations == [0, 4]
-                for service in cutover.WRITERS:
-                    self.rows[service] = container(service, target=True)
+                services = [arg for arg in tail[1:] if not arg.startswith("--")]
+                if "--no-deps" not in tail:
+                    services.append("neo4j")
+                for service in services:
+                    row = container(service, target=True)
+                    if "--no-start" not in tail:
+                        row.update(running=True, status="running")
+                    self.rows[service] = row
                 if self.failure == "identity":
                     self.rows["api"]["image"] = image("api")
             elif command == "start":
                 for service in cutover.WRITERS:
                     self.rows[service].update(running=True, status="running")
-            elif command not in ("build", "up"):
+            elif command != "build":
                 raise AssertionError(joined)
             return ""
         if args[0] == "bash":
@@ -196,6 +207,85 @@ def test_cutover_excludes_old_writers_and_checks_actual_images_before_release(pr
     assert not any(" rm " in call or " prune " in call or " down" in call for call in calls)
 
 
+def test_cutover_creates_only_stopped_writers_before_verified_start(protocol, monkeypatch):
+    instance, commands = protocol
+    neo4j = copy.deepcopy(commands.rows["neo4j"])
+    checkpoints = []
+    verify_identity = instance.candidate_identity
+
+    def record_identity(*, started):
+        verify_identity(started=started)
+        checkpoints.append((started, len(commands.calls), copy.deepcopy(commands.rows)))
+
+    monkeypatch.setattr(instance, "candidate_identity", record_identity)
+    instance.execute()
+    assert [started for started, _, _ in checkpoints] == [False, True, True]
+    _, verified_after, created = checkpoints[0]
+    assert created["neo4j"] == neo4j
+    for service in cutover.WRITERS:
+        assert created[service] == container(service, target=True)
+    override = json.loads(instance.override.read_text())
+    assert override == {
+        "services": {
+            service: {"image": image(service, True), "restart": "no"} for service in cutover.WRITERS
+        }
+    }
+    compose_calls = [
+        (index, args, seconds)
+        for index, (args, seconds) in enumerate(commands.calls)
+        if args[:2] == ["docker", "compose"] and ("up" in args or "start" in args)
+    ]
+    assert len(compose_calls) == 2
+    create_index, create_args, create_seconds = compose_calls[0]
+    start_index, start_args, start_seconds = compose_calls[1]
+    prefix = [
+        "docker",
+        "compose",
+        "--project-name",
+        "grove",
+        "--file",
+        str(instance.p["src"] / "deploy/compose.yml"),
+        "--file",
+        str(instance.override),
+    ]
+    assert create_args == prefix + [
+        "up",
+        "--no-start",
+        "--no-build",
+        "--no-deps",
+        "--force-recreate",
+        "api",
+        "gateway",
+        "runner",
+    ]
+    assert start_args == prefix + [
+        "start",
+        "--wait",
+        "--wait-timeout",
+        "170",
+        "api",
+        "gateway",
+        "runner",
+    ]
+    assert create_index < verified_after <= start_index
+    assert create_seconds == start_seconds == 180
+
+
+def test_compose_create_control_rejects_unsupported_no_deps(protocol):
+    instance, _ = protocol
+    with pytest.raises(cutover.Refused, match="compose_unknown_flag_no_deps"):
+        instance.compose(
+            "create",
+            "--no-build",
+            "--no-deps",
+            "--force-recreate",
+            "api",
+            "gateway",
+            "runner",
+            override=True,
+        )
+
+
 @pytest.mark.parametrize("failure", ["surviving", "transactions", "migration", "identity", "smoke"])
 def test_cutover_retains_failure_and_refuses_automatic_retry(protocol, failure):
     instance, commands = protocol
@@ -215,6 +305,8 @@ def test_cutover_retains_failure_and_refuses_automatic_retry(protocol, failure):
     assert len(commands.calls) == count
     if failure in ("identity", "smoke"):
         assert all(not commands.rows[name]["running"] for name in cutover.WRITERS)
+    if failure == "identity":
+        assert not any("start" in args for args, _ in commands.calls)
     if failure == "migration":
         assert commands.migration_applied
         assert state["migration_terminal"] == "exited"
