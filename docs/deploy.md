@@ -12,9 +12,9 @@ runs the compose project `grove` from `deploy/compose.yml`.
 | Service | What it is | Network | Runs as |
 |---|---|---|---|
 | `neo4j` | Neo4j Community, the pin of `docker-compose.dev.yml`. Heap 1 GB, page cache 512 MB, Cypher 25 by default. Data in the volume `grove-neo4j-data`. | `store` (internal) | the image's user |
-| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body; only `/v1/sources/upload` takes up to 256 MiB, with no request buffering (uploads, below). Read-only root file system; `/tmp` is a tmpfs of 320 MiB. A memory limit of 4 GB, with no swap past it. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
-| `gateway` | The model gateway, `python -m grove.models.gateway` from the API's image (`docs/models.md`, the gateway). It holds the model keys and `GROVE_GATEWAY_SECRET`, and writes each call to `model_calls`. It listens on port 18300 of its networks (`GROVE_GATEWAY_HOST=0.0.0.0`, since the runner's container cannot reach a loopback address) and publishes no port; every call needs a run token signed with `GROVE_GATEWAY_SECRET`. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
-| `runner` | The runner loop, `python -m grove.runner`: it asks the API for due work and runs each pass in OpenCode 1.18.32 against the gateway (`GROVE_GATEWAY_URL=http://gateway:18300/v1`), with the config and the agents of the repo's `runner/` folder (`/opt/grove/runner` in the image). OpenCode is checked against its release checksum, runs with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`, and has no plugin. | `runner` (internal) | uid 10002 `grove-runner` |
+| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body; only `/v1/sources/upload` takes up to 256 MiB, with no request buffering (uploads, below). Read-only root file system; `/tmp` is a tmpfs of 320 MiB. A memory limit of 4 GB, with no swap past it. | `store`, `runner_v2`, `egress` | uid 10001 `grove-api` |
+| `gateway` | The model gateway, `python -m grove.models.gateway` from the API's image (`docs/models.md`, the gateway). It holds the model keys and `GROVE_GATEWAY_SECRET`, and writes each call to `model_calls`. It listens on port 18300 of its networks (`GROVE_GATEWAY_HOST=0.0.0.0`, since the runner's container cannot reach a loopback address) and publishes no port; every call needs a run token signed with `GROVE_GATEWAY_SECRET`. Read-only root file system. | `store`, `runner_v2`, `egress` | uid 10001 `grove-api` |
+| `runner` | The runner loop, `python -m grove.runner`: it asks the API for due work and runs each pass in OpenCode 1.18.32 against the gateway (`GROVE_GATEWAY_URL=http://gateway:18300/v1`), with the config and the agents of the repo's `runner/` folder (`/opt/grove/runner` in the image). OpenCode is checked against its release checksum, runs with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`, and has no plugin. | `runner_v2` (internal) | uid 10002 `grove-runner` |
 
 An internal network has no route out. So the store reaches nothing but the API and the gateway,
 and the runner reaches the API, the gateway and no address outside the box: it holds no store
@@ -91,20 +91,33 @@ the shell that runs it.
 ## The runner's secrets
 
 `deploy/runner-secrets.sh` makes `gateway.env`, `runner.env` and `runner-auth.env` on the box, mode
-600 and root's. The script comes with the checkout of the sha that carries the runner loop, so on a
-box that has none of the three files `deploy-b` does this once:
+600 and root's. Initialize these files **before** the first deploy that starts the gateway.
+The gateway intentionally refuses startup without a secret of at least 32 bytes; it cannot answer
+`/health` until its constructor succeeds. The runner's separate unconfigured wait does not make
+the gateway healthy. An absent or short secret must never be bypassed to complete a deploy.
 
-1. Deploy that sha. With no runner token, the runner logs `grove-runner not_configured
-   missing=GROVE_RUNNER_TOKEN` once and waits (it does not exit, so `compose up --wait` passes),
-   and the API's runner routes answer 503.
-2. Run the script:
+1. Obtain an explicit request with the full target sha and refresh checkout, service, network,
+   marker and lock evidence. Confirm the reviewed initializer already exists in the clean host
+   checkout. If it is absent, stop for a source-delivery decision. Do not use a failed deploy to
+   obtain it, and do not transfer a script to the box.
+2. Hold the operator lock for the complete initialization-and-deploy sequence. Under that lock,
+   run the existing initializer once with the host lock:
 
    ```
-   ssh -n root@app.grove.x-arc.ai /opt/grove/src/deploy/runner-secrets.sh
+   ssh -n root@app.grove.x-arc.ai 'flock /run/grove/deploy.lock /opt/grove/src/deploy/runner-secrets.sh'
    ```
 
-3. Deploy the same sha again: an env file reaches a container only when compose creates it, so
-   `api`, `gateway` and `runner` must be created again with the new files.
+3. If initialization fails, retain the failure and stop. Do not retry it or proceed to deployment.
+4. While the same operator lock remains held, deploy the authorized full sha once through
+   `deploy/deploy.sh`, which acquires the host lock itself. Do not nest the operator lock wrapper.
+   Compose must recreate the API, gateway and runner to consume the new files.
+5. If deployment or smoke fails, retain the failure and stop for a new request. Require exact-sha
+   public health, all public smoke checks, healthy services and configured-runner acceptance.
+   Do not lengthen a smoke timeout or repeat a failed check to erase the original failure.
+
+A recovery of an already-served sha and a later deploy of the source repair are separate requests.
+The same-sha recovery preserves the previous different healthy build in `previous.sha`.
+Neither a source merge nor successful initialization proves healthy services.
 
 It prints file names with `created` or `kept`, and no value. It keeps a secret or a token that is
 there, and computes `runner-auth.env` again from `runner.env` at every run, so the hash the API
@@ -113,6 +126,18 @@ temporary file in `/etc/grove`, which then replaces the file whole. It refuses t
 `/etc/grove` does not exist (run `deploy/bootstrap.sh` first), and stops on a value there that is
 under 32 characters. To change the runner token, remove its line from `runner.env`, run the script
 and deploy again, so the API and the runner both start with the new pair.
+
+`deploy/runner-secrets.sh --check` is a separate read-only prerequisite. It validates the three
+plain files, current-owner private permissions, one exact field per file, secret/token minimum
+lengths and the token/hash relation. Blank lines and comments are allowed; duplicate or unknown
+fields, shell text, interpolation and escapes are refused. It parses data without sourcing files.
+It creates nothing and changes no bytes, owner, mode, modification time or change time. Filesystem
+read-access times can change on systems without `O_NOATIME`.
+
+The check prints only `runner_configuration_ok`, or `runner_configuration_invalid` with a fixed
+file name (or `configuration_directory`). Operator evidence contains only this status and file
+metadata, never values, hashes, complete environments or raw configuration. Apply always checks
+its own `GROVE_ETC` directory, even if a different initializer directory override exists.
 
 ## Deploy a commit
 
@@ -138,7 +163,11 @@ On the box, `deploy/deploy.sh <sha>`:
 2. fetches `develop` from GitHub and refuses a sha that is not on it, and a checkout with local
    changes or ignored files;
 3. checks out the sha and hands over to that commit's own `deploy/apply.sh`, which
-4. refuses to go on if a secret file is missing or readable by group or others, if an env file has another owner, if `/etc/grove` is open to group or others, or if a screening file is open to group or others or is a link. It makes `/etc/grove/screening` when it is absent and hands the screening files that are there to uid 10001;
+4. runs `runner-secrets.sh --check` immediately after its lock and sha assertions, before any
+   screening directory creation, permission change, host-file installation, build, migration,
+   marker write or service replacement. It then checks the other secret files and screening
+   files, refusing missing required files, open permissions, foreign env owners or screening
+   links. It makes `/etc/grove/screening` when absent and hands existing screening files to uid 10001;
 5. installs the host files of that commit (`deploy/install-host.sh`): the nginx sites, the
    certificate on first use (certbot, webroot), the backup units, the certbot reload hook and log
    rotation. If `nginx -t` refuses the new sites, the old ones go back and the deploy stops;
@@ -166,6 +195,34 @@ deploy/smoke.sh https://app.grove.x-arc.ai <sha>
 They check that `/healthz` answers ok for that build, that `/`, `/signin` and `/privacy` each answer with a page, that both metadata paths name
 `<base>/mcp` (also for `meta-webindexer/1.1`), and that an unauthenticated `/mcp` call gets 401 with
 the metadata URL.
+
+### Runner network transition
+
+The fixed bridge `grove-runner` uses logical network key `runner_v2` and Docker network name
+`grove_runner_v2`. Both identities differ from the earlier `runner` / `grove_runner` network.
+A change to the old network's bridge options caused Compose to refuse its active API and runner
+endpoints when it tried to create the migration container. A new Docker name alone is insufficient:
+Compose can still select the old resource through its logical network label.
+
+The separate network lets the migration container use the new topology while the old API and runner
+remain attached to the legacy network. Ordinary service replacement then moves the API, gateway,
+and runner to the new network. The store network, Neo4j container, data volumes, credential files,
+and both deploy locks retain their existing roles. The runner network stays internal, its bridge
+stays fixed, and the gateway publishes no port. Service DNS names remain `api` and `gateway`.
+
+Keep the legacy network for rollback. Deploys do not prune it. If network creation or migration
+fails before the target replaces services, the old endpoints remain connected and the existing
+checkout/host-file recovery still applies, including when the old deploy entrypoint starts the
+upgrade. A failure after target service replacement keeps the target marker and reports unhealthy
+services; it does not claim that the old build recovered. An explicit deploy of the old revision
+reuses the legacy network and removes the gateway container as an orphan when that revision has
+no gateway service. A same-SHA redeploy reuses the new network and preserves `previous.sha`.
+
+The deployment tests model network labels, names, options, active endpoints, and live container
+health with synthetic state. They cover the original refusal, a name-only negative control,
+pre-replacement recovery, unhealthy target services, repeated deployment, and rollback. Their
+health response comes from live simulated containers, independently of the SHA marker. These tests
+do not prove native Compose behavior or live host recovery; those remain deployment acceptance.
 
 ## Uploads and the screening files
 
@@ -304,5 +361,7 @@ ledger, compare).
    no variable, it registers with no address.
 5. Copy the other secret files (above), and the two screening files (uploads, above). A deploy
    also works without the screening files; uploads then answer 503.
-6. Deploy a sha.
-7. Run `deploy/runner-secrets.sh` and deploy the same sha again (the runner's secrets, above).
+6. Initialize the runner's three files under the operator and host locks, using the existing
+   reviewed checkout, and stop if initialization fails (the runner's secrets, above).
+7. Deploy the authorized full sha once under the same operator lock. The checked-in deploy takes
+   the host lock and checks configuration before it changes host files or services.

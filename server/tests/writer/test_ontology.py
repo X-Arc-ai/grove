@@ -728,7 +728,9 @@ def property_proposal(name: str, judgment_ids: list[str], neighbours: list[dict]
         "e1",
         judgment_ids,
         word_type="property_name",
-        kind="plan",
+        # A starter kind with no property name of its own (S55 names scheduled times for plan,
+        # task, trip, period and event), so a first property name of it needs no neighbour.
+        kind="problem",
         name=name,
         description="Who holds the plan.",
         neighbours=neighbours,
@@ -738,10 +740,10 @@ def property_proposal(name: str, judgment_ids: list[str], neighbours: list[dict]
 
 def plan_item(ev_id: str, title: str = "Replant the orchard", **properties: Any) -> dict:
     return create_item(
-        "plan",
+        "problem",
         title,
         ev_id,
-        status="proposed",
+        status="open",
         recheck_by=RECHECK,
         properties=properties,
     )
@@ -749,7 +751,7 @@ def plan_item(ev_id: str, title: str = "Replant the orchard", **properties: Any)
 
 def plan_kind(driver, world_id: str) -> str:
     registry = Registry.load(WorldQuery(driver, world_id))
-    return next(kind["id"] for kind in registry.kinds.values() if kind["name"] == "plan")
+    return next(kind["id"] for kind in registry.kinds.values() if kind["name"] == "problem")
 
 
 def fits(
@@ -823,11 +825,15 @@ def test_owner_owned_by_and_owner_name_resolve_to_one_property_name(driver, seed
         )
         op = property_proposal(phrase, ids, [{"word": "owner", "distinction": "none found"}])
         op["worked_example"] = {"ev_id": ev}
-        item = create_item("plan", titles[line], ev, status="proposed", recheck_by=RECHECK)
+        item = create_item("problem", titles[line], ev, status="open", recheck_by=RECHECK)
         item["properties"] = {phrase: "the hedge group"}
         apply(driver, world_id, [op, item], [observation(chat, ev, line)], caller=LEARNER)
 
-    names = read(driver, world_id, "MATCH (p:PropertyName) RETURN p.name AS name")
+    names = read(
+        driver,
+        world_id,
+        "MATCH (p:PropertyName) WHERE p.origin <> 'starter' RETURN p.name AS name",
+    )
     assert names == [{"name": "owner"}]
     for phrase in ("owner", "owned_by", "owner_name", "Owner Name"):
         found = registry_of(driver, world_id).property_name(plan_kind_id, phrase)
@@ -1174,7 +1180,8 @@ def test_a_field_fit_verdict_of_one_kinds_property_never_counts_for_another_kind
     """Probe PD4."""
     world_id = seeded["world_id"]
     registry = Registry.load(WorldQuery(driver, world_id))
-    task = next(kind["id"] for kind in registry.kinds.values() if kind["name"] == "task")
+    # Another starter kind with no property name of its own (task has the scheduled `due`, S55).
+    task = next(kind["id"] for kind in registry.kinds.values() if kind["name"] == "assumption")
     ids = fits(
         driver,
         world_id,
@@ -1185,12 +1192,12 @@ def test_a_field_fit_verdict_of_one_kinds_property_never_counts_for_another_kind
         plan_kind(driver, world_id),
     )
     op = property_proposal("owner", ids, [])
-    op["kind"] = "task"
+    op["kind"] = "assumption"
     item = create_item(
-        "task",
+        "assumption",
         "Dig the pond",
         "e1",
-        status="open",
+        status="holds",
         recheck_by=RECHECK,
         properties={"owner": "the pond group"},
     )
@@ -1320,7 +1327,7 @@ def test_a_state_property_name_on_a_kind_that_is_not_a_record_is_refused_at_the_
         "e1",
         [],
         word_type="property_name",
-        kind="plan",
+        kind="problem",
         name="mood",
         description="How the plan feels now.",
         neighbours=[],
@@ -1333,7 +1340,7 @@ def test_a_state_property_name_on_a_kind_that_is_not_a_record_is_refused_at_the_
         "state_property_on_item",
         "state_property_on_item",
     )
-    assert not read(driver, world_id, "MATCH (p:PropertyName) RETURN p")
+    assert not read(driver, world_id, "MATCH (p:PropertyName) WHERE p.origin <> 'starter' RETURN p")
 
 
 def test_an_update_may_restate_a_value_equal_to_its_own_title(driver, seeded, chat):
