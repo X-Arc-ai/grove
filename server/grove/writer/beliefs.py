@@ -74,7 +74,11 @@ def set_fields(run, belief, fields, reason_id, *, evidence_id=None):
 
 
 def _rows(run, target):
-    return [row["e"] for row in run.tx.run(_EVIDENCE, id=target)]
+    from grove.writer.message_binding import check_reused_evidence
+
+    rows = [row["e"] for row in run.tx.run(_EVIDENCE, id=target)]
+    check_reused_evidence(run, rows)
+    return rows
 
 
 def _observed(row):

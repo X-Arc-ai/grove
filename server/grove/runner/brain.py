@@ -11,6 +11,7 @@ import re
 from datetime import datetime
 from typing import Any
 
+from grove.learner_input import select_input
 from grove.prompts import DataBlock, render_blocks
 from grove.store.enums import ENUMS
 from grove.store.query import WorldQuery
@@ -87,12 +88,13 @@ def _speaker(connector_type: str, verbatim: object) -> str:
 def _request_input(query: WorldQuery, request_id: str, n0: int) -> tuple[dict, list[DataBlock]]:
     row = query.read(
         "MATCH (r:Request {id: $id}) RETURN r.status AS status, r.source_id AS source, "
-        "r.verbatim AS verbatim, r.said_at AS said_at",
+        "r.verbatim AS verbatim, r.said_at AS said_at, r.host_message_id AS host_message_id",
         id=request_id,
     )[0]
     source = query.read(
         "MATCH (s:Source {id: $id}) RETURN s.connector_id AS connector, s.content AS content, "
-        "s.received_at AS received",
+        "s.received_at AS received, s.speakers AS speakers, s.parser_version AS parser_version, "
+        "s.version AS version, s.forget_state AS forget_state",
         id=row["source"],
     )[0]
     connector = query.read("MATCH (c:Connector {id: $id}) RETURN c", id=source["connector"])
@@ -101,22 +103,32 @@ def _request_input(query: WorldQuery, request_id: str, n0: int) -> tuple[dict, l
         "MATCH (e:Episode) WHERE $source IN e.source_ids RETURN e.id AS id ORDER BY e.id LIMIT 1",
         source=row["source"],
     )
-    messages = _messages(source["content"])
+    selected = select_input(
+        {
+            **source,
+            "id": row["source"],
+            "connector_id": source["connector"],
+            "received_at": source.get("received"),
+        },
+        connector[0]["c"] if connector else {},
+        row,
+    )
     blocks: list[DataBlock] = []
     shown = []
-    for message in messages:
-        text = message.get("text")
-        if not isinstance(text, str) or not text:
-            continue
-        speaker = _speaker(connector_type, row.get("verbatim"))
+    for message in selected.messages:
+        text = message["text"]
+        speaker = message["speaker_kind"]
         blocks.append(DataBlock("source", speaker, None, row["source"], text))
         shown.append(
             {
                 "block": n0 + len(blocks),
                 # Stored fields reach an agent outside a block only as codes and instants.
-                "message_key": _code_or_none(message.get("key")),
-                "at": _instant_or_none(message.get("at")),
+                "message_key": message["key"],
+                "at": message["at"],
+                "locator": message["locator"],
                 "speaker_kind": speaker,
+                "modality": message["modality"],
+                "original_author": message["original_author"],
             }
         )
     content = source["content"] or ""
@@ -131,6 +143,9 @@ def _request_input(query: WorldQuery, request_id: str, n0: int) -> tuple[dict, l
         "received_at": source["received"].isoformat() if source.get("received") else None,
         "said_at": row["said_at"].isoformat() if row.get("said_at") else None,
         "messages": shown,
+        "held_messages": selected.held_count,
+        "input_complete": selected.complete,
+        "input_reasons": list(selected.reasons),
     }
     return entry, blocks
 
@@ -258,8 +273,14 @@ def batch_form(entry: dict[str, Any] | None) -> dict[str, Any]:
             "brain get.",
             "fields": FIELD_GUIDE,
         }
-    message = entry["messages"][0] if entry["messages"] else {"message_key": None, "at": None}
-    locator = "whole" if "whole" in entry["locators"] else (entry["locators"] or ["whole"])[0]
+    if not entry["messages"]:
+        return {
+            "request_id": entry["request_id"],
+            "note": "No eligible source messages. Do not invent evidence or finish held input.",
+            "fields": FIELD_GUIDE,
+        }
+    message = entry["messages"][0]
+    locator = message["locator"]
     support = [{"ev_id": "e1", "polarity": "supports"}]
     return {
         "request_id": entry["request_id"],
@@ -271,12 +292,17 @@ def batch_form(entry: dict[str, Any] | None) -> dict[str, Any]:
                     "episode_id": entry["episode_id"],
                     "source_id": entry["source_id"],
                     "locator": locator,
-                    "message_key": message["message_key"] or entry["source_id"],
-                    "source_time": message["at"] or entry["said_at"] or entry["received_at"],
+                    "message_key": message["message_key"],
+                    "source_time": message["at"],
                     "statement_class": "report_state",
                     "derivation": "observed",
-                    "speaker_kind": message.get("speaker_kind", "person"),
-                    "modality": "text",
+                    "speaker_kind": message["speaker_kind"],
+                    "modality": message["modality"],
+                    **(
+                        {"original_author": message["original_author"]}
+                        if message.get("original_author")
+                        else {}
+                    ),
                 }
             ],
             "ops": [
