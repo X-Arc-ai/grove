@@ -104,9 +104,14 @@ PR table. No independent public citation for the private experiments is supplied
 
 ## Release evidence
 
-[Submission status](docs/submission-status.md) records the source baseline, the PR60 API,
-the retained runner/gateway revision, the FAILED Request18 result, and open Request19 closure. [The operator checklist](docs/submission-checklist.md)
-records the remaining rehearsal, video, final links, and release decisions.
+[Submission status](docs/submission-status.md) records the unchanged source baseline and
+the dated release evidence update at 2026-11-04 19:04:34 UTC: Request19 closure and separate
+verification PASSED. The PR60 API and retained runner/gateway revisions remain distinct.
+Request18 remains FAILED. This operational closure was not a new code deployment.
+The [receipt facts](docs/submission-status.md#request19-release-evidence-update) preserve
+the completed closure and its limits. Materials remain merged but not deployed.
+[The operator checklist](docs/submission-checklist.md) records the remaining owner/Muse
+rehearsal, full corpus, video, final links, and release decisions.
 
 CI and independent review were waived as source-publication gates for this run. Failed,
 cancelled, and unrun checks remain separate from passes. The repository remains private.

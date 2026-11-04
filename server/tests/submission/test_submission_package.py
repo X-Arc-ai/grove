@@ -11,6 +11,7 @@ API = "564cc99b9c8a718f163503cc23227a8f2908fcd1"
 WORKERS = "266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e"
 MATERIALS = "0682eb201ad0ccfb8a8a9d074d07759ec8eb31a1"
 MATERIAL_SOURCE = "d17151421e027a4fe19b269a9f06cf6dcd17fe33"
+PREVIOUS_API = "cbcfe574e03880569bfcdb9a9732f79a7ef3daea"
 DOCUMENTS = (
     "README.md",
     "HACKATHON.md",
@@ -51,8 +52,7 @@ def test_release_record_separates_source_and_each_deployed_revision():
         for expected in (SOURCE, API, WORKERS, "2026-11-04", "19:04 UTC", "NOT RUN"):
             assert expected in text, (name, expected)
         assert "Request18 remains FAILED" in text, name
-        assert "Request19 closure has no completed" in text, name
-        assert "receipt in this snapshot" in text, name
+        assert "Request19 closure and separate verification PASSED" in " ".join(text.split()), name
     status = (ROOT / "docs/submission-status.md").read_text()
     assert "PRs #58 and #59" in status
     assert "not the currently recorded served API" in status
@@ -91,6 +91,9 @@ def test_source_update_preserves_the_dated_event_table():
     rows = [line for line in record.splitlines() if line.startswith("| [#")]
     assert len(rows) == 59
     assert rows[-1].startswith("| [#59]")
+    assert hashlib.sha256("\n".join(rows).encode()).hexdigest() == (
+        "03fb0e9449af189763e9dc5e5cad51d46702044f1761616af69e4747bcd1e389"
+    )
     assert "PR #60 belongs to the newer [source snapshot]" in record
     assert SOURCE in record and MATERIALS in record and MATERIAL_SOURCE in record
 
@@ -143,7 +146,7 @@ def test_source_proofs_do_not_become_runtime_or_full_review_acceptance():
 
 def test_current_package_removes_stale_material_and_api_claims():
     for name in (*DOCUMENTS, "docs/drafts/submission-writeup.txt"):
-        text = (ROOT / name).read_text()
+        text = " ".join((ROOT / name).read_text().split())
         for stale in (
             "next API deployment is not yet executed",
             "remains unpublished",
@@ -151,12 +154,90 @@ def test_current_package_removes_stale_material_and_api_claims():
             "current API remains on Request17",
             "recorded API remains on Request17",
             "b4b804acf94250c2092f2e3c7623d6e79ee8bb59",
+            "Request19 closure has no completed",
+            "no completed closure receipt",
+            "no completed receipt in this snapshot",
+            "open Request19 closure",
+            "stale `deployed.sha`",
+            "must record Request19 closure separately",
+            "Obtain the Request19 closure",
         ):
             assert stale not in text, (name, stale)
     checklist = (ROOT / "docs/submission-checklist.md").read_text()
     assert "Request19 closure and separate verification receipts" in checklist
     assert "preserve Request18 as FAILED" in checklist
     assert "coordinated API/runner source" in checklist
+
+
+def test_request19_dated_update_preserves_failure_and_deployment_boundary():
+    for name in (
+        "README.md",
+        "HACKATHON.md",
+        "docs/architecture.md",
+        "docs/submission-status.md",
+        "docs/submission-checklist.md",
+        "docs/drafts/submission-writeup.txt",
+    ):
+        text = " ".join((ROOT / name).read_text().split())
+        for expected in (
+            "19:04:34 UTC",
+            "Request19 closure and separate verification PASSED",
+            "Request18 remains FAILED",
+            "not a new code deployment",
+        ):
+            assert expected in text, (name, expected)
+    checklist = (ROOT / "docs/submission-checklist.md").read_text()
+    assert "- [x] Record the Request19 closure and separate verification receipts" in checklist
+    for pending in (
+        "Verify material ledger equality",
+        "Finish the complete 40-story corpus",
+        "Follow the README from a fresh browser context",
+        "Connect Muse to the prepared account",
+    ):
+        assert f"- [ ] {pending}" in checklist, pending
+
+
+def test_request19_receipt_records_verified_markers_without_new_runtime_actions():
+    status = (ROOT / "docs/submission-status.md").read_text()
+    update = " ".join(
+        status.split("## Request19 release evidence update", 1)[1]
+        .split("## Recorded source and historical evidence", 1)[0]
+        .split()
+    )
+    for expected in (
+        SOURCE,
+        API,
+        PREVIOUS_API,
+        "Both exited naturally with status 0 and empty stderr",
+        "`deployed.sha` matches the PR60 API",
+        "`previous.sha` retains",
+        "failed barrier is archived and inactive",
+        "three host locks were free",
+        "local operator lock was absent at verification",
+        "No rebuild, restart, migration, seed, or runtime data write occurred",
+        "Materials remain merged but not deployed",
+        "No new host or runtime checks ran",
+        "e029b7b87ba5bd68c8447a459239dc3d3713cc727d8ed72c9f5e093ad56a1013",
+        "8b25df182eaf1081439a7544280f098a382ba19dc8f546ffd4bd5fcf7f647238",
+        "6b2bdcddcbe89f4548ddda7089b2a5d11ee31c99e8082f0d5a46ecf999f42e2c",
+        "a2657e915f29eed845929689fe17218aa80dc45bab6e99192e8e51f41a58b4d0",
+    ):
+        assert expected in update, expected
+
+
+def test_request19_graph_counts_remain_dated_and_corpus_acceptance_open():
+    status = " ".join((ROOT / "docs/submission-status.md").read_text().split())
+    for expected in (
+        "At this dated Request19 verification",
+        "generation 53, 1,355 nodes, and 4,082 edges",
+        "1,352 Items, 26 Sources, 26 saved Requests, and 26 receipts",
+        "dated verified counts, not an unconditional current claim",
+        "40-story corpus remains incomplete",
+        "four earlier recall passes retain their original scope",
+        "Pebble remains INCOMPLETE",
+        "**NOT RUN**",
+    ):
+        assert expected in status, expected
 
 
 def test_event_record_preserves_pr18_as_merged_source():

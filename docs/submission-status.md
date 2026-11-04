@@ -10,29 +10,67 @@ login/upload/Muse flow is paused and remains **NOT RUN** for this release.
 | Surface | Recorded revision | Evidence boundary |
 |---|---|---|
 | Accepted source baseline | `c145cf8b450f3ae7ab43989cf07969ee5b493057` | Includes PRs #58 and #59, UI PR #60, materials PR #61, and the separate PR #63 source helper |
-| Recorded served API, PR #60 | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Request18 diagnosis confirmed exact runtime files; Root separately recorded healthy `/healthz`; Request18 remains FAILED |
-| Retained runner and gateway | `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e` | The diagnosis recorded unchanged services and zero restarts |
+| Recorded served API, PR #60 | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Request19 closure and separate verification PASSED at the dated release update below; Root verified healthy `/healthz`; Request18 remains FAILED |
+| Retained runner and gateway | `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e` | Request19 verified unchanged container identities, states, images, and restart counts |
 | Merged materials, PR #61 | `0682eb201ad0ccfb8a8a9d074d07759ec8eb31a1` | Accepted source `d17151421e027a4fe19b269a9f06cf6dcd17fe33`; all 43 component paths match; not deployed in the recorded PR60 API |
 | Source helper, PR #63 | `c145cf8b450f3ae7ab43989cf07969ee5b493057` | Source `f9c29e7e9afcdedcfce8190c9569b9bc71fd294a`; separates checkout and production image manifests; does not change the served application |
-| Historical Request17 API and stale `deployed.sha` | `cbcfe574e03880569bfcdb9a9732f79a7ef3daea` | Historical release/marker value, not the currently recorded served API |
+| Verified `deployed.sha` | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Request19 release marker matches the PR60 API |
+| Historical Request17 API, retained `previous.sha` | `cbcfe574e03880569bfcdb9a9732f79a7ef3daea` | Verified previous release marker, not the currently recorded served API |
 
 The document commit belongs in its PR receipt because a commit cannot contain its own final SHA.
 Published source does not prove deployed acceptance. The [event record](../HACKATHON.md)
 retains its distinct GitHub snapshot at 18:36 UTC through PR #59, with later source merges noted separately.
 
-## Request18 failure and Request19 closure
+## Preserved Request18 failure
 
 The Request18 diagnosis ended on 2026-11-04 at 18:54:49 UTC. All 20 runtime paths matched
 exact hashes, and five policy controls passed. The production image correctly excludes four
 `web/checks` paths. The wrapper incorrectly expected those paths, so Request18 remains FAILED.
 Root separately recorded `/healthz` HTTP 200 at exact PR60 with status/store `ok`.
-The API revision is distinct from the stale `deployed.sha` marker. No new host probe ran here.
+The release marker was stale at that diagnosis; Request19 corrected it below. No new host probe ran here.
 
 Request19 preparation records seven source tests and 24 local wrapper tests passed, with the
-original missing-file failure preserved. That is local proof, not operational closure.
-Root later issued one closure grant after PR #63 merged. Request19 closure has no completed
-receipt in this snapshot. Its fixed application target remains PR60; it does not deploy materials.
-A later closure result requires its own dated receipt and separate verification. Request18 stays FAILED.
+original missing-file failure preserved. That local preparation proof is separate from the
+completed operational closure below. Root issued one closure grant after PR #63 merged.
+
+## Request19 release evidence update
+
+Release evidence update: 2026-11-04 at 19:04:34 UTC. Request19 closure and separate
+verification PASSED. Both exited naturally with status 0 and empty stderr. Root independently
+verified public `/healthz` HTTP 200 with status/store `ok` and exact PR60 API target
+`564cc99b9c8a718f163503cc23227a8f2908fcd1`. The source snapshot remains
+`c145cf8b450f3ae7ab43989cf07969ee5b493057`; this was not a new code deployment.
+Request18 remains FAILED, with its original artifacts preserved.
+
+`deployed.sha` matches the PR60 API. `previous.sha` retains
+`cbcfe574e03880569bfcdb9a9732f79a7ef3daea`. The failed barrier is archived and inactive.
+The closure receipt, progress, and terminal records passed separate verification.
+All eight expected containers retained their required identities, states, images, and restart
+counts. The three host locks were free and the local operator lock was absent at verification.
+No rebuild, restart, migration, seed, or runtime data write occurred.
+
+The receipt records 24 checkout files, 20 image files, five source-policy controls, and 24 public
+checks passed, including all 15 asset hashes. The four image-excluded check files remained absent.
+These verified receipt identifiers cite the closure without private paths or account identities:
+
+| Record | SHA-256 |
+|---|---|
+| Closure receipt | `e029b7b87ba5bd68c8447a459239dc3d3713cc727d8ed72c9f5e093ad56a1013` |
+| Separate verification events | `8b25df182eaf1081439a7544280f098a382ba19dc8f546ffd4bd5fcf7f647238` |
+| Terminal record | `6b2bdcddcbe89f4548ddda7089b2a5d11ee31c99e8082f0d5a46ecf999f42e2c` |
+| Preserved Request18 barrier archive | `a2657e915f29eed845929689fe17218aa80dc45bab6e99192e8e51f41a58b4d0` |
+
+At this dated Request19 verification, the graph retained generation 53, 1,355 nodes, and
+4,082 edges, with finite values, valid endpoints, and no truncation. The corpus retained
+1,352 Items, 26 Sources, 26 saved Requests, and 26 receipts. These are dated verified counts,
+not an unconditional current claim. The two Cedar Items retained their saved provenance digest;
+the pending-work census was empty, and all 17 migration ledger entries passed verification.
+
+The fixed application target remains PR60; Request19 did not deploy materials. Materials remain
+merged but not deployed. Operational closure does not establish owner/Muse, authenticated
+upload, Connect/Disconnect, worker activation, or full-product acceptance. The complete
+40-story corpus remains incomplete; four earlier recall passes retain their original scope,
+and Pebble remains INCOMPLETE. No new host or runtime checks ran for this document correction.
 
 ## Recorded source and historical evidence
 
@@ -95,8 +133,8 @@ findings. Later repairs do not erase those failures. The original provenance fai
 
 ## Next release action
 
-Root owns CI observations and merge. The release owner must record Request19 closure separately,
-sequence any future materials release, and complete the [operator checklist](submission-checklist.md).
+Root owns CI observations and merge. Request19 closure and its separate verification are recorded above.
+The release owner must sequence any future materials release and complete the [operator checklist](submission-checklist.md).
 Keep the repository private. Do not resume the paused owner flow or submit externally without authority.
 
 CI and independent review are **WAIVED as source-publication gates**, not passed.
