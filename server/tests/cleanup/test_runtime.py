@@ -5,7 +5,7 @@ from click.testing import CliRunner
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from grove.api import internal
+from grove.api import belief_tools, internal
 from grove.api.errors import ApiError
 from grove.cleanup.access import CleanupRefused
 from grove.cli import main as cli
@@ -23,11 +23,14 @@ from grove.runner.shell import Refused, parse
         ("POST", "/propose", {"batch": {}}),
         ("POST", "/fetch", {"url": "https://public.example"}),
         ("POST", "/finish", {"request_id": "request"}),
+        ("POST", "/judge", {"mode": "evidence"}),
+        ("POST", "/retest", {"belief_id": "belief"}),
     ],
 )
 def test_inactive_curator_refuses_before_legacy_reads_or_writes(method, path, body):
     app = FastAPI()
     app.include_router(internal.router)
+    app.include_router(belief_tools.router)
     app.dependency_overrides[internal.live_pass] = lambda: SimpleNamespace(
         claims=SimpleNamespace(agent="curator")
     )
@@ -46,6 +49,14 @@ def test_inactive_curator_refuses_before_legacy_reads_or_writes(method, path, bo
 def test_direct_pass_input_does_not_expose_legacy_curator_data():
     with pytest.raises(CleanupRefused):
         brain.pass_input(None, "test_world", {"agent": "curator"})
+
+
+def test_direct_belief_dispatch_does_not_bypass_curator_guard():
+    with pytest.raises(ApiError) as refused:
+        belief_tools._call(
+            None, SimpleNamespace(claims=SimpleNamespace(agent="curator")), {}, retest=False
+        )
+    assert refused.value.status == 503
 
 
 def test_fetch_cli_keeps_url_in_body_and_shell_keeps_its_guards(monkeypatch):
