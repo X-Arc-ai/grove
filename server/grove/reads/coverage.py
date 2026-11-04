@@ -6,7 +6,8 @@ safe reason code. The adapter owns D14 filtering and supplies completeness expli
 An incomplete disclosure/inventory can never justify global absence, even when every
 visible connector is fresh. No hidden connector identifier or count is required.
 
-All dates are captured aware datetimes. `now` is supplied, never read. None for an
+All dates are captured aware datetimes, canonicalized to UTC instants. `now` is supplied,
+never read. Same-zone wall clocks do not determine chronology across a DST fold. None for an
 expected interval means an upload, with freshness bounded by its last successful upload.
 """
 
@@ -73,13 +74,14 @@ class ConnectorState:
         interval = self.expected_read_interval
         if interval is not None and (type(interval) is not int or interval <= 0):
             raise CoverageError("invalid_coverage_interval")
-        for value in (
-            self.last_successful_read,
-            self.last_attempted_read,
-            self.oldest_unprocessed_item,
+        for name in (
+            "last_successful_read",
+            "last_attempted_read",
+            "oldest_unprocessed_item",
         ):
+            value = getattr(self, name)
             if value is not None:
-                _at(value)
+                object.__setattr__(self, name, _at(value))
 
 
 @dataclass(frozen=True)
@@ -185,7 +187,7 @@ def evaluate_coverage(
     sources.sort(key=lambda source: source.connector_id)
     gaps = [source for source in sources if source.reasons]
     since = (
-        min(source.since for source in gaps)
+        min(_at(source.since) for source in gaps)
         if gaps and not incomplete and all(source.since is not None for source in gaps)
         else None
     )
@@ -267,7 +269,7 @@ def item_coverage_gap(
     if not relevant and not missing and not incomplete:
         return None
     since = (
-        min(source.since for source in relevant)
+        min(_at(source.since) for source in relevant)
         if relevant
         and not missing
         and not incomplete

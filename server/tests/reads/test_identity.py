@@ -2,6 +2,7 @@
 
 from dataclasses import FrozenInstanceError, asdict, replace
 from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -265,3 +266,66 @@ def test_invalid_world_and_duplicate_ids_are_typed_refusals():
 def test_empty_queries_never_match_everything(query):
     with pytest.raises(IdentityError):
         resolve(query)
+
+
+def _fold_role(kind, start, end):
+    fields, aliases = (), ()
+    if kind == "alias":
+        aliases = (alias("the treasurer", valid_from=start, valid_to=end),)
+    else:
+        fields = (IdentityField("role", "the treasurer", valid_from=start, valid_to=end),)
+    return (item(fields=fields),), aliases
+
+
+@pytest.mark.parametrize("kind", ["alias", "field"])
+@pytest.mark.parametrize("end_minute", [15, 30])
+def test_role_valid_bounds_across_dst_fold_use_instants(kind, end_minute):
+    zone = ZoneInfo("America/New_York")
+    start = datetime(2026, 11, 1, 1, 30, tzinfo=zone, fold=0)
+    end = datetime(2026, 11, 1, 1, end_minute, tzinfo=zone, fold=1)
+    assert start.astimezone(UTC) < end.astimezone(UTC)
+    people, aliases = _fold_role(kind, start, end)
+    result = resolve_identity(
+        WORLD,
+        "the treasurer",
+        people,
+        aliases,
+        at=datetime(2026, 11, 1, 6, tzinfo=UTC),
+        complete=True,
+    )
+    assert result.answer == "found"
+    assert [candidate.item_id for candidate in result.candidates] == ["one"]
+
+
+@pytest.mark.parametrize("kind", ["alias", "field"])
+def test_role_reversed_instants_across_dst_fold_refuse(kind):
+    zone = ZoneInfo("America/New_York")
+    start = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+    end = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0)
+    assert start.astimezone(UTC) > end.astimezone(UTC)
+    with pytest.raises(IdentityError, match="^invalid_identity_time$"):
+        _fold_role(kind, start, end)
+
+
+@pytest.mark.parametrize("kind", ["alias", "field"])
+@pytest.mark.parametrize(
+    "hour,minute,fold,expected",
+    [
+        (1, 29, 0, "unmatched"),
+        (1, 30, 0, "found"),
+        (1, 45, 0, "found"),
+        (1, 0, 1, "found"),
+        (1, 14, 1, "found"),
+        (1, 15, 1, "unmatched"),
+    ],
+)
+def test_role_dst_fold_retains_half_open_boundaries(kind, hour, minute, fold, expected):
+    zone = ZoneInfo("America/New_York")
+    start = datetime(2026, 11, 1, 1, 30, tzinfo=zone, fold=0)
+    end = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+    people, aliases = _fold_role(kind, start, end)
+    selected = datetime(2026, 11, 1, hour, minute, tzinfo=zone, fold=fold)
+    result = resolve_identity(WORLD, "the treasurer", people, aliases, at=selected, complete=True)
+    assert result.answer == expected
+    assert start.fold == 0 and end.fold == 1
+    assert start.tzinfo is end.tzinfo is zone
