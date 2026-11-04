@@ -495,6 +495,7 @@ def test_seeded_rows_carry_the_test_clock_and_not_the_system_clock(driver, seede
         "Meaning": ("minted_at", "touched_at"),
         "Alias": ("minted_at", "touched_at", "added_at"),
         "ChangeEntry": ("recorded_at", "world_time"),
+        "HistoryValue": ("touched_at",),
     }
     for label, fields in expected.items():
         for row in nodes(driver, world, label):
@@ -799,3 +800,10 @@ def test_a_world_writer_cannot_stamp_the_primitive_world(driver, seeded):
         )
     with pytest.raises(ScopeError):
         writer.transaction(lambda tx: tx.run("MATCH (m:Meaning) SET m.world_id = ''"))
+
+
+def test_seed_history_values_start_with_version_and_touch_time(driver, seeded):
+    world, _ = seeded
+    values = nodes(driver, world, "HistoryValue")
+    assert len(values) == HISTORY_VALUES
+    assert all(value["version"] == 1 and value["touched_at"] == AT for value in values)
