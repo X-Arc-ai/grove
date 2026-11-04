@@ -14,22 +14,25 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from grove.api import connectors, health, mcp, oauth, uploads, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
-from grove.api.errors import install_error_handlers, not_found
+from grove.api.errors import ApiError, install_error_handlers, not_found
 from grove.api.internal import PREFIX as INTERNAL_PREFIX
 from grove.api.internal import router as internal_router
 from grove.api.mail import Mailer
 from grove.api.oauth import OAUTH_PATHS, OAuthDeps
 from grove.api.views import PREFIX, router
+from grove.demo_guard import ReleaseFile, configuration
+from grove.mcp.demo import DemoReleaseMiddleware
 from grove.mcp.tools import DEFAULT_TOOLS, Tool
 from grove.runner.passes import PassSettings, RunnerAuth
 from grove.store.connection import Driver, open_driver
 from grove.views.session import SESSION_COOKIE
+from grove.writer.errors import InvalidRecord
 
 __all__ = ["WEB_DIST_ENV", "create_app"]
 
@@ -95,6 +98,9 @@ def create_app(
     With no runner_auth, the internal routes read GROVE_GATEWAY_SECRET and
     GROVE_RUNNER_TOKEN_SHA256 at first use."""
     settings = settings or load_api_settings()
+    demo_config = configuration()
+    if demo_config is not None:
+        ReleaseFile(demo_config).close()
     connector_config = connector_deps or connectors.ConnectorDeps()
 
     @asynccontextmanager
@@ -133,12 +139,29 @@ def create_app(
     app.state.auth = AuthDeps(mailer=mailer, google_http=google_http, world_id_for=world_id_for)
     app.state.oauth = oauth_deps or OAuthDeps()
     app.state.mcp_tools = tuple(DEFAULT_TOOLS if mcp_tools is None else mcp_tools)
+    app.state.demo_config = demo_config
+    if demo_config is not None:
+        from grove.mcp.tools import demo_tools
+
+        app.state.demo_tools = demo_tools()
     app.state.runner_auth = runner_auth
     app.state.pass_settings = pass_settings
     app.state.connectors = connector_config
     if driver is not None:
         app.state.driver = driver
     install_error_handlers(app)
+
+    @app.exception_handler(InvalidRecord)
+    async def source_refusal(request: Request, error: InvalidRecord) -> JSONResponse:
+        if error.code == "scope_denied" and error.rule == "restricted_demo":
+            refused = ApiError(
+                403, "scope_denied", "source connections are disabled for this world"
+            )
+        else:
+            refused = ApiError(500, "internal", "the server failed")
+        return JSONResponse(
+            refused.body(), status_code=refused.status, headers={"Cache-Control": "no-store"}
+        )
 
     @app.middleware("http")
     async def no_store(
@@ -150,6 +173,7 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    app.add_middleware(DemoReleaseMiddleware, config=demo_config)
     app.include_router(health.router)
     app.include_router(wellknown.router)
     app.include_router(oauth.router)

@@ -10,9 +10,9 @@ from pathlib import Path
 import httpx
 import pytest
 import yaml
-from neo4j import GraphDatabase
 
 from grove.runner import loop
+from grove.store import connection
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -95,7 +95,7 @@ def startup(tmp_path, monkeypatch):
 
     monkeypatch.setattr(loop, "run_pass", forbidden("pass_starts"))
     monkeypatch.setattr(loop.subprocess, "Popen", forbidden("processes"))
-    monkeypatch.setattr(GraphDatabase, "driver", forbidden("database_calls"))
+    monkeypatch.setattr(connection.GraphDatabase, "driver", forbidden("database_calls"))
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", forbidden("network_calls"))
     monkeypatch.setattr("socket.socket.connect", forbidden("network_calls"))
     monkeypatch.setattr("socket.socket.connect_ex", forbidden("network_calls"))
