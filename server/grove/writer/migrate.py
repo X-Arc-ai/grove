@@ -9,8 +9,9 @@ import hashlib
 import json
 import sys
 from pathlib import Path
+from uuid import uuid4
 
-from neo4j import Driver
+from neo4j import Driver, Query, Transaction
 
 from grove import clock
 from grove.store.connection import DATABASE, open_driver
@@ -19,6 +20,16 @@ from grove.store.scope import literal_spans
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 DEFAULT_SCOPE = "grove"
 AWAIT_SECONDS = 300
+_MAX_GENERATION = 2**63 - 1
+_GENERATION_VALUES = "CYPHER 25 MATCH (w:World) RETURN w.read_generation AS generation"
+_INITIALIZE_GENERATIONS = (
+    "CYPHER 25 MATCH (w:World) WHERE w.read_generation IS NULL SET w.read_generation = 0"
+)
+_OTHER_TRANSACTIONS = (
+    "SHOW TRANSACTIONS YIELD database, metaData "
+    "WHERE database = $database AND coalesce(metaData.grove_cutover_probe, '') <> $probe "
+    "RETURN count(*) AS active_transactions"
+)
 
 
 class MigrationDrift(RuntimeError):
@@ -31,6 +42,63 @@ class StoreNotEmpty(RuntimeError):
 
 class MigrationsMissing(RuntimeError):
     """The directory does not exist. An existing empty directory is valid."""
+
+
+class CutoverRefused(RuntimeError):
+    """A quiescent cutover check failed; messages never contain store values."""
+
+
+def check_quiescent(driver: Driver) -> dict[str, int]:
+    """Count all other database transactions using an account with full transaction visibility.
+
+    The host owns writer exclusion. This probe only checks its drain; it cannot prevent a new
+    writer from starting after the query. A fresh nonce excludes this query alone.
+    """
+    probe = uuid4().hex
+    query = Query(_OTHER_TRANSACTIONS, metadata={"grove_cutover_probe": probe}, timeout=30.0)
+    with driver.session(database=DATABASE) as session:
+        result = session.run(query, database=DATABASE, probe=probe)
+        row = result.single(strict=True)
+        result.consume()
+    count = row["active_transactions"] if row is not None else None
+    if type(count) is not int or count < 0:
+        raise CutoverRefused("transaction count is invalid")
+    if count:
+        raise CutoverRefused("other database transactions remain")
+    return {"active_transactions": count}
+
+
+def _generation_counts(tx: Transaction, *, allow_null: bool) -> dict[str, int]:
+    worlds, missing = 0, 0
+    result = tx.run(_GENERATION_VALUES)
+    for row in result:
+        worlds += 1
+        value = row["generation"]
+        if value is None:
+            missing += 1
+        elif type(value) is not int or not 0 <= value < _MAX_GENERATION:
+            raise CutoverRefused("world generations are invalid or exhausted")
+    result.consume()
+    if missing and not allow_null:
+        raise CutoverRefused("world generations remain missing")
+    return {"worlds": worlds, "missing": missing}
+
+
+def reconcile_generations(driver: Driver) -> dict[str, int]:
+    """Explicit NULL-only repair under the host maintenance barrier, independent of the ledger.
+
+    An unmanaged transaction avoids automatic retries after uncertain outcomes. Both scans and
+    the repair share one transaction. No world identifiers or other properties are fetched.
+    """
+    with driver.session(database=DATABASE) as session:
+        with session.begin_transaction(timeout=60.0) as tx:
+            before = _generation_counts(tx, allow_null=True)
+            tx.run(_INITIALIZE_GENERATIONS).consume()
+            after = _generation_counts(tx, allow_null=False)
+            if after["worlds"] != before["worlds"]:
+                raise CutoverRefused("world count changed during reconciliation")
+            tx.commit()
+    return {"worlds": after["worlds"], "initialized": before["missing"], "missing": 0}
 
 
 def split_statements(text: str) -> list[str]:
@@ -124,7 +192,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m grove.writer.migrate")
     parser.add_argument("--dir", type=Path, default=MIGRATIONS_DIR)
     parser.add_argument("--require-empty", action="store_true")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--check-quiescent", action="store_true")
+    modes.add_argument("--quiescent-reconcile", action="store_true")
     args = parser.parse_args(argv)
+
+    if args.check_quiescent or args.quiescent_reconcile:
+        if args.require_empty:
+            parser.error("--require-empty cannot be combined with a quiescent operation")
+        try:
+            with open_driver() as driver:
+                result = (
+                    check_quiescent(driver)
+                    if args.check_quiescent
+                    else reconcile_generations(driver)
+                )
+        except CutoverRefused as refused:
+            print(refused, file=sys.stderr)
+            return 2
+        except Exception:
+            # Driver exceptions may include query parameters or store values.
+            print("quiescent operation failed", file=sys.stderr)
+            return 1
+        print(json.dumps(result))
+        return 0
 
     with open_driver() as driver:
         try:
