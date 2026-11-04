@@ -202,6 +202,31 @@ def test_a_clock_advance_does_not_reclassify_a_calendar_row(driver, w, frozen):
     assert row["source_type"] == result["type"] == "planned"
 
 
+def test_a_bound_logged_past_row_can_be_reused_and_cited_again(driver, w):
+    src = source(driver, w, PAST)
+    item, row = typed(driver, w, obs(src))
+    op = create_item(
+        "task",
+        "Finish Orion session",
+        "unused",
+        status="done",
+        evidence_refs=[{"evidence_id": row["id"], "polarity": "supports"}],
+    )
+    task = created_id(apply(driver, w, [op], [], caller=LEARNER))
+    [stored] = WorldQuery(driver, w).read(
+        "MATCH (i:Item {id: $id}) RETURN i.status AS status", id=task
+    )
+    assert stored["status"] == "done"
+    same_message = {
+        "op": "attach_evidence",
+        "op_id": "again",
+        "target": item,
+        "ev_id": "c1",
+        "polarity": "supports",
+    }
+    assert apply(driver, w, [same_message], [obs(src)], caller=LEARNER).state == "saved"
+
+
 @pytest.mark.parametrize("reuse", ["evidence_id", "same_message"])
 def test_old_unbound_confirmation_cannot_be_cited_again(driver, w, monkeypatch, reuse):
     src = source(driver, w, binding=False)
