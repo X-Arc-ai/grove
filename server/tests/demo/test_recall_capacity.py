@@ -204,7 +204,7 @@ def test_capacity_does_not_weaken_refusal(monkeypatch, fault):
         recall.DemoRecallHandler()(context, {"about": "Cedar Lantern Amber Quay"})
 
 
-def test_native_two_cedar_facts_leave_room_for_rich_recall(request):
+def test_native_two_cedar_facts_leave_room_for_rich_recall(request, monkeypatch):
     """Execute the actual Cypher and writer when the focused native test is authorized."""
     from grove.demo_policy import configured_email_hash
     from grove.writer.demo_seed import seed_story
@@ -215,11 +215,26 @@ def test_native_two_cedar_facts_leave_room_for_rich_recall(request):
     for _ in range(2):
         complete(context, queue(context))
     seed_story(context.driver, configured_email_hash(), corpus.stories()[0].key)
-    for about, expected in [("Lantern Amber Quay", 30), ("Cedar Lantern Amber Quay", 32)]:
-        result = recall.DemoRecallHandler()(context, {"about": about})
-        assert len(result["items"]) == expected
-        assert result["coverage"]["truncated"] is True
-        assert sum(item["title"] == "Cedar demo" for item in result["items"]) == expected - 30
+    selected = corpus.topic_items("Lantern Amber Quay", 31)
+    monkeypatch.setattr(corpus, "topic_items", lambda *_: selected)
+    captured = []
+    read = recall.WorldQuery.read
+
+    def capture(query, statement, **params):
+        rows = read(query, statement, **params)
+        if statement == recall._TOPIC_CAPTURE:
+            captured.append(rows[0])
+        return rows
+
+    monkeypatch.setattr(recall.WorldQuery, "read", capture)
+    rich = recall.DemoRecallHandler()(context, {"about": "Lantern Amber Quay"})
+    mixed = recall.DemoRecallHandler()(context, {"about": "Cedar Lantern Amber Quay"})
+    assert [len(bundle["items"]) for bundle in captured] == [32, 32]
+    assert 0 < len(rich["items"]) <= 30
+    assert all(item["title"] != "Cedar demo" for item in rich["items"])
+    assert len(mixed["items"]) == len(rich["items"]) + 2
+    assert sum(item["title"] == "Cedar demo" for item in mixed["items"]) == 2
+    assert all(result["coverage"]["truncated"] for result in (rich, mixed))
 
 
 # Register the disposable-world fixture without requesting it in the pure controls.
