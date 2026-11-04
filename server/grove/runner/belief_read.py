@@ -12,6 +12,7 @@ import httpx
 from grove import clock
 from grove.models.verify_judge import JudgeInputError
 from grove.oauth.metadata_document import _read_within_limit, _target, system_resolver
+from grove.prompts import DataBlock, render_blocks
 from grove.screening import Message, Screener
 from grove.store.query import WorldQuery
 from grove.writer.sources import add_screened_source, record_episode
@@ -90,6 +91,9 @@ def fetch_retest(
         "source_id": source_id,
         "episode_id": episode_id,
         "locator": "whole",
+        "data": render_blocks(
+            [DataBlock("source", "automated", "confirmed", source_id, screened.content())]
+        ),
         "observation": {
             "ev_id": f"retest:{belief_id}:{source_id}",
             "source_id": source_id,

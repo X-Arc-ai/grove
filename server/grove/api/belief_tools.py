@@ -10,6 +10,7 @@ from grove.api.views import read_json_body
 from grove.models.belief_judge import judge_belief
 from grove.models.errors import ModelError
 from grove.models.layer import ModelLayer
+from grove.models.retest_claim_judge import judge_retest_claim
 from grove.models.verify_judge import JudgeInputError
 from grove.oauth.metadata_document import DocumentBusy, DocumentRefused
 from grove.runner.belief_read import fetch_retest
@@ -22,6 +23,8 @@ def _call(request: Request, live, body: dict, *, retest: bool) -> dict:
         raise ApiError(403, "scope_denied", "this agent cannot request belief judgments")
     if retest and live.claims.agent != "connector":
         raise ApiError(403, "scope_denied", "only the Connector retests beliefs")
+    if body.get("mode") == "claim" and live.claims.agent != "connector":
+        raise ApiError(403, "scope_denied", "only the Connector checks retest claims")
     driver, world_id = request.app.state.driver, live.world_id
     factory = getattr(request.app.state, "belief_model_factory", None) or ModelLayer
     read = None
@@ -45,7 +48,12 @@ def _call(request: Request, live, body: dict, *, retest: bool) -> dict:
                 "locator": read["locator"],
             }
         with factory(driver) as layer:
-            answer = judge_belief(layer, driver, world_id, body, run_id=live.claims.run_id)
+            if body.get("mode") == "claim":
+                answer = judge_retest_claim(
+                    layer, driver, world_id, body, run_id=live.claims.run_id
+                )
+            else:
+                answer = judge_belief(layer, driver, world_id, body, run_id=live.claims.run_id)
     except JudgeInputError as error:
         raise invalid_arguments(str(error), "body") from None
     except (DocumentRefused, DocumentBusy):
