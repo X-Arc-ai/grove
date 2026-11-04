@@ -286,6 +286,35 @@ def test_a_store_behind_a_running_curator_pass_starts_a_learner_within_60_second
     world_id, app, loop_settings, record, fake_dir, _ = rig
     from grove.writer import runs
 
+    # Force the CI ordering: the request is saved while its process still runs. Keep this
+    # gate local to the preemption test; the other loop tests use the unmodified stand-in.
+    fake = fake_dir / "opencode"
+    program = fake.read_text()
+    assert program.count("    sys.exit(0)") == 1
+    program = program.replace(
+        "    sys.exit(0)",
+        """    open(os.path.join(here, "preempt_proposed"), "w").close()
+    for _ in range(1200):
+        if os.path.exists(os.path.join(here, "preempt_release")):
+            break
+        threading.Event().wait(0.05)
+    else:
+        sys.exit(4)
+    sys.exit(0)""",
+    )
+    fake.write_text(program)
+
+    def finish_learner(learner_id):
+        (fake_dir / "preempt_release").touch()
+
+        def completed():
+            seen = record()
+            if any(r["id"] == learner_id and r["outcome"] != "running" for r in seen):
+                return seen
+            return None
+
+        return wait_for(completed, 30)
+
     runs.enqueue_job(
         driver,
         world_id,
@@ -298,17 +327,25 @@ def test_a_store_behind_a_running_curator_pass_starts_a_learner_within_60_second
         runner = Runner(loop_settings(served.url, "hang"))
         thread = threading.Thread(target=runner.serve, daemon=True)
         thread.start()
-        assert wait_for(lambda: (fake_dir / "child.pid").exists(), 30)
-        (fake_dir / "mode").write_text("propose")
-        queued_at = clock.now()
-        request_id = queue_store(driver, world_id)
-        saved = wait_for(
-            lambda: request_state(driver, world_id, request_id).api_state == "saved", 70
-        )
-        runner.stopping.set()
-        thread.join(timeout=30)
-    assert saved
-    runs_seen = record()
+        try:
+            assert wait_for(lambda: (fake_dir / "child.pid").exists(), 30)
+            (fake_dir / "mode").write_text("propose")
+            queued_at = clock.now()
+            request_id = queue_store(driver, world_id)
+            saved = wait_for(
+                lambda: request_state(driver, world_id, request_id).api_state == "saved", 70
+            )
+            assert saved
+            assert wait_for(lambda: (fake_dir / "preempt_proposed").exists(), 10)
+            learners = [r for r in record() if r["agent"] == "learner"]
+            assert len(learners) == 1 and learners[0]["outcome"] == "running"
+            # A saved request is not a finished pass. Release the controlled process and wait
+            # for this learner's terminal record before asking the service to stop.
+            runs_seen = finish_learner(learners[0]["id"])
+        finally:
+            runner.stopping.set()
+            thread.join(timeout=30)
+    assert saved and runs_seen
     assert [(r["agent"], r["outcome"]) for r in runs_seen[:2]] == [
         ("curator", "preempted"),
         ("learner", "ok"),
