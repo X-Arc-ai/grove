@@ -8,6 +8,10 @@ The repository is **PRIVATE**. This is a pre-release build: the complete user jo
 **not yet passed**. Start with [the recorded status](docs/submission-status.md) for the
 source baseline, deployed service revisions, and open acceptance.
 
+The documented source snapshot is `564cc99b9c8a718f163503cc23227a8f2908fcd1`.
+It includes the published UI repair in PR #60. The recorded API remains on Request17;
+the next API deployment is not yet executed. Published source does not prove deployed acceptance.
+
 ## What is here
 
 - A Python/FastAPI API, Neo4j store, world-scoped reads, and a validating writer.

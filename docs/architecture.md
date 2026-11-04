@@ -1,6 +1,6 @@
 # Architecture
 
-Source baseline: `756de68e00a1d69b9ea2448408754d85d7e2cbf8`, recorded on 2026-11-04.
+Source baseline: `564cc99b9c8a718f163503cc23227a8f2908fcd1`, recorded on 2026-11-04 after PR #60.
 Request17 deployed API `cbcfe574e03880569bfcdb9a9732f79a7ef3daea`.
 Its runner and gateway remained on `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e`.
 These are distinct revisions. [Submission status](submission-status.md) records evidence limits.
@@ -62,8 +62,10 @@ Muse acceptance remain **NOT RUN**. The source refuses mixed read/write MCP batc
 
 The browser contains the approved pre-event presentation assets and subsequent API integration.
 Worker status has a [recorded API contract](worker-activity.md). A toggle or status record does
-not prove complete worker execution. The UI repair and materials candidates were unpublished
-at this source baseline. Full responsive, control, and first-load transfer acceptance remain open.
+not prove complete worker execution. The UI repair in PR #60 is published source in this baseline.
+It is not deployed in Request17; the next API deployment is not yet executed.
+Its source checks do not prove deployed acceptance. Full responsive, control, and first-load
+transfer acceptance remain open.
 Disabled or disclosed controls still require implementation where the feature scope requires them.
 
 ## Sources and materials
@@ -79,8 +81,10 @@ provider consent remains separate acceptance. [Pipedream](pipedream.md) imports 
 PR #59 adds corrected account status, public catalog metadata, and confirmed account-scoped
 disconnection. That source is not deployed in Request17. A connected badge proves no import.
 
-Internal document, WhatsApp, image, and audio parsers exist. The separate file/note candidate
-adds screened material storage and note dispatch, but it is not part of this baseline.
+Internal document, WhatsApp, image, and audio parsers exist. The separate unpublished file/note
+candidate `b4b804acf94250c2092f2e3c7623d6e79ee8bb59` adds screened material storage and note dispatch,
+but it is not part of this baseline. Files report `held_provenance` and create no file Request.
+The candidate requires separate migration `0019_material_revisions.cypher` and release integration.
 Typed-file graph admission remains separate work. Parser tests do not prove durable retention,
 live extraction, or complete material acceptance. See [media](ingest-media.md),
 [WhatsApp](ingest-whatsapp.md), and [audio](ingest-audio.md).

@@ -4,6 +4,8 @@ GitHub snapshot: 2026-11-04 at 18:36 UTC. Repository visibility: PRIVATE.
 This is a source history record, not a completed submission. Dates are UTC.
 A merged PR proves source inclusion, not deployment, CI success, or user acceptance.
 The table preserves PR18 and its actual merge. Later candidates require a later snapshot.
+This table remains fixed through PR #59 at the time above. The later published UI source in
+PR #60 belongs to the newer [source snapshot](docs/submission-status.md), not this event-table snapshot.
 
 ## Event pull requests
 
