@@ -184,6 +184,10 @@
         return;
       }
       if(res.status!==401){sessionUnknown();return;}
+      // An expected anonymous focus check must not reset the email card or cancel its request.
+      // Initial checks and any locally known account still take the full expiry cleanup below.
+      var state=api.getState();
+      if(!state.auth&&!state.account&&!liveSessionReady&&(ui.authStage==='signin'||ui.authStage==='code'))return;
       if(api.getState().auth)live.notifySessionChange();
       endSession();
       ui.authStage='signin';showSigninError();render(true);
