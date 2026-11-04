@@ -14,6 +14,7 @@ from grove.writer import runs
 from grove.writer.errors import BatchDeclined
 from grove.writer.testing import plant_link, plant_node
 from tests.runner.helpers import queue_store
+from tests.writer.helpers import make_source
 
 
 def bearer(grant):
@@ -24,7 +25,16 @@ def item(driver, world, *, title="A patient service", **fields):
     return plant_node(driver, world, "Item", title=title, version=1, **fields)
 
 
-def belief(driver, world, frozen, *, due=False, title="A service answers promptly"):
+def belief(
+    driver,
+    world,
+    frozen,
+    *,
+    due=False,
+    title="A service answers promptly",
+    confirmed=None,
+    **fields,
+):
     subject = item(driver, world)
     claim = item(
         driver,
@@ -32,6 +42,7 @@ def belief(driver, world, frozen, *, due=False, title="A service answers promptl
         title=title,
         kind=KIND_BELIEF,
         recheck_by=frozen.now() - timedelta(hours=1) if due else None,
+        last_confirmed=confirmed,
     )
     state = plant_node(
         driver,
@@ -41,6 +52,8 @@ def belief(driver, world, frozen, *, due=False, title="A service answers promptl
         state="established",
         externally_testable=due,
         last_support_at=frozen.now() - timedelta(days=3),
+        version=1,
+        **fields,
     )
     plant_link(
         driver,
@@ -55,6 +68,7 @@ def belief(driver, world, frozen, *, due=False, title="A service answers promptl
 
 def conflict(driver, world, frozen, *, days=0, target=None):
     claim = item(driver, world) if target is None else target
+    source = make_source(driver, world, "web_pages", ["The service no longer answers promptly."])
     fresh = plant_node(
         driver,
         world,
@@ -63,7 +77,9 @@ def conflict(driver, world, frozen, *, days=0, target=None):
         active=True,
         polarity="contradicts",
         source_time=frozen.now(),
-        episode_id=new_id(world),
+        episode_id=source["episode_id"],
+        source_id=source["source_id"],
+        locator="whole",
     )
     return plant_node(
         driver,
@@ -73,6 +89,8 @@ def conflict(driver, world, frozen, *, days=0, target=None):
         standing_target_id=claim["id"],
         standing_change_id=0,
         fresh_evidence_id=fresh["id"],
+        fresh_source_id=source["source_id"],
+        fresh_locator="whole",
         detected_at=frozen.now() - timedelta(days=days),
         status="open",
         version=1,
@@ -100,7 +118,7 @@ def question(row, *, op_id="resolution"):
         "operation_ids": [],
         "question": "Which reading describes the service now?",
         "options": ["The service answers promptly.", "The service no longer answers promptly."],
-        "checked_source_ids": [],
+        "checked_source_ids": [row["fresh_source_id"]],
         "reason": "The retained sources leave two defensible readings.",
     }
 
@@ -258,6 +276,18 @@ def test_raw_connector_batch_cannot_bypass_queue(driver, seeded, frozen, rig):
     )
     assert response.status_code == 422
     assert response.json()["refusals"][0]["rule"] == "consolidation_shape"
+
+
+def test_due_retest_cannot_be_skipped_by_an_empty_envelope(driver, seeded, frozen, rig):
+    belief(driver, seeded, frozen, due=True)
+    live = grant(driver, seeded, rig)
+    response = rig[0].post(
+        "/v1/internal/brain/propose",
+        json={"batch": form(driver, seeded, live)},
+        headers=bearer(live),
+    )
+    assert response.status_code == 422
+    assert response.json()["refusals"][0]["rule"] == "consolidation_retest"
 
 
 def test_every_open_conflict_requires_a_resolution(driver, seeded, frozen, rig):
