@@ -62,6 +62,7 @@ from grove.models.shape import (
     responses_usage,
     usage_or_estimate,
 )
+from grove.models.voice import VoiceTurn, parse_turns, request_options
 from grove.store.connection import Driver
 from grove.writer.model_calls import BudgetState, ModelCall
 
@@ -94,6 +95,7 @@ class Transcript:
     audio_seconds: float
     cost: float
     model_call_ids: tuple[str, ...]
+    turns: tuple[VoiceTurn, ...] = ()
 
 
 def check_schema(schema: dict) -> Draft202012Validator:
@@ -806,13 +808,19 @@ class ModelLayer:
         audio_wav: bytes,
         job: str = "transcription",
         run_id: str | None = None,
+        mode: str = "PUSH_TO_TALK",
+        keywords: list[str] | tuple[str, ...] | None = None,
+        language_bias: list[str] | tuple[str, ...] | None = None,
     ) -> Transcript:
         """Text of a WAV file. Audio over the API's 10 minutes goes as pieces, one call each."""
+        options = request_options(mode, keywords, language_bias)
         job_row, spec, _ = self._prepare(world_id, job, None, run_id, family="voice")
         pieces = audio.split_wav(audio_wav)
         base, headers = self.settings.meta_base_url, self._meta_headers()
-        request = json.dumps({"model": spec.id, "audioEncoding": "WAV", "mode": "PUSH_TO_TALK"})
+        request = json.dumps({"model": spec.id, "audioEncoding": "WAV", **options})
         texts, ids, total_cost, total_seconds = [], [], 0.0, 0.0
+        turns = []
+        offset_ms = 0
         for index, piece in enumerate(pieces):
             if index:
                 # Each piece passes the gate: a long file must not run past a reached budget.
@@ -839,7 +847,13 @@ class ModelLayer:
             stated = doc.get("audioDurationMs")
             seconds = _audio_seconds(stated, piece.seconds)
             text = doc.get("transcript")
-            ok = isinstance(text, str)
+            piece_ms = round(piece.seconds * 1000)
+            invalid = None
+            try:
+                parsed = parse_turns(doc, mode=mode, piece_ms=piece_ms)
+            except InvalidOutput as error:
+                parsed = ()
+                invalid = error
             call_id, _, cost = self._record(
                 world_id,
                 job=job_row,
@@ -847,12 +861,26 @@ class ModelLayer:
                 effort=None,
                 run_id=run_id,
                 usage=Usage(),
-                outcome="ok" if ok else "invalid_output",
+                outcome="ok" if invalid is None else "invalid_output",
                 started=started,
                 audio_seconds=seconds,
             )
-            if not ok:
-                raise InvalidOutput("the transcript is missing", details={"model_call_id": call_id})
+            if invalid is not None:
+                raise InvalidOutput(invalid.message, details={"model_call_id": call_id})
+            turns.extend(
+                VoiceTurn(
+                    turn_id=turn["turn_id"],
+                    start_ms=offset_ms + turn["start_ms"],
+                    end_ms=offset_ms + turn["end_ms"],
+                    chunk_index=index,
+                    model_call_id=call_id,
+                    text=turn["text"],
+                    speaker=turn["speaker"],
+                )
+                for turn in parsed
+            )
+            # The source offset follows actual WAV frames, not the provider's billed duration.
+            offset_ms += piece_ms
             texts.append(text.strip())
             ids.append(call_id)
             total_cost += cost
@@ -862,4 +890,5 @@ class ModelLayer:
             audio_seconds=total_seconds,
             cost=total_cost,
             model_call_ids=tuple(ids),
+            turns=tuple(turns),
         )

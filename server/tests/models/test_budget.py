@@ -52,7 +52,7 @@ DEFER_JOBS = (
     "consolidation_pass",
     "smoke",
 )
-CONTINUE_JOBS = ("triage", "triage_fallback", "extraction", "transcription")
+CONTINUE_JOBS = ("triage", "triage_fallback", "extraction", "transcription", "image_read")
 THREADS = 12
 
 
