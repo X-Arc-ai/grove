@@ -5,6 +5,7 @@ import io
 import wave
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -70,6 +71,7 @@ def test_voice_uses_source_time_and_retains_empty_partial_turn(source_at):
     [
         b"",
         b"not audio",
+        b"RIFF" + (12).to_bytes(4, "little") + b"WAVEJUNK" + (100).to_bytes(4, "little"),
         wav_bytes(rate=8000),
         wav_bytes(width=1),
         wav_bytes(channels=2),
@@ -81,6 +83,33 @@ def test_bad_or_unnormalized_wav_never_calls_a_model(data):
     with pytest.raises(NotAnExport):
         transcribe_wav(layer, "test-world", data, budget=ReadBudget())
     assert layer.calls == []
+
+
+@pytest.mark.parametrize(
+    ("zone", "parts", "fold", "expected"),
+    [
+        ("America/New_York", (2026, 11, 1, 1, 30), 1, "2026-11-01T06:30:00.120000+00:00"),
+        ("Europe/Paris", (2026, 10, 25, 2, 30), 1, "2026-10-25T01:30:00.120000+00:00"),
+        (
+            "America/New_York",
+            (2026, 3, 8, 1, 59, 59, 900000),
+            0,
+            "2026-03-08T07:00:00.020000+00:00",
+        ),
+        (
+            "America/New_York",
+            (2026, 11, 1, 1, 59, 59, 900000),
+            0,
+            "2026-11-01T06:00:00.020000+00:00",
+        ),
+    ],
+)
+def test_voice_offsets_preserve_the_instant_around_dst_transitions(zone, parts, fold, expected):
+    source_at = datetime(*parts, tzinfo=ZoneInfo(zone), fold=fold)
+    result = transcribe_wav(
+        Layer(), "test-world", wav_bytes(), budget=ReadBudget(), source_at=source_at
+    )
+    assert result.turns[0].at.isoformat() == expected
 
 
 def test_naive_voice_timestamp_never_calls_a_model():
