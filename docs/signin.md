@@ -34,10 +34,23 @@ Every answer is `Cache-Control: no-store`. Every POST needs `Content-Type: appli
 | `GET /v1/auth/google/callback` | 303 to `next`, with the session cookie and `Referrer-Policy: no-referrer`. Any failure is 303 to `/signin?signin_error=google` with no session. Both clear the state cookie. |
 | `POST /v1/auth/logout` | 200 `{"signed_in": false}`, and it clears the cookie. It revokes the session that the cookie names, when there is one, and changes nothing else. With the store down it answers 503 and still clears the cookie. |
 | `GET /` | With `GROVE_WEB_DIST` set: `home.html` with no `grove_session` cookie, `index.html` with one (no store read: the page asks the session, and shows the card on a 401). `Cache-Control: no-store`, `Vary: Cookie`. |
-| `GET /signin` | `index.html`, `no-store`. After a sign-in by email code or Google, the page goes back to a `next` query value only when it starts with `/authorize?` (the consent page, `docs/hosts.md`); any other value goes to `/`. |
+| `GET /login` | Real login screen in `index.html`, `no-store`. Uses the existing verified email-code and Google identity paths. |
+| `GET /signup` | Create account screen in the same bundle, `no-store`. Verified new identities enter onboarding; an existing identity resumes its own account and world. |
+| `GET /signin` | Compatible login screen. All three entry routes preserve a bounded `next` only for `/authorize?` (the consent page, `docs/hosts.md`); other values go to `/`. Account navigation carries the same safe destination. |
+| `GET /logout` | A signed-in visit shows confirmation and does not revoke a session. The Log out button calls the existing POST route. A confirmed logout or an already anonymous visit reaches `/login`. |
 | `GET /privacy` | `privacy.html`. |
 
 A missing page file is the typed 404.
+
+## Browser account transitions
+
+The account menu exposes Log out. Logout clears the active identity, graph payloads, rendered graph, local names, draft content, source caches and pending request state. The server account and world remain. Back navigation rechecks the session; a page hidden in the browser history clears its rendered graph before it can return.
+
+Only minimal onboarding preferences survive on this browser: a step from 0 to 4 and completion/tour booleans, bound to an identity returned by the server. The preference list holds at most eight accounts. It holds no email, name, source text, draft, token, code or graph. Anonymous browser values never establish the identity used to save a preference. These preferences do not provide cross-device onboarding progress. Pending export reminders still come from their existing account API.
+
+A content-free browser storage signal causes other tabs to clear active state and read the current server session. Delayed responses from an earlier session cannot restore it. A provider or mail failure shows a neutral error; an accepted email request is not proof of delivery. Apple is disabled and explicitly unavailable.
+
+Focused source checks: `node web/checks/account-routes.cjs`, `python -m pytest tests/views/test_account_routes.py`, and `uv run --with playwright==1.58.0 python -m pytest -m browser tests/e2e/test_account_routes_browser.py`. The last check uses Chromium and a local synthetic HTTP contract. It is not proof of database persistence, real email delivery, Google consent or deployed acceptance.
 
 ## The cookies
 
