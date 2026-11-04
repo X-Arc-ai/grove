@@ -201,3 +201,13 @@ body.gp-logout-open #canvas,body.gp-logout-open #gp-motion { visibility:hidden }
 .gp-export-route i { font-style:normal;color:var(--text-muted) }
 .gp-export-route+.gp-copy { margin:24px 0 }
 @media(max-width:600px){.gp-visual-guide{padding:20px}.gp-guide-title h1{font-size:13px}.gp-export-route{font-size:8px;gap:8px}}
+
+/* Readable mobile instructions accompany the unchanged scaled guide. */
+.gp-guide-reader { display:none }
+@media(max-width:600px) {
+  #grove-product .gp-guide-reader { display:block;min-height:148px;margin-top:20px }
+  #grove-product .gp-guide-reader section[hidden] { display:none }
+  #grove-product .gp-guide-reader small { color:var(--text-muted);font:400 12px/1.5 var(--gp-font) }
+  #grove-product .gp-guide-reader h2 { margin:9px 0;font:500 18px/1.4 var(--gp-font);color:var(--text);letter-spacing:-.02em;overflow-wrap:anywhere }
+  #grove-product .gp-guide-reader p { margin:0;font:400 14px/1.7 var(--gp-font);color:var(--text-secondary);overflow-wrap:anywhere }
+}
