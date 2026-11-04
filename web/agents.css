@@ -234,3 +234,26 @@ body.hood-on .hood-legend, body.hood-on .hood-score { display: block; }
 body.hood-on .hood-legend,body.hood-on .hood-score { bottom:86px; }
 body.gp-onboarding-open .hood-bar,body.gp-onboarding-open .hood-legend,body.gp-onboarding-open .hood-score { display:none; }
 @media(max-width:700px){body.hood-on .hood-score{display:none}body.hood-on .hood-legend{bottom:120px;left:16px;width:156px}.hood-bar{bottom:76px;max-width:calc(100vw - 32px)}.hood-track{max-width:58vw}}
+
+/* Live status is a bounded read-only panel, never the simulated worker overlay. */
+body.hood-on aside.hood-score.hood-live{width:360px;min-width:0;max-width:calc(100vw - 24px);max-height:calc(100dvh - 150px);overflow:auto;padding:18px;right:24px;bottom:24px;user-select:text}
+.hood-live .hood-panel-heading{gap:12px;margin:0 0 10px}
+.hood-live .hood-panel-heading h2{font:500 13px/1.5 var(--gp-font);margin:0}
+.hood-live .hood-live-refresh{flex:none;border:1px solid var(--border);border-radius:5px;padding:6px 9px;background:var(--surface);color:var(--text);font:inherit;font-size:11px;cursor:pointer}
+.hood-live button:focus-visible,.hood-live summary:focus-visible{outline:2px solid var(--text);outline-offset:3px}
+.hood-live p{font-size:11px;line-height:1.6;margin:4px 0;color:var(--text-secondary)}
+.hood-live .hood-live-intro,.hood-live .hood-live-observed{margin:8px 0 12px}
+.hood-live .hood-live-worker{border-top:1px solid var(--border);padding:12px 0}
+.hood-live .hood-live-worker-head{display:flex;align-items:center;gap:8px}
+.hood-live h3{margin:0;flex:1;font:500 12px/1.6 var(--gp-font);color:var(--text)}
+.hood-live .hood-live-worker-head button{border:0;background:none;color:var(--text-muted);font:inherit;font-size:10px;cursor:default}
+.hood-live .hood-live-activity{color:var(--text)}
+.hood-live .hood-live-policy,.hood-live .hood-live-capability{margin-left:15px}
+.hood-live .hood-live-recent{border-top:1px solid var(--border);padding-top:12px;font-size:11px;line-height:1.6}
+.hood-live summary{cursor:pointer;color:var(--text)}
+.hood-live ol{padding-left:18px;margin:12px 0}
+.hood-live li{padding:6px 0;color:var(--text-secondary)}
+.hood-live li strong,.hood-live li span{display:block;font-size:10px;font-weight:400}
+.hood-live li strong{color:var(--text)}
+.hood-live .hood-live-note{margin-top:14px;font-size:10px;color:var(--text-muted)}
+@media(max-width:700px){body.hood-on aside.hood-score.hood-live{right:12px;bottom:88px;max-height:calc(100dvh - 150px);padding:16px}}

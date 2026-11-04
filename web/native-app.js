@@ -300,6 +300,7 @@
 
   // ---------------- boot ----------------
 
+  graphRequest=0;
   rebuildThemeCache();
   loadSchema();
   loadGraph(false);
@@ -312,13 +313,14 @@
     var epoch = viewEpoch;
     schemaAsked = true;
     window.groveApi('/api/schema').then(function (r) { return r.json(); }).then(function (s) {
-      if (epoch !== viewEpoch) return;   // the session ended while this read was out
+      if (epoch !== viewEpoch || request!==graphRequest) return;   // stale reads cannot change the view
       if (s && !s.error) schemaByType = s; else schemaAsked = false;
     }).catch(function () { /* schema is optional; panel falls back */ if (epoch === viewEpoch) schemaAsked = false; });
   }
 
   document.getElementById('refresh-data').addEventListener('click', function () { loadGraph(true); });
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+  document.getElementById('active-only').addEventListener('change',function(){activeOnly=this.checked;clearSelection({silent:true});applyVisibility();scheduleRedraw();});
   document.getElementById('search-btn').addEventListener('click', toggleSearch);
   document.getElementById('detail-close').addEventListener('click', closePanel);
   document.addEventListener('keydown', function (e) {
@@ -389,8 +391,9 @@
   var layoutCache = null, stableFrame = null;
   var lastNodeCount = null, lastEdgeCount = null, manualCamera = false;
   function renderStats() {
-    var state=window.GroveSimulation.getState();
-    statsEl.innerHTML='<span>'+rawNodes.length+' nodes</span>'+(state.nodeDelta?' <button class="stats-delta gp-count-delta" data-kind="nodes" aria-label="Show '+state.nodeDelta+' new nodes">(+'+state.nodeDelta+')</button>':'')+' <span class="gp-stat-divider">·</span> <span>'+rawEdges.length+' connections</span>'+(state.edgeDelta?' <button class="stats-delta gp-count-delta" data-kind="edges" aria-label="Show '+state.edgeDelta+' new connections">(+'+state.edgeDelta+')</button>':'');
+    var state=window.GroveSimulation.getState(),live=window.GroveSimulation.isLive();
+    function delta(kind,count,removed){return count?' <button class="stats-delta gp-count-delta'+(removed?' is-removed':'')+'" data-kind="'+kind+'" aria-label="Show '+count+' '+(removed?'removed ':'new ')+(kind.includes('nodes')?'nodes':'connections')+'">('+(removed?'−':'+')+count+')</button>':'';}
+    statsEl.innerHTML='<span>'+(live?state.currentNodeCount:rawNodes.length)+' nodes</span>'+delta('nodes',state.nodeDelta)+delta('removed-nodes',state.removedNodes,true)+' <span class="gp-stat-divider">·</span> <span>'+(live?state.currentEdgeCount:rawEdges.length)+' connections</span>'+delta('edges',state.edgeDelta)+delta('removed-edges',state.removedEdges,true)+(live?'<span class="stats-baseline"> · '+(state.graphBaselineAt?'Since previous graph check':'First graph check is the baseline')+'</span>':'');
     statsEl.querySelectorAll('[data-kind]').forEach(function(el){el.onclick=function(){selectChangesOnCanvas(el.dataset.kind);};});
     lastNodeCount=rawNodes.length;lastEdgeCount=rawEdges.length;
   }
@@ -428,54 +431,20 @@
     stableFrame = laid.frame;
   }
 
-  // Live mode: every load seeds the sim's layout of the current graph, then placeNew
-  // (layout-keep.js) keeps each stored position exactly and finds each new item a free spot
-  // near its hub or neighbours. Items the store has no position for are saved (insert-only);
-  // a failed save is retried on the next load. livePlaced keeps this session's placements, so
-  // a reload before a save lands shows the same map.
+  // Live layout is a projection of current adjacency, separate from the stored map.
+  // Never send these display coordinates to the positions endpoint.
   var livePlaced = {}, liveSaving = {};
-  var SELF_R_FAR = 90;   // drawNode's identity disc on the map at the zooms that frame a large world
+  var SELF_R_FAR = 90;
   function prepareLiveLayout(payload) {
-    var el = (payload && payload.elements) || { nodes: [], edges: [] };
-    var serverStored = {};
-    el.nodes.forEach(function (w) {
-      var d = w.data;
-      if (typeof d.x === 'number' && typeof d.y === 'number' && isFinite(d.x) && isFinite(d.y)) serverStored[d.id] = { x: d.x, y: d.y };
-    });
-    var all = JSON.parse(JSON.stringify(el.nodes)).map(function (w) { return w.data; });
+    var el=payload.elements,all=el.nodes.map(function(w){return Object.assign({},w.data);});
     adoptKinds(all);
-    var ns = all.filter(function (n) { return n.id !== 'grove-self'; });
-    var es = el.edges.map(function (w) { return w.data; }).filter(function (e) { return e.source !== 'grove-self' && e.target !== 'grove-self'; });
-    var laid = simLayout(ns, es);
-    var seed = {}, items = [];
-    all.forEach(function (n) {
-      var c = laid.cache[n.id] || {};
-      seed[n.id] = { x: c.x, y: c.y };
-      // A new leaf re-anchors on the hub its seed sits around. The primary hub can be one hop
-      // away while the seed sits at the centre, and its offset would throw the leaf far off.
-      items.push({ id: n.id, type: n.type, _primaryHubId: c._seedHubId || null, _hubR: c._hubR || null, _demoted: !!c._demoted });
-    });
-    var edges = el.edges.map(function (w) { return { source: w.data.source, target: w.data.target }; });
-    // The room a node takes here is the collide force's radius, and never less than the largest
-    // disc the node can draw. A placed item never moves, while a hub's disc grows with its mass
-    // (and from 18 to its full size when an ended hub comes back), and the identity node's disc
-    // keeps its size on screen, so it is largest on the map when the camera is far out.
-    var room = function (n) {
-      var r = nodeRadius(n) * (DENSE ? 1.45 : 1.6) + (DENSE ? 6 : 8);
-      if (n.id === 'grove-self') return Math.max(r, SELF_R_FAR);
-      return isHub(n) ? Math.max(r, HUB_R_MAX) : r;
-    };
-    var kept = window.GroveLayoutKeep.placeNew(Object.assign({}, livePlaced, serverStored), items, edges, seed, room);
-    layoutCache = {};
-    var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
-    all.forEach(function (n) {
-      var p = kept.positions[n.id];
-      layoutCache[n.id] = Object.assign({}, laid.cache[n.id] || {}, { x: p.x, y: p.y });
-      livePlaced[n.id] = { x: p.x, y: p.y };
-      x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
-    });
-    stableFrame = all.length ? { x0: x0 - 65, x1: x1 + 65, y0: y0 - 65, y1: y1 + 65 } : laid.frame;
-    saveNewPositions(all.filter(function (n) { return !serverStored[n.id]; }).map(function (n) { return n.id; }), kept.positions);
+    var es=el.edges.map(function(w){return w.data;});
+    var metadata=simLayout(all.filter(function(n){return n.id!=='grove-self';}),es);
+    var view=window.GroveLayoutKeep.organicView(all,es);
+    layoutCache={};
+    var x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+    all.forEach(function(n){var p=view.positions[n.id];layoutCache[n.id]=Object.assign({},metadata.cache[n.id]||{},p,{_primaryHubId:view.primary[n.id]===n.id?null:view.primary[n.id]});x0=Math.min(x0,p.x);x1=Math.max(x1,p.x);y0=Math.min(y0,p.y);y1=Math.max(y1,p.y);});
+    stableFrame=all.length?{x0:x0-65,x1:x1+65,y0:y0-65,y1:y1+65}:metadata.frame;
   }
   function saveNewPositions(ids, positions) {
     var S = window.GroveSimulation, G = window.GroveLive;
@@ -538,14 +507,14 @@
   // in local storage, and no placement of it is kept for the next person. The workers panel
   // hears 'grove:graph-cleared' and drops its own copy.
   function clearGraph() {
-    viewEpoch++;
+    viewEpoch++;graphRequest++;setGraphStatus('','');
     rawNodes = []; rawEdges = []; byId = {};
     fgNodes = []; fgLinks = []; fgNodeById = {}; neighborsOf = {};
     focusedNode = null; hoverNode = null; hoverLink = null; hopDist = {};
     livePlaced = {}; liveSaving = {}; layoutCache = null; stableFrame = null; _evoSig = null;
     schemaByType = {}; schemaAsked = false;
     hiddenTypes = {}; storage.removeItem('grove-minimal-codex-hidden-types');
-    manualCamera = false;
+    manualCamera = false;activeOnly=false;document.getElementById('active-only').checked=false;
     clearSelection({ silent: true });
     document.getElementById('selection-pill').innerHTML = '';
     document.getElementById('search-overlay').setAttribute('hidden', '');
@@ -563,11 +532,16 @@
   }
   canvasEl.addEventListener('pointerdown', function () { manualCamera=true; });
 
+  var graphRequest;
+  function placeToolbarControls(){var bar=document.querySelector('.topbar');if(bar)document.documentElement.style.setProperty('--grove-toolbar-bottom',bar.getBoundingClientRect().bottom+'px');}
+  window.addEventListener('resize',placeToolbarControls);
+  function setGraphStatus(state,text){var el=document.getElementById('graph-status');if(el){el.dataset.state=state;el.textContent=text;}var button=document.getElementById('refresh-data');if(button)button.setAttribute('aria-busy',String(state==='pending'));requestAnimationFrame(placeToolbarControls);}
   function loadGraph(refresh) {
-    var epoch = viewEpoch;
+    var epoch = viewEpoch,request=++graphRequest;
+    setGraphStatus('pending',refresh?'Refresh in progress':'Load in progress');
     return window.groveApi('/api/graph').then(function(r){return r.json();}).then(function(payload){
       if (payload.error) { var failed = new Error(payload.error); failed.code = payload.code; throw failed; }
-      if (epoch !== viewEpoch) return;   // the session ended while this read was out
+      if (epoch !== viewEpoch || request!==graphRequest) return;   // stale reads cannot change the view
       if (!schemaAsked) loadSchema();    // a sign-in in the same page: the first read answered 401
       prepareLayout(payload);
       var previous = fgNodeById || {};
@@ -582,7 +556,7 @@
       buildAdjacency(); renderStats(); buildFgPayload();
       fgNodes=fgNodes.map(function(n){
         var old=previous[n.id];
-        if(old) { old.title=n.title; old._hubR=n._hubR; return old; }
+        if(old) { var x=old.x,y=old.y,fx=old.fx,fy=old.fy;Object.assign(old,n);old.x=x;old.y=y;old.fx=fx;old.fy=fy;return old; }
         n.__home=[n.x,n.y]; n.__born=performance.now(); return n;
       });
       fgNodeById={}; fgNodes.forEach(function(n){fgNodeById[n.id]=n;});
@@ -593,12 +567,19 @@
         var ids={};visible.forEach(function(n){ids[n.id]=1;});
         Graph.graphData({nodes:visible,links:fgLinks.filter(function(l){return ids[l.source]&&ids[l.target];})});
       }
+      applyVisibility();
+      if(focusedNode&&!fgNodeById[focusedNode.id]){focusedNode=null;closePanel();}
+      clearSelection({silent:true});
       renderLegend();
       if (!focusedNode && !manualCamera && (!refresh || !previous["grove-self"])) frameGrove(0);
       if (!rawNodes.length) { focusedNode=null; manualCamera=false; detailEl.classList.remove('open'); }
       loadingEl.classList.add('hidden');
+      setGraphStatus('ready','Graph updated · '+new Date().toLocaleTimeString());
       window.dispatchEvent(new CustomEvent('grove:graph-rendered'));
+      window.dispatchEvent(new CustomEvent('grove:change'));
     }).catch(function(err){
+      if(epoch!==viewEpoch||request!==graphRequest||err&&err.code==='superseded')return;
+      setGraphStatus('error','Refresh failed. Your last graph stays visible. Try again.');
       // Live mode, signed out: the sign-in card takes the screen, so the loading cover steps aside.
       if (err && err.code === 'unauthenticated') { loadingEl.classList.add('hidden'); return; }
       // Live mode with no local sign-in: the sign-in card takes the screen, and it says what failed.
@@ -628,17 +609,8 @@
     // Live mode with no local sign-in: the sign-in card has the screen, and no graph goes behind it.
     if (!window.GROVE_FIXTURE && !window.GroveSimulation.getState().auth) return;
     if (hasSelection() || focusedNode || hoverNode) return;   // never mid-interaction
-    var epoch = viewEpoch;
-    window.groveApi('/api/graph').then(function (r) { return r.json(); }).then(function (payload) {
-      if (!payload || !payload.elements || epoch !== viewEpoch) return;
-      var ns = (payload.elements.nodes || []).map(function (w) { return w.data; });
-      var es = (payload.elements.edges || []).map(function (w) { return w.data; });
-      var sig = _graphSignature(ns, es);
-      if (_evoSig === null) { _evoSig = _graphSignature(rawNodes, rawEdges); }
-      if (sig === _evoSig) return;
-      _evoSig = sig;
-      loadGraph(false);   // full re-derive: placement, tiers, sizes, stats
-    }).catch(function () {});
+    loadGraph(false);   // One accepted snapshot updates both the map and its comparison.
+
   }, 180000);
 
   function buildAdjacency() {
@@ -1429,7 +1401,7 @@
       return visibleSet[s] && visibleSet[t];
     });
 
-    // Live mode: a legend click only hides and shows. Every place on the map is a stored place, so
+    // Live mode: a legend click only hides and shows. Preserve the current display positions, so
     // nothing below runs: no hub moves, no pin is dropped (a hidden hub keeps its own), and the
     // camera stays. Fixture mode keeps the sim's relayout.
     if (!window.GROVE_FIXTURE) { Graph.graphData({ nodes: visibleNodes, links: visibleLinks }); return; }
@@ -2083,7 +2055,7 @@
 
     var epoch = viewEpoch;
     window.groveApi('/api/node/' + encodeURIComponent(node.id)).then(function (r) { return r.json(); }).then(function (extra) {
-      if (epoch !== viewEpoch) return;   // the session ended while this read was out
+      if (epoch !== viewEpoch || request!==graphRequest) return;   // stale reads cannot change the view
       var apiNode = (extra && extra.node) || {};
       var fullSummary = apiNode.content || apiNode.summary || raw.summary || '';
       var apiProps = apiNode.properties || localProps;
@@ -2523,6 +2495,7 @@
   function selectChangesOnCanvas(kind, provider) {
     Promise.resolve(window.GroveSimulation.getChanges(provider)).then(function(data){
       if (!data || data.error) return;
+      if(kind==='removed-nodes'||kind==='removed-edges'){clearSelection({silent:true});var nodes=kind==='removed-nodes',count=nodes?data.removed_nodes:data.removed_edges;showSelectionPill(count+' '+(nodes?'node':'connection')+(count===1?'':'s')+' removed since the previous graph check. Removed details are not retained.');scheduleRedraw();return;}
       // Reset any previous selection or single-node focus.
       clearSelection({ silent: true });
       focusedNode = null;
@@ -2623,6 +2596,7 @@
     var next = cur === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
     storage.setItem('grove-minimal-codex-theme', next);
+    window.dispatchEvent(new CustomEvent('grove:theme',{detail:{theme:next}}));
     rebuildThemeCache();
     renderLegend();
     scheduleRedraw();

@@ -1,5 +1,6 @@
 """Account UI against a local, synthetic HTTP contract; no provider or database acceptance."""
 
+import copy
 import os
 import socket
 import subprocess
@@ -26,12 +27,76 @@ COOKIE = "grove_session"
 STORAGE = "grove-minimal-codex-v3"
 
 
+def worker_snapshot():
+    """Closed, synthetic read-only contract; it does not attest to a live process."""
+    rows = []
+    for name, policy, capability, activity in [
+        (
+            "learner",
+            ("limited", "demo_learner_only"),
+            ("limited", "legacy_learner_only"),
+            "recorded_running",
+        ),
+        (
+            "curator",
+            ("disabled", "demo_autonomous_disabled"),
+            ("unavailable", "curator_authority_unavailable"),
+            "idle",
+        ),
+        (
+            "connector",
+            ("disabled", "demo_autonomous_disabled"),
+            ("limited", "legacy_connector_only"),
+            "stale",
+        ),
+    ]:
+        rows.append(
+            {
+                "agent": name,
+                "policy": {"state": policy[0], "reason": policy[1]},
+                "capability": {"state": capability[0], "reason": capability[1]},
+                "activity": {
+                    "state": activity,
+                    "running_records": int(activity == "recorded_running"),
+                    "stale_records": int(activity == "stale"),
+                },
+            }
+        )
+    return {
+        "schema": "grove.worker-activity.v1",
+        "observed_at": "2026-11-04T12:00:00Z",
+        "observation_kind": "stored_run_records",
+        "service_state": "unknown",
+        "service_reason": "no_process_heartbeat",
+        "agents": rows,
+        "recent_runs": [
+            {
+                "agent": "learner",
+                "outcome": "ok",
+                "started_at": "2026-11-04T11:00:00Z",
+                "finished_at": "2026-11-04T11:02:00Z",
+            }
+        ],
+        "recent_limit": 20,
+        "recent_has_more": False,
+    }
+
+
 @pytest.fixture(scope="module")
 def controlled():
     subprocess.run([sys.executable, "web/build.py"], cwd=REPO, check=True, capture_output=True)
     app = FastAPI()
     _add_web_pages(app, str(REPO / "web/dist"))
-    state = {"accounts": {}, "sessions": {}, "sequence": 0, "logout_posts": 0, "fail_logout": False}
+    state = {
+        "accounts": {},
+        "sessions": {},
+        "sequence": 0,
+        "logout_posts": 0,
+        "fail_logout": False,
+        "worker_calls": [],
+        "worker_status": 200,
+        "worker_body": None,
+    }
 
     def account(request):
         key = state["sessions"].get(request.cookies.get(COOKIE))
@@ -131,6 +196,15 @@ def controlled():
     def health(request: Request):
         return {"nodes": 1, "edges": 0, "by_type": {}} if account(request) else absent()
 
+    @app.get("/v1/views/workers")
+    def workers(request: Request):
+        row = account(request)
+        if not row:
+            return absent()
+        state["worker_calls"].append(row["id"])
+        body = copy.deepcopy(state["worker_body"] or worker_snapshot())
+        return JSONResponse(body, status_code=state["worker_status"])
+
     @app.get("/v1/sources/pending-exports")
     def reminders(request: Request):
         row = account(request)
@@ -199,6 +273,9 @@ def finish(page):
         """() => { const s=GroveSimulation; s.completeOnboarding(); s.completeTour(); }"""
     )
     page.locator("#profile-button").wait_for(state="visible")
+    skip = page.get_by_role("button", name="Skip tour", exact=True)
+    if skip.count() and skip.is_visible():
+        skip.click()
 
 
 def shot(page, name):
@@ -430,3 +507,473 @@ def test_same_verified_account_restores_only_bounded_onboarding(context, complet
     assert resumed["onboardingStep"] == 2
     assert resumed["onboardingComplete"] is complete
     assert resumed["name"] == ""
+
+
+@pytest.mark.parametrize("width,height", [(1440, 900), (768, 1024), (375, 667)])
+def test_workers_toggle_reveals_panel_during_first_tour_step(context, width, height):
+    page = context.new_page()
+    page.set_viewport_size({"width": width, "height": height})
+    page.goto("/login")
+    login(page, f"workers-tour-{width}@example.test")
+    page.evaluate("GroveSimulation.completeOnboarding()")
+    page.get_by_role("heading", name="Your world, connected", exact=True).wait_for()
+    page.locator("#agents-toggle").check()
+    page.locator(".hood-score").wait_for(state="visible")
+    assert page.locator("#agents-toggle").is_checked()
+    assert page.locator(".hood-score").evaluate("""el => {
+      const b=el.getBoundingClientRect();
+      return b.left >= 0 && b.right <= innerWidth && b.top >= 0 && b.bottom <= innerHeight;
+    }""")
+    shot(page, f"workers-tour-{width}")
+
+
+def open_workers(page, address):
+    page.goto("/login")
+    login(page, address)
+    finish(page)
+    page.locator("#agents-toggle").check()
+    page.locator(".hood-live-observed").wait_for()
+
+
+def hold_worker_reads(page):
+    page.evaluate("""() => {
+      const prior=window.fetch;
+      window.workerReads=[];
+      window.fetch=function(url, options) {
+        if (url==='/v1/views/workers') return new Promise(resolve => workerReads.push(resolve));
+        return prior.apply(this, arguments);
+      };
+    }""")
+
+
+def resolve_worker(page, index, body, status=200):
+    page.evaluate(
+        """({index, body, status}) => {
+      workerReads[index](new Response(JSON.stringify(body),
+        {status, headers:{'Content-Type':'application/json'}}));
+    }""",
+        {"index": index, "body": body, "status": status},
+    )
+
+
+def test_workers_show_separate_policy_capability_and_stored_activity(context, controlled):
+    page = context.new_page()
+    open_workers(page, "worker-states@example.test")
+    assert (
+        page.locator('[data-worker="learner"] .hood-live-activity').inner_text()
+        == "Run recorded as active"
+    )
+    assert (
+        page.locator('[data-worker="curator"] .hood-live-policy').inner_text() == "Off in this demo"
+    )
+    assert (
+        page.locator('[data-worker="curator"] .hood-live-capability').inner_text()
+        == "Not available yet"
+    )
+    assert (
+        page.locator('[data-worker="connector"] .hood-live-activity').inner_text()
+        == "Last run needs a status update"
+    )
+    assert page.locator(".hood-live-worker button:disabled").count() == 3
+    page.get_by_text("Recent activity", exact=True).click()
+    assert "Learner · Completed" in page.locator(".hood-live-recent").inner_text()
+    assert "Process status is unavailable" in page.locator(".hood-live-note").inner_text()
+    count = len(controlled[1]["worker_calls"])
+    page.locator("[data-worker-refresh]").click()
+    page.locator(".hood-live-observed").wait_for()
+    assert len(controlled[1]["worker_calls"]) == count + 1
+    page.locator("#health-link").click()
+    page.locator(".gp-health-workers").get_by_text("Run recorded as active", exact=False).wait_for()
+    assert "Off in this demo" in page.locator(".gp-health-workers").inner_text()
+    shot(page, "workers-health-stored-status")
+
+
+def test_workers_error_retry_and_malformed_body_do_not_echo_untrusted_text(context, controlled):
+    page = context.new_page()
+    open_workers(page, "worker-error@example.test")
+    try:
+        controlled[1]["worker_status"] = 503
+        controlled[1]["worker_body"] = {"error": "PRIVATE-UNTRUSTED-WORKER-TEXT"}
+        page.locator("[data-worker-refresh]").click()
+        page.get_by_role("button", name="Retry", exact=True).wait_for()
+        assert "PRIVATE-UNTRUSTED" not in page.locator(".hood-live").inner_text()
+        controlled[1]["worker_status"] = 200
+        body = worker_snapshot()
+        body["agents"][0]["activity"]["state"] = "PRIVATE-UNTRUSTED-WORKER-TEXT"
+        controlled[1]["worker_body"] = body
+        page.get_by_role("button", name="Retry", exact=True).click()
+        page.get_by_role("button", name="Retry", exact=True).wait_for()
+        assert not page.locator(".hood-live-worker").count()
+        assert "PRIVATE-UNTRUSTED" not in page.locator(".hood-live").inner_text()
+        controlled[1]["worker_body"] = None
+        page.get_by_role("button", name="Retry", exact=True).click()
+        page.locator(".hood-live-observed").wait_for()
+    finally:
+        controlled[1]["worker_status"] = 200
+        controlled[1]["worker_body"] = None
+
+
+def test_workers_new_refresh_wins_and_hidden_panel_discards_inflight_response(context):
+    page = context.new_page()
+    open_workers(page, "worker-race@example.test")
+    hold_worker_reads(page)
+    page.locator("[data-worker-refresh]").click()
+    page.get_by_text("Checking worker status…", exact=True).wait_for()
+    page.locator("[data-worker-refresh]").click()
+    page.wait_for_function("workerReads.length === 2")
+    newest = worker_snapshot()
+    newest["agents"][0]["activity"] = {"state": "idle", "running_records": 0, "stale_records": 0}
+    resolve_worker(page, 1, newest)
+    page.locator('[data-worker="learner"]').get_by_text(
+        "No active run recorded", exact=True
+    ).wait_for()
+    resolve_worker(page, 0, worker_snapshot())
+    assert (
+        page.locator('[data-worker="learner"] .hood-live-activity').inner_text()
+        == "No active run recorded"
+    )
+    page.locator("[data-worker-refresh]").click()
+    page.wait_for_function("workerReads.length === 3")
+    page.locator("#agents-toggle").uncheck()
+    resolve_worker(page, 2, worker_snapshot())
+    assert not page.locator(".hood-live-worker").count()
+    assert not page.locator(".hood-live").is_visible()
+    page.locator("#agents-toggle").check()
+    page.wait_for_function("workerReads.length === 4")
+    resolve_worker(page, 3, newest)
+    page.locator('[data-worker="learner"]').get_by_text(
+        "No active run recorded", exact=True
+    ).wait_for()
+
+
+def test_workers_tab_hide_discards_inflight_response(context):
+    page = context.new_page()
+    open_workers(page, "worker-hidden@example.test")
+    hold_worker_reads(page)
+    page.locator("[data-worker-refresh]").click()
+    page.wait_for_function("workerReads.length === 1")
+    page.evaluate("""() => {
+      Object.defineProperty(document,'hidden',{configurable:true,value:true});
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    resolve_worker(page, 0, worker_snapshot())
+    assert not page.locator(".hood-live-worker").count()
+    page.evaluate("""() => {
+      Object.defineProperty(document,'hidden',{configurable:true,value:false});
+      document.dispatchEvent(new Event('visibilitychange'));
+    }""")
+    page.locator("[data-worker-refresh]").click()
+    page.wait_for_function("workerReads.length === 2")
+    resolve_worker(page, 1, worker_snapshot())
+    page.locator(".hood-live-observed").wait_for()
+
+
+def test_workers_logout_and_second_account_refuse_old_response(context):
+    page = context.new_page()
+    open_workers(page, "worker-old@example.test")
+    hold_worker_reads(page)
+    page.locator("[data-worker-refresh]").click()
+    page.wait_for_function("workerReads.length === 1")
+    other = context.new_page()
+    other.goto("/logout")
+    other.get_by_role("button", name="Log out", exact=True).click()
+    page.get_by_role("heading", name="Log in", exact=True).wait_for()
+    assert not page.locator(".hood-live-worker").count()
+    assert not page.locator("#agents-toggle").is_checked()
+    login(other, "worker-new@example.test")
+    page.wait_for_function("GroveSimulation.getState().account !== null")
+    finish(page)
+    resolve_worker(page, 0, worker_snapshot())
+    assert not page.locator(".hood-live-worker").count()
+    assert not page.locator("#agents-toggle").is_checked()
+    page.locator("#agents-toggle").check()
+    page.wait_for_function("workerReads.length === 2")
+    next_body = worker_snapshot()
+    next_body["agents"][0]["activity"] = {"state": "idle", "running_records": 0, "stale_records": 0}
+    next_body["recent_runs"] = []
+    resolve_worker(page, 1, next_body)
+    page.locator('[data-worker="learner"]').get_by_text(
+        "No active run recorded", exact=True
+    ).wait_for()
+    assert "Completed" not in page.locator(".hood-live").inner_text()
+
+
+def test_fidelity_account_uses_user_icon_and_opens_during_tour(context):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "fidelity-account@example.test")
+    page.evaluate("GroveSimulation.completeOnboarding()")
+    page.get_by_role("heading", name="Your world, connected", exact=True).wait_for()
+    assert page.locator("#profile-button svg").count() == 1
+    assert page.locator("#profile-button").inner_text() == ""
+    page.locator("#profile-button").click()
+    page.get_by_role("heading", name="Settings", exact=True).wait_for()
+    assert page.locator(".gp-settings-content").is_visible()
+
+
+def test_fidelity_refresh_remains_accessible_on_phone(context):
+    page = context.new_page()
+    page.set_viewport_size({"width": 375, "height": 667})
+    page.goto("/login")
+    login(page, "fidelity-refresh@example.test")
+    finish(page)
+    assert page.locator("#refresh-data").is_visible()
+    page.locator("#refresh-data").click()
+    page.locator("#graph-status").get_by_text("Graph updated", exact=False).wait_for()
+
+
+def test_fidelity_delete_brain_has_truthful_confirmation(context):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "fidelity-delete@example.test")
+    finish(page)
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="account"]').click()
+    page.get_by_role("button", name="Delete brain", exact=True).click()
+    page.get_by_role("heading", name="Delete your brain?", exact=True).wait_for()
+    assert page.get_by_role("button", name="Delete brain", exact=True).is_disabled()
+    assert "not available" in page.locator(".gp-confirm-dialog").inner_text()
+    page.get_by_role("button", name="Cancel", exact=True).click()
+    assert page.locator(".gp-settings-content").is_visible()
+    assert page.evaluate("GroveView.nodes().length") > 0
+
+
+@pytest.mark.parametrize("provider", ["muse", "chatgpt", "claude"])
+def test_fidelity_host_guides_have_visual_frames_and_pause(context, provider):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "fidelity-guide-" + provider + "@example.test")
+    finish(page)
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="connections"]').click()
+    page.locator('[data-host-inline="' + provider + '"]').click()
+    frame = page.locator(".gp-app-frame iframe")
+    frame.wait_for(state="visible")
+    assert "sandbox" in frame.evaluate("el => el.outerHTML")
+    source = frame.get_attribute("srcdoc")
+    assert source.count('class="film-frame"') >= 3
+    page.get_by_role("button", name="Pause guide", exact=True).click()
+    assert "animation-play-state:paused" in frame.get_attribute("srcdoc")
+    page.get_by_role("button", name="Play guide", exact=True).click()
+    assert "animation-play-state:paused" not in frame.get_attribute("srcdoc")
+    assert not page.locator('[data-action="host-connect"]').count()
+
+
+def install_graph_snapshot(page, nodes, edges):
+    page.evaluate(
+        """({nodes,edges}) => {
+      window.testGraph={elements:{nodes:nodes.map(data=>({data})),
+        edges:edges.map(data=>({data}))},self_item_id:'self-test'};
+      if (!window.originalGraphGet) {
+        window.originalGraphGet=GroveLive.getJSON;
+        GroveLive.getJSON=function(url){
+          if(url==='/v1/views/graph')
+            return Promise.resolve({ok:true,status:200,body:window.testGraph});
+          return originalGraphGet.apply(this,arguments);
+        };
+      }
+    }""",
+        {"nodes": nodes, "edges": edges},
+    )
+    page.locator("#refresh-data").click()
+    page.locator("#graph-status").get_by_text("Graph updated", exact=False).wait_for()
+
+
+def test_fidelity_session_deltas_show_current_subgraph_and_private_removal_summary(context):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "fidelity-deltas@example.test")
+    finish(page)
+    base = [{"id": "self-test", "label": "Owner", "type": "person"}]
+    install_graph_snapshot(page, base, [])
+    install_graph_snapshot(page, base, [])
+    assert page.evaluate("GroveSimulation.getState().nodeDelta") == 0
+    added = base + [
+        {"id": "n1", "label": "Private old title", "type": "task"},
+        {"id": "n2", "label": "Project", "type": "plan"},
+    ]
+    edges = [
+        {"id": "e1", "source": "self-test", "target": "n1", "verb": "HAS"},
+        {"id": "e2", "source": "n1", "target": "n2", "verb": "IN"},
+    ]
+    install_graph_snapshot(page, added, edges)
+    page.locator('[data-kind="nodes"]').get_by_text("(+2)", exact=True).wait_for()
+    page.locator('[data-kind="edges"]').get_by_text("(+2)", exact=True).wait_for()
+    page.locator('[data-kind="nodes"]').click()
+    assert "2 new nodes" in page.locator("#selection-pill").inner_text()
+    assert "previous graph check" in page.locator("#stats").inner_text()
+    install_graph_snapshot(page, [base[0], added[2]], [])
+    page.locator('[data-kind="removed-nodes"]').click()
+    assert "1 node removed" in page.locator("#selection-pill").inner_text()
+    assert "Private old title" not in page.locator("#selection-pill").inner_text()
+    assert page.evaluate("GroveSimulation.getState().removedEdges") == 2
+    assert page.evaluate("GroveSimulation.getChanges().new_nodes.length") == 0
+    assert "Private old title" not in page.evaluate("JSON.stringify(GroveSimulation.getChanges())")
+    page.evaluate("GroveSimulation.signOut()")
+    assert page.evaluate("GroveSimulation.getState().removedNodes") == 0
+
+
+def test_fidelity_refresh_error_and_late_response_keep_current_graph(context):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "fidelity-refresh-race@example.test")
+    finish(page)
+    page.evaluate("""() => {
+      window.heldGraphs=[];const get=GroveLive.getJSON;
+      GroveLive.getJSON=function(url){
+        if(url==='/v1/views/graph')return new Promise(resolve=>heldGraphs.push(resolve));
+        return get.apply(this,arguments);};
+      window.reloadGrove();window.reloadGrove();
+    }""")
+    assert "Refresh in progress" in page.locator("#graph-status").inner_text()
+    page.evaluate(
+        """heldGraphs[1]({ok:true,status:200,body:{elements:{nodes:[{data:{id:'current',label:'Current',type:'task'}}],edges:[]}}})"""
+    )
+    page.locator("#graph-status").get_by_text("Graph updated", exact=False).wait_for()
+    page.evaluate(
+        """heldGraphs[0]({ok:true,status:200,body:{elements:{
+            nodes:[{data:{id:'old',label:'Old private',type:'task'}}],edges:[]}}})"""
+    )
+    assert "old" not in page.evaluate("GroveView.nodes().map(n=>n.id)")
+    page.evaluate("() => { window.reloadGrove(); }")
+    page.evaluate("""heldGraphs[2]({ok:false,status:503,body:{error:{code:'unavailable'}}})""")
+    page.locator("#graph-status").get_by_text("Refresh failed", exact=False).wait_for()
+    assert "current" in page.evaluate("GroveView.nodes().map(n=>n.id)")
+
+
+def test_fidelity_dark_guide_and_health_sources(context):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "fidelity-dark@example.test")
+    finish(page)
+    if page.locator("html").get_attribute("data-theme") != "dark":
+        page.locator("#theme-toggle").click()
+    page.locator("#health-link").click()
+    page.locator('[data-live-count="nodes"]').get_by_text("1", exact=True).wait_for()
+    page.get_by_role("button", name="Your sources", exact=False).click()
+    assert page.locator(".gp-settings-content").is_visible()
+    page.locator('[data-settings-tab="connections"]').click()
+    page.locator('[data-host-inline="muse"]').click()
+    assert "background:#111113" in page.locator(".gp-app-frame iframe").get_attribute("srcdoc")
+    assert page.locator("html").get_attribute("data-theme") == "dark"
+    shot(page, "fidelity-dark-guide")
+
+
+@pytest.mark.parametrize("width,height", [(1440, 900), (768, 1024), (375, 667)])
+def test_fidelity_organic_graph_and_controls_at_each_viewport(context, width, height):
+    page = context.new_page()
+    page.set_viewport_size({"width": width, "height": height})
+    page.goto("/login")
+    login(page, "fidelity-viewport-" + str(width) + "@example.test")
+    finish(page)
+    nodes = [{"id": "self-test", "label": "Owner", "type": "person"}]
+    edges = []
+    for group in range(16):
+        hub = "project-" + str(group)
+        nodes.append({"id": hub, "label": "Project " + str(group), "type": "plan"})
+        if group:
+            edges.append(
+                {
+                    "id": "bridge-" + hub,
+                    "source": "project-" + str(group - 1),
+                    "target": hub,
+                    "verb": "SUPPORTS",
+                }
+            )
+        for index in range(50):
+            key = hub + "-" + str(index)
+            nodes.append(
+                {
+                    "id": key,
+                    "label": "Task " + str(index),
+                    "type": ["task", "observation", "person", "decision"][index % 4],
+                }
+            )
+            edges.append({"id": "edge-" + key, "source": hub, "target": key, "verb": "INCLUDES"})
+            if index:
+                edges.append(
+                    {
+                        "id": "sequence-" + key,
+                        "source": hub + "-" + str(index - 1),
+                        "target": key,
+                        "verb": "FOLLOWS",
+                    }
+                )
+    writes = []
+    page.on(
+        "request",
+        lambda request: (
+            writes.append(request.url)
+            if request.method == "POST" and "/positions" in request.url
+            else None
+        ),
+    )
+    install_graph_snapshot(page, nodes, edges)
+    page.evaluate("GroveView.fit(0)")
+    assert page.evaluate("GroveView.nodes().length") == len(nodes)
+    assert page.evaluate("GroveView.nodes().every(n=>Number.isFinite(n.x)&&Number.isFinite(n.y))")
+    assert writes == []
+    assert page.locator("#profile-button").is_visible()
+    assert page.locator("#health-link").is_visible()
+    assert page.locator("#refresh-data").is_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    shot(page, "fidelity-graph-" + str(width))
+    page.locator("#theme-toggle").click()
+    shot(page, "fidelity-graph-theme-" + str(width))
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="connections"]').click()
+    page.locator('[data-host-inline="claude"]').click()
+    assert page.locator(".gp-settings-layout").is_visible()
+    assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    shot(page, "fidelity-settings-guide-" + str(width))
+
+
+def test_fidelity_active_filter_preserves_real_graph_and_refresh(context):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "fidelity-active@example.test")
+    finish(page)
+    nodes = [
+        {"id": "self-test", "label": "Owner", "type": "person"},
+        {"id": "plan", "label": "Plan", "type": "plan"},
+        {"id": "done", "label": "Ended", "type": "plan", "status": "archived"},
+        {"id": "task", "label": "Task", "type": "task"},
+    ]
+    install_graph_snapshot(page, nodes, [])
+    page.locator("#active-only").check()
+    assert page.evaluate("GroveView.graph().graphData().nodes.map(n=>n.id).sort()") == [
+        "grove-self",
+        "plan",
+    ]
+    page.locator("#refresh-data").click()
+    page.locator("#graph-status").get_by_text("Graph updated", exact=False).wait_for()
+    assert page.evaluate("GroveView.graph().graphData().nodes.length") == 2
+    assert page.evaluate("GroveSimulation.getState().currentNodeCount") == 4
+    page.locator("#active-only").uncheck()
+    assert page.evaluate("GroveView.graph().graphData().nodes.length") == 4
+
+
+@pytest.mark.parametrize("device", ["iphone", "android"])
+def test_fidelity_whatsapp_device_films_pause_and_keep_settings(context, device):
+    page = context.new_page()
+    page.goto("/login")
+    login(page, "fidelity-whatsapp-" + device + "@example.test")
+    finish(page)
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="sources"]').click()
+    page.locator('[data-add-group="chats"]').click()
+    page.locator('[data-guide="chats"]').click()
+    frame = page.locator(".gp-app-frame iframe")
+    frame.wait_for(state="visible")
+    page.locator('[data-guide-device="' + device + '"]').click()
+    assert (
+        page.locator('[data-guide-device="' + device + '"]').get_attribute("aria-pressed") == "true"
+    )
+    assert frame.get_attribute("srcdoc").count('class="film-frame"') == 6
+    assert page.locator(".gp-settings-layout").is_visible()
+    assert page.get_by_role("button", name="Desktop", exact=True).count() == 0
+    page.get_by_role("button", name="Pause guide", exact=True).click()
+    assert "animation-play-state:paused" in frame.get_attribute("srcdoc")
+    shot(page, "fidelity-whatsapp-" + device)
+    page.get_by_role("button", name="Play guide", exact=True).click()
+    assert "animation-play-state:paused" not in frame.get_attribute("srcdoc")

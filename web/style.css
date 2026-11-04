@@ -7,12 +7,12 @@
   --surface: #111113;
   --border: #222225;
   --text: #f0f0f0;
-  --text-secondary: #888;
-  --text-muted: #555;
+  --text-secondary: #b0b0b4;
+  --text-muted: #8b8b92;
   --accent: #22c55e;
 
   /* Constellation node-body — warm cream that reads as "stamped on equipment". */
-  --cream: #f0eede;
+  --cream: #191d23;
 
   /* Type rings — Material palette, each type a distinct semantic hue.
      Each must read clearly at 1.5–3px stroke against the cream disk. */
