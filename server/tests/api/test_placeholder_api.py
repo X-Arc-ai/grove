@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -290,14 +291,16 @@ def test_the_app_opens_its_driver_with_short_timeouts(monkeypatch):
         return _Driver(record={"ok": 1})
 
     monkeypatch.setattr("grove.api.app.open_driver", fake_open)
+    monkeypatch.setattr("grove.api.app.open_read_driver", lambda: AsyncMock())
     with TestClient(create_app(ApiSettings(public_base_url="https://grove.example"))):
         pass
     assert seen == {"connection_timeout": 5.0, "connection_acquisition_timeout": 10.0}
 
 
-def test_the_app_closes_its_driver_at_shutdown():
+def test_the_app_closes_its_driver_at_shutdown(monkeypatch):
     driver = _Driver(record={"ok": 1})
     settings = ApiSettings(public_base_url="https://grove.example")
+    monkeypatch.setattr("grove.api.app.open_read_driver", lambda: AsyncMock())
     with TestClient(create_app(settings, driver_factory=lambda: driver)):
         assert driver.closed is False
     assert driver.closed is True

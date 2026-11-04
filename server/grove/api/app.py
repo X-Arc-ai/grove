@@ -26,8 +26,9 @@ from grove.api.mail import Mailer
 from grove.api.oauth import OAUTH_PATHS, OAuthDeps
 from grove.api.views import PREFIX, router
 from grove.mcp.tools import DEFAULT_TOOLS, Tool
+from grove.reads.runtime import ReadRuntime
 from grove.runner.passes import PassSettings, RunnerAuth
-from grove.store.connection import Driver, open_driver
+from grove.store.connection import Driver, open_driver, open_read_driver
 from grove.views.session import SESSION_COOKIE
 
 __all__ = ["WEB_DIST_ENV", "create_app"]
@@ -84,13 +85,16 @@ def create_app(
     oauth_deps: OAuthDeps | None = None,
     runner_auth: RunnerAuth | None = None,
     pass_settings: PassSettings | None = None,
+    read_runtime: ReadRuntime | None = None,
 ) -> FastAPI:
     """With a driver, the caller owns it: the app never closes it. With no mailer or google_http,
     sign-in loads the real one at first use. world_id_for gives a test its own t_ worlds.
     mcp_tools is the tool set of /mcp (None means grove.mcp.tools.DEFAULT_TOOLS); oauth_deps hands
     the OAuth routes a fake resolver and transport for metadata documents, or a smaller window.
     With no runner_auth, the internal routes read GROVE_GATEWAY_SECRET and
-    GROVE_RUNNER_TOKEN_SHA256 at first use."""
+    GROVE_RUNNER_TOKEN_SHA256 at first use. Production owns a separate D7 async runtime.
+    An injected synchronous driver does not implicitly open a second real connection pool;
+    callers may inject read_runtime and retain its ownership."""
     settings = settings or load_api_settings()
 
     @asynccontextmanager
@@ -98,11 +102,19 @@ def create_app(
         # Opening a driver does not connect, so the API starts while the store is still down.
         if driver is None:
             app.state.driver = driver_factory()
+        owned_read_runtime = None
         try:
+            if read_runtime is None and driver is None:
+                owned_read_runtime = ReadRuntime(open_read_driver())
+                app.state.read_runtime = owned_read_runtime
             yield
         finally:
-            if driver is None:
-                app.state.driver.close()
+            try:
+                if owned_read_runtime is not None:
+                    await owned_read_runtime.close()
+            finally:
+                if driver is None:
+                    app.state.driver.close()
 
     # redirect_slashes=False: Starlette builds that redirect from the request, and uvicorn runs
     # without proxy headers, so it would name plain http and a client would send its body in clear.
@@ -120,6 +132,7 @@ def create_app(
     app.state.mcp_tools = tuple(DEFAULT_TOOLS if mcp_tools is None else mcp_tools)
     app.state.runner_auth = runner_auth
     app.state.pass_settings = pass_settings
+    app.state.read_runtime = read_runtime
     if driver is not None:
         app.state.driver = driver
     install_error_handlers(app)
