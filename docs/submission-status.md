@@ -1,94 +1,87 @@
 # Submission status
 
-Interim snapshot: 2026-11-04 13:51 UTC. This document separates accepted source, deployment,
-and actual acceptance. The full approved feature scope remains required. The direct publication
-waiver permits this documentation refresh; it does not turn incomplete features into completed ones.
+Documentation snapshot: 2026-11-04 at 18:36 UTC. Repository: **PRIVATE**.
+This package records accepted source and existing release receipts. It does not report a new
+host check, complete product acceptance, or external submission. The current owner manual
+login/upload/Muse flow is paused and remains **NOT RUN** for this release.
 
-## Revisions
+## Source and deployed revisions
 
-| Surface | Revision at this check | Meaning |
+| Surface | Recorded revision | Evidence boundary |
 |---|---|---|
-| `develop` | `6346a9fc7c6c9b8119a9e7310cb93944f2fb1afe` | Accepted source baseline, including inactive PRs #33 and #34 components |
-| Public `/healthz` | `cac4b95cbc7ce5284c04fcb684ebb2f115162144` | Service/store OK; Request7 UI release |
-| `main` | `b5e45f71b7fc84d3fbc57c1dc86a1fe4254fd19f` | Initial repository revision; this lane makes no main merge |
+| Accepted source baseline | `756de68e00a1d69b9ea2448408754d85d7e2cbf8` | Includes PRs #58 and #59; these repairs are not deployed in the receipt below |
+| Request17 API | `cbcfe574e03880569bfcdb9a9732f79a7ef3daea` | API-only release; anonymous root redirects to `/login` |
+| Request17 runner and gateway | `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e` | Existing services retained their source and did not restart |
+| Later UI and materials work | Separate unpublished candidates at this baseline | Not included in this source snapshot or the recorded deployment |
 
-The document commit and merge identifiers belong to the PR and lane receipt because a commit
-cannot contain its own final SHA. Final release-candidate R1 and secret scans remain **NOT RUN**.
-The 2026-11-03 scans certify only their old candidate, not this source baseline or a later main revision.
+The document commit belongs in its PR receipt because a commit cannot contain its own final SHA.
+The [event record](../HACKATHON.md) is a GitHub snapshot, not a deployment or acceptance list.
 
-## Claim and evidence map
+## Recorded evidence
 
-| Component | Source and deployment evidence | Actual limit |
-|---|---|---|
-| Typed storage, requests and writer | PRs #1, #6, #9; `server/tests/writer/` | A queued request is not a saved receipt |
-| Corrections, history and restore | PR #16; D3 writer/store suites; included in Request7 ancestry | Does not establish complete D14 physical restore acceptance |
-| Truth clock, capabilities and Calendar facts | PR #15; Calendar provenance and clock suites; included in Request7 | Source timestamps do not prove narrated events occurred |
-| Source screening and chat uploads | PRs #7, #17; `server/tests/ingest/` | General private-export processing is not enabled on the current host |
-| Calendar/Git connectors | PR #20; `server/tests/connectors/`; included in Request7 | Actual provider consent and configured live-source acceptance remain open |
-| Sign-in and OAuth | PRs #8, #11; auth/host suites | Current owner login and Muse consent remain NOT RUN |
-| Restricted Cedar demo | PR #27; `server/tests/hosts/test_demo_recall.py`; Request6 controlled seed | One saved request and one directly recalled eligible item; owner Muse exercise NOT RUN |
-| General MCP | `DEFAULT_TOOLS = ()`; standalone store component in `server/grove/mcp/store.py` | The restricted pair does not provide general `store`/`recall` acceptance |
-| Mixed batch refusal | PR #31; MCP preflight tests; included in Request7 | Refusal checks do not establish the complete general read path |
-| UI guides, catalog and real upload | PRs #25, #26, #32; Request7 exact public assets | Owner upload and full responsive behavior remain NOT RUN |
-| Pipedream | PRs #29, #30; `docs/pipedream.md`; included in Request7 | Authorization/status only, no imports; actual consent remains unverified |
-| Runner, gateway and models | PRs #5, #10, #12, #14, #19, #22, #24, #28; Request7 health/smokes | Bounded component checks do not establish complete agent behavior |
-| Ontology | PR #13; ontology/writer suites | Full hygiene, merge/split/rename/retirement workflows remain open |
-| Walk consequences | PR #23; `docs/cascade.md`; included in Request7 ancestry | Deployed source does not prove complete Walk/Beliefs runtime acceptance |
-| Erasure and restore privacy source | PR #21 merged after Request7 | Not deployed; D14 physical/runtime acceptance remains open |
-| Inactive authority validation and file leases | PR #34 | Not deployed or activated; does not complete general D7/D14 acceptance |
-| Internal text and media components | PR #33; `docs/ingest-media.md`, `docs/ingest-audio.md`, `docs/ingest-whatsapp.md` | Not deployed; no new upload provider or complete typed persistence |
+Request17 records 24 successful public smoke checks, including 15 exact assets; the root
+redirect and login page passed. Anonymous protected reads refused access. The retained graph
+contained 1,355 nodes and 4,082 edges with valid endpoints. The core Cedar proof contained two
+saved Items. The corpus record contained 26 Sources, 26 saved Requests, and 26 receipts.
+These are receipt values, not fresh counts measured by this document task.
 
-The [event record](../HACKATHON.md) lists PRs, UTC dates, and exact merge identifiers.
-Test paths identify evidence sources. This documentation refresh does not claim a fresh run of those product suites.
+The complete 40-story corpus remains incomplete. Four richer topics passed an earlier backend
+read, but Request17 final verification repeated only the accepted core Cedar proof. The natural
+Muse questions and automatic Grove use remain unverified. Backend recall is not a Muse rehearsal.
 
-## Deployment evidence and owner acceptance
+PR #58 records 213 focused passes for real ordinary JSON/ZIP parsing, mandatory screening,
+retention, receipts, isolation, idempotency, and no graph mutation. PR #59 records 58 focused
+passes for account status, catalog, scopes, and confirmed account-scoped disconnection.
+Those saved source checks do not prove deployed behavior or live provider consent.
+Their later automatic Validate runs failed at Ruff under the existing publication waiver.
 
-Request7 deployed `cac4b95cbc7ce5284c04fcb684ebb2f115162144`. Its receipt records 14 successful host/Mac smoke checks,
-15 exact public assets, six expected refusals, healthy API/gateway/store services, and a running runner.
-The controller independently confirmed the served revision. The fresh 13:51 UTC health read agrees.
-No seed repeated during Request7. These are service and anonymous checks, not owner acceptance.
+The unpublished UI candidate has separate author and independent evidence for its exact heads.
+The unpublished materials candidate records 222 focused native controls and requires migration
+0019 plus release integration. Neither candidate is certified by this documentation snapshot.
 
-The current demonstration has two separate accounts and datasets:
+## Capability boundaries
 
-1. An ordinary account uploads the exact Lumen file and receives source-retention counts.
-2. A prepared account uses restricted Cedar recall through Muse. Its content predates the Lumen upload.
+| Capability | Current source and remaining limit |
+|---|---|
+| Storage, writer, history, and time | Source components exist with scoped tests; a queued request is not a saved receipt |
+| Ordinary chat uploads | PR #58 supports screened ChatGPT/Claude JSON and ZIP retention; no graph Items or links result from retention alone |
+| Restricted demo | Prepared synthetic Cedar/project data supports restricted recall; the upload does not create that graph |
+| General MCP | `DEFAULT_TOOLS = ()`; the restricted pair does not establish general `store`/`recall` acceptance |
+| Calendar/Git | Read-only connector source exists; actual consent and configured live-source acceptance remain open |
+| Pipedream | Authorization, status, catalog, and disconnect source; no content import or synchronization |
+| Files and notes | A separate unpublished candidate supplies material storage and note processing; typed-file graph admission remains separate |
+| Workers and Questions | Status and inactive protocol components exist; complete D7/D10/D11/D14 runtime acceptance remains open |
+| Privacy, reset, and restore | Source components and guards exist; complete delete-brain and physical/runtime restore acceptance remain open |
+| UI | Source and independent checks apply only to their recorded heads; full control and responsive acceptance remain open |
+| Performance | Earlier HTML and asset measurements are historical; total initial transfer and current first-paint acceptance remain unverified |
 
-The upload does not create the prepared graph. Both owner paths remain **NOT RUN**.
-General `store`/`recall`, arbitrary imports, history, Areas and complete privacy remain incomplete.
-The prepared account refuses uploads and Pipedream. Pipedream imports no content.
+Unavailable controls do not satisfy the required feature scope. CI or source publication does
+not change these limits. See [architecture](architecture.md) for component links.
 
-The public HTML is 1,073,088 raw bytes. The earlier local gzip result is 336,709 bytes.
-The 15 asset bodies total 1,264,896 bytes. These different measurements do not establish total
-compressed initial transfer or first paint. The 500,000-byte total target remains unverified.
+## Preserved history
 
-## Remaining acceptance and owners
+PR #18 merged as `93ea06e7a2b771e9051c1179f431882a40b22a44` from
+`d9d6a74952f961938240874f2e7e9b0a2c07e309`. That refresh passed eight focused checks and
+preserved two expected old-document failures. Its two automatic Validate runs were CANCELLED.
+The current package continues that work and preserves the previous lane's evidence.
 
-| Acceptance | Owner/dependency | Required evidence |
-|---|---|---|
-| Current two-account demo | Release owner and demo owners | Normal login, exact Lumen first/repeat upload, logout, actual Muse OAuth and two independent recalls |
-| README-only fresh-context path | Submission and Muse owners | Fresh browser and isolated Muse Code HOME at the accepted final revision |
-| General imports and typed persistence | Connector, ingest and writer owners | Configured screening, real retention/provenance, extraction, and complete input guards |
-| General D7 reads and D14 privacy | Read-path and privacy owners | Complete authority guards, world-scoped results, erasure and physical/runtime restore acceptance |
-| Full remaining feature scope | Beliefs, cleanup, ontology, evals and view owners | Original acceptance criteria with fresh evidence |
-| Provider connection | Release owner / integration owners | Real authorized consent and refreshed status, never an inferred content import |
-| UI completion and page weight | View owners | Responsive behavior, source/revoke integration and complete initial-transfer measurement |
-| Film and rehearsal | Release owner / invented-data film owner | Recorded actual behavior and complete rehearsal, with no private data |
-| Final release evidence | Submission and release owner | Current event history, exact release SHA, R1 and secret scans |
-| Main/public release and submission | Controller / release owner | Authorized release actions and final links; this lane does none of them |
+The earlier 2026-11-03 candidate `947627ca7dc0b801de660fe15fcb214c275d6d54` passed its
+focused checks, identity/name lint, reviewed secret scan, and Validate. Its independent verdict
+remained **FAIL/BLOCKED**: the browser stopped at unavailable account/inbox access, and isolated
+Muse exited before consent with `OAuth HTTP request failed: error sending request`.
+The older empty registry, missing upload route, and runner-network failure remain historical
+findings. Later repairs do not erase those failures. The original provenance failure also remains.
 
-## Preserved historical failures and process status
+## Next release action
 
-The 2026-11-03 candidate `947627ca7dc0b801de660fe15fcb214c275d6d54` passed its focused checks,
-identity/name lint, reviewed secret scan and Validate. Its independent verdict remained **FAIL/BLOCKED**:
-the fresh browser stopped at unavailable account/inbox access, and isolated Muse exited before consent
-with `OAuth HTTP request failed: error sending request`. The host then served `9a5cb23`.
-The empty public registry, absent upload route, and failed runner-network transition were findings
-at that earlier snapshot. They are not descriptions of today's restricted deployed demo.
-The original logs, screenshots, reviewed scan matches and failed provenance test remain retained.
+The release owner must sequence accepted UI/backend source, refresh the exact service revisions,
+and complete the [operator checklist](submission-checklist.md). Keep the repository private.
+Do not resume the paused owner flow or submit externally without the corresponding authority.
 
-CI, independent review and full-product acceptance are **WAIVED as source-publication gates** for
-this refresh. They are not reported as passed. The current focused document results and exact commit
-belong to PR #18 and its final receipt. No new browser, Muse, account or provider session runs here.
+CI and independent review are **WAIVED as source-publication gates**, not passed.
+This package runs focused document controls only. New browser, Muse, account, provider,
+model, database, and host checks are **NOT RUN**. Final release-candidate name/secret scans,
+video, official rule review, and final submission links remain required preparation.
 
-[Write-up](drafts/submission-writeup.txt) and [X post](drafts/x-post.txt) remain unsent drafts.
-No completed submission, complete forgetting, measured recall accuracy, or final public acceptance is claimed.
+The [write-up](drafts/submission-writeup.txt) and [X post](drafts/x-post.txt) are unsent drafts.
+No complete forgetting, measured recall accuracy, full runtime acceptance, or final submission is claimed.
