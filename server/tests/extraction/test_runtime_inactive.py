@@ -23,3 +23,22 @@ def test_runtime_stays_unavailable_without_registration(monkeypatch):
                         "grove.extraction.runtime",
                         "grove.extraction.execution_state",
                     }
+
+
+def test_durable_unit_has_no_production_provider_or_registration(monkeypatch):
+    from grove.writer import learner_requests as boundary
+
+    monkeypatch.setenv("GROVE_LEARNER_DURABLE", "1")
+    for call in (
+        lambda: boundary.refuse_runtime(),
+        lambda: boundary.transaction(None, "world", object()),
+        lambda: boundary._require_authority_in_tx(None, object(), "commit", None, None),
+        lambda: boundary._require_attempt_in_tx(None, object(), None, None, None),
+        lambda: boundary._require_consumer_in_tx(None, object(), None, None),
+    ):
+        with pytest.raises(ExtractionRefused, match="learner_authority_unavailable"):
+            call()
+    root = Path(__file__).resolve().parents[2] / "grove"
+    for directory in ("api", "runner"):
+        for path in (root / directory).glob("*.py"):
+            assert "learner_execution" not in path.read_text()

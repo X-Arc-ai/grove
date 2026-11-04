@@ -232,3 +232,59 @@ the accepted shared writer transaction seam, obtain its own schema reservation, 
 the D14 data/erasure contract. Real admission, each-send lifetime checks, durable dispositions,
 atomic graph/completion/counter/outbox writes, provider integration, and full labelled-week
 acceptance remain open.
+
+## Inactive durable Learner source
+
+The `learner_execution_v1` protocol stores one protected Request per Work, an append-only
+execution journal, bounded call records, complete message dispositions, one completion,
+ordered episode progress, and durable downstream intents. Migration
+`0017_learner_execution.cypher` declares these seven homes. Publication of this source does
+not apply the migration or authorize production persistence.
+
+The internal functions in `writer/learner_execution.py` require an existing `WorldTx`.
+The ordinary `PreparedBatch` executor supplies all graph, source, caller, Curator and Beliefs
+checks. A proved blank or completely reviewed empty batch uses an explicit no-graph branch.
+Completion, actual effect identities, Request state, progress and intents share one native
+transaction. Stable event IDs reject changed retries. Current source, actual RunRecord,
+claim epoch and owner checks also precede replay. A failed predecessor blocks later progress.
+Import watermarks and import counts remain separate from extraction accounting.
+
+`RunWitness` separates the actual RunRecord row version from the pure protocol version.
+An ended unrelated Run cannot authorize recovery. A new claimant cannot renew the original
+deadline, token limit, five-call bound, single repair, or single re-ground allowance.
+Full executable operations and observations must match their descriptors and deterministic
+translation of the stored provider output. A supplied ModelCall ID is insufficient authority.
+
+Private JSON values use explicit typed references in HistoryValue. The bounds are:
+
+| Value or structure | Maximum |
+|---|---:|
+| Binding, initial input, event | 1 MiB each |
+| Proposal, executable batch, stored call request or result | 512 KiB each |
+| State, triage, completion, handoff | 256 KiB each |
+| Call binding, disposition | 16 KiB each |
+| Individual transport or normalized text | 256 KiB |
+| Complete retained value closure per Work | 16 MiB |
+| Execution revisions, binding revisions, calls | 64, 2, 5 |
+| JSON depth, nodes, collection members | 16, 16,384, 2,048 |
+| Ordered progress window, downstream targets | 256 each |
+
+Token preflight runs before JSON allocation. Closed wrappers reject unknown fields, duplicate
+keys, non-finite numbers, floats, invalid Unicode, mixed reference kinds and cycles. Snapshot
+validation reconstructs the journal and checks complete private closure, protected identity,
+completion effects and downstream references before load and after transformed ledger replay.
+A missing or erased dependency causes refusal. This validation does not supply a Forget
+selector or prove that the current physical erasure compiler reaches these new families.
+
+Production authority remains unconditionally unavailable. No provider constructor, API,
+runner mode, registry entry or outbox drainer activates this protocol. The missing owners must
+supply reciprocal per-send Models association and current D14 admission, worker lifetime,
+transaction checks and final release. The inactive local authority publisher does not supply
+those owners. Held, unresolved, redacted, rejected, incomplete, typed and media work cannot
+become successful v1 completion. Full D10, full D14, Request7 and owner demo acceptance remain open.
+
+The focused regression files distinguish pure codec checks and in-memory transaction controls
+from opt-in native Neo4j and actual subprocess cuts. The native/process module requires
+`GROVE_LEARNER_NATIVE_TESTS=1` under separate test authorization. Its fixtures use synthetic
+owner and model responses. Native atomicity, process recovery, physical erasure and live owner
+acceptance remain **NOT RUN** in this source session; synthetic controls do not prove them.

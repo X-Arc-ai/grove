@@ -1119,7 +1119,7 @@ A row that holds an old value of an item's content column also has the label :Pa
 
 Keys: `requests_world_id_id_unique` (world_id, id).
 
-Indexes: `requests_world_id_status_idx` (world_id, status).
+Indexes: `requests_world_id_status_idx` (world_id, status); `requests_world_id_learner_work_id_idx` (world_id, learner_work_id); `requests_world_id_learner_completion_id_idx` (world_id, learner_completion_id).
 
 A request commits once, in one batch, and `saved` moves in the same transaction as that commit (S41). A filter in MATCH or WHERE reads with no lock, so a transition checks the row after it holds the row's write lock (S1).
 
@@ -1153,6 +1153,8 @@ A request commits once, in one batch, and `saved` moves in the same transaction 
 | (none) | `about` | `ids` | ruling | S41: B.3 remember, for the later pass |
 | (none) | `relay` | `enum:relay` | ruling | S53: remember, answer or correction |
 | (none) | `protocol` | `code` | ruling | Optional protected protocol: question_answer_v1 |
+| (none) | `learner_work_id` | `id` | ruling | Optional immutable protected Learner work reference |
+| (none) | `learner_completion_id` | `id` | ruling | Optional immutable Learner completion reference |
 | (none) | `question_id` | `id` | ruling | Optional immutable question answer binding |
 | (none) | `question_binding_revision` | `int` | ruling | Optional positive binding revision |
 | (none) | `answer_command` | `json_ids` | ruling | Optional canonical AnswerCommandV1; <=16 KiB |
@@ -2161,6 +2163,239 @@ Indexes: `forget_approvals_world_id_idx` (world_id).
 | (none) | `created_at` | `instant` | ruling | approval time |
 | (none) | `expires_at` | `instant` | ruling | short approval lifetime |
 | (none) | `used_at` | `instant` | ruling | consumed atomically with the cascade |
+
+### learner_work
+
+`:LearnerWork`, node. Scope world. Restore group snapshot. Owner D10.
+
+Keys: `learner_work_id_unique` (id); `learner_work_world_id_episode_id_generation_profile_unique` (world_id, episode_id, generation, profile); `learner_work_world_id_request_id_unique` (world_id, request_id).
+
+Indexes: `learner_work_world_id_state_retry_at_idx` (world_id, state, retry_at); `learner_work_world_id_source_id_idx` (world_id, source_id); `learner_work_world_id_connector_id_idx` (world_id, connector_id).
+
+Inactive durable Learner source. Private values require complete D14 closure before runtime use.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+| (none) | `episode_id` | `id` | ruling | Immutable same-world origin |
+| (none) | `source_id` | `id` | ruling | Immutable same-world origin |
+| (none) | `connector_id` | `id` | ruling | Immutable same-world origin |
+| (none) | `generation` | `int` | ruling | Positive source-owner generation |
+| (none) | `profile` | `enum:learner_profile` | ruling | Exact inactive v1 profile |
+| (none) | `request_id` | `id` | ruling | Immutable one-to-one protected Request |
+| (none) | `initial_input_value_id` | `value_id` | ruling | Immutable canonical initial binding; <=1 MiB |
+| (none) | `latest_execution_id` | `id` | ruling | Current append-only revision |
+| (none) | `state` | `enum:learner_state` | ruling | Exact current execution projection |
+| (none) | `retry_at` | `instant` | ruling | Optional current retry time |
+| (none) | `completion_id` | `id` | ruling | Optional immutable successful completion |
+| (none) | `supersedes_work_id` | `id` | ruling | Optional prior terminal generation |
+| (none) | `created_at` | `instant` | ruling | Immutable operational creation time |
+
+### learner_executions
+
+`:LearnerExecution`, node. Scope world. Restore group snapshot. Owner D10.
+
+Keys: `learner_executions_id_unique` (id); `learner_executions_world_id_work_id_ordinal_unique` (world_id, work_id, ordinal); `learner_executions_world_id_work_id_event_id_unique` (world_id, work_id, event_id).
+
+Indexes: `learner_executions_world_id_work_id_idx` (world_id, work_id); `learner_executions_world_id_run_id_idx` (world_id, run_id); `learner_executions_world_id_commit_id_idx` (world_id, commit_id).
+
+Inactive durable Learner source. Private values require complete D14 closure before runtime use.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+| (none) | `work_id` | `id` | ruling | Exact same-world associations |
+| (none) | `request_id` | `id` | ruling | Exact same-world associations |
+| (none) | `run_id` | `id` | ruling | Exact same-world associations |
+| (none) | `ordinal` | `int` | ruling | Append-only revision, starts at zero; at most 63 |
+| (none) | `binding_revision` | `int` | ruling | Positive semantic revision; at most two |
+| (none) | `claim_epoch` | `int` | ruling | Checked protocol epoch |
+| (none) | `predecessor_id` | `id` | ruling | Optional only at ordinal zero |
+| (none) | `event_id` | `id` | ruling | Immutable command replay key |
+| (none) | `event_kind` | `enum:learner_event` | ruling | Exact accepted protocol event |
+| (none) | `state` | `enum:learner_state` | ruling | Exact reducer result |
+| (none) | `binding_value_id` | `value_id` | ruling | Canonical private value; <=1 MiB |
+| (none) | `event_value_id` | `value_id` | ruling | Canonical private value; <=1 MiB |
+| (none) | `state_value_id` | `value_id` | ruling | Canonical private state wrapper; <=256 KiB |
+| (none) | `proposal_value_id` | `value_id` | ruling | Optional canonical private payload; <=512 KiB |
+| (none) | `batch_value_id` | `value_id` | ruling | Optional canonical private payload; <=512 KiB |
+| (none) | `triage_value_id` | `value_id` | ruling | Optional canonical private trace; <=256 KiB |
+| (none) | `dependency_ids` | `ids` | ruling | Complete context reference union; <=1536 |
+| (none) | `commit_id` | `id` | ruling | Journal transaction identity |
+| (none) | `change_set_id` | `id` | ruling | Journal transaction identity |
+| (none) | `at` | `instant` | ruling | Operational event acceptance time |
+
+### learner_calls
+
+`:LearnerCall`, node. Scope world. Restore group snapshot. Owner D10.
+
+Keys: `learner_calls_id_unique` (id); `learner_calls_world_id_work_id_ordinal_unique` (world_id, work_id, ordinal); `learner_calls_world_id_model_call_id_unique` (world_id, model_call_id).
+
+Indexes: `learner_calls_world_id_work_id_idx` (world_id, work_id); `learner_calls_world_id_state_idx` (world_id, state); `learner_calls_world_id_run_id_idx` (world_id, run_id).
+
+Inactive durable Learner source. Private values require complete D14 closure before runtime use.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+| (none) | `work_id` | `id` | ruling | Immutable actual-attempt association |
+| (none) | `prepared_execution_id` | `id` | ruling | Immutable actual-attempt association |
+| (none) | `run_id` | `id` | ruling | Immutable actual-attempt association |
+| (none) | `ordinal` | `int` | ruling | One through five across all claims and rebinds |
+| (none) | `claim_epoch` | `int` | ruling | Exact prepared claim and binding |
+| (none) | `binding_revision` | `int` | ruling | Exact prepared claim and binding |
+| (none) | `stage` | `enum:learner_stage` | ruling | Exact PR41 stage |
+| (none) | `route` | `code` | ruling | Exact PR41 model-step tuple; <=80 ASCII characters |
+| (none) | `model` | `code` | ruling | Exact PR41 model-step tuple; <=80 ASCII characters |
+| (none) | `job` | `code` | ruling | Exact PR41 model-step tuple; <=80 ASCII characters |
+| (none) | `effort` | `code` | ruling | Exact PR41 model-step tuple; <=80 ASCII characters |
+| (none) | `state` | `enum:learner_call_state` | ruling | Current journal-justified attempt state |
+| (none) | `request_value_id` | `value_id` | ruling | Exact private normalized and wire request; <=512 KiB |
+| (none) | `result_value_id` | `value_id` | ruling | Optional screened wire/normalized result; <=512 KiB |
+| (none) | `binding_value_id` | `value_id` | ruling | Private digest and metering association; <=16 KiB |
+| (none) | `model_call_id` | `id` | ruling | Optional reciprocal owner-issued metering reference |
+| (none) | `latest_execution_id` | `id` | ruling | Revision that justifies current attempt state |
+| (none) | `prepared_at` | `instant` | ruling | Immutable reservation time |
+| (none) | `sent_at` | `instant` | ruling | Optional owner event time, set once |
+| (none) | `settled_at` | `instant` | ruling | Optional owner event time, set once |
+| (none) | `validation_code` | `enum:learner_validation` | ruling | Optional closed result code |
+
+### learner_dispositions
+
+`:LearnerDisposition`, node. Scope world. Restore group snapshot. Owner D10.
+
+Keys: `learner_dispositions_id_unique` (id); `learner_dispositions_world_id_work_id_binding_revision_message_ordinal_unique` (world_id, work_id, binding_revision, message_ordinal).
+
+Indexes: `learner_dispositions_world_id_source_id_idx` (world_id, source_id); `learner_dispositions_world_id_episode_id_idx` (world_id, episode_id); `learner_dispositions_world_id_state_idx` (world_id, state).
+
+Inactive durable Learner source. Private values require complete D14 closure before runtime use.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+| (none) | `work_id` | `id` | ruling | Exact same-world origin |
+| (none) | `execution_id` | `id` | ruling | Exact same-world origin |
+| (none) | `source_id` | `id` | ruling | Exact same-world origin |
+| (none) | `episode_id` | `id` | ruling | Exact same-world origin |
+| (none) | `binding_revision` | `int` | ruling | Immutable positive source versions |
+| (none) | `source_version` | `int` | ruling | Immutable positive source versions |
+| (none) | `episode_version` | `int` | ruling | Immutable positive source versions |
+| (none) | `message_ordinal` | `int` | ruling | Exact retained-message position, zero through 127 |
+| (none) | `locator` | `locator` | ruling | Exact retained key locator; <=1024 characters |
+| (none) | `state` | `enum:learner_disposition` | ruling | Complete message disposition |
+| (none) | `detail_value_id` | `value_id` | ruling | Private provenance and complete class outcomes; <=16 KiB |
+| (none) | `operation_ids` | `ids` | ruling | Local descriptor IDs; <=500 |
+| (none) | `evidence_ids` | `ids` | ruling | Local observation IDs; <=1024 |
+| (none) | `hold_id` | `id` | ruling | Optional future references; absent for v1 success |
+| (none) | `mention_id` | `id` | ruling | Optional future references; absent for v1 success |
+| (none) | `handoff_id` | `id` | ruling | Optional future references; absent for v1 success |
+| (none) | `at` | `instant` | ruling | Operational disposition time |
+
+### learner_completions
+
+`:LearnerCompletion`, node. Scope world. Restore group snapshot. Owner D10.
+
+Keys: `learner_completions_id_unique` (id); `learner_completions_world_id_work_id_unique` (world_id, work_id); `learner_completions_world_id_request_id_unique` (world_id, request_id).
+
+Indexes: `learner_completions_world_id_completed_at_idx` (world_id, completed_at); `learner_completions_world_id_commit_id_idx` (world_id, commit_id).
+
+Inactive durable Learner source. Private values require complete D14 closure before runtime use.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+| (none) | `work_id` | `id` | ruling | Exact final associations |
+| (none) | `request_id` | `id` | ruling | Exact final associations |
+| (none) | `execution_id` | `id` | ruling | Exact final associations |
+| (none) | `run_id` | `id` | ruling | Exact final associations |
+| (none) | `binding_revision` | `int` | ruling | Final checked semantic revision and claim epoch |
+| (none) | `claim_epoch` | `int` | ruling | Final checked semantic revision and claim epoch |
+| (none) | `commit_id` | `id` | ruling | Same transaction as all accepted effects |
+| (none) | `change_set_id` | `id` | ruling | Same transaction as all accepted effects |
+| (none) | `outcome` | `enum:learner_completion` | ruling | Successful whole-work result only |
+| (none) | `detail_value_id` | `value_id` | ruling | Private completion plan, effect ledger and versions; <=256 KiB |
+| (none) | `disposition_ids` | `ids` | ruling | Exact complete disposition set; one through 128 |
+| (none) | `operation_count` | `int` | ruling | Derived bounded count, never a supplied estimate |
+| (none) | `message_count` | `int` | ruling | Derived bounded count, never a supplied estimate |
+| (none) | `blank_count` | `int` | ruling | Derived bounded count, never a supplied estimate |
+| (none) | `empty_count` | `int` | ruling | Derived bounded count, never a supplied estimate |
+| (none) | `extracted_count` | `int` | ruling | Derived bounded count, never a supplied estimate |
+| (none) | `created_item_count` | `int` | ruling | Derived bounded count, never a supplied estimate |
+| (none) | `completed_at` | `instant` | ruling | Operational commit time |
+
+### learner_episode_progress
+
+`:LearnerEpisodeProgress`, node. Scope world. Restore group snapshot. Owner D10.
+
+Keys: `learner_episode_progress_id_unique` (id); `learner_episode_progress_world_id_episode_id_profile_unique` (world_id, episode_id, profile); `learner_episode_progress_world_id_stream_anchor_source_id_profile_position_unique` (world_id, stream_anchor_source_id, profile, position).
+
+Indexes: `learner_episode_progress_world_id_connector_id_idx` (world_id, connector_id); `learner_episode_progress_world_id_required_work_id_idx` (world_id, required_work_id).
+
+Inactive durable Learner source. Private values require complete D14 closure before runtime use.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+| (none) | `episode_id` | `id` | ruling | Immutable same-world source-stream lineage |
+| (none) | `connector_id` | `id` | ruling | Immutable same-world source-stream lineage |
+| (none) | `stream_anchor_source_id` | `id` | ruling | Immutable same-world source-stream lineage |
+| (none) | `profile` | `enum:learner_profile` | ruling | Exact inactive v1 profile |
+| (none) | `position` | `int` | ruling | Stable source-owner order, starts at zero; <=255 |
+| (none) | `predecessor_progress_id` | `id` | ruling | Optional only at position zero |
+| (none) | `required_generation` | `int` | ruling | Latest positive registered requirement |
+| (none) | `required_work_id` | `id` | ruling | Latest required source-owner work |
+| (none) | `completed_generation` | `int` | ruling | Optional latest completed generation |
+| (none) | `completion_id` | `id` | ruling | Optional latest successful completion |
+| (none) | `historical_contribution` | `enum:learner_contribution` | ruling | Extracted contribution never downgrades |
+| (none) | `source_start` | `instant` | ruling | Optional exact source start; absence means unknown |
+| (none) | `created_at` | `instant` | ruling | Immutable operational creation time |
+
+### learner_handoffs
+
+`:LearnerHandoff`, node. Scope world. Restore group snapshot. Owner D10.
+
+Keys: `learner_handoffs_id_unique` (id); `learner_handoffs_world_id_execution_id_kind_unique` (world_id, execution_id, kind).
+
+Indexes: `learner_handoffs_world_id_state_idx` (world_id, state); `learner_handoffs_world_id_work_id_idx` (world_id, work_id).
+
+Inactive durable Learner source. Private values require complete D14 closure before runtime use.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+| (none) | `work_id` | `id` | ruling | Immutable accepted origin |
+| (none) | `execution_id` | `id` | ruling | Immutable accepted origin |
+| (none) | `completion_id` | `id` | ruling | Exactly one optional origin class must be present |
+| (none) | `disposition_id` | `id` | ruling | Exactly one optional origin class must be present |
+| (none) | `kind` | `enum:learner_handoff_kind` | ruling | Bounded aggregate intent; future questions cannot complete v1 |
+| (none) | `contract_version` | `int` | ruling | Exactly one |
+| (none) | `payload_value_id` | `value_id` | ruling | Private typed intent; <=256 KiB |
+| (none) | `target_ids` | `ids` | ruling | Complete same-world target set; <=256 |
+| (none) | `state` | `enum:learner_handoff_state` | ruling | Pending, acknowledged or revoked |
+| (none) | `consumer_receipt_id` | `id` | ruling | Optional immutable durable consumer transaction |
+| (none) | `created_at` | `instant` | ruling | Immutable operational creation time |
+| (none) | `acknowledged_at` | `instant` | ruling | Optional operational acknowledgement time |
 
 ## Full-text indexes
 
