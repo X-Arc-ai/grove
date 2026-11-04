@@ -71,7 +71,7 @@ def frozen():
 
 def automated_source(driver, w: str, lines: list[str]) -> dict[str, str]:
     """A notice that arrived in a chat, whose own metadata names the automated sender: the code
-    that parsed it set the speaker, so the writer types the row by it (D5, S46)."""
+    that parsed it set the speaker, so the writer types the row by it (D5, S51)."""
     connector_id = record_connector(driver, w, "whatsapp")
     source_id = record_source(
         driver,

@@ -88,6 +88,32 @@ anything else reads `planned`; (4)
 `not_started` for a known start after `at`; (5) `current`. The successors and the scheduled values
 ride on every state.
 
+### The two time axes, the history and the restore (D3)
+
+```python
+from grove.store.asof import world_as_of, item_as_of
+from grove.store.replay import known_as_of, rebuild, read_history, ReplayRefused, FORGOTTEN_MARKER
+from grove.store.history_reads import item_history, changes_between, stopped_believing
+from grove.store.d3_fingerprint import live_fingerprint, fingerprint
+from grove.writer.restore import take_snapshot, restore, rebuild_in_place, replay_ledger
+```
+
+Both as-of reads return `grove.store.axes.AsOf`: `axis`, `at`, and `items` and `links` keyed by id,
+each an `AsOfRow(row, standing)`. A row that did not stand at `at` is left out, except an item
+with successors then, which stays with them on its standing.
+
+| Function | What it does |
+|---|---|
+| `world_as_of(query, at, *, item_ids=None)` | What was true at world time `at`, with everything Grove knows now. Item content is the replay at `at`; the ending is the head's, placed by its stop clock (its earliest bound, else its latest, else the world time of the end entry); a refuted item is never true and is left out; `spent` does not end anything on this axis; a replayed stop clock drops while the replayed status is live. Claim fields and the planned origin come from the evidence rows active now whose source time is at or before `at`. Links: the head row, when `link_standing` at `at` is current, with a link's ending placed as an item's when it has a stop clock (`placed_link`: a link that ended at an `unknown` or `before` time stood until then; a refuted link never stood). Successors: the successor links that stand at `at`. |
+| `known_as_of(query, at)` | What Grove believed at record time `at`: the head rebuilt from the entries recorded by then, read at world time `at` with the world axis's placement of each ending (an ending placed after `at` had not happened yet, never for `refuted` or `spent`). |
+| `item_as_of(query, item_id, world_time)` | The raw replay of one item's columns (D1's head rule). It is the building block of `world_as_of`, not a read path: it carries no standing and no successors. |
+| `item_history(query, item_id)` | Every entry of the item, of its links, of their evidence rows and of its belief row, in sequence, with old and new values decoded and the reason as text; `.successors` are the item's successors now. The item page's "what Grove believed, when, on what evidence, and what replaced it". |
+| `changes_between(query, start, end)` | The changes recorded in `[start, end)`, one per entity and change set, each with `kind` (`created`, `changed`, `ended`, `reopened`, `undone`) and, for an ending, its `end_class` or `end_reason`, so "ended in the world" and "refuted" are told apart. |
+| `stopped_believing(query, start, end)` | The endings recorded in `[start, end)` that were beliefs Grove gave up: `refuted` only. An ending in the world, a retirement, a slot link replaced, a re-pointed merge link and a spent record are not. |
+| `rebuild(entries, values, *, known_at=None, validate=True)` | The projections the entries give, in sequence, as a `Projection` (`rows[table][id]`, `history`, `forgotten`). Each entry is checked as the writer checks it, against the registry as rebuilt so far; a failed check raises `ReplayRefused(sequence, rule)`. History-only entries never move a row. |
+| `live_fingerprint(driver, world_id, *, forgotten=())` and `fingerprint(rows, history, tables, *, forgotten=())` | D3's fingerprint: every projection row's id, clocks, `recheck_by`, status, end class and version (and `active` on evidence), the history's last sequence and entry count, and each snapshot table's count and newest id. No text, and no `touched_at`. |
+| `take_snapshot`, `load_snapshot`, `rebuild_in_place`, `replay_ledger`, `restore` | D3's one restore procedure, in its four steps; `restore` raises `RestoreMismatch` and the store must not go live when the fingerprint does not match the snapshot's, recomputed without the ids the ledger forgot since. The word rows keep D8's measures, which no entry holds (S47). `replay_ledger` refuses a `field_value` or `named_value` row that names a row entry's value (`ReplayRefused`, rule `row_value`) before it marks anything. The writers are stopped for the whole restore. `python -m grove.writer.restore fingerprint|rebuild --world <id>` runs it on a store loaded from a dump. |
+
 ### The resolver
 
 ```python
@@ -175,6 +201,12 @@ what an earlier one did.
 | `attach_evidence` | U C K P W | **op_id**, **target** (item, link or belief id), **ev_id** or **evidence_id**, **polarity**, judgment_ids | `= item 77d2aa01 evidence e88f0a1b (supports, said)` |
 | `end_evidence` | C K P | **op_id**, **evidence**, **end_reason** (`correction`, `forget`, `merge`) | `- evidence e88f0a1b (correction)` |
 | `verify` | U C K P H | **op_id**, **claim** (item or link id), **pieces** (list of `{ev_id or evidence_id, judgment_id or answer}`), **disposition** (`confirmed`, `moved`, `retired`, `deferred`), **reason**, second_judge (judgment ids), recheck_by, recheck_how, override_reason | `v item 44b0aa12: confirmed 10-27 09:15 against a fetched page; re-check by 10-29` |
+| `correct` | U C K P | **op_id**, **target** (the record), **successor** (an item id or a temp id of this batch), **evidence_refs**, **reason**, no_head_update_reason | `> link 5c21aa90: 9a1e0c33 -[corrected by]-> 31cdee01`, with the head's own lines |
+| `refute` | U C K P | **op_id**, **target** (item or link), **evidence_refs**, **reason**, version | `x item 44b0aa12 (refuted)` |
+| `supersede` | U K P | **op_id**, **target**, **successor**, **evidence_refs**, **reason**, stopped_being_true, version | `x item 44b0aa12 (superseded)` and the `superseded by` link |
+| `merge` | C K P | **op_id**, **survivor**, **absorbed**, **reason**, evidence_refs | `* item a3b7c1d2 merged into b7e8f9a0`, the re-pointed links |
+| `undo` | P W | **op_id**, **change_set**, **reason** | `u change set 18422aa0 undone`, then the inverse lines |
+| `retire_record` | K | **op_id**, **record**, **lesson** (the belief or head that holds its lesson), **reason**, version | `x record 9a1e0c33 (spent; lesson in b7e8f9a0)` |
 | `propose_word` | U C K | **op_id**, **word_type** (`kind`, `meaning`, `property_name`), **name**, **description**, **reason**, **worked_example** (`{ev_id}` or `{evidence_id}`), **neighbours** (`[{word, distinction}]`), **declared**, **judgment_ids**, kind (a property name's kind, required for one), proposed_capability (`{connector_type, capability}`), reversed (a meaning that reads its first neighbour from the other end) | `o mint meaning "is godparent of" (provisional)` or `o alias "is pals with" for meaning "related to"` |
 | `promote_word` | K P | **op_id**, **word_type**, **word** (id or name), **reason**, kind (for a property name) | `o promote meaning "is godparent of" (canonical)` |
 
@@ -187,10 +219,10 @@ D4's one way to move last confirmed. A piece cites the recorded judgment that ju
 (`server/grove/writer/judgments.py` writes them; `server/grove/models/verify_judge.py` runs the
 fixed judge prompt), or, for the person in Grove's views, the answer they chose. The writer reads each
 verdict from its row and computes the rest from stored rows: the capability that lets the piece's
-source confirm this claim (`server/grove/store/capabilities.py`, S49), each piece's weight
+source confirm this claim (`server/grove/store/capabilities.py`, S54), each piece's weight
 (1.0 when newer than the claim's last confirmation, else falling from 1.0 to 0.3 at its
 connector's staleness limit and 0 beyond; always fresh for git and the calendar), `agree`,
-`disagree`, the ratio and the band (S47), and whether the claim is load-bearing (a consequence
+`disagree`, the ratio and the band (S52), and whether the claim is load-bearing (a consequence
 link into or out of it, a link that carries consequences, a state link on the person's own item).
 A confirmation needs the band `confirm`, and a load-bearing one an agreeing second judge from
 another model or recorded as a correlated stand-in. Each verify appends one `:Verification` row,
@@ -198,7 +230,7 @@ and `confirmed_against` names it. Last confirmed moves to the time the newest ad
 for, never the commit time, and every row, at typing, is refused when it is dated after now or after its source was read (`sources.received_at`; a calendar entry or a reminder may be dated ahead), with `future_evidence`, and refused when it is dated outside the window of the episode it cites (`outside_episode`). An operation's world time is never later than its batch. Load-bearing is
 read again at the end of the batch, so a consequence link that a later operation adds needs the
 second judge too. The AI host verifies only with the person's own words in an answer or
-a correction (S48). `moved` needs the claim changed earlier in the batch, and `retired` needs it
+a correction (S53). `moved` needs the claim changed earlier in the batch, and `retired` needs it
 ended with the end class `retired` and its consequence links ended. A confirmation at create
 (`confirmed_by_call`) needs a confirming creating row read in this pass, an extraction call of
 this run, and a claim that is not load-bearing at the end of the batch.
@@ -248,9 +280,55 @@ phrase kept, and gives a link of a meaning that settled as a state its re-check 
 codes and the person's own item. Only `server/grove/api/auth.py` calls it. `docs/signin.md` has the
 flows.
 
-The other B.2 operations belong to later lanes: correct, refute, supersede, merge,
-`retire_record` and undo (`writer-b`); capability rows from the item page (`views-c`) and
-with a mint (`ontology`);
+### The composite operations (D3)
+
+D3's composite operations live in `composite.py` (`writer-b`). Each moves lineage, the head and the
+links in the batch's one transaction, and nothing is deleted:
+
+- `correct` adds a "corrected by" link from the record to the item that carries the newer truth.
+  The record's row is not written at all: it stays byte for byte as it was, `touched_at` and
+  `version` included. The head's update rides in the same batch as its own operations
+  (`update_item`, `change_status`, `create_link`, ...), or `no_head_update_reason` says why there is
+  none (rule `head_update_required`). The successor may be minted earlier in the batch.
+- `refute` ends an item or a link as `refuted`, with no world end time: it was never true. The
+  evidence must rank at or above the claim (planned < said < reported_done < confirmed; an inferred
+  row or claim below planned), rule `refute_rank`; the person's own word passes (D9).
+- `supersede` ends the old item as `superseded`, with a stop clock (sent, or `before` the evidence
+  time), and adds "superseded by" to its successor. It takes a record-class item, because a
+  replaced decision is superseded; an overtaken observation or event is corrected instead (S46).
+- `merge` needs one lifecycle class (rule `merge_lifecycle`) and every active link of the absorbed
+  item fitting the survivor (`endpoint_kind_mismatch`, rule `merge_link_fit`). The absorbed item
+  ends as superseded by the survivor (its successor link starts at its own start, so it reads
+  overtaken at every time); each of its active links ends (`superseded`, no stop clock) and is
+  created again on the survivor with the same clocks, provenance and evidence rows, or adds its
+  evidence to the survivor's link with the same key; its title becomes an item alias of the
+  survivor, and its own item aliases move to the survivor.
+- `undo` appends the inverse of one change set, newest entry first, each entry with `inverse_of`:
+  a field goes back to its old value, a late value gets a late inverse at its own world time, a
+  created item or link ends as `refuted`, a created evidence row ends (`correction`), an ended one
+  is active again, a created registry row is `retired`. It is refused when a row the change set
+  moved has moved since (`version_conflict`, rule `undo_conflict`; a `restated` or
+  `no_head_update` marker moves no row), when the change set was undone
+  already (`already_undone`), when it is the starter set (`not_undoable`), or when a value it holds
+  was forgotten (`value_forgotten`). An undo can itself be undone. An undo of a D8 operation
+  retires a minted word or alias, or sets a promoted word back to provisional, and names itself in
+  the change-log row's `undone_by` (O10, S46). It is refused while an active item, link,
+  property or alias of a later batch uses the word (`version_conflict`, rule `word_in_use`), and
+  for a capability minted with the word, which has no ending (rule `no_ending`). These checks
+  also apply to a later undo that would retire the word again. The next operation in the batch
+  sees the updated registry. Older log rows are matched to their history; an ambiguous old
+  automatic promotion is refused (`ontology_log_ambiguous`). A batch that undoes several change
+  sets keeps every branch in the log when it is itself undone.
+- `retire_record` ends a record on the record axis only: `end_class` `spent` and `lesson_in` (the
+  new item column), both entries with no world time, and no stop clock. `current()` stops returning
+  it; history and world-axis as-of reads keep it, and its evidence rows stay active.
+
+A "corrected by" or "superseded by" link starts at the operation's evidence time, never after now
+(rule `successor_in_future`, S46). No operation edits a successor link by hand: `create_link`,
+`end_link` and `refute` refuse a primitive meaning; only an undo ends one. A belief is refused by
+these operations (rule `belief_transition`): the beliefs lane moves beliefs by D9's state machine.
+
+The remaining operations belong to later lanes: capability rows from the item page (`views-c`);
 beliefs and contradictions (`beliefs`); proposals and marks (`walk`); questions, holds and
 mentions (`cleanup`, `ingest-b`); forget (`forget`). D8's merge, split, rename, retire and undo are
 P1 (Appendix D, P1 item 3): the change log stores the inverse each of them will need.
@@ -438,7 +516,7 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | `end_item` and `end_link` need a valid end class and a world end time; `reopen_item` needs a reason; `end_evidence` needs a valid end reason | `invalid_arguments` (rules `missing_field`, `enum`) | `test_contract_d2.py` |
 | `attach_evidence` needs a target that exists, and is unique on message key, target and polarity | `not_found` (rule `target_not_found`) | `test_contract_d2.py` |
 | An item, a link or an evidence row ends once | `invalid_arguments` (rule `already_ended`) | `test_contract_d2.py` |
-| Only a terminal status carries `stopped_being_true`, and a change that goes to history only cannot carry it (the writer has no place to store it, so it refuses and never drops it) | `invalid_arguments` (rules `stopped_needs_terminal`, `stopped_on_history_only`) | `test_contract_d2.py` |
+| Only a terminal status carries `stopped_being_true`; a late terminal status that goes to history only keeps its end time as a history-only entry at its own world time | `invalid_arguments` (rule `stopped_needs_terminal`) | `test_contract_d2.py` |
 | Only a link of the generic meaning keeps an original phrase | `invalid_arguments` (rule `original_phrase`) | `test_contract_d2.py` |
 | A stale version is refused | `version_conflict` | `test_contract_d2.py` |
 | One invalid operation rolls back the whole batch; a dependent of an operation refused at the end of the batch is named too; a failed commit raises and returns no receipt; an unknown commit outcome or an unreadable receipt is never a retryable "nothing written" | (none) | `test_atomicity.py` |
@@ -472,6 +550,13 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | Two spellings of one property in one create or update with different values are refused, so no value is lost | `invalid_arguments` (rule `property_named_twice`) | `test_resolver.py` |
 | An unmapped or ambiguous link phrase rides on the generic meaning with its phrase kept, never on a meaning that carries consequences | (none) | `test_resolver.py` |
 | The candidate band is every item of the kind at 0.3 or more, best first; an ended item is flagged and kept; a distinct pair is left out | (none) | `test_resolver.py`, `test_neardup_labelled.py` |
+| A correction leaves the record byte-identical and moves the head in the same commit; with no head update it states why; the successor may be minted in the batch; a successor link never starts after now; an ended record is not corrected | `invalid_arguments` (rules `head_update_required`, `successor_in_future`), `ended_target` | `test_contract_d3.py` |
+| A refutation ends an item or a link as never true, with evidence at the claim's rank unless the person says it; a successor link is not refuted by hand | `invalid_arguments` (rule `refute_rank`), `unknown_meaning` (rule `primitive_meaning`) | `test_contract_d3.py` |
+| A supersession ends the old item with a stop clock and keeps the lineage | `invalid_arguments` (rule `already_ended`) | `test_contract_d3.py` |
+| A merge re-points the links with the same clocks and turns names into aliases; a merge then an undo restores both items, their links and their aliases; one lifecycle class, links fitting the survivor | `invalid_arguments` (rule `merge_lifecycle`), `endpoint_kind_mismatch` (rule `merge_link_fit`) | `test_contract_d3.py` |
+| An undo of an automatic change takes one call and keeps both change sets; it conflicts when the row moved since; a late value's undo restores the as-of read; an undone creation is refuted; only the person or the writer undoes; the starter set is not undone | `version_conflict` (rule `undo_conflict`), `invalid_arguments` (rules `already_undone`, `not_undoable`), `scope_denied` | `test_contract_d3.py` |
+| A spent record leaves `current()`, keeps its evidence and its history, and reads true on the world axis; only the consolidation agent retires, and only a record | `invalid_arguments` (rule `not_a_record`), `scope_denied` | `test_contract_d3.py` |
+| A clock entry holds the value id of its words | (none) | `test_contract_d3.py` |
 | A proposed word that resolves already mints nothing; a reversed phrase swaps the ends | `invalid_arguments` (rule `word_exists`) | `test_ontology.py` |
 | A new word is minted provisional with its reason, its worked example, its ends and two named neighbours; one episode restated stays provisional, three distinct episodes make it canonical in the same transaction | (none) | `test_ontology.py` |
 | A proposal cites two recorded same-word judgments of this word, from two models or a correlated second judge; two `same` make an alias; a disagreement mints | `second_judge_required` (rules `judgments_required`, `two_models`), `unrecorded_verdict` (rules `unrecorded_verdict`, `judgment_subject`, `judgment_role`, `judgment_verdict`, `judgment_call`) | `test_ontology.py` |

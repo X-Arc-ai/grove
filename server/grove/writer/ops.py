@@ -113,6 +113,43 @@ OPS: dict[str, OpSpec] = {
         ("second_judge", "recheck_by", "recheck_how", "override_reason"),
         "v",
     ),
+    # D3's composite operations (B.2). Each moves lineage, the head and the links in one batch.
+    "correct": OpSpec(
+        _callers("UCKP"),
+        ("op_id", "target", "successor", "evidence_refs", "reason"),
+        ("no_head_update_reason",),
+        ">",
+    ),
+    "refute": OpSpec(
+        _callers("UCKP"),
+        ("op_id", "target", "evidence_refs", "reason"),
+        ("version",),
+        "x",
+    ),
+    "supersede": OpSpec(
+        _callers("UKP"),
+        ("op_id", "target", "successor", "evidence_refs", "reason"),
+        ("stopped_being_true", "version"),
+        "x",
+    ),
+    "merge": OpSpec(
+        _callers("CKP"),
+        ("op_id", "survivor", "absorbed", "reason"),
+        ("evidence_refs",),
+        "*",
+    ),
+    "undo": OpSpec(
+        _callers("PW"),
+        ("op_id", "change_set", "reason"),
+        (),
+        "u",
+    ),
+    "retire_record": OpSpec(
+        _callers("K"),
+        ("op_id", "record", "lesson", "reason"),
+        ("version",),
+        "x",
+    ),
     # D8's ontology operations (B.2: propose U C K; the rest K P). grove.writer.ontology checks
     # the declared fields, the neighbours and the judgments; the shape is checked here.
     "propose_word": OpSpec(
@@ -178,7 +215,19 @@ _PROVENANCE_KEYS = ("episode_id", "source_id", "locator", "message_key", "source
 _REF_KEYS = frozenset({"ev_id", "evidence_id", "polarity"})
 _DISTINCT_KEYS = frozenset({"item", "reason"})
 # Fields that take an item or link id, and so also a temp id of this batch.
-REF_FIELDS = ("item", "link", "target", "from", "to", "claim")
+REF_FIELDS = (
+    "item",
+    "link",
+    "target",
+    "from",
+    "to",
+    "claim",
+    "successor",
+    "survivor",
+    "absorbed",
+    "record",
+    "lesson",
+)
 
 # Keys no caller may send, wherever they sit (not inside properties, which are the item's data).
 _FORBIDDEN: dict[str, tuple[str, str]] = {
@@ -422,11 +471,20 @@ def _check_fields(name: str, op: dict[str, Any]) -> None:
         _clock(op["became_true"], "became_true")
     if "stopped_being_true" in op:
         _clock(op["stopped_being_true"], "stopped_being_true")
-    for key in ("kind", "title", "meaning", "reason", "status", "original_phrase", "op_id"):
+    for key in (
+        "kind",
+        "title",
+        "meaning",
+        "reason",
+        "status",
+        "original_phrase",
+        "op_id",
+        "no_head_update_reason",
+    ):
         if key in op:
             rule = "required_field" if key == "title" else "type"
             _text(op[key], key, rule=rule)
-    for key in (*REF_FIELDS, "evidence", "ev_id", "evidence_id"):
+    for key in (*REF_FIELDS, "evidence", "ev_id", "evidence_id", "change_set"):
         if key in op:
             _text(op[key], key)
     for key in ("summary", "body"):

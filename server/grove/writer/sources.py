@@ -61,7 +61,7 @@ _META_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
 
 
 def speakers_json(speakers: Any) -> str | None:
-    """The speakers the connector's code read from a source's own metadata (S46): message key to
+    """The speakers the connector's code read from a source's own metadata (S51): message key to
     {kind, locator, sender, original_author}. `locator` is where that message sits in the source,
     so no row can borrow the key for another place. `sender` is a code the connector chose (never
     an address), and `original_author` an item id. Only code that parses a source sets these, so
@@ -335,7 +335,7 @@ def write_screened_source(
 ) -> dict[str, Any]:
     """Write one :Source and its :ScreeningReceipt in the caller's transaction.
 
-    `document` (S46) is the connector's word that the source is an uploaded file or picture (a
+    `document` (S51) is the connector's word that the source is an uploaded file or picture (a
     PDF, an image, a scan), not text the person typed: only such a source can be an artifact.
 
     It returns the source id, the counts per class and the number of kept messages: no text.

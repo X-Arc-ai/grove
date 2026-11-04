@@ -115,7 +115,7 @@ class VerdictsMismatch(InvalidOutput):
 @dataclass(frozen=True)
 class Piece:
     """One piece of evidence as the judge reads it: an evidence row, or, for a fetch that has no
-    row yet, the stored source and the locator read (S46)."""
+    row yet, the stored source and the locator read (S51)."""
 
     text: str
     speaker_kind: str

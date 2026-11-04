@@ -133,7 +133,7 @@ ALIASES = {
     },
 }
 ALIAS_COUNT = 27
-# S50: the scheduled times of the starter kinds, by (kind, name): their scheduled roles.
+# S55: the scheduled times of the starter kinds, by (kind, name): their scheduled roles.
 PROPERTY_NAMES = {
     ("plan", "scheduled for"): "start",
     ("task", "due"): "due",
@@ -279,7 +279,7 @@ def test_an_alias_with_no_reversed_key_is_refused():
 
 
 def test_the_starter_property_names_are_scheduled_times(driver, seeded):
-    """S50: each starter property name marks a scheduled time of its kind, so a plan's date and a
+    """S55: each starter property name marks a scheduled time of its kind, so a plan's date and a
     trip's announced start are properties of the claim, never its clocks (D4, spec line 920)."""
     world, ids = seeded
     kind_names = {kind_id: name for name, kind_id in ids["kinds"].items()}

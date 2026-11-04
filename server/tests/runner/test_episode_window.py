@@ -1,4 +1,4 @@
-"""The episode the runner cuts for a request holds the time its row is dated at (S46).
+"""The episode the runner cuts for a request holds the time its row is dated at (S51).
 
 A remember carries no time per message, so the Learner dates its row at the request's `said_at`
 (the runner's batch form does so), and the writer refuses a row dated outside its episode. The

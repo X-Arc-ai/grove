@@ -267,7 +267,7 @@ def test_a_confirming_artifact_in_the_same_transaction_allows_done(driver, w, ta
         ["Signed hand-over: the seating plan, sent"],
         document=True,
     )
-    # The whole stored file is the artifact (S46); a line of a note never is.
+    # The whole stored file is the artifact (S51); a line of a note never is.
     artifact = whole(files, "f1", statement_class="artifact")
     done = line(talk, "d1", 2, statement_class="report_happened")
     apply(driver, w, [attach(task, "f1"), change_status(task, "done", "d1")], [artifact, done])

@@ -330,7 +330,7 @@ def test_a_proposal_the_judges_cannot_take_is_held_and_the_plan_goes_on(driver, 
 
 def property_proposal(name: str, **over) -> dict:
     # A starter kind with no property name of its own yet (the starter set names scheduled times
-    # for plan, task, trip, period and event, S50), so its first property needs no neighbour.
+    # for plan, task, trip, period and event, S55), so its first property needs no neighbour.
     op = {
         "op_id": new_op_id(),
         "word_type": "property_name",

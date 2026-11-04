@@ -65,7 +65,7 @@ def chat(driver, seeded):
 
 
 # The episode window of a test source: wide, so a test may date its rows freely. A row may not be
-# dated outside its episode (S46); a test of that rule passes its own window.
+# dated outside its episode (S51); a test of that rule passes its own window.
 EPISODE_FROM = datetime(2000, 1, 1, tzinfo=UTC)
 EPISODE_TO = datetime(2100, 1, 1, tzinfo=UTC)
 

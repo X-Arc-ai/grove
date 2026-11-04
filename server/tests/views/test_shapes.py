@@ -2,8 +2,10 @@
 
 import re
 
+from grove.store.current import STATES
+from grove.store.primitives import MEANING_CORRECTED_BY
 from grove.writer.testing import plant_node, set_self_item
-from tests.views.conftest import plant_small_world
+from tests.views.conftest import T2, plant_keyed_link, plant_small_world
 
 ISO_Z = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z")
 DAY = re.compile(r"\d{4}-\d{2}-\d{2}")
@@ -33,6 +35,8 @@ NODE_KEYS = {
     "version",
     "properties",
     "has_changes",
+    "standing",
+    "successors",
 }
 # The node detail only: the clocks in words (D4), docs/views.md "C".
 CLOCK_KEYS = {"last confirmed", "re-check by", "became true", "recorded", "source type", "state"}
@@ -52,6 +56,7 @@ EDGE_KEYS = {
 }
 STATS_KEYS = {"total_nodes", "total_edges", "by_type", "embedded", "edge_verbs"}
 DETAIL_KEYS = {"node", "required_props", "optional_props", "required_prop_names", "status_field"}
+SUCCESSOR_KEYS = {"id", "link_id", "meaning"}
 HEALTH_KEYS = {
     "status",
     "summary",
@@ -85,6 +90,11 @@ def assert_node_types(node):
     assert type(node["version"]) is int
     assert isinstance(node["properties"], dict)
     assert type(node["has_changes"]) is bool
+    assert node["standing"] in STATES
+    assert isinstance(node["successors"], list)
+    for successor in node["successors"]:
+        assert set(successor) == SUCCESSOR_KEYS
+        assert all(isinstance(value, str) for value in successor.values())
 
 
 def test_graph_keys_types_and_values(driver, world, client_for):
@@ -120,6 +130,8 @@ def test_graph_keys_types_and_values(driver, world, client_for):
         "version": 3,
         "properties": {"due": "2026-12-01", "budget": 400},
         "has_changes": True,
+        "standing": "current",
+        "successors": [],
     }
     catering = nodes[small.catering["id"]]
     # No world clock: valid_at falls back to recorded; no touched_at: updated_at is recorded.
@@ -198,6 +210,68 @@ def test_node_detail_keys_and_values(driver, world, client_for):
     assert catering["node"]["content"] == "Three menus to compare"
     assert catering["node"]["status_field_value"] == ""
     assert client.get(f"/v1/views/node/{small.maya['id']}").json()["optional_props"] == []
+
+
+def plant_correction(driver, small) -> tuple[dict, dict]:
+    """A newer item and an active "corrected by" link from the venue to it, as the writer's
+    correct operation (writer-b, Part A) writes one. Returns (successor, link)."""
+    successor = plant_node(
+        driver,
+        small.world_id,
+        "Item",
+        kind=small.task["id"],
+        title="Book the Okonkwo hall",
+        recorded=T2,
+        became_true_earliest=T2,
+    )
+    link = plant_keyed_link(
+        driver,
+        small.world_id,
+        small.venue["id"],
+        successor["id"],
+        MEANING_CORRECTED_BY,
+        recorded=T2,
+        became_true_earliest=T2,
+        became_true_latest=T2,
+        became_true_precision="instant",
+    )
+    return successor, link
+
+
+def test_successor_on_views_graph(driver, world, client_for):
+    small = plant_small_world(driver, world)
+    successor, link = plant_correction(driver, small)
+    nodes = nodes_by_id(client_for(world).get("/v1/views/graph").json())
+
+    venue = nodes[small.venue["id"]]
+    assert venue["standing"] == "overtaken"
+    assert venue["successors"] == [
+        {"id": successor["id"], "link_id": link["id"], "meaning": "corrected by"}
+    ]
+    # The successor itself, and an item with no successor, carry none.
+    for other in (successor, small.catering, small.maya):
+        assert (nodes[other["id"]]["standing"], nodes[other["id"]]["successors"]) == (
+            "current",
+            [],
+        )
+    for node in nodes.values():
+        assert set(node) == NODE_KEYS
+        assert_node_types(node)
+
+
+def test_successor_on_views_node(driver, world, client_for):
+    small = plant_small_world(driver, world)
+    successor, link = plant_correction(driver, small)
+    client = client_for(world)
+
+    venue = client.get(f"/v1/views/node/{small.venue['id']}").json()["node"]
+    assert venue["standing"] == "overtaken"
+    assert venue["successors"] == [
+        {"id": successor["id"], "link_id": link["id"], "meaning": "corrected by"}
+    ]
+    assert_node_types(venue)
+    catering = client.get(f"/v1/views/node/{small.catering['id']}").json()["node"]
+    assert (catering["standing"], catering["successors"]) == ("current", [])
 
 
 def test_an_unknown_node_is_a_typed_404(world, client_for):
