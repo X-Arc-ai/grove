@@ -481,6 +481,12 @@ ONTOLOGY_CHANGE_LOG = Table(
         _col("actor", "code"),
         _col("at", "instant"),
         _col("undone by", "id"),
+        _ruling(
+            "change_set_id",
+            "id",
+            "S46: the change set of the batch that wrote the row; an undo finds the rows it "
+            "reverses by it",
+        ),
         # O10: undone by changes after the row is written, so the row carries the S12 pair.
         *_version_touched(),
     ),

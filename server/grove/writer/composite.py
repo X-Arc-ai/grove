@@ -890,6 +890,7 @@ class _Undo:
             row = ontology.lock_registry(run, label, entity_id)
             if row.get("status") == "retired":
                 return
+            ontology.check_retirable(run, label, row)
             self.entry(entry, field="status", old=row.get("status"), new="retired", world_time=None)
             ontology.set_registry(run, label, entity_id, {"status": "retired"})
             self.bump(entity_type, entity_id, label)
