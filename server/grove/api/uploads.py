@@ -249,7 +249,11 @@ async def _invented_upload(
             raise missing_policy
         spool.seek(0)
         result = await run_in_threadpool(
-            take_in, request.app.state.driver, world_id, provider, Upload(spool, size),
+            take_in,
+            request.app.state.driver,
+            world_id,
+            provider,
+            Upload(spool, size),
             screener=new_demo_screener(),
         )
         return result.to_api()

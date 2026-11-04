@@ -64,15 +64,37 @@ _CLOCKS = ("became_true", "stopped_being_true")
 _BOUNDS = ("earliest", "latest")
 _UNKNOWN = "unknown"
 _MARKERS: dict[str, frozenset[str]] = {
-    "item": frozenset({"reopened", "merged_into", "verified"}),
-    "link": frozenset({"restated", "no_head_update", "verified"}),
+    "item": frozenset(
+        {
+            "reopened",
+            "merged_into",
+            "verified",
+            "cascade_mark",
+            "cascade_proposal",
+            "cascade_disposition",
+        }
+    ),
+    "link": frozenset(
+        {"restated", "no_head_update", "verified", "cascade_end", "cascade_explanation"}
+    ),
 }
 # Markers that never move their row, so they add no version: a known link restated, and the
 # reason a correction gives for no head update, which can land on a link that a correction of an
 # earlier batch made (the writer leaves that link's version as it was). The undo's conflict
 # check leaves out the same set (grove.writer.composite.STILL_MARKERS). A verification marker
 # itself changes no field; its clock/re-check entries count any actual version change.
-_NO_VERSION = frozenset({"restated", "no_head_update", "verified"})
+_NO_VERSION = frozenset(
+    {
+        "restated",
+        "no_head_update",
+        "verified",
+        "cascade_mark",
+        "cascade_proposal",
+        "cascade_disposition",
+        "cascade_end",
+        "cascade_explanation",
+    }
+)
 # Item fields of the entry vocabulary that a later migration may add to the catalogue.
 _ITEM_FIELDS = frozenset({"lesson_in"})
 _FIXED = frozenset({"id", "world_id", "version", "touched_at"})

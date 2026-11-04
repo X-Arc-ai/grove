@@ -145,7 +145,16 @@ def read_receipt(
         for entry in entries
         if entry.get("new_value_id")
         and (
-            entry["field"] in ("end_class", "end_reason", "verified", "merged_into", "lesson_in")
+            entry["field"]
+            in (
+                "end_class",
+                "end_reason",
+                "verified",
+                "merged_into",
+                "lesson_in",
+                "cascade_mark",
+                "cascade_proposal",
+            )
             or (entry["entity_type"] in ("link", "registry_row") and entry["field"] == "row")
         )
     ]
@@ -201,6 +210,16 @@ def _line(
 ) -> ReceiptLine | None:
     entity_type, entity_id, name = entry["entity_type"], entry["entity_id"], entry["field"]
     value_id = entry.get("new_value_id")
+    if name in ("cascade_mark", "cascade_proposal"):
+        detail = values.get(value_id) or {}
+        return ReceiptLine(
+            "~" if name == "cascade_mark" else "?",
+            "item",
+            entity_id,
+            value_id=detail.get("id"),
+            target_id=detail.get("trigger_id"),
+            field=detail.get("action"),
+        )
     if name == "verified" and entity_type in ("item", "link", "belief"):
         # The value holds the verification id; the line keeps the id, never the text.
         return ReceiptLine(
@@ -490,6 +509,13 @@ def _link_text(link_id: str, found: dict[str, dict[str, Any]]) -> str:
 
 def _render_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
     entity = short_id(line.entity_id)
+    if line.symbol == "~":
+        return (
+            f"~ item {entity} affected by {short_id(line.target_id or '')} "
+            f"(mark {short_id(line.value_id or '')})"
+        )
+    if line.symbol == "?":
+        return f"? proposal {short_id(line.value_id or '')}: item {entity} ({line.field})"
     if line.symbol == "+":
         item = found["items"].get(line.entity_id, {})
         kind = found["kinds"].get(item.get("kind"), "?")
