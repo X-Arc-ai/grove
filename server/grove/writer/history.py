@@ -55,13 +55,13 @@ def compact(row: dict[str, Any]) -> dict[str, Any]:
 
 def add_text(tx: WorldTx, stamp: Stamp, text: str) -> str:
     value_id = new_id(stamp.world_id)
-    tx.run(_ADD_VALUE, row={"id": value_id, "value": text})
+    tx.run(_ADD_VALUE, row={"id": value_id, "value": text, "version": 1, "touched_at": stamp.at})
     return value_id
 
 
 def add_value(tx: WorldTx, stamp: Stamp, value: Any, *, past_of_item: str | None = None) -> str:
     value_id = new_id(stamp.world_id)
-    row = {"id": value_id, "value": encode(value)}
+    row = {"id": value_id, "value": encode(value), "version": 1, "touched_at": stamp.at}
     if past_of_item is None:
         tx.run(_ADD_VALUE, row=row)
     else:

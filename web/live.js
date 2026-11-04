@@ -16,6 +16,8 @@
     health: '/v1/views/health',
     positions: '/v1/views/positions',
     upload: '/v1/sources/upload',
+    sourceCoverage: '/v1/sources/connectors',
+    sourceConnections: '/v1/connectors',
     googleStart: '/v1/auth/google/start?next=/',
     emailStart: '/v1/auth/email/start',
     emailVerify: '/v1/auth/email/verify',

@@ -66,7 +66,7 @@ _STARTER_PROPERTY_NAMES = (
 )
 # The default capabilities of D5 (S54): store-wide rows with fixed ids, like the primitive rows.
 _ENSURE_DEFAULT_CAPABILITY = CYPHER_PREFIX + "MERGE (c:Capability {id: $id}) SET c += $row"
-_ADD_VALUE = "CREATE (v:HistoryValue {id: $id, value: $value})"
+_ADD_VALUE = "CREATE (v:HistoryValue {id: $id, value: $value, version: 1, touched_at: $at})"
 _ADD_ENTRY = "CREATE (e:ChangeEntry) SET e += $entry"
 _STARTER_KINDS = "MATCH (k:Kind {origin: $origin}) RETURN k.id AS id, k.name AS key"
 _STARTER_MEANINGS = "MATCH (m:Meaning {origin: $origin}) RETURN m.id AS id, m.name AS key"
@@ -119,9 +119,9 @@ def seed_primitives(driver: Driver) -> None:
         session.execute_write(_ensure_primitives)
 
 
-def _add_value(tx: WorldTx, world_id: str, value: str) -> str:
+def _add_value(tx: WorldTx, world_id: str, value: str, at: datetime) -> str:
     value_id = new_id(world_id)
-    tx.run(_ADD_VALUE, id=value_id, value=value)
+    tx.run(_ADD_VALUE, id=value_id, value=value, at=at)
     return value_id
 
 
@@ -149,7 +149,7 @@ def _add_row(tx: WorldTx, label: str, row: dict[str, Any], run: _SeedRun) -> Non
             "entity_id": row["id"],
             "field": _FIELD,
             "new_value_id": _add_value(
-                tx, run.world_id, _row_as_json(_TABLES[label], row, run.world_id)
+                tx, run.world_id, _row_as_json(_TABLES[label], row, run.world_id), run.at
             ),
             "recorded_at": run.at,
             "world_time": run.at,
@@ -179,7 +179,7 @@ def _registry_row(tx: WorldTx, declared: dict[str, Any], run: _SeedRun) -> dict[
     return {
         **_governed(run),
         "name": declared["name"],
-        "description": _add_value(tx, run.world_id, declared["description"]),
+        "description": _add_value(tx, run.world_id, declared["description"], run.at),
         "distinct_episodes": 0,
         "uses": 0,
         "primitive": False,
@@ -236,7 +236,7 @@ def _property_row(
         "temporal_class": declared["temporal_class"],
         "scheduled_role": declared.get("scheduled_role"),
         "default_horizon": declared.get("default_horizon"),
-        "description": _add_value(tx, run.world_id, declared["description"]),
+        "description": _add_value(tx, run.world_id, declared["description"], run.at),
         "distinct_episodes": 0,
         "uses": 0,
     }
@@ -275,7 +275,7 @@ def _seed(tx: WorldTx, world_id: str, starter: dict[str, Any], at: datetime) -> 
     run = _SeedRun(
         world_id=world_id,
         at=at,
-        reason=_add_value(tx, world_id, _REASON),
+        reason=_add_value(tx, world_id, _REASON, at),
         commit_id=new_id(world_id),
         change_set_id=new_id(world_id),
     )
@@ -337,7 +337,7 @@ def create_world(driver: Driver, world_id: str, *, owner_user_id: str) -> dict[s
                 _SeedRun(
                     world_id=world_id,
                     at=at,
-                    reason=_add_value(tx, world_id, _REASON),
+                    reason=_add_value(tx, world_id, _REASON, at),
                     commit_id=new_id(world_id),
                     change_set_id=new_id(world_id),
                 ),
