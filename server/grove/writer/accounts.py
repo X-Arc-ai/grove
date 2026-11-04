@@ -23,6 +23,7 @@ from neo4j import Driver, ManagedTransaction, unit_of_work
 from neo4j.exceptions import ConstraintError
 
 from grove import clock
+from grove.demo_policy import DEMO_VERSION, DemoDenied, configured_email_hash, require_designation
 from grove.ids import new_id
 from grove.store.connection import DATABASE
 from grove.store.query import CYPHER_PREFIX, PlatformQuery, WorldQuery, collect
@@ -342,6 +343,58 @@ def ensure_account(
         driver, world_id, method=method, title=own_title(display_name)
     )
     return Account(user_id, world_id, self_item_id, created)
+
+
+def ensure_demo_account(
+    driver: Driver,
+    hashed_address: str,
+    *,
+    world_id_for: Callable[[str], str] = default_world_id,
+) -> Account:
+    """Reserve a fresh demo identity before normal account initialization.
+
+    Only ON CREATE writes the designation. An existing ordinary account never becomes a demo.
+    The unique address key serializes first provision against normal first sign-in and retries.
+    """
+    if configured_email_hash() is None or hashed_address != configured_email_hash():
+        raise DemoDenied()
+    fresh = new_id()
+    chosen_world = world_id_for(fresh)
+
+    def reserve(tx: ManagedTransaction) -> tuple[str, str]:
+        rows = _rows(
+            tx,
+            "MERGE (u:User {email_hash: $email_hash}) "
+            "ON CREATE SET u.id = $id, u.created_at = $at, "
+            "u.demo_version = $version, u.demo_world_id = $world_id "
+            "RETURN u.id AS id, u.demo_version AS version, u.demo_world_id AS world_id",
+            email_hash=hashed_address,
+            id=fresh,
+            at=clock.now(),
+            version=DEMO_VERSION,
+            world_id=chosen_world,
+        )
+        row = rows[0]
+        if row["version"] != DEMO_VERSION or row["world_id"] != world_id_for(row["id"]):
+            raise DemoDenied()
+        return row["id"], row["world_id"]
+
+    for attempt in range(_ATTEMPTS):
+        try:
+            user_id, world_id = _write(driver, reserve)
+            break
+        except ConstraintError:
+            if attempt == _ATTEMPTS - 1:
+                raise
+    # Check metadata before the normal helper can select or touch another world.
+    worlds = PlatformQuery(driver).read(_OLDEST_WORLD, user_id=user_id)
+    if worlds and worlds[0]["id"] != world_id:
+        raise DemoDenied()
+    account = ensure_account(driver, hashed_address, method="email", world_id_for=world_id_for)
+    if account.user_id != user_id or account.world_id != world_id:
+        raise DemoDenied()
+    require_designation(driver, world_id, user_id)
+    return account
 
 
 # Sessions ------------------------------------------------------------------------------------
