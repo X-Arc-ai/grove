@@ -16,6 +16,8 @@ import json
 import re
 from pathlib import Path
 
+import preview_corpus
+
 ROOT = Path(__file__).resolve().parent
 FIXTURE_HOOK = "window.GROVE_FIXTURE"
 DATA_FLOW = ROOT.parent / "docs" / "data-flow.md"
@@ -80,7 +82,7 @@ def script(match, demo=False):
         return ""
     text = (ROOT / match[1].removeprefix("./")).read_text(encoding="utf-8")
     if name == "conversation-preview.js":
-        data = json.loads((ROOT / "demo.synthetic.json").read_text(encoding="utf-8"))
+        data = preview_corpus.cut(json.loads((ROOT / "demo.synthetic.json").read_text(encoding="utf-8")))
         payload = "window.GroveClaudePreviewData=" + json.dumps(data).replace("<", "\\u003c") + ";"
         url = emit_asset(payload.encode("utf-8"), ".js", "text/javascript")
         text = "GroveDeferred.register('claude-preview'," + json.dumps(url) + ");\n" + text

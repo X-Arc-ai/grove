@@ -17,6 +17,8 @@
     workers: '/v1/views/workers',
     positions: '/v1/views/positions',
     upload: '/v1/sources/upload',
+    agentFiles: '/v1/agent-files',
+    agentNotes: '/v1/agent-files/notes',
     pendingExports: '/v1/sources/pending-exports',
     sourceCoverage: '/v1/sources/connectors',
     sourceConnections: '/v1/connectors',
@@ -198,6 +200,20 @@
       });
     },
     pendingExports: function () { return getJSON(ENDPOINTS.pendingExports); },
+    errorText: errorText,
+    agentFiles: function () { return getJSON(ENDPOINTS.agentFiles); },
+    addAgentNote: function (title, body) { return postJSON(ENDPOINTS.agentNotes, { title: title, body: body }); },
+    addAgentFile: function (file) {
+      return window.fetch(ENDPOINTS.agentFiles + '?name=' + encodeURIComponent(file.name), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/octet-stream' },
+        body: file,
+      }).then(read).then(watchSession.bind(null, sessionsBegun));
+    },
+    removeAgentFile: function (kind, name) {
+      return request('DELETE', ENDPOINTS.agentFiles + '/' + kind + '/' + encodeURIComponent(name)).then(watchSession.bind(null, sessionsBegun));
+    },
     requestExport: function (provider) {
       var codes = { chatgpt: 'chatgpt', claude: 'claude_ai', chats: 'whatsapp', muse: 'muse', grok: 'grok' };
       if (!Object.prototype.hasOwnProperty.call(codes, provider)) return Promise.reject(new Error('Unknown export provider.'));

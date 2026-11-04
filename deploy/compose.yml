@@ -71,7 +71,15 @@ services:
       GROVE_DENYLIST: /run/grove/screening/denylist.txt
       # The API's own default, written out so nginx's limit for the upload path can match it.
       GROVE_UPLOAD_MAX_BYTES: "268435456"
+      GROVE_AGENT_FILES_DIR: /run/grove/agent-files
     volumes:
+      # The worlds' working folders, under the runner's own HOME (grove.api.agent_files).
+      # apply.sh makes the folder for the API to write and the runner's group to read.
+      - type: bind
+        source: /var/lib/grove-runner/worlds
+        target: /run/grove/agent-files
+        bind:
+          create_host_path: false
       - type: bind
         source: /etc/grove/google-oauth.json
         target: /run/grove/google-oauth.json

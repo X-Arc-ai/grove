@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   var data = null, context = null, epoch = 0, timer = null, step = 0, ids = [], history = [];
-  var tick = 3000, steps = 18;
+  var tick = 1500, steps = 36;
   function clear() {
     epoch++; window.clearTimeout(timer); timer = null;
     data = null; context = null; step = 0; ids = []; history = [];
@@ -39,7 +39,7 @@
   // No call to getState here: the live state engine uses this projection.
   function view() {
     if (!data) return null;
-    return {provider: 'claude', label: 'Claude example', progress: Math.round(step / steps * 100),
+    return {provider: 'claude', label: 'Claude', progress: Math.round(step / steps * 100),
       status: step < steps ? 'importing' : 'ready', step: step};
   }
   function announce() {
