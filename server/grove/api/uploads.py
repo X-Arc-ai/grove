@@ -10,12 +10,13 @@ codes only. docs/ingest.md has the contract.
 """
 
 import os
+import re
 import tempfile
 import threading
 from datetime import datetime
 from typing import IO, Annotated, Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 import grove.ingest  # noqa: F401  Registers the parsers, so providers() lists them.
@@ -34,6 +35,7 @@ from grove.config import ConfigError
 from grove.demo_policy import is_demo_world
 from grove.ingest.connector import NotAnExport, Upload, providers
 from grove.ingest.take_in import take_in
+from grove.ingest.import_progress import ProgressSelectionDenied, ProgressUnavailable, read_import_progress
 from grove.ingest.tokens import find_upload_grant
 from grove.ingest.upload_policy import screener_for_upload
 from grove.screening import Screener
@@ -338,3 +340,37 @@ def get_connectors(request: Request, session: Session) -> dict[str, Any]:
     """The session's world only. An upload token is no session, so it gets a 401 here."""
     rows = WorldQuery(request.app.state.driver, session.world_id).read(_CONNECTORS)
     return {"connectors": [_connector(row) for row in rows]}
+
+
+@router.get("/import-progress")
+def get_import_progress(request: Request, response: Response, session: Session) -> dict[str, Any]:
+    if "authorization" in request.headers:
+        raise unauthenticated("import progress requires a session")
+    params = request.query_params
+    if set(params) - {"provider", "after", "limit", "client_id"} or any(len(params.getlist(key)) != 1 for key in params):
+        raise invalid_arguments("unsupported import progress query", "query")
+    provider = params.get("provider")
+    if provider not in {"chatgpt", "claude_ai", "muse"}:
+        raise invalid_arguments("unknown import provider", "provider")
+    client_id = params.get("client_id")
+    if "client_id" in params and provider != "muse":
+        raise invalid_arguments("client_id is only valid for Muse", "client_id")
+    raw_limit = params.get("limit", "50")
+    if not raw_limit.isascii() or not raw_limit.isdigit() or not 1 <= len(raw_limit) <= 2:
+        raise invalid_arguments("limit must be between 1 and 50", "limit")
+    limit = int(raw_limit)
+    if not 1 <= limit <= 50:
+        raise invalid_arguments("limit must be between 1 and 50", "limit")
+    after = params.get("after")
+    if after is not None and not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", after):
+        raise invalid_arguments("after must be a source cursor", "after")
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return read_import_progress(
+            request.app.state.driver, session.world_id, provider, after=after, limit=limit,
+            client_id=client_id, user_id=session.user_id,
+        )
+    except ProgressSelectionDenied as error:
+        raise ApiError(403, "scope_denied", str(error)) from None
+    except ProgressUnavailable as error:
+        raise _not_configured(str(error)) from None

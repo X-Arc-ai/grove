@@ -418,6 +418,73 @@ def test_an_attachment_is_only_the_fact():
         assert EXTRACTED not in text and PREVIEW not in text and "My notes" not in text
 
 
+def _file_facts(*, attachments=(), files=(), documents=()):
+    row = record(
+        "files-1", "human", seconds=10, attachments=list(attachments), files=list(files),
+        content=[text_block("Read these files.", 10), *documents],
+    )
+    (chat,) = parse(as_json(conversation(BEES, [row])))
+    return chat.messages[0].text
+
+
+def test_one_file_in_three_containers_has_one_marker():
+    item = {"file_uuid": "file-1", "file_name": "map.txt", "extracted_content": EXTRACTED}
+    text = _file_facts(attachments=[item], files=[item], documents=[{"type": "document", **item}])
+    assert text.count("[attached file: map.txt]") == 1
+    assert EXTRACTED not in text
+
+
+def test_uuid_free_file_matches_only_complete_unique_cross_container_metadata():
+    metadata = {"file_name": "map.txt", "file_size": 120, "file_type": "text/plain"}
+    text = _file_facts(attachments=[metadata], files=[{**metadata, "file_uuid": "file-1"}])
+    assert text.count("[attached file: map.txt]") == 1
+
+
+@pytest.mark.parametrize("attachments,files,expected", [
+    ([{"file_name": "map.txt"}], [{"file_name": "map.txt"}], 2),
+    ([{"file_uuid": "one", "file_name": "map.txt"}], [{"file_uuid": "two", "file_name": "map.txt"}], 2),
+    ([{}], [{"file_uuid": "one"}], 2),
+    ([{"file_name": "map.txt", "file_size": True, "file_type": "text/plain"}],
+     [{"file_name": "map.txt", "file_size": True, "file_type": "text/plain"}], 2),
+])
+def test_ambiguous_file_references_and_distinct_uuids_remain_distinct(attachments, files, expected):
+    assert _file_facts(attachments=attachments, files=files).count("[attached") == expected
+
+
+def test_duplicate_metadata_in_one_container_cannot_merge_uuid_free_references():
+    item = {"file_name": "map.txt", "file_size": 120, "file_type": "text/plain"}
+    assert _file_facts(attachments=[item, item], files=[item]).count("[attached") == 3
+
+
+@pytest.mark.parametrize("invalid_id", ["", " ", "\t\n"])
+def test_blank_file_identifiers_never_merge_distinct_references(invalid_id):
+    text = _file_facts(
+        attachments=[{"file_uuid": invalid_id, "file_name": "orchard.txt"}],
+        files=[{"file_uuid": invalid_id, "file_name": "harbor.txt"}],
+    )
+    assert text.count("[attached") == 2
+    assert "orchard.txt" in text and "harbor.txt" in text
+
+
+@pytest.mark.parametrize("invalid_id", ["", " ", "\t\n"])
+def test_blank_declared_file_identifier_cannot_use_metadata_fallback(invalid_id):
+    metadata = {"file_name": "orchard.txt", "file_size": 31, "file_type": "text/plain"}
+    text = _file_facts(
+        attachments=[{**metadata, "file_uuid": invalid_id}],
+        files=[metadata],
+    )
+    assert text.count("[attached") == 2
+
+
+def test_uuid_free_metadata_cannot_bridge_two_different_uuids():
+    item = {"file_name": "map.txt", "file_size": 120, "file_type": "text/plain"}
+    text = _file_facts(
+        attachments=[item], files=[{**item, "file_uuid": "one"}],
+        documents=[{"type": "document", **item, "file_uuid": "two"}],
+    )
+    assert text.count("[attached") == 3
+
+
 def test_two_failed_results_of_one_record_are_one_automated_message():
     records = [
         record(

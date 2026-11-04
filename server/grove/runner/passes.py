@@ -16,7 +16,7 @@ The runner service holds no store credential, so the API does each step for it:
 
 import json
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -24,16 +24,22 @@ from grove import clock
 from grove.demo_policy import is_demo_world
 from grove.ids import new_id
 from grove.models.config import load_catalog
-from grove.models.gateway_auth import mint as mint_gateway_token
+from grove.models.gateway_auth import IMPORT_PROFILE, mint as mint_gateway_token
 from grove.runner.tokens import AGENTS, check_runner_token_hash, mint_pass_token
 from grove.store.connection import Driver
 from grove.store.errors import ScopeError
 from grove.store.query import PlatformQuery, WorldQuery
-from grove.writer import Caller, claim_next_request, fail_request, record_episode
+from grove.writer import Caller, fail_request, record_episode
+from grove.writer.import_queue import (
+    PREFIX as IMPORT_PREFIX,
+    claim_import_request,
+    claim_interactive_request,
+    has_due_import,
+)
 from grove.writer import runs as run_rows
 from grove.writer.clocks import parse_instant
 from grove.writer.forget_ledger import LedgerUnavailable, material_request_guard
-from grove.writer.requests import LEASE_SECONDS
+from grove.writer.requests import LEASE_SECONDS, _DUE
 
 # Appendix C line 3269: ten changed items since the Connector's last pass, or a new contradiction.
 CONNECTOR_CHANGED_ITEMS = 10
@@ -94,10 +100,7 @@ def _worlds(driver: Driver) -> list[str]:
 
 
 _DUE_REQUEST = (
-    "MATCH (r:Request) WHERE r.source_id IS NOT NULL AND ("
-    "(r.status = 'queued' AND (r.retry_at IS NULL OR r.retry_at <= $now)) OR "
-    "(r.status = 'failed' AND r.retry_at IS NOT NULL AND r.retry_at <= $now) OR "
-    "(r.status = 'applying' AND (r.lease_until IS NULL OR r.lease_until <= $now))) "
+    "MATCH (r:Request) WHERE " + _DUE + " AND NOT r.id STARTS WITH $import_prefix "
     "RETURN r.id AS id LIMIT 1"
 )
 _DUE_JOBS = (
@@ -108,6 +111,12 @@ _LIVE_RUNS = (
     "MATCH (r:RunRecord {outcome: 'running'}) "
     "RETURN r.id AS id, r.agent AS agent, r.started AS started, r.time_cap AS time_cap"
 )
+
+
+def _has_due_requests(query: WorldQuery, now: datetime, *, allow_import=True) -> bool:
+    return bool(query.read(_DUE_REQUEST, now=now, import_prefix=IMPORT_PREFIX)) or (
+        allow_import and has_due_import(query, now)
+    )
 
 
 def live_run(query: WorldQuery, now: datetime, settings: "PassSettings") -> dict | None:
@@ -154,7 +163,7 @@ def due_work(
         if budget_reached(query, now):
             continue
         demo_world = is_demo_world(driver, world_id)
-        if demo_world and not query.read(_DUE_REQUEST, now=now):
+        if demo_world and not _has_due_requests(query, now, allow_import=False):
             # Leave autonomous jobs and stale runs intact for an explicit continuation.
             continue
         rows = query.read(_LIVE_RUNS)
@@ -165,10 +174,10 @@ def due_work(
                 driver, world_id, stale_margin_seconds=settings.lease_margin_seconds
             )
         if live is not None:
-            if live["agent"] != "learner" and query.read(_DUE_REQUEST, now=now):
+            if live["agent"] != "learner" and _has_due_requests(query, now, allow_import=not demo_world):
                 due.append({"world_id": world_id, "agent": "learner", "preempt": live["id"]})
             continue
-        if query.read(_DUE_REQUEST, now=now):
+        if _has_due_requests(query, now, allow_import=not demo_world):
             due.append({"world_id": world_id, "agent": "learner"})
         elif not demo_world:
             _ensure_connector_job(driver, world_id)
@@ -301,6 +310,16 @@ def start_pass(
         # Each claim repeats the check under the ledger lock through its World transaction.
         with material_request_guard(driver, world_id, due_at=clock.now(world_id)):
             pass
+    import_due = (
+        agent == "learner" and not is_demo_world(driver, world_id)
+        and has_due_import(WorldQuery(driver, world_id), clock.now(world_id))
+    )
+    if import_due:
+        # A threshold and watchdog, not a reservation or a hard total cost promise.
+        settings = replace(
+            settings, token_cap=min(settings.token_cap, 64_000),
+            time_cap_seconds=min(settings.time_cap_seconds, 120),
+        )
     catalog = load_catalog()
     _, job = AGENTS[agent]
     job_spec = catalog.job(job)
@@ -325,15 +344,24 @@ def start_pass(
     job_id: str | None = None
     if agent == "learner":
         caller = caller_for(agent)
+        maximum = min(settings.learner_requests, 5)
+        interactive_slots = max(0, maximum - int(import_due))
         try:
-            for _ in range(settings.learner_requests):
-                claimed = claim_next_request(
+            for _ in range(interactive_slots):
+                claimed = claim_interactive_request(
                     driver, world_id, caller, worker=run_id, lease_seconds=settings.lease_seconds
                 )
                 if claimed is None:
                     break
                 input_ids.append(claimed.id)
                 _ensure_episode(driver, world_id, claimed.source_id, run_id, started["started"])
+            if import_due and maximum > 0:
+                claimed = claim_import_request(
+                    driver, world_id, caller, worker=run_id, lease_seconds=settings.lease_seconds
+                )
+                if claimed is not None:
+                    input_ids.append(claimed.id)
+                    _ensure_episode(driver, world_id, claimed.source_id, run_id, started["started"])
         except LedgerUnavailable:
             # A deletion can start after the preflight. Keep Requests recoverable and
             # end this unissued run as a failure, never as a successful empty pass.
@@ -386,6 +414,7 @@ def start_pass(
             job=job,
             ttl_seconds=settings.token_ttl_seconds,
             token_cap=settings.token_cap,
+            profile=IMPORT_PROFILE if any(key.startswith(IMPORT_PREFIX) for key in input_ids) else None,
         ),
         time_cap_seconds=settings.time_cap_seconds,
     )
@@ -394,7 +423,7 @@ def start_pass(
 def _next_agent(driver: Driver, world_id: str) -> str | None:
     query = WorldQuery(driver, world_id)
     now = clock.now(world_id)
-    if query.read(_DUE_REQUEST, now=now):
+    if _has_due_requests(query, now, allow_import=not is_demo_world(driver, world_id)):
         return "learner"
     _ensure_connector_job(driver, world_id)
     agents = {row["agent"] for row in query.read(_DUE_JOBS, now=now)}

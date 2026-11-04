@@ -21,6 +21,7 @@ The gateway holds the Meta key and the Glimmer key; the runner holds neither.
 import asyncio
 import json
 import math
+import threading
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any
@@ -47,9 +48,10 @@ from grove.models.errors import (
     ModelError,
     ModelRefused,
     ProviderError,
+    RateLimited,
     Unauthenticated,
 )
-from grove.models.gateway_auth import RunClaims, verify
+from grove.models.gateway_auth import IMPORT_PROFILE, RunClaims, verify
 from grove.models.http import (
     MAX_ATTEMPTS,
     MODAL_ATTEMPTS,
@@ -107,6 +109,8 @@ _KNOWN_FIELDS = frozenset(
 DRAIN_SECONDS = 120.0
 # A full Spark context is about 4 MB of text; images as data URLs take the rest. The box has 8 GB.
 MAX_BODY_BYTES = 32 * 1024 * 1024
+IMPORT_BODY_BYTES = 131072
+IMPORT_OUTPUT_TOKENS = 8192
 
 
 def _error(error: ModelError) -> JSONResponse:
@@ -275,6 +279,14 @@ def _empty_completion(doc: dict) -> bool:
     return not text.strip() and not calls
 
 
+class DrainIncomplete(RuntimeError):
+    """A value-free shutdown result; process exit must not replace this evidence."""
+
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(f"gateway drain incomplete: {reason}")
+
+
 class Gateway:
     def __init__(
         self,
@@ -287,6 +299,14 @@ class Gateway:
     ) -> None:
         self._sleep = sleep
         self._pending: set[asyncio.Task] = set()
+        self._providers: set[asyncio.Task] = set()
+        self._closing = False
+        self._close_task: asyncio.Task | None = None
+        self._late_close: asyncio.Task | None = None
+        self._accounting_failed = False
+        self._cleanup_failed = False
+        # One process serves the internal gateway. Never queue import model calls.
+        self._import_slot = threading.Lock()
         self.settings = settings or load_model_settings()
         self.catalog = catalog or load_catalog()
         self.secret = self.settings.require_gateway_secret()
@@ -358,9 +378,69 @@ class Gateway:
         if claims.token_cap is not None:
             self.meter.check_run_cap(claims.world_id, claims.run_id, claims.token_cap)
 
+    async def _record_call(self, claims: RunClaims, *args) -> None:
+        # Cancellation cannot stop a database thread. Keep its import slot until
+        # that thread actually finishes, including cancellation during shutdown.
+        # Ordinary calls need the same accounting drain, without import limits.
+        async def write() -> None:
+            try:
+                await asyncio.to_thread(self._record, claims, *args)
+            except Exception:
+                self._accounting_failed = True
+                raise
+
+        record = self._spawn(write())
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(record)
+                break
+            except asyncio.CancelledError:
+                if record.cancelled():
+                    raise
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+
     async def chat_completions(self, request: Request) -> Response:
+        if self._closing:
+            return _error(ProviderError("the model gateway is closing"))
         try:
             claims = verify(self.secret, self.catalog, _bearer(request))
+        except ModelError as error:
+            return _error(error)
+        if claims.profile != IMPORT_PROFILE:
+            return await asyncio.shield(
+                self._spawn(self._chat_completions(request, claims), provider=True)
+            )
+        if not self._import_slot.acquire(blocking=False):
+            return _error(RateLimited("an import model call is already active"))
+        released = False
+
+        def release() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                self._import_slot.release()
+
+        async def dispatch() -> Response:
+            handed_to_pump = False
+            try:
+                answer = await self._chat_completions(request, claims, on_complete=release)
+                handed_to_pump = isinstance(answer, StreamingResponse)
+                return answer
+            finally:
+                if not handed_to_pump:
+                    release()
+
+        # A client cancellation must not free the slot while a provider call or
+        # meter write still runs. A stream transfers ownership to its pump.
+        return await asyncio.shield(self._spawn(dispatch(), provider=True))
+
+    async def _chat_completions(
+        self, request: Request, claims: RunClaims, *, on_complete: Callable[[], None] | None = None
+    ) -> Response:
+        try:
             body = await _read_json(request)
             if not isinstance(body, dict) or not isinstance(body.get("model"), str):
                 raise ModelRefused("the body must be an object with a model")
@@ -368,15 +448,27 @@ class Gateway:
             if not spec.chat:
                 raise ModelRefused("this model does not take chat")
             job = self.catalog.job(claims.job)
+            if claims.profile == IMPORT_PROFILE and spec.id != self.catalog.model_for(job).id:
+                raise ModelRefused("an import call must use its assigned model")
             effort = _effort(job, spec, self.catalog)
             url, headers = self._route(spec)
             try:
                 out = upstream_body(
                     body, spec=spec, effort=effort, job=claims.job, world_id=claims.world_id
                 )
+                if claims.profile == IMPORT_PROFILE:
+                    if any(
+                        isinstance(message.get("content"), list)
+                        and any(part.get("type") == "image_url" for part in message["content"])
+                        for message in out["messages"]
+                    ):
+                        raise ModelRefused("an import call cannot contain images")
+                    out["max_tokens"] = min(out["max_tokens"], IMPORT_OUTPUT_TOKENS)
                 messages, tools = json.dumps(out["messages"]), json.dumps(out.get("tools") or [])
                 # A trial build: NaN or a lone surrogate cannot be sent, and it is said here.
-                self.client.build_request("POST", url, json=out)
+                outbound = self.client.build_request("POST", url, json=out)
+                if claims.profile == IMPORT_PROFILE and len(outbound.content) > IMPORT_BODY_BYTES:
+                    raise BodyTooLarge("an import call exceeds 131072 outbound JSON bytes")
             except (ValueError, TypeError, RecursionError):
                 raise ModelRefused("the body cannot be sent as JSON") from None
             try:
@@ -400,7 +492,6 @@ class Gateway:
                 "POST", url, json=out, headers={**headers, "Accept-Encoding": "identity"}
             )
 
-        record = self._record
         try:
             response = await asend(
                 self.client,
@@ -409,6 +500,14 @@ class Gateway:
                 sleep=self._sleep,
                 attempts=MODAL_ATTEMPTS if spec.route == "modal" else MAX_ATTEMPTS,
             )
+        except asyncio.CancelledError:
+            # Shutdown exhausted the provider drain. The provider may have run;
+            # preserve estimated accounting before releasing the import slot.
+            await self._record_call(
+                claims, spec, effort, estimate_usage(input_chars),
+                "provider_error", started, attempt[0],
+            )
+            raise
         except ModelError as error:
             # An egress refusal: nothing left, so nothing is recorded.
             return _error(error)
@@ -416,13 +515,16 @@ class Gateway:
             # No answer, or an answer whose body could not be read (a DecodingError). Past a
             # failed connect, the provider may have run the call, so the row carries an estimate.
             usage = Usage() if isinstance(exc, NOT_SENT) else estimate_usage(input_chars)
-            await run_in_threadpool(
-                record, claims, spec, effort, usage, "provider_error", started, attempt[0]
+            await self._record_call(
+                claims, spec, effort, usage, "provider_error", started, attempt[0]
             )
             return _error(ProviderError("the model provider did not answer"))
         if response.status_code >= 300:
+            cancelled = False
             try:
                 await response.aread()
+            except asyncio.CancelledError:
+                cancelled = True
             except Exception:  # The status decides from here; an unreadable body changes nothing.
                 pass
             finally:
@@ -430,9 +532,11 @@ class Gateway:
             outcome = "rate_limited" if response.status_code == 429 else "provider_error"
             ran = may_have_run(response.status_code)
             usage = estimate_usage(input_chars) if ran else Usage()
-            await run_in_threadpool(
-                record, claims, spec, effort, usage, outcome, started, attempt[0]
+            await self._record_call(
+                claims, spec, effort, usage, outcome, started, attempt[0]
             )
+            if cancelled:
+                raise asyncio.CancelledError
             if response.status_code < 400:
                 # Redirects are not followed: the provider must answer at the URL it was given.
                 return _error(ProviderError("the model provider answered with a redirect"))
@@ -444,21 +548,21 @@ class Gateway:
                 doc = None
             if not isinstance(doc, dict):
                 usage = estimate_usage(input_chars)
-                await run_in_threadpool(
-                    record, claims, spec, effort, usage, "provider_error", started, attempt[0]
+                await self._record_call(
+                    claims, spec, effort, usage, "provider_error", started, attempt[0]
                 )
                 return _error(ProviderError("the model provider's answer is not a JSON object"))
             text, _, _ = chat_answer(doc)
             usage = usage_or_estimate(chat_usage(doc.get("usage")), input_chars, len(text))
             # The answer passes on as it came; an empty one is recorded as such (D15).
             outcome = "invalid_output" if _empty_completion(doc) else "ok"
-            await run_in_threadpool(
-                record, claims, spec, effort, usage, outcome, started, attempt[0]
+            await self._record_call(
+                claims, spec, effort, usage, outcome, started, attempt[0]
             )
             # The provider's bytes: its answer may hold what JSONResponse refuses to encode.
             return Response(response.content, media_type="application/json")
         return StreamingResponse(
-            self._relay(response, claims, spec, effort, started, attempt[0], input_chars),
+            self._relay(response, claims, spec, effort, started, attempt[0], input_chars, on_complete),
             media_type="text/event-stream",
             headers={"cache-control": "no-cache"},
         )
@@ -490,7 +594,7 @@ class Gateway:
             headers["retry-after"] = str(math.ceil(wait))
         return JSONResponse(body, status_code=response.status_code, headers=headers)
 
-    async def _relay(
+    def _relay(
         self,
         response: httpx.Response,
         claims: RunClaims,
@@ -499,6 +603,7 @@ class Gateway:
         started: float,
         gpu_from: float | None = None,
         input_chars: int = 0,
+        on_complete: Callable[[], None] | None = None,
     ) -> AsyncIterator[bytes]:
         """The client's side of a stream: chunks from the pump's queue. The pump owns the upstream
         response and the record, so a client that leaves, or a cancel of this generator, can
@@ -506,8 +611,13 @@ class Gateway:
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         gone = asyncio.Event()
         pump = self._spawn(
-            self._pump(response, queue, gone, claims, spec, effort, started, gpu_from, input_chars)
+            self._pump(response, queue, gone, claims, spec, effort, started, gpu_from, input_chars, on_complete),
+            provider=True,
         )
+        # Start the pump even if the client never starts reading the response.
+        return self._relay_client(queue, gone, pump)
+
+    async def _relay_client(self, queue, gone, pump) -> AsyncIterator[bytes]:
         try:
             while (chunk := await queue.get()) is not None:
                 yield chunk
@@ -518,10 +628,21 @@ class Gateway:
                 cap = self._spawn(self._cap(pump))
                 pump.add_done_callback(lambda _: cap.cancel())
 
-    def _spawn(self, work: Any) -> asyncio.Task:
+    def _spawn(self, work: Any, *, provider: bool = False) -> asyncio.Task:
         task = asyncio.ensure_future(work)
         self._pending.add(task)
-        task.add_done_callback(self._pending.discard)
+        if provider:
+            self._providers.add(task)
+
+        def ended(done: asyncio.Task) -> None:
+            self._pending.discard(done)
+            self._providers.discard(done)
+            # A disconnected client may never retrieve its task's exception.
+            # Accounting/cleanup failure flags retain the shutdown outcome.
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(ended)
         return task
 
     @staticmethod
@@ -540,6 +661,7 @@ class Gateway:
         started: float,
         gpu_from: float | None,
         input_chars: int,
+        on_complete: Callable[[], None] | None = None,
     ) -> None:
         watch = _StreamMeter()
         outcome: str | None = None
@@ -563,19 +685,27 @@ class Gateway:
             # The cap's cancel lands here too.
             if outcome is None:
                 outcome = "client_closed" if gone.is_set() else "provider_error"
-            try:
-                usage = usage_or_estimate(chat_usage(watch.usage), input_chars, watch.chars)
-                # In a thread: a slow store must not freeze every other stream of the loop.
-                await asyncio.to_thread(
-                    self._record, claims, spec, effort, usage, outcome, started, gpu_from
-                )
-            finally:
-                # Whatever happened, the client's stream ends.
-                queue.put_nowait(None)
+            async def finish() -> None:
                 try:
-                    await response.aclose()
-                except (httpx.HTTPError, asyncio.CancelledError):
-                    pass
+                    usage = usage_or_estimate(chat_usage(watch.usage), input_chars, watch.chars)
+                    # In a thread: a slow store must not freeze other streams.
+                    await self._record_call(
+                        claims, spec, effort, usage, outcome, started, gpu_from
+                    )
+                finally:
+                    queue.put_nowait(None)
+                    try:
+                        await response.aclose()
+                    except Exception:
+                        self._cleanup_failed = True
+                        raise
+                    finally:
+                        if on_complete is not None:
+                            on_complete()
+
+            # Cancellation ends the provider read, never its accounting task.
+            # The changing pending set includes this late-created finalizer.
+            await asyncio.shield(self._spawn(finish()))
 
     async def models(self, request: Request) -> Response:
         try:
@@ -590,16 +720,78 @@ class Gateway:
         return JSONResponse({"object": "list", "data": data})
 
     async def settle(self, timeout: float | None = None) -> None:
-        """Wait for the pumps still reading or recording, and for their caps."""
-        pending = [task for task in self._pending if not task.done()]
-        if pending:
-            await asyncio.wait(pending, timeout=DRAIN_SECONDS + 5 if timeout is None else timeout)
+        """Drain dispatches, newly created pumps, finalizers and meter threads.
 
-    async def aclose(self) -> None:
-        await self.settle()
-        for task in list(self._pending):
-            task.cancel()
+        A deadline reports incomplete work and never cancels accounting. Callers
+        must keep the process alive if they need pending records to finish.
+        """
+        limit = DRAIN_SECONDS + 5 if timeout is None else timeout
+        if not math.isfinite(limit) or limit < 0:
+            raise ValueError("drain timeout must be finite and nonnegative")
+        deadline = clock.monotonic() + limit
+        while pending := {task for task in self._pending if not task.done()}:
+            remaining = max(0.0, deadline - clock.monotonic())
+            if not remaining:
+                raise DrainIncomplete("deadline")
+            done, _ = await asyncio.wait(
+                pending, timeout=remaining, return_when=asyncio.FIRST_COMPLETED
+            )
+            if not done:
+                raise DrainIncomplete("deadline")
+        if self._accounting_failed:
+            raise DrainIncomplete("accounting_failed")
+        if self._cleanup_failed:
+            raise DrainIncomplete("response_close_failed")
+
+    async def _finish_client_close(self) -> None:
+        # After an incomplete deadline, retain the client until live finalizers
+        # finish. This late cleanup cannot turn the reported failure into success.
+        while pending := {task for task in self._pending if not task.done()}:
+            await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
         await self.client.aclose()
+
+    async def _close(self, drain_timeout: float, finalizer_timeout: float) -> None:
+        failure: DrainIncomplete | None = None
+        try:
+            await self.settle(timeout=drain_timeout)
+        except DrainIncomplete as error:
+            failure = error
+        finalizer_deadline = clock.monotonic() + finalizer_timeout
+        if failure is not None:
+            if failure.reason == "deadline":
+                # Only provider dispatch/pump tasks receive cancellation. Their
+                # finalizers and database threads retain their own lifetime.
+                for task in tuple(self._providers):
+                    task.cancel()
+                try:
+                    await self.settle(timeout=finalizer_timeout)
+                except DrainIncomplete as final_error:
+                    failure = final_error
+        self._late_close = asyncio.create_task(self._finish_client_close())
+        done, _ = await asyncio.wait(
+            {self._late_close},
+            timeout=max(0.0, finalizer_deadline - clock.monotonic()),
+        )
+        if not done:
+            failure = failure or DrainIncomplete("client_close_deadline")
+        else:
+            try:
+                self._late_close.result()
+            except Exception:
+                failure = DrainIncomplete("client_close_failed")
+        if failure is not None:
+            raise failure
+
+    async def aclose(
+        self, *, drain_timeout: float = DRAIN_SECONDS, finalizer_timeout: float = 5.0
+    ) -> None:
+        """Close once; every caller observes the same complete/incomplete result."""
+        if any(not math.isfinite(value) or value < 0 for value in (drain_timeout, finalizer_timeout)):
+            raise ValueError("close timeouts must be finite and nonnegative")
+        if self._close_task is None:
+            self._closing = True
+            self._close_task = asyncio.create_task(self._close(drain_timeout, finalizer_timeout))
+        await asyncio.shield(self._close_task)
 
 
 def create_app(gateway: Gateway) -> FastAPI:
