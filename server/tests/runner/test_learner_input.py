@@ -30,7 +30,7 @@ def message(key="message-1", **changes):
 
 def source(rows=None, **changes):
     return {
-        "id": "source-1",
+        "id": "00000000-0000-7000-8000-000000000003",
         "connector_id": "connector-1",
         "parser_version": "chatgpt-1",
         "received_at": READ,
@@ -104,15 +104,15 @@ def test_metadata_keeps_forwarded_author_and_rejects_person_substitution():
 
 
 @pytest.mark.parametrize(
-    "request,speaker",
+    "relay,speaker",
     [
         ({"verbatim": True, "host_message_id": "host-1"}, "person"),
         ({"verbatim": True}, "ai_host"),
         ({"verbatim": False, "host_message_id": "host-1"}, "ai_host"),
     ],
 )
-def test_host_person_voice_requires_both_verbatim_and_message_id(request, speaker):
-    picked = select_input(source(), {"type": "ai_host"}, request)
+def test_host_person_voice_requires_both_verbatim_and_message_id(relay, speaker):
+    picked = select_input(source(), {"type": "ai_host"}, relay)
     assert picked.complete
     assert picked.messages[0]["speaker_kind"] == speaker
 
@@ -136,6 +136,9 @@ def test_typed_source_has_no_model_input_even_with_claimed_admission():
 @pytest.mark.parametrize(
     "meta",
     [
+        [],
+        None,
+        {"kind": None},
         {"kind": "person", "locator": "key:another-message"},
         {"kind": [], "locator": "key:message-1"},
     ],

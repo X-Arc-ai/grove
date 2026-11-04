@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from grove.writer import api, apply, composite, ontology, provenance
+from grove.writer import api, apply, cascade, composite, ontology, provenance
 from grove.writer.caller import Caller
 from grove.writer.errors import BatchDeclined, Refused
 from grove.writer.message_binding import (
@@ -439,3 +439,46 @@ def test_typed_request_source_is_checked_before_both_replay_returns(monkeypatch,
             request_id="request-1",
         )
     assert caught.value.refusals[0].rule == "typed_source_unadmitted"
+
+
+@pytest.mark.parametrize("stage", ["recompute", "cascade"])
+def test_late_provenance_refusal_declines_without_saving_request(monkeypatch, stage):
+    tx = MemoryRows(raw=True)
+    request = {"id": "request-1", "status": "applying"}
+    logged = []
+    completed = []
+    monkeypatch.setattr(api, "read_row", lambda *args: request)
+    monkeypatch.setattr(api, "replay_rule", lambda *args: api.APPLY)
+    monkeypatch.setattr(
+        api, "WorldWriter", lambda *args: SimpleNamespace(transaction=lambda fn: fn(tx))
+    )
+    monkeypatch.setattr(api, "merge_row", lambda *args: (request, False))
+    monkeypatch.setattr(api, "_log_decline", lambda *args: logged.append(args[4]))
+    monkeypatch.setattr(api, "mark_saved", lambda *args: completed.append("saved"))
+    monkeypatch.setattr(api, "_after_commit", lambda: completed.append("committed"))
+    monkeypatch.setattr(api, "shape_refusals", lambda batch: ([], {}))
+    monkeypatch.setattr(apply.Registry, "load", lambda tx: SimpleNamespace())
+    monkeypatch.setitem(apply._HANDLERS, "create_item", lambda *args: None)
+
+    def refuse(*args):
+        raise Refused(
+            "missing_provenance", "typed_source_unadmitted", "typed support is not admitted"
+        )
+
+    monkeypatch.setattr(apply, "_finish", refuse if stage == "recompute" else lambda *args: None)
+    monkeypatch.setattr(
+        cascade, "apply_cascade", refuse if stage == "cascade" else lambda *args: None
+    )
+    caller = Caller(kind="update", scopes=frozenset({"grove.propose"}), actor="agent:l")
+    with pytest.raises(BatchDeclined) as caught:
+        api.apply_batch(
+            None,
+            WORLD,
+            caller,
+            {"ops": [{"op": "create_item", "op_id": "o1"}], "evidence": []},
+            request_id="request-1",
+        )
+    assert caught.value.refusals[0].rule == "typed_source_unadmitted"
+    assert caught.value.receipt.request_id == "request-1"
+    assert logged == [caught.value]
+    assert completed == []

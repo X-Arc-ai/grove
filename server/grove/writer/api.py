@@ -249,6 +249,12 @@ def apply_batch(
         WorldWriter(driver, world_id).transaction(work)
     except _Replay as replay:
         return _answer_replay(driver, world_id, replay.row, replay.answer, len(ops))
+    except Refused as refused:
+        # Final recomputation and cascade checks run outside the per-operation loop.
+        # They still decline the whole transaction and use the public refusal contract.
+        declined = _declined([refused.refusal(None, None)], len(ops), key)
+        _log_decline(driver, world_id, caller, key, declined, fingerprint, run_id)
+        raise declined from refused
     except BatchDeclined as declined:
         _log_decline(driver, world_id, caller, key, declined, fingerprint, run_id)
         raise
