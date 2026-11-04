@@ -346,7 +346,7 @@ def record_read(
             "last_outcome": outcome,
             "touched_at": at,
         }
-        if outcome != "failed":
+        if outcome in {"took_in", "nothing_new"}:
             columns["last_successful_read"] = at
         if not tx.run(_READ_OUTCOME, id=connector_id, columns=columns, failed=failed):
             raise InvalidRecord("not_found", "connector_not_found", "no such connector here")
