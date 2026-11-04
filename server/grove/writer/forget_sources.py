@@ -15,6 +15,10 @@ from grove.writer.errors import InvalidRecord
 from grove.writer.tx import WorldTx
 
 _LOCATORS = "MATCH (f:ForgetLedger) RETURN f.locators AS locators"
+_RECOVERED = (
+    "MATCH (s:Source) WHERE s.forget_state IN ['span_forgotten', 'forgotten'] "
+    "RETURN s.external_locator AS locator"
+)
 _PREFIX = "sha256:"
 _VERSION = "grove.forget.locator.v1"
 
@@ -58,6 +62,17 @@ def _held(reader: Any) -> frozenset[str]:
         ):
             raise InvalidRecord("unavailable", "forget_ledger", "the source gate is unavailable")
         result.update(locators)
+    # Recovery can discover an older source that the immutable approval did not
+    # enumerate. Its stored opaque locator makes that one source fail closed.
+    for row in read(_RECOVERED):
+        locator = row.get("locator")
+        if (
+            isinstance(locator, str)
+            and len(locator) == 71
+            and locator.startswith(_PREFIX)
+            and all(c in "0123456789abcdef" for c in locator[len(_PREFIX) :])
+        ):
+            result.add(locator)
     return frozenset(result)
 
 

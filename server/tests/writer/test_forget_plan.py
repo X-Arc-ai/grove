@@ -305,3 +305,142 @@ def test_full_fixture_transform_covers_every_value_home_without_replay(driver, m
     assert after["change_entries"] == before["change_entries"]
     assert len(json.loads(after["sources"][0]["content"])) == 1
     assert after["support_changed"][0]["belief_id"] == fixture["ids"]["belief"]
+
+
+def test_replay_finds_old_named_variants_absent_from_current_inventory():
+    word = "Amber Finch"
+    current = inventory(history_values=[{"id": "current-value", "value": word + " current note"}])
+    plan = build_plan(current, {"type": "named_value", "value": word})
+    original_plan = json.dumps(plan, sort_keys=True)
+    old_messages = [
+        {"key": "old-private", "text": "Earlier AMBER, FINCH went to the quay", "sender": None},
+        {"key": "old-control", "text": "Retain the ordinary shipping note", "sender": None},
+    ]
+    old_source = {**source(json.dumps(old_messages)), "external_locator": "older-export"}
+    old = inventory(
+        sources=[old_source],
+        history_values=[
+            {
+                "id": "old-value",
+                "value": json.dumps({"reason": "A different note about Amber Finch"}),
+            },
+            {"id": "control-value", "value": "Retain the ordinary shipping note"},
+        ],
+        items=[{"id": "belief", "title": "Retain the claim"}],
+        beliefs=[{"item_id": "belief", "state": "established"}],
+        evidence=[
+            {
+                "id": "old-evidence",
+                "source_id": old_source["id"],
+                "message_key": "old-private",
+                "locator": "key:old-private",
+                "target_id": "belief",
+                "target_type": "belief",
+                "polarity": "supports",
+                "active": True,
+            }
+        ],
+    )
+    after, _ = transform(old, plan, AT)
+    assert "amber" not in json.dumps(after, default=str).casefold()
+    assert after["history_values"][1] == old["history_values"][1]
+    assert json.loads(after["sources"][0]["content"]) == old_messages[1:]
+    assert after["sources"][0]["external_locator"] == locator_key("older-export")
+    assert after["evidence"][0]["active"] is False
+    assert after["support_changed"][0]["belief_id"] == "belief"
+    assert json.dumps(plan, sort_keys=True) == original_plan
+    assert transform(after, plan, AT)[0] == after
+
+
+def test_replay_matches_target_derived_text_in_old_field_and_source_copies():
+    word = "Amber Finch"
+    current = inventory(items=[{"id": "item", "title": word, "summary": "Retain summary"}])
+    plan = build_plan(current, {"type": "field_value", "item_id": "item", "field": "title"})
+    old = inventory(
+        items=[{"id": "item", "title": word, "summary": "Retain summary"}],
+        sources=[source("The old account names Amber Finch.\nRetain line two.")],
+        history_values=[{"id": "old-only", "value": "This older field copy mentions Amber Finch."}],
+    )
+    after, _ = transform(old, plan, AT)
+    assert word not in json.dumps(after, default=str)
+    assert after["sources"][0]["content"].endswith("Retain line two.")
+    assert after["items"][0]["summary"] == "Retain summary"
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    [
+        {"length": 0, "sha256": "0" * 64},
+        {"length": True, "sha256": "0" * 64},
+        {"length": 4, "sha256": "raw target"},
+        {"length": 4, "sha256": "0" * 64, "text": "raw target"},
+    ],
+)
+def test_invalid_opaque_predicate_refuses_before_transformation(predicate):
+    plan = build_plan(inventory(), {"type": "named_value", "value": "private"})
+    plan["predicates"] = [predicate]
+    with pytest.raises(ValueError, match="predicate"):
+        transform(inventory(), plan, AT)
+
+
+def test_opaque_predicates_keep_no_target_and_do_not_redact_unrelated_text():
+    plan = build_plan(inventory(), {"type": "named_value", "value": "Amber Finch"})
+    assert plan["version"] == 2
+    assert "amber" not in json.dumps(plan).casefold()
+    assert plan["predicates"] == [{"length": 11, "sha256": digest("amber finch")}]
+    old = inventory(
+        history_values=[{"id": "unrelated", "value": "Amber decided to retain the finch drawing."}]
+    )
+    assert transform(old, plan, AT)[0] == old
+
+
+def test_replay_scans_historical_source_row_images_and_preserves_live_control():
+    word = "Amber Finch"
+    plan = build_plan(inventory(), {"type": "named_value", "value": word})
+    live = source(json.dumps([{"key": "kept", "text": "Retained current message"}]))
+    historical = {
+        **live,
+        "content": json.dumps(
+            [
+                {"key": "old-private", "text": "The earlier Amber Finch source sentence"},
+                {"key": "old-control", "text": "Retained historical message"},
+            ]
+        ),
+    }
+    old = inventory(
+        sources=[live],
+        history_values=[
+            {
+                "id": "historical-source-value",
+                "value": json.dumps({"table": "sources", "row": historical}),
+            }
+        ],
+    )
+    after, _ = transform(old, plan, AT)
+    assert "Amber Finch" not in json.dumps(after, default=str)
+    assert after["sources"][0]["content"] == live["content"]
+    assert after["sources"][0]["external_locator"] == locator_key(live["external_locator"])
+    restored = json.loads(after["history_values"][0]["value"])["row"]
+    assert json.loads(restored["content"]) == [
+        {"key": "old-control", "text": "Retained historical message"}
+    ]
+    assert transform(after, plan, AT)[0] == after
+
+
+def test_replay_refuses_orphan_source_history_before_any_erasure():
+    plan = build_plan(inventory(), {"type": "named_value", "value": "Amber Finch"})
+    old = inventory(
+        history_values=[
+            {
+                "id": "orphan-source-value",
+                "value": json.dumps({"table": "sources", "row": source("Amber Finch old source")}),
+            }
+        ]
+    )
+    before = json.dumps(old, sort_keys=True)
+    with pytest.raises(InvalidRecord) as failure:
+        transform(old, plan, AT)
+    assert failure.value.code == "unavailable"
+    assert failure.value.rule == "forget_source_history"
+    assert "Amber Finch" not in str(failure.value)
+    assert json.dumps(old, sort_keys=True) == before

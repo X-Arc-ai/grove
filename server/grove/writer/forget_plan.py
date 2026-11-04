@@ -1,7 +1,11 @@
 """Deterministic D14 erasure plans with no retained search text.
 
-Plans contain row identities, complete-leaf hashes and opaque source selectors. Source
-messages are addressed by their original keys, never their current array positions.
+Plans contain row identities, complete-leaf hashes, normalized length/digest search predicates
+and opaque source selectors. Source messages use their original keys, never array positions.
+Replay discovers older text variants without retaining the approved plaintext or changing the
+ledger. A newly discovered source keeps unrelated messages but refuses future imports for its
+whole locator. An affected historical Source image without a matching durable locator refuses
+before erasure; recovery never invents a replacement source row.
 """
 
 import copy
@@ -28,6 +32,8 @@ TEXT = {
 PLAN_KEYS = {
     "version",
     "hashes",
+    "predicates",
+    "source_exact",
     "delete",
     "mark_values",
     "history_fields",
@@ -48,6 +54,33 @@ _PROTECTED = {"change_entries", "forget_ledger", "forget_approvals"}
 
 def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _predicate(text):
+    normalized = normalise_phrase(text)
+    return {"length": len(normalized), "sha256": digest(normalized)}
+
+
+class _Matcher:
+    """Match approved normalized substrings without recovering the approved words."""
+
+    def __init__(self, predicates):
+        self.by_length = defaultdict(set)
+        self.cache = {}
+        for predicate in predicates:
+            self.by_length[predicate["length"]].add(predicate["sha256"])
+
+    def __call__(self, text):
+        if text in self.cache:
+            return self.cache[text]
+        normalized = normalise_phrase(text)
+        matched = any(
+            digest(normalized[start : start + length]) in hashes
+            for length, hashes in self.by_length.items()
+            for start in range(len(normalized) - length + 1)
+        )
+        self.cache[text] = matched
+        return matched
 
 
 def _json(text):
@@ -261,6 +294,8 @@ def _span_text(source, span):
 
 
 def _overlap(locator, span, source, *, message_key=None):
+    if span.get("content_hash") and span["content_hash"] != digest(source.get("content") or ""):
+        return False
     if span["mode"] == "whole" or locator == "whole":
         return True
     if span["mode"] == "messages":
@@ -295,15 +330,29 @@ def _overlap(locator, span, source, *, message_key=None):
 
 
 def build_plan(inventory: dict[str, list[dict]], target: dict) -> dict:
-    plan = {key: [] for key in PLAN_KEYS}
-    plan["version"] = 1
+    return _compile_plan(inventory, target)
+
+
+def _compile_plan(inventory, target=None, *, base=None):
+    plan = copy.deepcopy(base) if base is not None else {key: [] for key in PLAN_KEYS}
+    plan["version"] = 2
     rows = {name: inventory.get(name, []) for name in WORLD_TABLES}
-    needles, gone, marks = set(), set(), set()
+    needles = set()
+    gone = {part["key"]["id"] for part in plan["delete"] if "id" in part["key"]}
+    marks = set(plan["mark_values"])
     items = {r["id"]: r for r in rows["items"]}
     values = {r["id"]: r for r in rows["history_values"]}
     sources = {r["id"]: r for r in rows["sources"]}
-    kind = target.get("type")
-    if kind in {"item", "field_value"} and "item_id" in target:
+    source_images = [*sources.values()]
+    source_images.extend(
+        nested["row"]
+        for value in rows["history_values"]
+        if (nested := _row_value(value.get("value"))) and nested["table"] == "sources"
+    )
+    kind = target.get("type") if target is not None else None
+    if base is not None:
+        pass
+    elif kind in {"item", "field_value"} and "item_id" in target:
         item = items.get(target["item_id"])
         if item is None:
             raise InvalidRecord("not_found", "forget_item", "no such item")
@@ -356,11 +405,37 @@ def build_plan(inventory: dict[str, list[dict]], target: dict) -> dict:
             raise InvalidRecord("not_found", "forget_source", "no such source")
         span = _resolve_span(source, target.get("locator"), rows["evidence"])
         plan["source_spans"].append(span)
+        plan["source_exact"].append(source["id"])
         needles.update(_span_text(source, span))
     else:
         raise InvalidRecord("invalid_arguments", "forget_target", "unknown forget target")
 
-    gone.update(r["id"] for r in rows["evidence"] if r.get("target_id") in gone)
+    # A restored snapshot can contain dependencies and field values that were no
+    # longer present when the person approved the erasure.
+    for part in plan["item_fields"]:
+        for entry in rows["change_entries"]:
+            if entry.get("entity_id") != part["id"]:
+                continue
+            for prop in ("old_value_id", "new_value_id"):
+                if not entry.get(prop):
+                    continue
+                if entry.get("field") == "row":
+                    plan["history_fields"].append({"id": entry[prop], "field": part["field"]})
+                    value = values.get(entry[prop], {})
+                    nested = _row_value(value.get("value"))
+                    if nested:
+                        needles.update(leaves(nested["row"].get(part["field"])))
+                elif entry.get("field") == part["field"]:
+                    marks.add(entry[prop])
+    while True:
+        expanded = gone | {
+            r["id"] for r in rows["links"] if r.get("from_item") in gone or r.get("to_item") in gone
+        }
+        expanded |= {r["id"] for r in rows["aliases"] if r.get("target_id") in gone}
+        expanded |= {r["id"] for r in rows["evidence"] if r.get("target_id") in gone}
+        if expanded == gone:
+            break
+        gone = expanded
     # Reach old row values and the value-id properties of deleted rows to a fixed point.
     for name, current in rows.items():
         if name in _PROTECTED or name == "history_values":
@@ -370,6 +445,7 @@ def build_plan(inventory: dict[str, list[dict]], target: dict) -> dict:
                 name in {"beliefs", "map_positions"} and row.get("item_id") in gone
             ):
                 plan["delete"].append(selector(name, row))
+                needles.update(_text_leaves(name, row))
                 for column in WORLD_TABLES[name].columns:
                     if column.type == "value_id":
                         marks.update(row[p] for p in column.props if row.get(p))
@@ -396,12 +472,15 @@ def build_plan(inventory: dict[str, list[dict]], target: dict) -> dict:
                         if ref and ref not in marks:
                             marks.add(ref)
                             pending.append(ref)
-    normalized = {
-        normalise_phrase(n) for n in needles if n != FORGOTTEN_MARKER and normalise_phrase(n)
-    }
-
-    def matches(text):
-        return any(needle in normalise_phrase(text) for needle in normalized)
+    predicates = {(p["length"], p["sha256"]) for p in plan["predicates"]}
+    predicates.update(
+        (p["length"], p["sha256"])
+        for text in needles
+        if text != FORGOTTEN_MARKER and normalise_phrase(text)
+        for p in [_predicate(text)]
+    )
+    plan["predicates"] = [{"length": length, "sha256": sha} for length, sha in sorted(predicates)]
+    matches = _Matcher(plan["predicates"])
 
     # Immutable identities cannot be rewritten without changing the append-only
     # history. Fail before issuing a plan if legacy data put prose in such a key.
@@ -428,7 +507,7 @@ def build_plan(inventory: dict[str, list[dict]], target: dict) -> dict:
             check_identity(name, row)
             if name == "history_values" and (nested := _row_value(row.get("value"))):
                 check_identity(nested["table"], nested["row"])
-    hashes = set()
+    hashes = set(plan["hashes"])
     for name, current in rows.items():
         if name in _PROTECTED:
             continue
@@ -448,8 +527,22 @@ def build_plan(inventory: dict[str, list[dict]], target: dict) -> dict:
                             for text in leaves(metadata_row.get(prop), include_keys=True)
                             if matches(text)
                         )
-    for source in sources.values():
-        if kind == "source_span" and source["id"] == target["source_id"]:
+    for source in source_images:
+        selected = any(matches(text) for text in _text_leaves("sources", source))
+        selected = selected or any(
+            span["source_id"] == source.get("id") and _source_content(source, [span]) != source
+            for span in plan["source_spans"]
+        )
+        live_source = sources.get(source.get("id"))
+        if selected and (live_source is None or _source_key(live_source) != _source_key(source)):
+            # There is no durable row for a newly discovered locator tombstone.
+            # Refuse before applying any plan rather than invent a source identity.
+            raise InvalidRecord(
+                "unavailable",
+                "forget_source_history",
+                "a historical source requires repair before erasure",
+            )
+        if source["id"] in plan["source_exact"]:
             continue
         messages = _messages(source.get("content"))
         if messages is not None:
@@ -465,34 +558,45 @@ def build_plan(inventory: dict[str, list[dict]], target: dict) -> dict:
         else:
             for index, line in enumerate((source.get("content") or "").splitlines(), 1):
                 if matches(line):
-                    plan["source_spans"].append(_span(source, "line", start=index, end=index))
+                    plan["source_spans"].append(
+                        _span(
+                            source,
+                            "line",
+                            start=index,
+                            end=index,
+                            content_hash=digest(source.get("content") or ""),
+                        )
+                    )
     # Sort/deduplicate selectors; no raw source key or input locator enters the ledger.
     spans = {json.dumps(s, sort_keys=True): s for s in plan["source_spans"]}
     plan["source_spans"] = [spans[k] for k in sorted(spans)]
-    locators = {
+    locators = set(plan["locators"]) | {
         _source_key(source)
         for source in sources.values()
         if isinstance(source.get("external_locator"), str) and matches(source["external_locator"])
     }
     for span in plan["source_spans"]:
-        source = sources[span["source_id"]]
+        matching_images = [s for s in source_images if s["id"] == span["source_id"]]
         if span["mode"] == "whole":
-            plan["source_ids"].append(source["id"])
+            plan["source_ids"].append(span["source_id"])
         if span["mode"] == "messages":
             locators.update(
                 message_locator_key(source.get("external_locator", ""), m["key"])
+                for source in matching_images
                 for m in _messages(source.get("content")) or []
                 if digest(m["key"]) in span["message_keys"]
             )
         else:
             locators.add(span["source_key"])
-    ended = {
+    ended = set(plan["end_evidence"]) | {
         e["id"]
         for e in rows["evidence"]
         for span in plan["source_spans"]
         if e.get("source_id") == span["source_id"]
-        and _overlap(
-            e.get("locator"), span, sources[span["source_id"]], message_key=e.get("message_key")
+        and any(
+            _overlap(e.get("locator"), span, source, message_key=e.get("message_key"))
+            for source in source_images
+            if source["id"] == span["source_id"]
         )
     }
     while True:
@@ -508,7 +612,11 @@ def build_plan(inventory: dict[str, list[dict]], target: dict) -> dict:
             episode = episodes.get(row.get("episode_id"), {})
             affected = any(
                 span["source_id"] in (episode.get("source_ids") or [])
-                and _overlap(row.get("locator"), span, sources[span["source_id"]])
+                and any(
+                    _overlap(row.get("locator"), span, source)
+                    for source in source_images
+                    if source["id"] == span["source_id"]
+                )
                 for span in plan["source_spans"]
             )
             if affected or row.get("resolved_to") in gone:
@@ -547,11 +655,16 @@ def build_plan(inventory: dict[str, list[dict]], target: dict) -> dict:
         hashes=sorted(hashes),
         mark_values=sorted(marks),
         end_evidence=sorted(ended - gone),
-        clear_examples=sorted(ended | gone),
+        clear_examples=sorted(ended | gone | set(plan["clear_examples"])),
         locators=sorted(locators),
-        queue_beliefs=sorted((affected & beliefs) - remaining - gone),
+        queue_beliefs=sorted(
+            ((affected & beliefs) - remaining - gone) | set(plan["queue_beliefs"])
+        ),
         source_ids=sorted(set(plan["source_ids"])),
     )
+    for key in ("delete", "history_fields", "item_fields", "evidence_values"):
+        unique = {json.dumps(part, sort_keys=True): part for part in plan[key]}
+        plan[key] = [unique[k] for k in sorted(unique)]
     validate_plan(plan)
     return plan
 
@@ -561,7 +674,7 @@ def validate_plan(plan):
         not isinstance(plan, dict)
         or set(plan) != PLAN_KEYS
         or type(plan["version"]) is not int
-        or plan["version"] != 1
+        or plan["version"] != 2
     ):
         raise ValueError("invalid forget plan shape")
     if any(not isinstance(plan[k], list) for k in PLAN_KEYS - {"version"}):
@@ -577,7 +690,24 @@ def validate_plan(plan):
         raise ValueError("invalid forget hash")
     if any(not isinstance(v, str) or not _LOCATOR.fullmatch(v) for v in plan["locators"]):
         raise ValueError("invalid forget locator")
-    for key in ("mark_values", "source_ids", "end_evidence", "clear_examples", "queue_beliefs"):
+    for predicate in plan["predicates"]:
+        if (
+            not isinstance(predicate, dict)
+            or set(predicate) != {"length", "sha256"}
+            or type(predicate["length"]) is not int
+            or predicate["length"] <= 0
+            or not isinstance(predicate["sha256"], str)
+            or not _HASH.fullmatch(predicate["sha256"])
+        ):
+            raise ValueError("invalid opaque search predicate")
+    for key in (
+        "mark_values",
+        "source_ids",
+        "source_exact",
+        "end_evidence",
+        "clear_examples",
+        "queue_beliefs",
+    ):
         if not identifiers(plan[key]):
             raise ValueError("invalid forget identity")
     for part in plan["delete"]:
@@ -633,6 +763,12 @@ def validate_plan(plan):
             if mode in {"line", "char"}
             else set()
         )
+        if "content_hash" in span and mode == "line":
+            expected.add("content_hash")
+            if not isinstance(span["content_hash"], str) or not _HASH.fullmatch(
+                span["content_hash"]
+            ):
+                raise ValueError("invalid source content hash")
         if (
             set(span) != expected
             or not identifiers([span["source_id"]])
@@ -673,6 +809,8 @@ def _blank_field(row, field):
 def _source_content(source, spans):
     result = dict(source)
     for span in spans:
+        if span.get("content_hash") and span["content_hash"] != digest(source.get("content") or ""):
+            continue
         mode = span["mode"]
         if mode == "whole":
             result.update(
@@ -712,6 +850,23 @@ def _source_content(source, spans):
 
 def transform(inventory: dict, plan: dict, at: datetime) -> tuple[dict, dict]:
     validate_plan(plan)
+    original_locators = set(plan["locators"])
+    plan = _compile_plan(inventory, base=plan)
+    new_locators = set(plan["locators"]) - original_locators
+    recovered_sources = set()
+    source_images = [*inventory.get("sources", [])]
+    source_images.extend(
+        nested["row"]
+        for value in inventory.get("history_values", [])
+        if (nested := _row_value(value.get("value"))) and nested["table"] == "sources"
+    )
+    for source in source_images:
+        external = source.get("external_locator", "")
+        if _source_key(source) in new_locators or any(
+            message_locator_key(external, m["key"]) in new_locators
+            for m in _messages(source.get("content")) or []
+        ):
+            recovered_sources.add(source["id"])
     result, counts = copy.deepcopy(inventory), defaultdict(int)
     hashes, marks = set(plan["hashes"]), set(plan["mark_values"])
     field_sets = {}
@@ -740,6 +895,10 @@ def transform(inventory: dict, plan: dict, at: datetime) -> tuple[dict, dict]:
                 _blank_field(row, field)
         if name == "sources":
             row = _source_content(row, spans[row["id"]])
+            if row["id"] in recovered_sources:
+                row["external_locator"] = _source_key(original)
+                if row.get("forget_state") != "forgotten":
+                    row["forget_state"] = "span_forgotten"
         if name == "evidence" and row.get("id") in ended:
             row.update(
                 active=False,
