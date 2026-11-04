@@ -111,7 +111,7 @@ def _prepared(query: WorldQuery, body: dict) -> tuple[str, list[DataBlock], dict
             f"item:{item['id']}",
             [_belief_block(item), block],
             binding,
-            ["supports", "contradicts", "not_about_claim"],
+            ["supports", "contradicts", "complements", "not_about_claim"],
         )
     if mode == "same_belief":
         if set(body) != {"mode", "survivor", "absorbed"}:
