@@ -456,3 +456,28 @@ def test_filename_matches_published_encoder_reference():
     from grove.authority.legacy_reader import ledger_name
 
     assert ledger_name(WORLD) == _name(WORLD)
+
+
+def test_legacy_row_span_is_exact_and_bounded():
+    original = row()
+    original["requested_by"] = "synthetic-\u00e9"
+    raw = payload([original, row(2)])
+    budget = DecoderBudget()
+    ledger = decode(raw, budget)
+    spans = [legacy.legacy_row_span(ledger, i) for i in range(2)]
+    assert raw[slice(*spans[0])] == _json(original).encode()
+    assert raw[slice(*spans[1])] == _json(row(2)).encode()
+    assert spans[0][1] < spans[1][0]
+    budget.close()
+    with pytest.raises(AuthorityCodecRefused, match="cancelled"):
+        legacy.legacy_row_span(ledger, 0)
+
+
+@pytest.mark.parametrize("index", [True, False, -1, 1, 2**63, "0", None])
+def test_legacy_row_span_invalid_or_closed_refuses(index):
+    ledger = decode(payload([row()]))
+    with pytest.raises(AuthorityCodecRefused) as caught:
+        legacy.legacy_row_span(ledger, index)
+    assert caught.value.__context__ is None
+    assert caught.value.__cause__ is None
+    assert str(caught.value) in ("input_type", "scalar")

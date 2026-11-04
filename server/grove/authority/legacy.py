@@ -696,3 +696,25 @@ def legacy_row(ledger, index):
         code = "scalar"
     ledger = None
     raise AuthorityCodecRefused(code)
+
+
+def legacy_row_span(ledger, index):
+    """Return the checked original row interval, only during its reader lifetime."""
+    code = None
+    try:
+        if type(ledger) is not UntrustedLegacyLedger or type(index) is not int:
+            refuse("input_type")
+        _check_budget(ledger._budget)
+        if not 0 <= index < ledger.binding.count:
+            refuse("scalar")
+        start = int.from_bytes(ledger._offsets[index * 8 : index * 8 + 4], "little")
+        end = int.from_bytes(ledger._offsets[index * 8 + 4 : index * 8 + 8], "little")
+        if not 0 <= start < end <= len(ledger._data):
+            refuse("scalar")
+        return start, end
+    except AuthorityCodecRefused as error:
+        code = error.code
+    except (ValueError, TypeError, IndexError, OverflowError):
+        code = "scalar"
+    ledger = None
+    raise AuthorityCodecRefused(code)
