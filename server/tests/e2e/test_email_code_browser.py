@@ -195,6 +195,7 @@ def test_the_code_card_stays_and_the_code_signs_in(
         _ask_for_a_code(page, address)
         page.screenshot(path=str(shots / f"{leave}-1-card.png"))
         page.fill("#gp-code", PARTIAL_CODE)
+        page.evaluate("window.codeField = document.querySelector('#gp-code')")
 
         LEAVES[leave](page, context, base_url)
         page.wait_for_timeout(500)
@@ -205,6 +206,7 @@ def test_the_code_card_stays_and_the_code_signs_in(
         assert page.locator("[data-email-form]").count() == 0
         if leave == "second-tab":
             assert page.input_value("#gp-code") == PARTIAL_CODE, "the typed digits are gone"
+            assert page.evaluate("window.codeField.isConnected"), "the card was drawn again"
         assert len([to for to, _ in mail_sink.sent if to == address]) == 1
 
         page.fill("#gp-code", mail_sink.last_code(address))
