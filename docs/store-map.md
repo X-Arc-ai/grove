@@ -497,6 +497,33 @@ responses. D14 owns complete physical forget coverage, including every value ID 
 reference added by this module. Those combined consumer results are later acceptance, not
 inferred from the walk suite. No D6 migration is required.
 
+## Inactive authority outcome source
+
+The authority v1 source declares three operational ledger tables: `authority_projections`,
+`authority_operations`, and `authority_approval_uses`. Migration 0018 declares only five
+unique constraints. It creates no rows and supplies no bootstrap, backfill, or activation.
+These tables remain outside logical D3 snapshots, replay history, and ordinary forget-plan
+deletion. They carry no free-text or JSON home, HistoryValue reference, `version`, or `touched_at`.
+
+The projection binds one world to its owner, installation, profile, journal head, exact
+legacy-ledger bytes, and state digest. Its `ready` flag is metadata, not runtime permission.
+The fence never decreases, including across restore. A verified no-op must not write the
+projection or advance the fence, generation, or sequence.
+
+An operation retains immutable registration fields and the current fenced attempt.
+Its terminal fields are absent until the terminal transaction commits. That transaction
+records only `COMMITTED_EXACT` or `CANCELLED_EXACT`; `UNKNOWN` and `NOT_APPLIED_PROVEN`
+are probe results, not durable outcomes. Approval-use facts are immutable, have no TTL,
+and commit with the terminal outcome. Neither operations nor approval uses exceed 32768
+rows per world. Full event bytes stay in the external journal.
+
+The `digest` type is restricted to the exact 17 authority columns listed below.
+Each value is 64 lowercase hexadecimal characters. The schema lint checks that property
+allowlist; the authority writer must validate actual values and closed codes.
+The frozen legacy/v2 plan vocabulary excludes the seven Learner tables and these three
+authority tables. Catalogue presence does not authorize a legacy selector for any of them.
+The source and schema do not enable routes, runtime callers, readiness, or service activation.
+
 <!-- generated:begin -->
 ## Type classes
 
@@ -519,6 +546,7 @@ inferred from the walk suite. No D6 migration is required.
 | `locator` | a place in a source, or a URL |
 | `code` | a machine code, not free text |
 | `config` | developer-written configuration |
+| `digest` | exactly 64 lowercase hexadecimal characters, only in approved authority columns |
 
 Text homes, the only columns of type `text_home` or `json_home` (line 2561, and the status words of S31): `items.title`, `items.summary`, `items.body`, `items.properties`, `items.property_values`, `items.search_terms`, `items.status`, `kinds.name`, `kinds.status_vocabulary`, `meanings.name`, `property_names.name`, `aliases.phrase`, `aliases.normalised_phrase`, `sources.content`, `history_values.value`, `run_records.proposed_operations`.
 
@@ -2396,6 +2424,118 @@ Inactive durable Learner source. Private values require complete D14 closure bef
 | (none) | `consumer_receipt_id` | `id` | ruling | Optional immutable durable consumer transaction |
 | (none) | `created_at` | `instant` | ruling | Immutable operational creation time |
 | (none) | `acknowledged_at` | `instant` | ruling | Optional operational acknowledgement time |
+
+### authority_projections
+
+`:AuthorityProjection`, node. Scope world. Restore group ledger. Owner forget.
+
+Keys: `authority_projection_world_unique` (world_id).
+
+Indexes: none.
+
+Inactive authority source: one row per world, with world_id as its identity. Profile, owner and installation identity are immutable; epoch changes require restore. No-op verification performs no SET and advances no fence, generation or sequence. No bootstrap, backfill or runtime activation is supplied.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| (none) | `world_id` | `id` | ruling | Opaque ASCII [A-Za-z0-9_.:-]{1,128} |
+| (none) | `owner_id` | `id` | ruling | Opaque ASCII [A-Za-z0-9_.:-]{1,128} |
+| (none) | `installation_id` | `id` | ruling | Nonzero lowercase canonical UUID |
+| (none) | `profile_code` | `code` | ruling | Exactly authority_state_v1 |
+| (none) | `profile_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `installation_epoch` | `int` | ruling | Integer in 1..2^63-1; booleans are not integers |
+| (none) | `authority_epoch` | `int` | ruling | Integer in 1..2^63-1; booleans are not integers |
+| (none) | `erasure_revision` | `int` | ruling | Integer in 0..2^63-1; booleans are not integers |
+| (none) | `sequence` | `int` | ruling | Integer in 1..32768; booleans are not integers |
+| (none) | `head_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `state_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `ledger_format` | `code` | ruling | Exactly grove.forget-ledger.v1 |
+| (none) | `ledger_file_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `ledger_rows_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `ledger_count` | `int` | ruling | Integer in 0..2^63-1; booleans are not integers; legacy decoder cap also applies |
+| (none) | `ready` | `bool` | ruling | Metadata only; never runtime permission |
+| (none) | `fence` | `int` | ruling | Integer in 0..2^63-1; booleans are not integers; monotonic, never lowered |
+| (none) | `active_intent_id` | `id` | ruling | Absent or Nonzero lowercase canonical UUID |
+
+### authority_operations
+
+`:AuthorityOperation`, node. Scope world. Restore group ledger. Owner forget.
+
+Keys: `authority_operation_id_unique` (id); `authority_operation_key_unique` (world_id, idempotency_key).
+
+Indexes: none.
+
+Inactive bounded outcome registry, at most 32768 rows per world. Registration fields are immutable. Attempt fields change only under the matching fence. Terminal fields are absent before terminal commit and immutable afterward. UNKNOWN and NOT_APPLIED_PROVEN are never persisted as outcomes. Full event bytes remain in the external journal; there is no separate attempt log.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| (none) | `id` | `id` | ruling | Nonzero lowercase canonical UUID; immutable intent identity |
+| (none) | `idempotency_key` | `id` | ruling | Nonzero lowercase canonical UUID |
+| (none) | `world_id` | `id` | ruling | Opaque ASCII [A-Za-z0-9_.:-]{1,128} |
+| (none) | `owner_id` | `id` | ruling | Opaque ASCII [A-Za-z0-9_.:-]{1,128} |
+| (none) | `installation_id` | `id` | ruling | Nonzero lowercase canonical UUID |
+| (none) | `profile_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `intent_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `prepare_event_id` | `id` | ruling | Nonzero lowercase canonical UUID |
+| (none) | `prepare_sequence` | `int` | ruling | Integer in 1..32768; booleans are not integers |
+| (none) | `prepare_head_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `base_sequence` | `int` | ruling | Integer in 0..32768; zero is reserved for later origin |
+| (none) | `base_head_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters; absent only for later origin |
+| (none) | `base_state_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `expected_result_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `installation_epoch` | `int` | ruling | Integer in 1..2^63-1; booleans are not integers |
+| (none) | `authority_epoch` | `int` | ruling | Integer in 1..2^63-1; booleans are not integers |
+| (none) | `erasure_revision` | `int` | ruling | Integer in 0..2^63-1; booleans are not integers |
+| (none) | `mode` | `code` | ruling | Exactly ordinary, restrictive, restore, origin or close |
+| (none) | `original_approval_id` | `id` | ruling | Absent or Nonzero lowercase canonical UUID |
+| (none) | `choice_digest` | `digest` | ruling | Absent or Exactly 64 lowercase hexadecimal characters |
+| (none) | `registered_at` | `instant` | ruling | UTC native datetime; exact 27-byte UTC representation at the codec boundary |
+| (none) | `phase` | `enum:authority_phase` | ruling | Current attempt state |
+| (none) | `attempt_id` | `id` | ruling | Nonzero lowercase canonical UUID |
+| (none) | `attempt_fence` | `int` | ruling | Integer in 1..2^63-1; booleans are not integers |
+| (none) | `operation_id` | `id` | ruling | Nonzero lowercase canonical UUID |
+| (none) | `revoked_through` | `int` | ruling | Integer in 0..2^63-1; booleans are not integers |
+| (none) | `barrier_id` | `id` | ruling | Absent or Nonzero lowercase canonical UUID |
+| (none) | `barrier_fence` | `int` | ruling | Absent or Integer in 1..2^63-1; booleans are not integers |
+| (none) | `outcome` | `enum:authority_outcome` | ruling | Absent before terminal commit; then immutable |
+| (none) | `result_state_digest` | `digest` | ruling | Terminal only; Exactly 64 lowercase hexadecimal characters |
+| (none) | `result_installation_epoch` | `int` | ruling | Terminal only; Integer in 1..2^63-1; booleans are not integers |
+| (none) | `result_authority_epoch` | `int` | ruling | Terminal only; Integer in 1..2^63-1; booleans are not integers |
+| (none) | `result_erasure_revision` | `int` | ruling | Terminal only; Integer in 0..2^63-1; booleans are not integers |
+| (none) | `result_ledger_format` | `code` | ruling | Terminal only; exactly grove.forget-ledger.v1 |
+| (none) | `result_ledger_file_digest` | `digest` | ruling | Terminal only; Exactly 64 lowercase hexadecimal characters |
+| (none) | `result_ledger_rows_digest` | `digest` | ruling | Terminal only; Exactly 64 lowercase hexadecimal characters |
+| (none) | `result_ledger_count` | `int` | ruling | Terminal only; Integer in 0..2^63-1; booleans are not integers |
+| (none) | `d3_sequence_before` | `int` | ruling | Terminal only; Integer in 0..2^63-1; booleans are not integers |
+| (none) | `d3_sequence_after` | `int` | ruling | Terminal only; Integer in 0..2^63-1; booleans are not integers |
+| (none) | `terminal_at` | `instant` | ruling | Terminal only; UTC native datetime; exact 27-byte UTC representation at the codec boundary |
+| (none) | `resolution` | `enum:authority_resolution` | ruling | Terminal only; immutable |
+| (none) | `renewed_approval_id` | `id` | ruling | Absent or terminal-only Nonzero lowercase canonical UUID |
+
+### authority_approval_uses
+
+`:AuthorityApprovalUse`, node. Scope world. Restore group ledger. Owner forget.
+
+Keys: `authority_approval_use_id_unique` (id); `authority_approval_use_world_unique` (world_id, approval_id).
+
+Indexes: none.
+
+Inactive immutable irreversible approval-use facts, at most 32768 rows per world. Consumption commits in the same transaction as its terminal outcome. No bearer token, private source digest, automatic TTL or erasure-plan deletion is permitted.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| (none) | `id` | `id` | ruling | Nonzero lowercase canonical UUID; equals approval_id |
+| (none) | `approval_id` | `id` | ruling | Nonzero lowercase canonical UUID; equals id |
+| (none) | `world_id` | `id` | ruling | Opaque ASCII [A-Za-z0-9_.:-]{1,128} |
+| (none) | `user_id` | `id` | ruling | Opaque ASCII [A-Za-z0-9_.:-]{1,128} |
+| (none) | `installation_id` | `id` | ruling | Nonzero lowercase canonical UUID |
+| (none) | `intent_id` | `id` | ruling | Nonzero lowercase canonical UUID |
+| (none) | `choice_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `display_digest` | `digest` | ruling | Exactly 64 lowercase hexadecimal characters |
+| (none) | `installation_epoch` | `int` | ruling | Integer in 1..2^63-1; booleans are not integers |
+| (none) | `authority_epoch` | `int` | ruling | Integer in 1..2^63-1; booleans are not integers |
+| (none) | `use_kind` | `enum:authority_use_kind` | ruling | Irreversible use result |
+| (none) | `role` | `enum:authority_use_role` | ruling | Original or renewed approval |
+| (none) | `used_at` | `instant` | ruling | UTC native datetime; exact 27-byte UTC representation at the codec boundary |
 
 ## Full-text indexes
 

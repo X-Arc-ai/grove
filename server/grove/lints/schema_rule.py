@@ -39,6 +39,29 @@ TEXT_HOMES = frozenset(
         ("run_records", "proposed_operations"),
     }
 )
+# Digests are not a general-purpose text escape. Only these authority fields
+# have the fixed lowercase hexadecimal contract enforced by their writer.
+AUTHORITY_DIGEST_COLUMNS = frozenset(
+    {
+        ("authority_projections", "profile_digest"),
+        ("authority_projections", "head_digest"),
+        ("authority_projections", "state_digest"),
+        ("authority_projections", "ledger_file_digest"),
+        ("authority_projections", "ledger_rows_digest"),
+        ("authority_operations", "profile_digest"),
+        ("authority_operations", "intent_digest"),
+        ("authority_operations", "prepare_head_digest"),
+        ("authority_operations", "base_head_digest"),
+        ("authority_operations", "base_state_digest"),
+        ("authority_operations", "expected_result_digest"),
+        ("authority_operations", "choice_digest"),
+        ("authority_operations", "result_state_digest"),
+        ("authority_operations", "result_ledger_file_digest"),
+        ("authority_operations", "result_ledger_rows_digest"),
+        ("authority_approval_uses", "choice_digest"),
+        ("authority_approval_uses", "display_digest"),
+    }
+)
 NON_TEXT_TYPES = frozenset(
     {
         "id",
@@ -107,6 +130,11 @@ def check(root: Path, base: str | None = None) -> list[Finding]:
                 if kind in {"text_home", "json_home"}:
                     if any((table.name, prop) not in TEXT_HOMES for prop in column.props):
                         findings.append(Finding(CATALOGUE, 1, "schema/text-outside-home"))
+                elif kind == "digest":
+                    if any(
+                        (table.name, prop) not in AUTHORITY_DIGEST_COLUMNS for prop in column.props
+                    ):
+                        findings.append(Finding(CATALOGUE, 1, "schema/digest-outside-authority"))
                 elif kind.startswith("enum:"):
                     values = codes.get(kind.removeprefix("enum:"))
                     if (

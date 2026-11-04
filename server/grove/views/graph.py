@@ -9,6 +9,7 @@ without its successor), from grove.store.current, the one liveness function.
 """
 
 import json
+import math
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,6 +28,8 @@ READY = "ready"
 HEALTHY = "healthy"
 SUMMARY_READY = "Your Grove is ready"
 SUMMARY_EMPTY = "Your Grove is empty"
+MAX_GRAPH_ITEMS = 2500
+MAX_GRAPH_LINKS = 10000
 
 # The graph reads only what node_data, edge_data, the time filters and the standing use: never an
 # item's body, search terms or property values. world_id rides along so the WorldLeak guard checks
@@ -74,16 +77,25 @@ def _projection(variable: str, fields: tuple[str, ...]) -> str:
     return ", ".join(f"{variable}.{name} AS {name}" for name in fields)
 
 
-_ITEMS = "MATCH (i:Item) RETURN " + _projection("i", _ITEM_FIELDS)
+_ITEMS = (
+    "MATCH (i:Item) RETURN " + _projection("i", _ITEM_FIELDS) + " ORDER BY i.id LIMIT $item_cap"
+)
 _ITEM = "MATCH (i:Item {id: $id}) RETURN i"
 _ITEM_ID = "MATCH (i:Item {id: $id}) RETURN i.id AS id"
 _ANOTHER_ITEM = "MATCH (i:Item) WHERE i.id <> $own RETURN i.id AS id LIMIT 1"
 _LINK_MATCH = "MATCH (a:Item)-[l:LINK]->(b:Item) "
 _LINKS_RETURN = "RETURN " + _projection("l", _LINK_FIELDS)
 # Without as_of only active links show, so the ended ones stay in the store.
-_ACTIVE_LINKS = _LINK_MATCH + "WHERE l.active_key IS NOT NULL " + _LINKS_RETURN
-_ALL_LINKS = _LINK_MATCH + _LINKS_RETURN
-_POSITIONS = "MATCH (p:MapPosition) RETURN p.item_id AS item_id, p.x AS x, p.y AS y"
+_LINK_BOUND = " ORDER BY l.id LIMIT $link_cap"
+_ENDPOINTS = "l.from_item IN $item_ids AND l.to_item IN $item_ids "
+_ACTIVE_LINKS = (
+    _LINK_MATCH + "WHERE l.active_key IS NOT NULL AND " + _ENDPOINTS + _LINKS_RETURN + _LINK_BOUND
+)
+_ALL_LINKS = _LINK_MATCH + "WHERE " + _ENDPOINTS + _LINKS_RETURN + _LINK_BOUND
+_POSITIONS = (
+    "MATCH (p:MapPosition) WHERE p.item_id IN $item_ids "
+    "RETURN p.item_id AS item_id, p.x AS x, p.y AS y LIMIT $item_cap"
+)
 _POSITION = "MATCH (p:MapPosition {item_id: $id}) RETURN p.x AS x, p.y AS y"
 _KIND_COUNTS = "MATCH (i:Item) RETURN i.kind AS kind, count(i) AS n"
 _ACTIVE_LINK_COUNT = (
@@ -156,7 +168,8 @@ def _properties(value: object) -> dict[str, Any]:
         return {}
     try:
         parsed = json.loads(value)
-    except ValueError:
+        json.dumps(parsed, allow_nan=False)
+    except (ValueError, TypeError, OverflowError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
 
@@ -225,13 +238,15 @@ def edge_data(link: dict, registry: Registry) -> dict[str, Any]:
     }
 
 
-def _positions(world: WorldQuery) -> dict[str, tuple[float, float]]:
+def _positions(world: WorldQuery, item_ids: list[str]) -> dict[str, tuple[float, float]]:
     return {
         row["item_id"]: (float(row["x"]), float(row["y"]))
-        for row in world.read(_POSITIONS)
+        for row in world.read(_POSITIONS, item_ids=item_ids, item_cap=MAX_GRAPH_ITEMS)
         if isinstance(row["item_id"], str)
         and isinstance(row["x"], int | float)
         and isinstance(row["y"], int | float)
+        and math.isfinite(row["x"])
+        and math.isfinite(row["y"])
     }
 
 
@@ -250,19 +265,27 @@ def graph_payload(
     now: datetime,
 ) -> dict[str, Any]:
     registry = read_registry(world, primitives)
-    positions = _positions(world)
+    captured = world.read(_ITEMS, item_cap=MAX_GRAPH_ITEMS + 1)
+    items_truncated = len(captured) > MAX_GRAPH_ITEMS
     items = [
         item
-        for item in sorted(world.read(_ITEMS), key=lambda item: item["id"])
+        for item in sorted(captured[:MAX_GRAPH_ITEMS], key=lambda item: item["id"])
         if in_window(item, window)
     ]
+    positions = _positions(world, [item["id"] for item in items])
     found = standings_of(world, items, at=now)
     nodes = [
         node_data(item, registry, positions.get(item["id"]), self_item_id, found[item["id"]])
         for item in items
     ]
     shown = {node["id"] for node in nodes}
-    links = world.read(_ACTIVE_LINKS if window.as_of is None else _ALL_LINKS)
+    captured_links = world.read(
+        _ACTIVE_LINKS if window.as_of is None else _ALL_LINKS,
+        item_ids=sorted(shown),
+        link_cap=MAX_GRAPH_LINKS + 1,
+    )
+    links_truncated = len(captured_links) > MAX_GRAPH_LINKS
+    links = captured_links[:MAX_GRAPH_LINKS]
     edges = [
         edge_data(link, registry)
         for link in sorted(links, key=lambda link: link["id"])
@@ -287,6 +310,14 @@ def graph_payload(
         "as_of": iso_z(window.as_of),
         "known_as_of": iso_z(window.known_as_of),
         "self_item_id": self_item_id if self_item_id in shown else None,
+        "selection": {
+            "scope": "bounded graph sample"
+            if items_truncated or links_truncated
+            else "complete graph",
+            "truncated": items_truncated or links_truncated,
+            "max_nodes": MAX_GRAPH_ITEMS,
+            "max_edges": MAX_GRAPH_LINKS,
+        },
     }
 
 

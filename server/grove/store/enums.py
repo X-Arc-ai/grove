@@ -320,4 +320,15 @@ ENUMS: dict[str, tuple[str, ...]] = {
     "learner_contribution": ("none", "done_empty", "done_extracted"),
     "learner_handoff_kind": ("curator_dirty", "connector_dirty", "curator_question_v1"),
     "learner_handoff_state": ("pending", "acknowledged", "revoked"),
+    # Inactive authority protocol; these codes grant no runtime permission.
+    "authority_phase": ("active", "fenced", "applied", "cancelled"),
+    "authority_outcome": ("COMMITTED_EXACT", "CANCELLED_EXACT"),
+    "authority_resolution": (
+        "apply",
+        "complete_restriction",
+        "complete_reapproved",
+        "cancel_unapplied_expansion",
+    ),
+    "authority_use_kind": ("applied", "cancelled"),
+    "authority_use_role": ("original", "renewed"),
 }
