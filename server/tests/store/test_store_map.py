@@ -129,7 +129,10 @@ def test_future_code_is_not_stated_as_present():
 def test_public_docs_point_to_no_private_plan():
     assert "handoff" not in doc_text().lower()
     flow = (REPO / "docs" / "data-flow.md").read_text(encoding="utf-8")
-    assert "Meta Model API, Spark 1.3, Standard mode" in flow
+    assert "Meta Model API, Muse Spark 1.3" in flow
+    assert "Generated from `server/grove/privacy.py`" in flow
+    assert "Settings present does not prove" in flow
+    assert "handoff" not in flow.lower()
     record = (REPO / "HACKATHON.md").read_text(encoding="utf-8")
     assert record.count("the simulation of the views (the sim)") == 1
     assert (
@@ -148,7 +151,7 @@ def test_the_open_points_of_review_round_one():
         "`GROVE_ENV=production` must be set on the box",
         "D3's restore has not run on this store",
         "no rows for the mail provider, Google sign-in, Calendar and backups",
-        "`history_values.forgotten_at`, `budgets.spent`",
+        "`budgets.spent`",
     ):
         assert phrase in points, phrase
 
@@ -167,8 +170,11 @@ def test_belief_reason_storage_and_undo_move_to_resolved_points():
     assert why.type == "value_id"
 
 
-def test_the_open_points_hand_a_forgotten_items_map_position_to_forget():
+def test_map_position_erasure_is_resolved_and_other_open_points_remain():
     head = doc_text().split(BEGIN, 1)[0]
     open_points = head.split("## Open points for later lanes", 1)[1].split("\n## ", 1)[0]
-    row = next(line for line in open_points.splitlines() if "`map_positions`" in line)
-    assert "after its item is forgotten" in row and row.endswith("| `forget` |")
+    active, resolved = open_points.split("A point that a later lane resolves", 1)
+    assert "`map_positions`" not in active
+    row = next(line for line in resolved.splitlines() if "`map_positions`" in line)
+    assert "after its item is forgotten" in row and "`forget`: D14 erasure" in row
+    assert "D14 erasure and restore" in head

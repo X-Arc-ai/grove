@@ -15,6 +15,32 @@
   };
   var icons = window.GroveIcons || {};
   var ui = { step: api.getState().onboardingStep || 0, panel: null, guide: null, guideStep:0, tour: 0, tourNode: null, error: '', host: null, hostStage: 0 };
+  var liveUploads = {};
+  var liveData = {owner:null};
+  var liveSessionReady = false;
+  function refreshLiveData(force){
+    if(!live)return;
+    var state=api.getState(),owner=state.auth&&state.account;
+    if(liveData.owner!==owner)liveData={owner:owner};
+    if(!owner||!liveSessionReady||(!force&&liveData.started))return;
+    var request=liveData={owner:owner,started:true,pending:true,sources:null,connections:null,health:null};
+    function current(){var now=api.getState();return request===liveData&&now.auth&&now.account===owner;}
+    var reads=[['sources',live.ENDPOINTS.sourceCoverage,'connectors'],['connections',live.ENDPOINTS.sourceConnections,'connections'],['health',live.ENDPOINTS.health,null]];
+    Promise.all(reads.map(function(row){return live.getJSON(row[1]).then(function(res){
+      if(!current()||!res.ok||!res.body)return;
+      var value=row[2]?res.body[row[2]]:res.body;
+      if(row[2]?!Array.isArray(value):!Number.isFinite(value.nodes)||!Number.isFinite(value.edges))return;
+      request[row[0]]=value;
+    }).catch(function(){});})).then(function(){if(current()){request.pending=false;render(true);}});
+  }
+  function coverageMessage(){return liveData.pending?'Check in progress':liveData.sources===null?'Source information is not available. Try again.':'';}
+  function liveSourceAccounts(){
+    return (liveData.sources||[]).map(function(row){
+      var id={claude_ai:'claude',whatsapp:'chats',google_calendar:'calendar'}[row.provider]||row.provider;
+      var connection=(liveData.connections||[]).find(function(c){return c.id===row.connector_id;});
+      return {id:id,label:PROVIDERS[id]?PROVIDERS[id].label:row.provider,kind:['notes','files','images'].includes(row.type)?'file':'account',live:true,readCount:row.read_count,outcome:row.last_outcome,status:connection?connection.state:'uploaded',lastRead:row.last_successful_read};
+    });
+  }
   var root = document.createElement('div'); root.id = 'grove-product'; document.body.appendChild(root);
   var modalRoot = document.createElement('div'); modalRoot.id='gp-modal-root'; root.appendChild(modalRoot);
   var chrome = document.createElement('div'); chrome.id='gp-chrome'; root.appendChild(chrome);
@@ -51,7 +77,7 @@
 
   function wordmark(){return '<span class="wm gp-wordmark"><span>grove</span><span class="wm-dot" aria-hidden="true"></span></span>';}
   function pendingExports(s){return Object.keys(s.pendingExports||{}).filter(function(id){return !!PROVIDERS[id];});}
-  function needsHistory(s){return pendingExports(s).length>0||!s.sources.some(function(so){return (so.providers||[]).some(function(id){return AI_PROVIDERS.includes(id);});});}
+  function needsHistory(s){if(live)return pendingExports(s).length>0||!liveSourceAccounts().some(function(a){return AI_PROVIDERS.includes(a.id)&&a.readCount>0;});return pendingExports(s).length>0||!s.sources.some(function(so){return (so.providers||[]).some(function(id){return AI_PROVIDERS.includes(id);});});}
   function esc(x){return String(x==null?'':x).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function icon(id){if(id==='muse'&&!icons.muse)return '';return icons[id] || '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';}
   function arrow(){return '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 10h12m-5-5 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';}
@@ -76,6 +102,7 @@
   // than the stored one resets the local state first. A world that holds items, on a browser with no
   // onboarding in progress, opens on the map. Says whether it did. Runs twice with no second effect.
   function arrive(body){
+    liveSessionReady=true;
     if(api.bindAccount(body.account)){
       ui.step=0;ui.guideStage=0;ui.editName=false;ui.nameDraft='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};ui.requestDrafts={};ui.uploadFile=null;ui.connecting={};ui.query='';ui.notice='';
       if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
@@ -144,6 +171,7 @@
   // sign-in ends, the graph leaves memory and the screen, panels close and the sign-in card shows.
   // A person already on the sign-in card (checking, the email code) keeps the step they are on.
   function endSession(){
+    liveSessionReady=false;liveData={owner:null};
     var onCard=!api.getState().auth&&!!ui.authStage;
     api.signOut();
     if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
@@ -168,15 +196,24 @@
     else rows=[['google','Google','Gmail, Drive, Calendar'],['notion','Notion','Notes & knowledge'],['slack','Slack','Team conversations'],['microsoft','Microsoft 365','Mail, files & teams'],['linear','Linear','Projects & tasks'],['dropbox','Dropbox','Files & folders']];
     return rows.length?rows.map(function(x){var active=x[0]==='google'?api.getState().googleConnected:accountActive(x[0]);return '<button class="gp-integration '+(active?'is-connected':'')+'" data-integration="'+x[0]+'" aria-label="'+(active?'Connected to ':'Connect ')+esc(x[1])+'"><span class="gp-integration-mark">'+appMark(x[0])+'</span><span><strong>'+esc(x[1])+'</strong><small>'+esc(x[2])+'</small></span><span class="gp-integration-status">'+(ui.connecting[x[0]]?'…':active?'✓':'+')+'</span></button>';}).join(''):'<p class="gp-empty-sources">No matches — try another name</p>';
   }
-  function integrationChoices(){return '<label class="gp-integration-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" placeholder="Search 3,000+ integrations" aria-label="Search 3,000+ integrations" data-integration-search value="'+esc(ui.query)+'"></label><div class="gp-integrations" id="gp-integration-results">'+integrationResults()+'</div><div id="gp-inline-auth"></div>';}
-  function hostChoices(){var hosts=api.getState().connectedHosts;return '<div class="gp-host-choices">'+HOST_ORDER.map(function(id){var done=hosts.includes(id);return '<button class="gp-host-choice '+(done?'is-connected':'')+'" data-host-inline="'+id+'" aria-label="'+(done?'Disconnect Grove from ':'Connect Grove to ')+PROVIDERS[id].label+'"><span class="gp-provider-icon">'+icon(id)+'</span><span><strong>'+PROVIDERS[id].label+'</strong><small>'+(done?'Grove is connected':'Connect Grove')+'</small></span><span class="gp-host-status">'+(ui.connecting['host:'+id]?'…':done?'✓':'+')+'</span></button>';}).join('')+'</div>';}
+  function loadViewAsset(name){
+    var key=name==='guides'?'guide':'catalog';
+    if(ui[key+'Loading']||ui[key+'Error'])return;
+    ui[key+'Loading']=true;
+    window.GroveDeferred.load(name).then(function(){
+      if(name==='catalog'){catalog=window.GroveIntegrations||[];catalog.forEach(function(a){if(!PROVIDERS[a.id])PROVIDERS[a.id]={label:a.name,source:'notes',color:'var(--text)'};});}
+    },function(){ui[key+'Error']='This view could not load. Try again.';}).finally(function(){ui[key+'Loading']=false;render(true);});
+  }
+  function assetNotice(name){var key=name==='guides'?'guide':'catalog';return '<p class="gp-section-copy" role="status">'+(ui[key+'Error']?esc(ui[key+'Error']):'Loading '+(name==='guides'?'your guide':'apps')+'…')+'</p>'+(ui[key+'Error']?'<button class="gp-small" data-retry-asset="'+name+'">Try again</button>':'');}
+  function integrationChoices(){if(!window.GroveIntegrations&&window.GroveDeferred){loadViewAsset('catalog');return assetNotice('catalog');}if(live)return '<div data-pipedream-apps></div>';return '<label class="gp-integration-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" placeholder="Search 3,000+ integrations" aria-label="Search 3,000+ integrations" data-integration-search value="'+esc(ui.query)+'"></label><div class="gp-integrations" id="gp-integration-results">'+integrationResults()+'</div><div id="gp-inline-auth"></div>';}
+  function hostChoices(){var hosts=live?[]:api.getState().connectedHosts;return '<div class="gp-host-choices">'+HOST_ORDER.map(function(id){var done=hosts.includes(id);return '<button class="gp-host-choice '+(done?'is-connected':'')+'" data-host-inline="'+id+'" aria-label="'+(live?'Set up Grove in ':done?'Disconnect Grove from ':'Connect Grove to ')+PROVIDERS[id].label+'"><span class="gp-provider-icon">'+icon(id)+'</span><span><strong>'+PROVIDERS[id].label+'</strong><small>'+(live?'View setup directions':done?'Grove is connected':'Connect Grove')+'</small></span><span class="gp-host-status">'+(ui.connecting['host:'+id]?'…':done?'✓':'+')+'</span></button>';}).join('')+'</div>';}
   function stepContent(){
     if(ui.step===1)return heading('','Start with your conversations','Give Grove the context behind how you think')+'<div class="gp-source-choices">'+AI_PROVIDERS.map(function(id){return sourceChoice(id,PROVIDERS[id].label);}).join('')+'</div>';
     if(ui.step===2)return heading('','Bring your world closer','Keep your Grove in step with your everyday life')+integrationChoices();
     if(ui.step===3)return heading('','Add what matters','The knowledge and ideas you want your AI to know')+filesComposer();
     return heading('','Take Grove with you','Let your favorite AI pick up where you left off')+hostChoices()+customMcp();
   }
-  function setup(){return shell(stepper()+stepContent()+'<div class="gp-step-footer">'+(ui.step>1?'<button class="gp-back" data-action="back" aria-label="Previous step">'+arrow()+'</button>':'<span aria-hidden="true"></span>')+'<button class="gp-next" data-action="next" aria-label="'+(ui.step===4?'Enter your Grove':'Next step')+'"><i>'+arrow()+'</i></button></div>','gp-setup',false);}
+  function setup(){return shell(stepper()+stepContent()+'<div class="gp-step-footer">'+(ui.step>1?'<button class="gp-back" data-action="back" aria-label="Previous step">'+arrow()+'</button>':'<span aria-hidden="true"></span>')+(ui.step<4?'<button class="gp-text" data-action="skip">Skip for now</button>':'')+'<button class="gp-next" data-action="next" aria-label="'+(ui.step===4?'Enter your Grove':'Next step')+'"><i>'+arrow()+'</i></button></div>','gp-setup',false);}
   function move(action){action();var el=modalRoot.querySelector('.gp-dialog');if(el&&!reduceMotion.matches)el.animate([{opacity:0},{opacity:1}],{duration:240,easing:'ease-out'});}
 
 
@@ -185,12 +222,34 @@
     claude:[['claude-home','Open Claude on the web and click your profile.'],['claude-menu','Open Settings.'],['claude-privacy','Choose Privacy, then Export data. Your download arrives by email.']]
   };
   var HELP={chats:'https://faq.whatsapp.com/1180414079177245/',chatgpt:'https://help.openai.com/en/articles/7260999-exporting-your-chatgpt-history-and-data',claude:'https://support.claude.com/en/articles/9450526-export-your-claude-data',grok:'https://x.ai/legal/faq'};
+  function liveUpload(id){
+    var account=JSON.stringify(api.getState().auth);
+    if(!liveUploads[id]||liveUploads[id].account!==account)liveUploads[id]={account:account,file:null,pending:false,result:null,error:''};
+    return liveUploads[id];
+  }
+  function uploadResult(result){
+    if(!result)return '';
+    var labels={taken_in:'Import accepted',nothing_new:'No new messages',kept_out:'No retained messages',failed:'Import failed'};
+    var counts=[['chats','Chats read'],['chats_new','New chats'],['sources_added','Sources added'],['episodes_added','Episodes added'],['messages_read','Messages read'],['messages_kept','Messages kept'],['failed_chats','Failed chats']];
+    return '<div class="gp-upload-result" role="status"><p><strong>'+esc(labels[result.state]||'Upload result')+'</strong></p>'+(result.failed_chats?'<p>Some chats failed. Keep this export and retry the upload.</p>':'')+'<p>'+counts.map(function(row){return row[1]+': '+esc(result[row[0]]);}).join(' · ')+'</p>'+Object.keys(result.screened||{}).map(function(key){return '<p>Screened '+esc(key)+': '+esc(result.screened[key])+'</p>';}).join('')+'<p>Your graph has not changed from this upload.</p></div>';
+  }
+  function canUpload(id){return !live||id==='chatgpt'||id==='claude';}
+  function exportPicker(id){
+    var p=PROVIDERS[id],state=live?liveUpload(id):{file:ui.uploadFile},ready=canUpload(id);
+    var input=live&&ready?'<input type="file" accept="'+p.accept+'" data-pick-export="'+id+'" aria-label="'+p.label+' export file" hidden>':'';
+    return input+'<button class="gp-upload-zone" data-action="pick-export"'+(!ready||state.pending?' disabled':'')+'><span>'+icon('notes')+'</span><strong>'+(state.file?esc(state.file.name):id==='notes'?'Choose a file':'Choose your export')+'</strong><small>'+(!ready?'Not available yet':state.pending?'Upload in progress':state.file?'Ready to upload':id==='notes'?'Notes and documents':'Your conversations, ready for Grove')+'</small></button>'+(live&&state.pending?'<p class="gp-section-copy" role="status" aria-live="polite">Upload in progress</p>':'')+(live&&state.error?'<p class="gp-section-copy" role="alert">'+esc(state.error)+'</p>':'')+(live?uploadResult(state.result):'');
+  }
   function guide(){
     var id=ui.guide,p=PROVIDERS[id],walk=WALKS[id],upload=ui.guideStage===1||id==='notes';
     if(id==='google'||['notion','linear','slack','microsoft'].includes(id))return integrationGuide(id);
     var title=upload?'Upload your '+(id==='notes'?'files':p.label+' history'):id==='muse'?'Connect Muse':'Export your '+p.label+' history';
     var help=!upload&&HELP[id]?'<a class="gp-help" href="'+HELP[id]+'" target="_blank" rel="noreferrer" aria-label="Official '+p.label+' export instructions" title="Official instructions">↗</a>':'';
     var header='<header class="gp-guide-heading"><span class="gp-provider-icon" style="color:'+p.color+'">'+icon(id)+'</span><h1 id="gp-title" tabindex="-1">'+title+help+'</h1><button class="gp-icon" data-action="guide-back" aria-label="Close guide">×</button></header>';
+    if(!window.GroveAppScreens&&window.GroveDeferred){
+      loadViewAsset('guides');
+      var pending=assetNotice('guides')+'<footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">Back</button></footer>';
+      return api.getState().onboardingComplete?settingsFrame(pending,'sources',sourceTrail(id,upload)):shell(header+pending,'gp-guide gp-visual-guide',false);
+    }
     var frames=upload?[{html:transferFilm(id),label:id==='chats'?'Save or share your WhatsApp export, then bring it to Grove':'Download your export and upload it to Grove'}]:walk?walk.map(function(step){return {html:window.GroveAppScreens[step[0]],label:step[1].replace(/\.$/,'')};}):[];
     if(!upload&&!walk&&p.steps.length&&id!=='notes')frames=p.steps.slice(0,2).map(function(step,i){return {html:'<div class="film-instruction"><div class="film-logo">'+icon(id)+'</div><span>0'+(i+1)+'</span><h2>'+step[0]+'</h2><p>'+step[1].replace(/\.$/,'')+'</p></div>',label:step[0]};});
     if(!frames.length)frames.push({html:transferFilm(id),label:'Bring your context to Grove'});
@@ -198,8 +257,9 @@
     var frameSeconds=id==='chats'&&!upload?5:!upload&&(id==='chatgpt'||id==='claude')?2.2:3.6,duration=frames.length*frameSeconds,css=window.GroveAppScreenCSS+(window.GroveWhatsAppGuide?window.GroveWhatsAppGuide.css:'')+filmCSS(frames.length,duration)+(upload?'html,body,.film-stage,.film-transfer{height:360px}':'');
     var doc='<!doctype html><html><head><meta charset="utf-8"><style>'+css+'</style></head><body><div class="film-stage">'+frames.map(function(f,i){return '<section class="film-frame" style="animation-delay:-'+(duration-i*frameSeconds).toFixed(2)+'s">'+f.html+'</section>';}).join('')+'</div></body></html>';
     var film='<div class="gp-app-frame" aria-label="Animated guide: '+esc(frames.map(function(f){return f.label;}).join('. '))+'"><iframe title="Automatic '+p.label+' guide" tabindex="-1" aria-hidden="true" inert sandbox srcdoc="'+esc(doc)+'"></iframe></div>';
-    var picker=upload?'<button class="gp-upload-zone" data-action="pick-export"><span>'+icon('notes')+'</span><strong>'+(ui.uploadFile?esc(ui.uploadFile.name):id==='notes'?'Choose a file':'Choose your export')+'</strong><small>'+(ui.uploadFile?'Ready to upload':id==='notes'?'Notes and documents':'Your conversations, ready for Grove')+'</small></button>':'';
-    var primary=upload?'<button class="gp-primary" data-action="upload-export"'+(!ui.uploadFile?' disabled':'')+'>Upload '+(id==='notes'?'file':'export')+'</button>':id==='muse'?'<button class="gp-primary" data-import="muse">Connect Muse</button>':'<button class="gp-primary" data-action="export-requested">'+(id==='chats'?'I have my export':'I’ve requested it')+'</button>';
+    var picker=upload?exportPicker(id):'';
+    var selected=live?liveUpload(id):{file:ui.uploadFile};
+    var primary=upload?'<button class="gp-primary" data-action="upload-export"'+(!canUpload(id)||!selected.file||selected.pending?' disabled':'')+'>'+(selected.pending?'Upload in progress':'Upload '+(id==='notes'?'file':'export'))+'</button>':id==='muse'?'<button class="gp-primary" data-import="muse">Connect Muse</button>':'<button class="gp-primary" data-action="export-requested">'+(id==='chats'?'I have my export':'I’ve requested it')+'</button>';
     var devices=id==='chats'&&!upload?'<div class="gp-device-choice" aria-label="WhatsApp device">'+[['iphone','iPhone'],['android','Android']].map(function(d){return '<button data-guide-device="'+d[0]+'" aria-pressed="'+(ui.guideDevice===d[0])+'">'+d[1]+'</button>';}).join('')+'</div>':'';
     var controls=frames.length>1?'<div class="gp-film-tools"><button class="gp-text" data-action="film-toggle" aria-label="Pause guide">Ⅱ</button></div>':'';
     var content=header+devices+film+picker+controls+'<footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">'+(upload?(id==='notes'||id==='chats'?'Later':'When the email arrives'):'Back')+'</button>'+primary+'</footer>';
@@ -218,21 +278,25 @@
   window.addEventListener('resize',fitGuide);
   function info(copy){return '<span class="gp-info" tabindex="0" role="note" aria-label="'+esc(copy)+'">i<span class="gp-tooltip" role="tooltip">'+esc(copy)+'</span></span>';}
   function filesComposer(){
-    var all=Object.values(api.getState().files||{}),notes=all.filter(function(f){return f.kind==='note';}),files=all.filter(function(f){return f.kind!=='note';});
+    var all=live?[]:Object.values(api.getState().files||{}),notes=all.filter(function(f){return f.kind==='note';}),files=all.filter(function(f){return f.kind!=='note';});
     function rows(items){return '<div class="gp-file-added">'+items.map(function(f){var a=api.getState().accountImports[f.id];return '<div><span>'+icon('notes')+'</span><strong>'+esc(f.name)+'</strong><small class="gp-status" data-account-status="'+f.id+'">'+(a&&a.status==='importing'?a.progress+'%':'')+'</small></div>';}).join('')+'</div>';}
     var samples=['About me.md','Project direction.pptx','Research notes.pdf','Reading list.docx','Ideas.txt'];
     var available=samples.filter(function(name){return !files.some(function(f){return f.name===name;});});
-    var picker=ui.filePicker?'<div class="gp-file-picker"><p class="gp-kicker">Choose files</p><form data-files-form>'+available.map(function(name){return '<label><input type="checkbox" name="file" value="'+name+'" checked><span>'+name+'</span><small>'+name.split('.').pop().toUpperCase()+'</small></label>';}).join('')+(!available.length?'<p class="gp-section-copy">All example files have been added</p>':'')+'<footer><button class="gp-text" type="button" data-action="cancel-files">Cancel</button><button class="gp-small" '+(!available.length?'disabled':'')+'>Add selected</button></footer></form></div>':'';
-    var editor=ui.noteEditor?'<form class="gp-note-form" data-note-form><label>Title<input name="title" placeholder="A little about me" maxlength="100" value="'+esc(ui.noteDraft.title)+'" required></label><label>Note<textarea name="body" placeholder="What would you like Grove to know?" rows="3" required>'+esc(ui.noteDraft.body)+'</textarea></label><footer><button type="button" class="gp-text" data-action="cancel-note">Cancel</button><button class="gp-small">Add note</button></footer></form>':'';
-    return '<div class="gp-files-composer"><section class="gp-material-section"><header><div><h2>Your files</h2><p>Documents, slides, PDFs, and more</p></div><button class="gp-small" data-action="choose-files">Add files +</button></header>'+picker+rows(files)+(!files.length&&!ui.filePicker?'<p class="gp-material-empty">Bring the things you return to</p>':'')+'</section><section class="gp-material-section"><header><div><h2>Your notes</h2><p>Your own words, directly to Grove</p></div><button class="gp-small" data-action="write-note">Add note +</button></header>'+editor+rows(notes)+(!notes.length&&!ui.noteEditor?'<p class="gp-material-empty">An idea, a preference, or something worth knowing</p>':'')+'</section></div>';
+    var picker=!live&&ui.filePicker?'<div class="gp-file-picker"><p class="gp-kicker">Choose files</p><form data-files-form>'+available.map(function(name){return '<label><input type="checkbox" name="file" value="'+name+'" checked><span>'+name+'</span><small>'+name.split('.').pop().toUpperCase()+'</small></label>';}).join('')+(!available.length?'<p class="gp-section-copy">All example files have been added</p>':'')+'<footer><button class="gp-text" type="button" data-action="cancel-files">Cancel</button><button class="gp-small" '+(!available.length?'disabled':'')+'>Add selected</button></footer></form></div>':'';
+    var editor=!live&&ui.noteEditor?'<form class="gp-note-form" data-note-form><label>Title<input name="title" placeholder="A little about me" maxlength="100" value="'+esc(ui.noteDraft.title)+'" required></label><label>Note<textarea name="body" placeholder="What would you like Grove to know?" rows="3" required>'+esc(ui.noteDraft.body)+'</textarea></label><footer><button type="button" class="gp-text" data-action="cancel-note">Cancel</button><button class="gp-small">Add note</button></footer></form>':'';
+    return '<div class="gp-files-composer"><section class="gp-material-section"><header><div><h2>Your files</h2><p>Documents, slides, PDFs, and more</p></div><button class="gp-small" data-action="choose-files"'+(live?' disabled title="Not available yet"':'')+'>Add files +</button></header>'+picker+rows(files)+(!files.length&&!ui.filePicker?'<p class="gp-material-empty">'+(live?'Not available yet. You can add files later.':'Bring the things you return to')+'</p>':'')+'</section><section class="gp-material-section"><header><div><h2>Your notes</h2><p>Your own words, directly to Grove</p></div><button class="gp-small" data-action="write-note"'+(live?' disabled title="Not available yet"':'')+'>Add note +</button></header>'+editor+rows(notes)+(!notes.length&&!ui.noteEditor?'<p class="gp-material-empty">'+(live?'Not available yet. You can add notes later.':'An idea, a preference, or something worth knowing')+'</p>':'')+'</section></div>';
   }
 
-  function sourceAccounts(s){return Object.keys(s.accountImports).map(function(id){var a=s.accountImports[id];return Object.assign({},a,{id:id,label:a.kind==='file'?a.label:PROVIDERS[id]?PROVIDERS[id].label:(a.label||id)});});}
+  function sourceAccounts(s){if(live)return liveSourceAccounts();return Object.keys(s.accountImports).map(function(id){var a=s.accountImports[id];return Object.assign({},a,{id:id,label:a.kind==='file'?a.label:PROVIDERS[id]?PROVIDERS[id].label:(a.label||id)});});}
   function sourceAction(kind,label,attr){
     var paths={update:'M19 7v5h-5M5 17v-5h5M6.1 7a7 7 0 0 1 11.6-1L19 8M5 16l1.3 2A7 7 0 0 0 18 17',disconnect:'M12 3v9M7 5.5a8 8 0 1 0 10 0',remove:'M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 10v7M14 10v7',reconnect:'M12 5v14M5 12h14'};
     return '<button class="gp-source-action '+(kind==='disconnect'||kind==='remove'?'gp-destructive':kind==='reconnect'?'gp-positive':'')+'" '+attr+' aria-label="'+esc(label)+'" title="'+esc(label)+'"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="'+paths[kind]+'"/></svg></button>';
   }
   function sourceRow(a){
+    if(a.live){
+      var words={took_in:'Import accepted',nothing_new:'No new messages',kept_out:'No retained messages',failed:'Import failed'};
+      return '<div class="gp-source-row"><span class="gp-provider-icon">'+appMark(a.id)+'</span><div class="gp-source-name"><strong>'+esc(a.label)+'</strong><small>'+esc(words[a.outcome]||'Read status unavailable')+'</small>'+(a.status==='disconnected'?'<small>Disconnected · memories retained</small>':'')+'</div><span class="gp-source-value">'+(Number.isFinite(a.readCount)?esc(a.readCount)+' episodes read':'Count unavailable')+'</span></div>';
+    }
     var off=a.status==='disconnected',c=a.contribution||{nodes:0,edges:0},file=a.kind==='file';
     var detail=file?((api.getState().files[a.id]||{}).kind==='note'?'Note':'File'):a.id==='chats'?'Uploaded history':off?'Memories retained':'Syncs automatically';
     var update=a.id==='chats'&&!off?sourceAction('update','Update WhatsApp history','data-upload-provider="chats"'):'';
@@ -241,7 +305,7 @@
   function pendingRows(s){return pendingExports(s).map(function(id){var previous=s.accountImports[id]&&s.accountImports[id].loadedCount>0;return '<div class="gp-source-row gp-source-pending"><span class="gp-provider-icon">'+icon(id)+'</span><div class="gp-source-name"><strong>'+PROVIDERS[id].label+'</strong><small>'+(previous?'New chats aren’t in your Grove yet':'Not in your Grove yet')+'</small></div><span class="gp-pending-status"><i class="gp-notification-dot" aria-hidden="true"></i>Upload needed</span><button class="gp-text gp-upload-pending" data-upload-provider="'+id+'" aria-label="Upload '+PROVIDERS[id].label+' export">Upload '+arrow()+'</button></div>';}).join('');}
   function groupedSources(s){
     var accounts=sourceAccounts(s);
-    return [['chats','Chats'],['apps','Synced apps'],['files','Files & notes']].map(function(group){
+    return (live?'<p class="gp-section-copy" role="status">'+esc(coverageMessage())+'</p><button class="gp-text" data-action="refresh-live-data">Check sources</button>':'')+[['chats','Chats'],['apps','Synced apps'],['files','Files & notes']].map(function(group){
       var pending=group[0]==='chats'?pendingRows(s):'';
       var rows=accounts.filter(function(a){return group[0]==='files'?a.kind==='file':a.kind!=='file'&&(group[0]==='chats'?AI_PROVIDERS.includes(a.id):!AI_PROVIDERS.includes(a.id));});
       return '<section class="gp-source-group"><header><h3>'+group[1]+'</h3><button class="gp-text" data-add-group="'+group[0]+'">Add +</button></header>'+pending+(rows.length?rows.map(sourceRow).join(''):pending?'':'<p class="gp-source-empty">'+{chats:'Your conversations can start here',apps:'Connect the places your work lives',files:'Add a document, a plan, or a note'}[group[0]]+'</p>')+'</section>';
@@ -257,7 +321,7 @@
     var copy=disconnect?'New imports will stop. The memories already in your Grove stay.':'Memories supported only by this file will be removed. Shared memories stay.';
     return '<div class="gp-confirm-backdrop"><section class="gp-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="gp-confirm-title" aria-describedby="gp-confirm-copy"><header><h2 id="gp-confirm-title" tabindex="-1">'+esc(title)+'</h2><button class="gp-icon" data-action="cancel-confirm" aria-label="Close confirmation">×</button></header><p id="gp-confirm-copy">'+copy+'</p><div class="gp-confirm-actions"><button class="gp-small" data-action="cancel-confirm">Cancel</button><button class="gp-small gp-danger" data-action="confirm-delete">'+(disconnect?'Disconnect':'Remove file')+'</button></div></section></div>';
   }
-  function growthForm(s){var g=ui.growthDraft||s.growth;return '<h2>My Grove</h2><p class="gp-section-copy">A little guidance, entirely up to you</p><form data-growth-form class="gp-growth-form"><label><span class="gp-field-label">Focus on '+info('Tell Grove which work, people, or ideas deserve more attention. Leave this blank to let your sources lead.')+'</span><textarea name="focus" rows="2" placeholder="The work, people, and ideas that matter to you">'+esc(g.focus)+'</textarea></label><label><span class="gp-field-label">How to read my sources '+info('Set the context for interpretation. For example, a plan is a possibility until there is evidence it happened.')+'</span><textarea name="reading" rows="2" placeholder="Treat plans as possibilities until I confirm what happened">'+esc(g.reading)+'</textarea></label><label><span class="gp-field-label">Leave out '+info('Describe topics or details that should not shape your Grove, such as temporary logistics or routine chatter.')+'</span><textarea name="avoid" rows="2" placeholder="Routine chatter, temporary details, or topics to ignore">'+esc(g.avoid)+'</textarea></label><div class="gp-check-row"><label class="gp-check-label"><input type="checkbox" name="confirm" '+(g.confirm?'checked':'')+'>Ask before changing an established preference</label>'+info('Grove will bring a question to your input inbox before replacing a preference it has already learned.')+'</div><footer><span class="gp-save-note gp-positive" role="status">'+esc(ui.notice)+'</span><button class="gp-small">Save guidance</button></footer></form>';}
+  function growthForm(s){var g=ui.growthDraft||s.growth;return '<h2>My Grove</h2><p class="gp-section-copy">A little guidance, entirely up to you</p>'+(live?'<p class="gp-section-copy">Guidance stays on this browser and is not applied to your Grove yet.</p>':'')+'<form data-growth-form class="gp-growth-form"><label><span class="gp-field-label">Focus on '+info('Tell Grove which work, people, or ideas deserve more attention. Leave this blank to let your sources lead.')+'</span><textarea name="focus" rows="2" placeholder="The work, people, and ideas that matter to you">'+esc(g.focus)+'</textarea></label><label><span class="gp-field-label">How to read my sources '+info('Set the context for interpretation. For example, a plan is a possibility until there is evidence it happened.')+'</span><textarea name="reading" rows="2" placeholder="Treat plans as possibilities until I confirm what happened">'+esc(g.reading)+'</textarea></label><label><span class="gp-field-label">Leave out '+info('Describe topics or details that should not shape your Grove, such as temporary logistics or routine chatter.')+'</span><textarea name="avoid" rows="2" placeholder="Routine chatter, temporary details, or topics to ignore">'+esc(g.avoid)+'</textarea></label><div class="gp-check-row"><label class="gp-check-label"><input type="checkbox" name="confirm" '+(g.confirm?'checked':'')+'>Ask before changing an established preference</label>'+info('Grove will bring a question to your input inbox before replacing a preference it has already learned.')+'</div><footer><span class="gp-save-note gp-positive" role="status">'+esc(ui.notice)+'</span><button class="gp-small">Save guidance</button></footer></form>';}
   // The sim's example name is fixture mode only; live mode with no name known says 'You'.
   function shownName(state){return state.name||(live?'You':'Anas');}
   function accountSettings(state){
@@ -266,14 +330,14 @@
     // Live mode shows only the address the sign-in knows; with none (Google), the sign-in method.
     var email=state.auth&&state.auth.email||(live?'':'anas@example.com');
     var emailRow=email?'<div class="gp-setting-row"><span><strong>Email</strong><small>'+esc(email)+'</small></span><span class="gp-positive">Verified</span></div>':'<div class="gp-setting-row"><span><strong>Email</strong><small>Signed in with '+esc(method)+'</small></span></div>';
-    return '<h2>Account</h2><p class="gp-section-copy">Your identity and access</p><section class="gp-account-section"><h3>Profile</h3>'+name+emailRow+'</section><section class="gp-account-section"><h3>Sign-in</h3><div class="gp-setting-row"><span><strong>'+esc(method)+'</strong><small>This device</small></span><button class="gp-small" data-action="logout">Log out</button></div>'+(ui.logoutError?'<p class="gp-footnote" role="alert">'+esc(ui.logoutError)+'</p>':'')+'</section><section class="gp-account-section"><h3>Your data</h3><div class="gp-setting-row"><span><strong>Download my Grove</strong><small>Keep a copy of your sources and guidance</small></span><button class="gp-text" data-action="download-data">Download ↗</button></div></section>';
+    return '<h2>Account</h2><p class="gp-section-copy">Your identity and access</p><section class="gp-account-section"><h3>Profile</h3>'+name+emailRow+'</section><section class="gp-account-section"><h3>Sign-in</h3><div class="gp-setting-row"><span><strong>'+esc(method)+'</strong><small>This device</small></span><button class="gp-small" data-action="logout">Log out</button></div>'+(ui.logoutError?'<p class="gp-footnote" role="alert">'+esc(ui.logoutError)+'</p>':'')+'</section><section class="gp-account-section"><h3>Your data</h3><div class="gp-setting-row"><span><strong>'+(live?'Download browser settings':'Download my Grove')+'</strong><small>'+(live?'Keep this browser’s preferences and pending reminders':'Keep a copy of your sources and guidance')+'</small></span><button class="gp-text" data-action="download-data">Download ↗</button></div></section>';
   }
   function requestsPanel(){
     var items=(api.getState().requests||[]).filter(function(r){return r.status==='open';}),r=items.find(function(r){return r.id===ui.requestId;})||items[0],index=items.indexOf(r);
     if(r)ui.requestId=r.id;
     var question=r?r.title:'';
     if(r&&r.kind==='connection'&&question==='Does this connection still hold?')question='Is this still right: '+r.targetLabel.replace(/ → /g,' ')+'?';
-    var body=r?'<form data-request-form data-request="'+r.id+'"><h2>'+esc(question)+'</h2><textarea name="answer" rows="3" required aria-label="Your answer" placeholder="'+esc(r.placeholder)+'">'+esc(ui.requestDrafts[r.id]||'')+'</textarea><footer><div class="gp-review-nav"><button class="gp-icon gp-prev-arrow" type="button" data-action="request-prev" aria-label="Previous question" '+(index===0?'disabled':'')+'>'+arrow()+'</button><span>'+(index+1)+' / '+items.length+'</span><button class="gp-icon" type="button" data-action="request-next" aria-label="Next question" '+(index===items.length-1?'disabled':'')+'>'+arrow()+'</button></div><button class="gp-small">Send answer</button></footer></form>':'<p class="gp-review-empty">You’re all caught up</p>';
+    var body=r?'<form data-request-form data-request="'+r.id+'"><h2>'+esc(question)+'</h2><textarea name="answer" rows="3" required aria-label="Your answer" placeholder="'+esc(r.placeholder)+'">'+esc(ui.requestDrafts[r.id]||'')+'</textarea><footer><div class="gp-review-nav"><button class="gp-icon gp-prev-arrow" type="button" data-action="request-prev" aria-label="Previous question" '+(index===0?'disabled':'')+'>'+arrow()+'</button><span>'+(index+1)+' / '+items.length+'</span><button class="gp-icon" type="button" data-action="request-next" aria-label="Next question" '+(index===items.length-1?'disabled':'')+'>'+arrow()+'</button></div><button class="gp-small">Send answer</button></footer></form>':'<p class="gp-review-empty">'+(live?'Questions are not available yet':'You’re all caught up')+'</p>';
     return '<section class="gp-review-popover" role="dialog" aria-modal="false" aria-labelledby="gp-title"><header><span class="gp-review-agent" id="gp-title" tabindex="-1">'+(r?workerMark(r.agent.toLowerCase())+'From '+esc(r.agent):'Grove')+'</span>'+close()+'</header>'+body+'</section>';
   }
 
@@ -306,6 +370,7 @@
     return '<svg viewBox="0 0 136 60" role="img" aria-label="'+(vals.length>1?'Recorded '+(kind==='nodes'?'node':'connection')+' growth, from '+vals[0]+' to '+current:'Growth history starts at '+current)+'"><path d="M4 54H132" fill="none" stroke="var(--border)" stroke-width="1"/><polyline points="'+line+'" fill="none" stroke="var(--gp-success)" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/><circle cx="130" cy="'+last.toFixed(1)+'" r="2.5" fill="var(--gp-success)"/></svg>';
   }
   function healthSources(s){
+    if(live&&liveData.sources===null)return '<p class="gp-section-copy">'+esc(coverageMessage())+'</p>';
     var accounts=sourceAccounts(s).filter(function(a){return a.status!=='disconnected';});
     return '<div class="gp-health-source-groups">'+[['chats','Chats'],['apps','Synced apps'],['files','Files & notes']].map(function(g){
       var rows=accounts.filter(function(a){return g[0]==='files'?a.kind==='file':a.kind!=='file'&&(g[0]==='chats'?AI_PROVIDERS.includes(a.id):!AI_PROVIDERS.includes(a.id));});
@@ -315,23 +380,51 @@
   }
   function health(){
     var s=api.getState(),care=careSummary();
+    if(live){
+      var data=liveData.health;
+      return shell('<header class="gp-popup-top"><h1 id="gp-title" tabindex="-1">Your Grove health</h1>'+close()+'</header><div class="gp-health-scroll"><section class="gp-health-overview"><div class="gp-health-counts">'+[['nodes','Nodes'],['edges','Connections']].map(function(row){return '<div class="gp-health-metric"><div><span class="gp-metric-label">'+row[1]+'</span><strong data-live-count="'+row[0]+'">'+(data?data[row[0]].toLocaleString():'Unavailable')+'</strong></div><div class="gp-growth-chart"><small>Growth history unavailable</small></div></div>';}).join('')+'</div></section><section class="gp-health-section"><h2><button class="gp-section-link" data-action="watch-care">Your Grove workers '+exploreArrow()+'</button></h2><div class="gp-health-workers">'+[['learner','Learner'],['curator','Curator'],['connector','Connector']].map(function(w){return '<div>'+workerMark(w[0])+'<span><strong>'+w[1]+'</strong><small>Activity unavailable</small></span></div>';}).join('')+'</div><div class="gp-health-freshness"><span>Freshness</span><strong>Unavailable</strong></div></section><section class="gp-health-section"><h2><button class="gp-section-link" data-action="manage-sources">Your sources '+exploreArrow()+'</button></h2>'+healthSources(s)+'</section><button class="gp-text" data-action="refresh-live-data">Check health</button></div>','gp-health-dialog',true);
+    }
     function metric(kind,label,count,delta){return '<div class="gp-health-metric"><div><span class="gp-metric-label">'+label+'</span><strong data-count="'+kind+'">'+count.toLocaleString()+'</strong><button class="gp-health-growth" data-growth-kind="'+kind+'" aria-label="Show new '+label.toLowerCase()+'" '+(!delta?'hidden':'')+'><b data-growth-count="'+kind+'">+'+delta.toLocaleString()+'</b></button></div><div class="gp-growth-chart" data-growth-chart="'+kind+'">'+growthSparkline(kind)+'</div></div>';}
     var workers=[['learner','Learner','updated','Brings in new context'],['curator','Curator','tended','Keeps memories useful'],['connector','Connector','connections','Finds links across your world']];
     return shell('<header class="gp-popup-top"><h1 id="gp-title" tabindex="-1">Your Grove health</h1>'+close()+'</header><div class="gp-health-scroll"><section class="gp-health-overview"><div class="gp-health-counts">'+metric('nodes','Nodes',s.currentNodeCount,s.nodeDelta)+metric('edges','Connections',s.currentEdgeCount,s.edgeDelta)+'</div></section><section class="gp-health-section"><h2><button class="gp-section-link" data-action="watch-care">Your Grove workers '+exploreArrow()+'</button></h2><div class="gp-health-workers">'+workers.map(function(w){return '<div>'+workerMark(w[0])+'<span><strong>'+w[1]+' '+info(w[3])+'</strong><small><b data-care="'+w[2]+'">'+care[w[2]]+'</b> <span data-care-words="'+w[2]+'">'+careWords(w[2],care[w[2]])+'</span></small></span></div>';}).join('')+'</div><div class="gp-health-freshness"><span>Freshness '+info('Learner, Curator, and Connector revisit dusty areas first, refreshing context and keeping connections useful.')+'</span><strong data-care="fresh">'+care.fresh+'%</strong><div class="gp-freshness-track"><i style="width:'+care.fresh+'%" data-care-bar></i></div></div></section><section class="gp-health-section"><h2><button class="gp-section-link" data-action="manage-sources">Your sources '+exploreArrow()+'</button></h2>'+healthSources(s)+'</section></div>','gp-health-dialog',true);
   }
-  var MCP_URL='https://mcp.grove.example/mcp';
+  var MCP_URL=live?live.mcpUrl():'https://mcp.grove.example/mcp';
+  function mcpLink(){return '<label for="gp-mcp-url">Server URL</label><div class="gp-mcp-link"><input id="gp-mcp-url" value="'+esc(MCP_URL)+'" readonly aria-label="Grove MCP server URL"><button class="gp-small" data-action="copy-mcp">'+(ui.mcpCopied?'Copied':'Copy')+'</button></div>';}
   function mcpIcon(){return '<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m8 5-6 7 6 7m8-14 6 7-6 7M14 3l-4 18"/></svg>';}
   function customMcp(){
+    if(live)return '<section class="gp-mcp-section"><details '+(ui.mcpOpen?'open':'')+' data-mcp-details><summary tabindex="0" class="gp-host-choice"><span class="gp-provider-icon">'+mcpIcon()+'</span><span><strong>Custom MCP</strong><small>Set up another AI app</small></span><span class="gp-host-status" aria-hidden="true">+</span></summary><div class="gp-mcp-body"><p class="gp-section-copy">Add this server in your AI app’s MCP connector settings. Complete the connection in that app through Grove’s consent page.</p>'+mcpLink()+'</div></details></section>';
     var clients=api.getState().mcpClients||[];
     return '<section class="gp-mcp-section"><details '+(ui.mcpOpen?'open':'')+' data-mcp-details><summary class="gp-host-choice"><span class="gp-provider-icon">'+mcpIcon()+' </span><span><strong>Custom MCP</strong><small>Connect another AI app</small></span><span class="gp-host-status" aria-hidden="true">+</span></summary><div class="gp-mcp-body"><p class="gp-section-copy">Give any MCP-compatible AI access to your Grove. Add this server in its connector settings</p><label for="gp-mcp-url">Server URL</label><div class="gp-mcp-link"><input id="gp-mcp-url" value="'+MCP_URL+'" readonly aria-label="Grove MCP server URL"><button class="gp-small" data-action="copy-mcp">'+(ui.mcpCopied?'Copied':'Copy')+'</button></div><form data-mcp-form><label for="gp-mcp-name">AI app name</label><div class="gp-input-row"><input id="gp-mcp-name" name="client" placeholder="Your AI app" value="'+esc(ui.mcpDraft||'')+'" maxlength="60" required><button class="gp-small">Connect</button></div></form>'+clients.map(function(c){return '<div class="gp-mcp-client"><span><strong>'+esc(c.name)+'</strong><small>Custom MCP</small></span>'+sourceAction('disconnect','Disconnect '+c.name,'data-mcp-remove="'+esc(c.id)+'"')+'</div>';}).join('')+'</div></details></section>';
   }
   function connectionsContent(){return '<h2>Connections</h2><p class="gp-section-copy">Take your Grove to the AI you use</p>'+hostChoices()+customMcp();}
   function connections(){return settingsFrame(connectionsContent(),'connections');}
-  function hostGuide(){var id=ui.host,label=PROVIDERS[id].label,connected=(api.getState().connectedHosts||[]).includes(id);return shell('<header class="gp-popup-top"><button class="gp-text" data-action="host-back">← Back</button>'+close()+'</header>'+heading('',connected?'Grove is with you':'Use Grove in '+label,connected?'Your context is ready in '+label:'Your brain, wherever you think')+'<div class="gp-connection-route"><span class="gp-grove-mini">g<span></span></span><i></i><span>'+icon(id)+'</span></div><button class="gp-primary gp-wide" data-action="host-connect">'+(connected?'Done':'Connect Grove to '+label)+'</button>','gp-connect-dialog',true);}
+  function hostGuide(){
+    if(live){
+      var name=ui.host==='muse'?'Muse Desktop':PROVIDERS[ui.host].label;
+      return shell('<header class="gp-popup-top"><button class="gp-text" data-action="host-back">← Back</button>'+close()+'</header>'+heading('','Use Grove in '+name,'Complete the connection in your AI app')+'<div class="gp-mcp-body"><ol class="gp-section-copy"><li>Open '+name+'.</li><li>Add a custom MCP connector with the server URL below.</li><li>Sign in to Grove and review the requested access on Grove’s consent page.</li><li>After you approve access, return to '+name+'.</li></ol>'+mcpLink()+'</div>','gp-connect-dialog',true);
+    }
+    var id=ui.host,label=PROVIDERS[id].label,connected=(api.getState().connectedHosts||[]).includes(id);return shell('<header class="gp-popup-top"><button class="gp-text" data-action="host-back">← Back</button>'+close()+'</header>'+heading('',connected?'Grove is with you':'Use Grove in '+label,connected?'Your context is ready in '+label:'Your brain, wherever you think')+'<div class="gp-connection-route"><span class="gp-grove-mini">g<span></span></span><i></i><span>'+icon(id)+'</span></div><button class="gp-primary gp-wide" data-action="host-connect">'+(connected?'Done':'Connect Grove to '+label)+'</button>','gp-connect-dialog',true);}
   function sourcesPanel(){var tab=ui.sourceTab;return settingsFrame('<div class="gp-source-tabs" role="tablist">'+[['chats','Chats'],['apps','Synced apps'],['files','Files & notes']].map(function(t){return '<button role="tab" aria-selected="'+(tab===t[0])+'" data-source-tab="'+t[0]+'">'+t[1]+'</button>';}).join('')+'</div><div class="gp-add-content">'+(tab==='chats'?'<p class="gp-section-copy">Bring the conversations that know you</p><div class="gp-source-choices">'+AI_PROVIDERS.map(function(id){return sourceChoice(id,PROVIDERS[id].label);}).join('')+'</div>':tab==='apps'?integrationChoices():filesComposer())+'</div>','sources',[['Sources','sources-back'],['Add a source']]);}
   function setStep(n){ui.step=n;ui.guide=null;if(api.setStep)api.setStep(n);render(true);if(window.GroveView)window.GroveView.fit();}
   function finish(){ui.guide=null;ui.panel=null;var duration=reduceMotion.matches?0:1300;document.body.classList.add('gp-arriving');tourAfter=performance.now()+duration+900;api.completeOnboarding();render(true);if(window.GroveView)window.GroveView.fit(duration);clearTimeout(arrivalTimer);arrivalTimer=setTimeout(function(){document.body.classList.remove('gp-arriving');},duration);setTimeout(maybeTour,duration+950);}
-  function importSource(id,file,provider){ui.error='';api.importSource(id,{name:file.name,size:file.size,provider:provider,update:!!accountActive(provider),label:PROVIDERS[provider]&&PROVIDERS[provider].label}).then(function(){ui.guide=null;render(true);var el=modalRoot.querySelector('[data-source-choice="'+provider+'"] .gp-source-orb'),r=el&&el.getBoundingClientRect();if(window.GroveMotion)window.GroveMotion.source(provider,r?{x:r.left+r.width/2,y:r.top+r.height/2}:null);}).catch(function(){ui.error='That source could not be added. Please try again.';render(true);});}
+  function importSource(id,file,provider){
+    if(live){
+      if(!canUpload(provider))return;
+      var upload=liveUpload(provider);
+      if(upload.pending)return;
+      upload.pending=true;upload.result=null;upload.error='';render(true);
+      live.uploadExport(provider,file).then(function(res){
+        if(liveUpload(provider)!==upload)return;
+        if(!res.ok){upload.error='HTTP '+res.status+': '+live.errorText(res.body,'The upload failed. Please try again.');return;}
+        var result=res.body;
+        if(!result||!['taken_in','nothing_new','kept_out','failed'].includes(result.state)){upload.error='The server returned an unrecognized upload result. Keep this export and try again.';return;}
+        upload.result=result;
+        if((result.state==='taken_in'||result.state==='nothing_new')&&result.failed_chats===0){upload.file=null;if(api.cancelExport)api.cancelExport(provider);refreshLiveData(true);}
+      }).catch(function(error){if(liveUpload(provider)===upload)upload.error=error.message||'The upload could not reach Grove. Please try again.';}).finally(function(){upload.pending=false;if(liveUpload(provider)===upload)render(true);});
+      return;
+    }
+    ui.error='';api.importSource(id,{name:file.name,size:file.size,provider:provider,update:!!accountActive(provider),label:PROVIDERS[provider]&&PROVIDERS[provider].label}).then(function(){ui.guide=null;render(true);var el=modalRoot.querySelector('[data-source-choice="'+provider+'"] .gp-source-orb'),r=el&&el.getBoundingClientRect();if(window.GroveMotion)window.GroveMotion.source(provider,r?{x:r.left+r.width/2,y:r.top+r.height/2}:null);}).catch(function(){ui.error='That source could not be added. Please try again.';render(true);});
+  }
   function focus(selector){requestAnimationFrame(function(){var el=root.querySelector(selector||'#gp-title')||root.querySelector('#gp-title');if(el)el.focus({preventScroll:true});});}
   function settleEntrance(){
     var surface=modalRoot.firstElementChild;
@@ -346,20 +439,32 @@
     },1800);
   }
   function render(force){var s=api.getState(),onboard=!s.auth||!s.onboardingComplete;if(!s.auth&&!ui.authStage)ui.authStage='signin';if(ui.panel!=='profile'||ui.settingsTab!=='account')ui.logoutError='';var shape=[onboard,ui.step,ui.panel,ui.guide,ui.guideStep,ui.guideStage,ui.settingsTab,ui.host,ui.authStage,ui.sourceTab,ui.filePicker,ui.noteEditor,ui.confirm&&JSON.stringify(ui.confirm),ui.requestTab,ui.requestId,(s.requests||[]).map(function(r){return r.id+':'+r.status;}).join(','),Object.keys(s.pendingExports).join(','),Object.keys(s.accountImports).map(function(id){return id+':'+s.accountImports[id].status;}).join(','),(s.connectedHosts||[]).join(','),(s.mcpClients||[]).map(function(c){return c.id;}).join(',')].join('|');
-    if(force||shape!==lastShape){lastShape=shape;var content=ui.authStage?signIn():ui.guide?guide():onboard?(ui.step===0?welcome():setup()):ui.panel==='profile'?profile():ui.panel==='health'?health():ui.panel==='connections'?connections():ui.panel==='sources'?sourcesPanel():ui.panel==='requests'?requestsPanel():'';if(ui.confirm)content='<div class="gp-confirm-context" inert aria-hidden="true">'+content.replace('aria-modal="true"','aria-modal="false"')+'</div>'+confirmation();modalRoot.innerHTML=content;if(ui.error&&content){var err=document.createElement('p');err.className='gp-footnote';err.setAttribute('role','alert');err.textContent=ui.error;var dialog=modalRoot.querySelector('.gp-auth-form')||modalRoot.querySelector('section');if(dialog)dialog.appendChild(err);}bind();if(ui.confirmScroll!=null){var pane=modalRoot.querySelector('.gp-settings-content');if(pane)pane.scrollTop=ui.confirmScroll;if(!ui.confirm)ui.confirmScroll=null;}fitGuide();positionRequests();if(window.GroveEntryScene)window.GroveEntryScene.mount(modalRoot.querySelector('.gp-entry-canvas'));settleEntrance();if(force&&content){focus(ui.confirm?'#gp-confirm-title':ui.confirmReturn||'#gp-title');if(!ui.confirm)ui.confirmReturn=null;}}
-    document.body.classList.toggle('gp-onboarding-open',onboard);document.body.classList.toggle('gp-welcome-open',onboard&&ui.step===0&&!ui.authStage);document.body.classList.toggle('gp-auth-open',!!ui.authStage);document.body.classList.toggle('gp-modal-open',(!!ui.panel&&ui.panel!=='requests')||!!ui.guide);document.body.classList.toggle('gp-tour-open',!!ui.tour);
-    var fullModal=onboard||!!ui.guide||['profile','health','connections','sources'].includes(ui.panel);
+    if(force||shape!==lastShape){lastShape=shape;var content=ui.authStage?signIn():live&&ui.host?hostGuide():ui.guide?guide():onboard?(ui.step===0?welcome():setup()):ui.panel==='profile'?profile():ui.panel==='health'?health():ui.panel==='connections'?connections():ui.panel==='sources'?sourcesPanel():ui.panel==='requests'?requestsPanel():'';if(ui.confirm)content='<div class="gp-confirm-context" inert aria-hidden="true">'+content.replace('aria-modal="true"','aria-modal="false"')+'</div>'+confirmation();modalRoot.innerHTML=content;if(ui.error&&content){var err=document.createElement('p');err.className='gp-footnote';err.setAttribute('role','alert');err.textContent=ui.error;var dialog=modalRoot.querySelector('.gp-auth-form')||modalRoot.querySelector('section');if(dialog)dialog.appendChild(err);}bind();if(ui.confirmScroll!=null){var pane=modalRoot.querySelector('.gp-settings-content');if(pane)pane.scrollTop=ui.confirmScroll;if(!ui.confirm)ui.confirmScroll=null;}fitGuide();positionRequests();if(window.GroveEntryScene)window.GroveEntryScene.mount(modalRoot.querySelector('.gp-entry-canvas'));settleEntrance();if(force&&content){focus(ui.confirm?'#gp-confirm-title':ui.confirmReturn||'#gp-title');if(!ui.confirm)ui.confirmReturn=null;}}
+    document.body.classList.toggle('gp-onboarding-open',onboard);document.body.classList.toggle('gp-welcome-open',onboard&&ui.step===0&&!ui.authStage);document.body.classList.toggle('gp-auth-open',!!ui.authStage);document.body.classList.toggle('gp-modal-open',(!!ui.panel&&ui.panel!=='requests')||!!ui.guide||!!(live&&ui.host));document.body.classList.toggle('gp-tour-open',!!ui.tour);
+    var fullModal=onboard||!!(live&&ui.host)||!!ui.guide||['profile','health','connections','sources'].includes(ui.panel);
     document.querySelectorAll('.topbar,#search-overlay,#selection-pill,#legend,#canvas,#detail').forEach(function(el){el.inert=fullModal;});
     document.getElementById('profile-button').hidden=onboard;document.getElementById('profile-button').setAttribute('aria-expanded',String(ui.panel==='profile'||ui.panel==='sources'));
     var exportCount=pendingExports(s).length,profileLabel=exportCount?'Settings, '+exportCount+' conversation '+(exportCount===1?'export':'exports')+' to upload':needsHistory(s)?'Settings, conversation history to add':'Profile and settings';
     var profileButton=document.getElementById('profile-button');profileButton.textContent=shownName(s).charAt(0).toUpperCase();profileButton.classList.toggle('has-pending',needsHistory(s));profileButton.setAttribute('aria-label',profileLabel);profileButton.setAttribute('title',exportCount?exportCount+' conversation '+(exportCount===1?'export':'exports')+' to upload':needsHistory(s)?'Add your conversation history':'Settings');
-    var bottom=onboard?'':'<button class="gp-accounts-trigger" data-action="connections" aria-label="Take Grove to your AI"><span class="gp-host-cta">Take Grove to your AI '+arrow()+'</span><span class="gp-provider-stack">'+HOST_ORDER.map(function(id){return '<span class="'+(s.connectedHosts.includes(id)?'is-connected':'')+'">'+icon(id)+'<small>'+PROVIDERS[id].label+'</small></span>';}).join('')+'</span></button>'+(s.currentNodeCount?'<button class="gp-types-toggle" data-action="types">Node types</button>':'');
+    var bottom=onboard?'':'<button class="gp-accounts-trigger" data-action="connections" aria-label="Take Grove to your AI"><span class="gp-host-cta">Take Grove to your AI '+arrow()+'</span><span class="gp-provider-stack">'+HOST_ORDER.map(function(id){return '<span class="'+(!live&&s.connectedHosts.includes(id)?'is-connected':'')+'">'+icon(id)+'<small>'+PROVIDERS[id].label+'</small></span>';}).join('')+'</span></button>'+(s.currentNodeCount?'<button class="gp-types-toggle" data-action="types">Node types</button>':'');
     if(chrome.innerHTML!==bottom){chrome.innerHTML=bottom;bindChrome();}
     var rq=document.getElementById('requests-button'),pending=(s.requests||[]).filter(function(r){return r.status==='open';}).length;rq.hidden=onboard;rq.classList.toggle('has-pending',pending>0);rq.setAttribute('aria-label','Grove needs your input'+(pending?', '+pending+(pending===1?' question':' questions'):''));rq.setAttribute('aria-expanded',String(ui.panel==='requests'));
     sessionNote.textContent=ui.offline?SIGNIN_COPY.offline:'';sessionNote.hidden=!ui.offline;
     updateLive();renderTour();
+    if(live)refreshLiveData(false);
   }
   function updateLive(){
+    if(live){
+      progress.innerHTML='';document.getElementById('learning-slot').innerHTML='';
+      var state=api.getState();
+      root.querySelectorAll('[data-source-choice]').forEach(function(el){
+        var id=el.dataset.sourceChoice,added=liveSourceAccounts().some(function(a){return a.id===id&&a.readCount>0;}),pending=!!state.pendingExports[id];
+        el.classList.toggle('is-added',added);el.classList.remove('is-learning');
+        var label=el.querySelector('strong small');if(label)label.textContent=added?'Added':pending?'Upload':'Connect';
+        el.setAttribute('aria-label',(added?'Added ':pending?'Upload ':'Connect ')+(PROVIDERS[id]||{label:id}).label);
+      });
+      return;
+    }
     var s=api.getState(),accounts=sourceAccounts(s).filter(function(a){return a.status==='importing';}),jobs=accounts.filter(function(a){return a.status==='importing';});
     document.getElementById('learning-slot').innerHTML='';
     var markup=(!s.onboardingComplete&&ui.step===0)?'':accounts.map(function(a){return '<span class="gp-account-progress '+(a.status==='ready'?'is-ready':'')+'" data-progress-id="'+a.id+'" aria-label="'+a.label+', '+(a.status==='ready'?'connected':a.progress+' percent')+'" style="--progress:'+a.progress/100+'"><svg class="gp-mini-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18"/></svg><span class="gp-mini-mark">'+(a.kind==='file'?icon('notes'):appMark(a.id))+'</span></span>';}).join('');
@@ -372,23 +477,24 @@
     root.querySelectorAll('[data-count]').forEach(function(el){el.textContent=(el.dataset.count==='nodes'?s.currentNodeCount:s.currentEdgeCount).toLocaleString();});
     root.querySelectorAll('[data-source-choice]').forEach(function(el){var id=el.dataset.sourceChoice,p=PROVIDERS[id],so=source(p?p.source:id),added=id==='calendar'?so.status!=='idle':(so.providers||[so.provider]).includes(id)&&so.status!=='idle';if(s.accountImports&&s.accountImports[id]){so=s.accountImports[id];added=so.status!=='disconnected';}el.classList.toggle('is-added',added);el.classList.toggle('is-learning',added&&so.status==='importing');el.style.setProperty('--source-progress',added?(so.progress||100)/100:0);var verb=added?(so.status==='ready'?'':'Adding'):((s.pendingExports||{})[id]?'Upload':id==='notes'?'Add':'Connect');el.querySelector('strong small').textContent=verb;el.setAttribute('aria-label',(verb||'Connected to')+' '+(p?p.label:'Calendar'));});
     root.querySelectorAll('[data-integration]').forEach(function(el){var id=el.dataset.integration,added=id==='google'?s.googleConnected:!!(s.accountImports&&s.accountImports[id]&&s.accountImports[id].status!=='disconnected');el.classList.toggle('is-connected',added);el.setAttribute('aria-pressed',String(added));});
-    sourceAccounts(s).forEach(function(a){['nodes','edges'].forEach(function(k){root.querySelectorAll('[data-contribution-'+k+'="'+a.id+'"]').forEach(function(el){el.textContent=a.contribution[k];});});});
+    sourceAccounts(s).forEach(function(a){['nodes','edges'].forEach(function(k){if(!a.contribution)return;root.querySelectorAll('[data-contribution-'+k+'="'+a.id+'"]').forEach(function(el){el.textContent=a.contribution[k];});});});
     root.querySelectorAll('[data-growth-count]').forEach(function(el){var delta=el.dataset.growthCount==='nodes'?s.nodeDelta:s.edgeDelta;el.textContent='+'+delta.toLocaleString();el.closest('button').hidden=!delta;});
     root.querySelectorAll('[data-growth-chart]').forEach(function(el){el.innerHTML=growthSparkline(el.dataset.growthChart);});
     var care=careSummary();root.querySelectorAll('[data-care]').forEach(function(el){var k=el.dataset.care;el.textContent=k==='state'?(care.running?'At work':'Waiting for sources'):k==='fresh'?care.fresh+'%':care[k];});root.querySelectorAll('[data-care-words]').forEach(function(el){var k=el.dataset.careWords;el.textContent=careWords(k,care[k]);});var bar=root.querySelector('[data-care-bar]');if(bar)bar.style.width=care.fresh+'%';
     var healthState=document.getElementById('health-state');if(healthState)healthState.classList.toggle('is-learning',!!jobs.length);
   }
   function handle(action){
-    if(action==='start')move(function(){setStep(1);});
+    if(action==='refresh-live-data'){refreshLiveData(true);render(true);}
+    else if(action==='start')move(function(){setStep(1);});
     else if(action==='auth-close'){authEpoch++;ui.authStage=null;render(true);}
     else if(action==='auth-back'){ui.error='';ui.authStage='signin';render(true);}
     else if(action==='edit-name'){ui.editName=true;ui.nameDraft=api.getState().name||(live?'':'Anas');render(true);focus('#gp-name');}
     else if(action==='cancel-name'){ui.editName=false;render(true);}
     else if(action==='request-prev'||action==='request-next'){var items=api.getState().requests.filter(function(r){return r.status==='open';}),i=items.findIndex(function(r){return r.id===ui.requestId;});var next=Math.max(0,Math.min(items.length-1,i+(action==='request-prev'?-1:1)));if(items[next])ui.requestId=items[next].id;render(true);}
     else if(action==='copy-mcp'){var input=modalRoot.querySelector('#gp-mcp-url');function copied(){ui.mcpCopied=true;var b=modalRoot.querySelector('[data-action="copy-mcp"]');if(b)b.textContent='Copied';}function select(){if(input){input.select();try{if(document.execCommand('copy'))copied();}catch(e){}}}if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(MCP_URL).then(copied,select);else select();}
-    else if(action==='choose-files'){ui.filePicker=true;ui.noteEditor=false;render(true);}
+    else if(action==='choose-files'){if(live)return;ui.filePicker=true;ui.noteEditor=false;render(true);}
     else if(action==='cancel-files'){ui.filePicker=false;render(true);}
-    else if(action==='write-note'){ui.noteEditor=true;ui.filePicker=false;render(true);}
+    else if(action==='write-note'){if(live)return;ui.noteEditor=true;ui.filePicker=false;render(true);}
     else if(action==='cancel-note'){ui.noteEditor=false;render(true);}
     else if(action==='connections-back'){ui.panel=ui.returnPanel;render(true);}
     else if(action==='source-picker'){ui.panel='sources';ui.settingsTab='sources';ui.guide=null;ui.query='';render(true);}
@@ -401,7 +507,7 @@
       if(c.type==='disconnect'){api.disconnectSource(c.id);render(true);}
       else if(c.type==='file'){api.removeFile(c.id);render(true);}
     }
-    else if(action==='pick-export'){var p=PROVIDERS[ui.guide];ui.uploadFile={name:p.file,size:240000};render(true);}
+    else if(action==='pick-export'){if(live){var input=modalRoot.querySelector('[data-pick-export]');if(input&&!liveUpload(ui.guide).pending)input.click();return;}var p=PROVIDERS[ui.guide];ui.uploadFile={name:p.file,size:240000};render(true);}
     else if(action==='back'&&ui.step>1)move(function(){setStep(ui.step-1);});
     else if(action==='next'||action==='skip')move(function(){if(ui.step<4)setStep(ui.step+1);else finish();});
     else if(action==='guide-up'){if(ui.guideStage===1){ui.guideStage=0;ui.uploadFile=null;}else{ui.guide=null;ui.guideStep=0;}render(true);}
@@ -409,7 +515,7 @@
     else if(action==='export-requested'){if(api.requestExport)api.requestExport(ui.guide);ui.guideStage=1;ui.uploadFile=null;render(true);}
     else if(action==='upload-stage'){if(api.requestExport)api.requestExport(ui.guide);ui.guideStage=1;ui.uploadFile=null;render(true);}
     else if(action==='export-stage'){ui.editName=false;ui.nameDraft='';ui.guideStage=0;ui.uploadFile=null;render(true);}
-    else if(action==='upload-export'){if(!ui.uploadFile)return;var p=PROVIDERS[ui.guide];importSource(p.source,ui.uploadFile,ui.guide);ui.uploadFile=null;}
+    else if(action==='upload-export'){var file=live?liveUpload(ui.guide).file:ui.uploadFile;if(!file)return;var p=PROVIDERS[ui.guide];importSource(p.source,file,ui.guide);if(!live)ui.uploadFile=null;}
     else if(action==='film-toggle'){
       var frame=root.querySelector('.gp-app-frame iframe'),button=root.querySelector('[data-action=film-toggle]'),track=root.querySelector('.gp-film-track i');
       if(frame){
@@ -430,7 +536,7 @@
     else if(action==='connections'){endTour();ui.panel='profile';ui.settingsTab='connections';ui.guide=null;ui.host=null;render(true);}
     else if(action==='sources'){ui.panel='sources';ui.guide=null;render(true);}
     else if(action==='host-back'){ui.host=null;render(true);}
-    else if(action==='host-connect'){if((api.getState().connectedHosts||[]).includes(ui.host)){ui.host=null;render(true);}else{api.connectHost(ui.host);render(true);}}
+    else if(action==='host-connect'){if(live)return;if((api.getState().connectedHosts||[]).includes(ui.host)){ui.host=null;render(true);}else{api.connectHost(ui.host);render(true);}}
     else if(action==='types')document.body.classList.toggle('gp-types-open');
     else if(action==='tour'){ui.panel=null;ui.tour=1;ui.tourNode=null;render();}
   }
@@ -444,16 +550,18 @@
   }
   function refreshIntegrations(){var results=modalRoot.querySelector('#gp-integration-results');if(results){results.innerHTML=integrationResults();bindIntegrations();}}
   function bindIntegrations(){modalRoot.querySelectorAll('[data-integration]').forEach(function(el){el.onclick=function(){var id=el.dataset.integration,app=catalog.find(function(a){return a.id===id;});if(!app||app.auth==='OAuth'||accountActive(id)){connectInline(id);return;}var slot=modalRoot.querySelector('#gp-inline-auth');if(!slot){connectInline(id);return;}slot.innerHTML='<form class="gp-inline-key"><label>'+esc(app.name)+' access key<input aria-label="Access key" type="password" value="grove-demo-key" autocomplete="off"></label><button class="gp-small">Connect</button></form>';slot.querySelector('form').onsubmit=function(e){e.preventDefault();slot.innerHTML='';connectInline(id);};};});}
-  function bind(){bindActions(modalRoot);modalRoot.querySelectorAll('[data-guide]').forEach(function(el){el.onclick=function(){var snap=window.GroveMotion&&window.GroveMotion.capture(el.querySelector('.gp-choice-mark,.gp-provider-icon'));ui.guide=el.dataset.guide;ui.guideStep=0;ui.uploadFile=null;ui.guideStage=api.getState().pendingExports[ui.guide]?1:0;if(window.GroveMotion)window.GroveMotion.hover(null);render(true);if(window.GroveMotion)window.GroveMotion.morph(snap,modalRoot.querySelector('.gp-provider-icon'));};});modalRoot.querySelectorAll('[data-import]').forEach(function(el){el.onclick=function(){var p=PROVIDERS[el.dataset.import];importSource(p.source,{name:p.file,size:240000},el.dataset.import);};});modalRoot.querySelectorAll('[data-file]').forEach(function(el){el.onchange=function(){var f=el.files&&el.files[0],id=el.dataset.file;if(f)importSource(PROVIDERS[id].source,f,id);};});modalRoot.querySelectorAll('[data-host]').forEach(function(el){el.onclick=function(){ui.host=el.dataset.host;render(true);};});modalRoot.querySelectorAll('[data-pick-export]').forEach(function(el){el.onchange=function(){ui.uploadFile=el.files&&el.files[0]||null;render(true);};});
+  function bind(){bindActions(modalRoot);modalRoot.querySelectorAll('[data-guide]').forEach(function(el){el.onclick=function(){if(live&&el.dataset.guide==='muse'){ui.guide=null;ui.host='muse';ui.mcpCopied=false;render(true);return;}var snap=window.GroveMotion&&window.GroveMotion.capture(el.querySelector('.gp-choice-mark,.gp-provider-icon'));ui.guide=el.dataset.guide;ui.guideStep=0;ui.uploadFile=null;ui.guideStage=api.getState().pendingExports[ui.guide]?1:0;if(window.GroveMotion)window.GroveMotion.hover(null);render(true);if(window.GroveMotion)window.GroveMotion.morph(snap,modalRoot.querySelector('.gp-provider-icon'));};});modalRoot.querySelectorAll('[data-import]').forEach(function(el){el.onclick=function(){var p=PROVIDERS[el.dataset.import];importSource(p.source,{name:p.file,size:240000},el.dataset.import);};});modalRoot.querySelectorAll('[data-file]').forEach(function(el){el.onchange=function(){var f=el.files&&el.files[0],id=el.dataset.file;if(f)importSource(PROVIDERS[id].source,f,id);};});modalRoot.querySelectorAll('[data-host]').forEach(function(el){el.onclick=function(){ui.host=el.dataset.host;render(true);};});modalRoot.querySelectorAll('[data-pick-export]').forEach(function(el){el.onchange=function(){if(live){var upload=liveUpload(el.dataset.pickExport);if(upload.pending)return;upload.file=el.files&&el.files[0]||null;upload.result=null;upload.error='';}else ui.uploadFile=el.files&&el.files[0]||null;render(true);};});
     modalRoot.querySelectorAll('[data-settings-tab]').forEach(function(el){el.onclick=function(){ui.settingsTab=el.dataset.settingsTab;ui.panel='profile';ui.guide=null;ui.editName=false;ui.confirm=null;ui.notice='';render(true);};});
     modalRoot.querySelectorAll('[data-upload-provider]').forEach(function(el){el.onclick=function(){ui.guide=el.dataset.uploadProvider;ui.guideStage=1;ui.uploadFile=null;render(true);};});
+    modalRoot.querySelectorAll('[data-retry-asset]').forEach(function(el){el.onclick=function(){var key=el.dataset.retryAsset==='guides'?'guide':'catalog';ui[key+'Error']='';render(true);};});
     bindIntegrations();
+    if(live&&window.GrovePipedream)window.GrovePipedream.mount(modalRoot);
     var mcpDetails=modalRoot.querySelector('[data-mcp-details]');if(mcpDetails)mcpDetails.ontoggle=function(){ui.mcpOpen=mcpDetails.open;};
-    var mcpForm=modalRoot.querySelector('[data-mcp-form]');if(mcpForm){mcpForm.oninput=function(){ui.mcpDraft=mcpForm.elements.client.value;};mcpForm.onsubmit=function(e){e.preventDefault();var name=mcpForm.elements.client.value.trim();if(!name)return;ui.mcpDraft='';api.addMcpClient(name);render(true);};}
-    modalRoot.querySelectorAll('[data-mcp-remove]').forEach(function(el){el.onclick=function(){api.removeMcpClient(el.dataset.mcpRemove);render(true);};});
+    var mcpForm=modalRoot.querySelector('[data-mcp-form]');if(!live&&mcpForm){mcpForm.oninput=function(){ui.mcpDraft=mcpForm.elements.client.value;};mcpForm.onsubmit=function(e){e.preventDefault();var name=mcpForm.elements.client.value.trim();if(!name)return;ui.mcpDraft='';api.addMcpClient(name);render(true);};}
+    modalRoot.querySelectorAll('[data-mcp-remove]').forEach(function(el){el.onclick=function(){if(live)return;api.removeMcpClient(el.dataset.mcpRemove);render(true);};});
     modalRoot.querySelectorAll('[data-growth-kind]').forEach(function(el){el.onclick=function(){ui.panel=null;render();if(window.GroveView)window.GroveView.showChanges(el.dataset.growthKind);};});
     var search=modalRoot.querySelector('[data-integration-search]');if(search)search.oninput=function(){ui.query=search.value;refreshIntegrations();};
-    modalRoot.querySelectorAll('[data-host-inline]').forEach(function(el){el.onclick=function(){var id=el.dataset.hostInline;if(api.getState().connectedHosts.includes(id)){api.disconnectHost(id);render(true);return;}api.connectHost(id);render(true);};});
+    modalRoot.querySelectorAll('[data-host-inline]').forEach(function(el){el.onclick=function(){var id=el.dataset.hostInline;if(live){ui.host=id;ui.mcpCopied=false;render(true);return;}if(api.getState().connectedHosts.includes(id)){api.disconnectHost(id);render(true);return;}api.connectHost(id);render(true);};});
     modalRoot.querySelectorAll('[data-source-toggle]').forEach(function(el){el.onclick=function(){var id=el.dataset.sourceToggle;if(accountActive(id)){openConfirmation('disconnect',id);}else {api.updateSource(id).then(function(){render(true);});}};});
     modalRoot.querySelectorAll('[data-signin]').forEach(function(el){el.onclick=function(){chooseSignIn(el.dataset.signin);};});
     modalRoot.querySelectorAll('[data-guide-device]').forEach(function(el){el.onclick=function(){ui.guideDevice=el.dataset.guideDevice;render(true);};});
@@ -467,9 +575,9 @@
     modalRoot.querySelectorAll('[data-add-group]').forEach(function(el){el.onclick=function(){ui.sourceTab=el.dataset.addGroup;ui.panel='sources';ui.query='';ui.filePicker=false;ui.noteEditor=false;render(true);};});
     modalRoot.querySelectorAll('[data-remove-file]').forEach(function(el){el.onclick=function(){openConfirmation('file',el.dataset.removeFile);};});
     modalRoot.querySelectorAll('[data-source-value]').forEach(function(el){el.onclick=function(){ui.panel=null;render();if(window.GroveView)window.GroveView.showChanges('nodes',el.dataset.sourceValue);};});
-    var filesForm=modalRoot.querySelector('[data-files-form]');if(filesForm)filesForm.onsubmit=function(e){e.preventDefault();var names=Array.from(filesForm.querySelectorAll('input:checked')).map(function(i){return i.value;});if(!names.length)return;ui.filePicker=false;Promise.all(names.map(function(name){return api.addFile(name);})).then(function(){render(true);if(window.GroveMotion)window.GroveMotion.source('notes');});};
-    var noteForm=modalRoot.querySelector('[data-note-form]');if(noteForm)noteForm.oninput=function(){ui.noteDraft={title:noteForm.elements.title.value,body:noteForm.elements.body.value};};if(noteForm)noteForm.onsubmit=function(e){e.preventDefault();var name=noteForm.elements.title.value+'.md',body=noteForm.elements.body.value;ui.noteEditor=false;ui.noteDraft={title:'',body:''};api.addFile(name,body,'note').then(function(){render(true);});};
-    var growthFormEl=modalRoot.querySelector('[data-growth-form]');if(growthFormEl)growthFormEl.oninput=function(){var f=growthFormEl.elements;ui.growthDraft={focus:f.focus.value,reading:f.reading.value,avoid:f.avoid.value,confirm:f.confirm.checked};};if(growthFormEl)growthFormEl.onsubmit=function(e){e.preventDefault();var f=growthFormEl.elements;api.saveGrowth({focus:f.focus.value,reading:f.reading.value,avoid:f.avoid.value,confirm:f.confirm.checked});ui.notice='Saved';ui.growthDraft=null;render(true);};
+    var filesForm=modalRoot.querySelector('[data-files-form]');if(!live&&filesForm)filesForm.onsubmit=function(e){e.preventDefault();var names=Array.from(filesForm.querySelectorAll('input:checked')).map(function(i){return i.value;});if(!names.length)return;ui.filePicker=false;Promise.all(names.map(function(name){return api.addFile(name);})).then(function(){render(true);if(window.GroveMotion)window.GroveMotion.source('notes');});};
+    var noteForm=modalRoot.querySelector('[data-note-form]');if(noteForm)noteForm.oninput=function(){ui.noteDraft={title:noteForm.elements.title.value,body:noteForm.elements.body.value};};if(!live&&noteForm)noteForm.onsubmit=function(e){e.preventDefault();var name=noteForm.elements.title.value+'.md',body=noteForm.elements.body.value;ui.noteEditor=false;ui.noteDraft={title:'',body:''};api.addFile(name,body,'note').then(function(){render(true);});};
+    var growthFormEl=modalRoot.querySelector('[data-growth-form]');if(growthFormEl)growthFormEl.oninput=function(){var f=growthFormEl.elements;ui.growthDraft={focus:f.focus.value,reading:f.reading.value,avoid:f.avoid.value,confirm:f.confirm.checked};};if(growthFormEl)growthFormEl.onsubmit=function(e){e.preventDefault();var f=growthFormEl.elements;api.saveGrowth({focus:f.focus.value,reading:f.reading.value,avoid:f.avoid.value,confirm:f.confirm.checked});ui.notice=live?'Saved on this browser only; not applied yet':'Saved';ui.growthDraft=null;render(true);};
     var form=modalRoot.querySelector('[data-name-form]');if(form){form.oninput=function(){ui.nameDraft=form.elements.name.value;};form.onsubmit=function(e){e.preventDefault();var name=form.elements.name.value.trim();if(!name)return;ui.editName=false;api.setName(name);render(true);};}}
   function maybeTour(){if(performance.now()<tourAfter)return;var s=api.getState();if(s.onboardingComplete&&!s.tourComplete&&!ui.panel&&!ui.guide&&!ui.tour&&s.currentNodeCount){ui.tour=1;ui.tourNode=null;renderTour();}}
   function endTour(){if(ui.tour){ui.tour=0;document.body.classList.remove('gp-tour-open','gp-tour-workers','gp-tour-ai');ui.tourNode=null;lastTourShape='';if(api.completeTour)api.completeTour();tourRoot.innerHTML='';}}
@@ -521,10 +629,10 @@
   document.getElementById('requests-button').onclick=function(){endTour();ui.panel=ui.panel==='requests'?null:'requests';ui.guide=null;ui.requestTab='open';ui.requestId=null;render(true);};
   document.getElementById('profile-button').onclick=function(){ui.panel=ui.panel==='profile'?null:'profile';ui.settingsTab=needsHistory(api.getState())?'sources':'account';ui.guide=null;render(true);};
   document.getElementById('health-link').onclick=function(e){e.preventDefault();if(!api.getState().onboardingComplete)return;ui.panel=ui.panel==='health'?null:'health';ui.guide=null;render(true);};
-  document.addEventListener('keydown',function(e){if(e.key==='Escape'){if(ui.confirm){handle('cancel-confirm');}else if(ui.guide){ui.guide=null;render();}else if(ui.panel){ui.panel=null;ui.host=null;render();}else if(ui.tour)endTour();}if(e.key==='Tab'&&modalRoot.querySelector('[aria-modal="true"]')){var activeDialog=modalRoot.querySelector('[aria-modal="true"]'),els=Array.from(activeDialog.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),a[href],[tabindex="0"]'));var first=els[0],last=els[els.length-1];if(!els.length)return;if(!activeDialog.contains(document.activeElement)){e.preventDefault();(e.shiftKey?last:first).focus();}else if(e.shiftKey&&(document.activeElement===first||!els.includes(document.activeElement))){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'){if(ui.confirm){handle('cancel-confirm');}else if(live&&ui.host){ui.host=null;render(true);}else if(ui.guide){ui.guide=null;render();}else if(ui.panel){ui.panel=null;ui.host=null;render();}else if(ui.tour)endTour();}if(e.key==='Tab'&&modalRoot.querySelector('[aria-modal="true"]')){var activeDialog=modalRoot.querySelector('[aria-modal="true"]'),els=Array.from(activeDialog.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),a[href],[tabindex="0"]'));var first=els[0],last=els[els.length-1];if(!els.length)return;if(!activeDialog.contains(document.activeElement)){e.preventDefault();(e.shiftKey?last:first).focus();}else if(e.shiftKey&&(document.activeElement===first||!els.includes(document.activeElement))){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});
   modalRoot.addEventListener('click',function(e){if(e.target.classList.contains('gp-confirm-backdrop')){handle('cancel-confirm');return;}if(e.target.classList.contains('gp-backdrop')&&!ui.confirm&&api.getState().onboardingComplete){ui.panel=null;ui.guide=null;ui.host=null;render();}});
   window.addEventListener('grove:care',updateLive);
-  window.addEventListener('grove:unauthenticated',function(){if(live)endSession();});
+  window.addEventListener('grove:unauthenticated',function(){if(live){liveData={owner:null};endSession();}});
   window.addEventListener('grove:change',function(){render();maybeTour();});
   window.addEventListener('grove:graph-rendered',function(){maybeTour();renderTour();});
   window.addEventListener('grove:node-opened',function(){if(ui.tour===1){ui.tour=2;renderTour();}});

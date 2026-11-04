@@ -566,6 +566,21 @@ CONNECTORS = Table(
             "(ingest-a1); one row per world, type and provider",
         ),
         _col("auth reference", "code"),
+        _ruling("instance_key", "code", "opaque identity of one selected calendar or repository"),
+        _ruling(
+            "credential_ciphertext",
+            "code",
+            "AES-GCM sealed provider tokens; key held outside the store",
+        ),
+        _ruling("connection_status", "code", "pending, connected or disconnected"),
+        _ruling("oauth_state_hash", "code", "single-use SHA256 of pending consent state"),
+        _ruling("oauth_expires_at", "instant", "pending consent deadline"),
+        _ruling("sync_cursor", "code", "provider cursor, separate from the message-time watermark"),
+        _ruling(
+            "event_versions", "json_ids", "bounded event and field fingerprints; no event text"
+        ),
+        _ruling("sync_owner", "id", "owner of the current bounded sync lease"),
+        _ruling("sync_until", "instant", "sync lease deadline"),
         _col("scope", "json_ids", note="an allowlist compiled into the read (D14)"),
         _col("settings", "json_ids", note="calendar log mode, calendar id, from date, days logged"),
         _col("batch rule", "code"),
@@ -597,7 +612,7 @@ CONNECTORS = Table(
         ),
         *_version_touched(),
     ),
-    uniques=_keys("connectors", ("id",)),
+    uniques=_keys("connectors", ("id",), ("world_id", "provider", "instance_key")),
     indexes=_ranges("connectors", ("world_id", "type")),
     notes="S27: parser, locator format, source-type mapping and speaker rules are code, not rows.",
 )
@@ -892,6 +907,7 @@ HISTORY_VALUES = Table(
         _WORLD,
         _col("value", "text_home", note="the value or the forgotten marker"),
         _col("forgotten at", "instant"),
+        *_version_touched(),
         _ruling(
             "item_id",
             "id",
@@ -1618,6 +1634,7 @@ FORGET_LEDGER = Table(
         _col("approved at", "instant"),
         _col("receipt", "json_ids", note="counts per place, never the value"),
         _col("the date after which no backup holds the value", "date", "backups_clear_after"),
+        _ruling("plan", "json_ids", "D14: opaque row selectors and digests, never target text"),
     ),
     uniques=_keys("forget_ledger", ("id",)),
     indexes=_ranges("forget_ledger", ("world_id",)),
@@ -1917,7 +1934,28 @@ OAUTH_GRANTS = Table(
     ),
 )
 
-LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS)
+FORGET_APPROVALS = Table(
+    name="forget_approvals",
+    label="ForgetApproval",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D14",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("user_id", "id", "the approving person"),
+        _ruling("token_hash", "code", "SHA-256; the raw token is never stored"),
+        _ruling("target_digest", "code", "bound to the exact requested target"),
+        _ruling("created_at", "instant", "approval time"),
+        _ruling("expires_at", "instant", "short approval lifetime"),
+        _ruling("used_at", "instant", "consumed atomically with the cascade"),
+    ),
+    uniques=_keys("forget_approvals", ("id",), ("token_hash",)),
+    indexes=_ranges("forget_approvals", ("world_id",)),
+)
+
+LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS, FORGET_APPROVALS)
 
 # B.1's five groups, in B.1 order.
 B1_GROUPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
@@ -2019,6 +2057,27 @@ FULLTEXT_INDEXES: tuple[FulltextIndex, ...] = (
         ("world_id", "phrase", "normalised_phrase"),
     ),
     FulltextIndex("grove_past_values", ("PastValue",), ("world_id", "value")),
+    FulltextIndex(
+        "grove_forget_values",
+        ("Item", "Alias", "HistoryValue", "Kind", "Meaning", "PropertyName", "RunRecord", "Source"),
+        (
+            "world_id",
+            "title",
+            "summary",
+            "body",
+            "properties",
+            "property_values",
+            "search_terms",
+            "status",
+            "status_vocabulary",
+            "phrase",
+            "normalised_phrase",
+            "value",
+            "name",
+            "proposed_operations",
+            "content",
+        ),
+    ),
     FulltextIndex(
         "grove_value_index",
         ("Item", "Alias", "HistoryValue", "Kind", "Meaning", "PropertyName", "RunRecord"),

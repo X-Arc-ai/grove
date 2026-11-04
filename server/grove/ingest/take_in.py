@@ -8,6 +8,7 @@ re-import of the same export finds every key stored, so it writes no source, no 
 episode: only the connector's coverage times move. docs/ingest.md has the contract.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -28,6 +29,7 @@ from grove.screening import Message, ScreenedSource, Screener
 from grove.store.connection import Driver
 from grove.store.query import WorldQuery
 from grove.writer.errors import InvalidRecord
+from grove.writer.forget_sources import ForgottenSource, blocked_message_keys
 from grove.writer.ingest import (
     DeltaMoved,
     EpisodeCut,
@@ -183,6 +185,7 @@ def _take_chat(
     chat: ParsedChat,
     screener: Screener,
     result: TakeInResult,
+    sync_owner: str | None = None,
 ) -> None:
     """Screen bounded source parts, cut episodes over the whole delta, then commit atomically.
     Source storage limits must not inflate the episode count used by evidence thresholds."""
@@ -190,7 +193,8 @@ def _take_chat(
     query = WorldQuery(driver, world_id)
     for _ in range(MAX_TRIES):
         stored, _sources = stored_keys(query, connector_id, locator)
-        delta = [message for message in chat.messages if message.key not in stored]
+        blocked = blocked_message_keys(query, locator, (message.key for message in chat.messages))
+        delta = [message for message in chat.messages if message.key not in stored | blocked]
         if not delta:
             return
         screened_parts = []
@@ -201,6 +205,17 @@ def _take_chat(
             screened_parts.append(screened)
         cuts = cut_episodes(spec, chat, kept, clock.now(world_id))
         moments = [message.at for message in delta if message.at is not None]
+        events = {
+            message.key: message.calendar_event.to_writer()
+            for message in kept
+            if message.calendar_event is not None
+        }
+        speakers = None
+        if spec.provider in ("google_calendar", "git"):
+            speakers = {
+                message.key: {"kind": message.speaker_kind, "locator": "key:" + message.key}
+                for message in kept
+            }
         try:
             written = write_chat_delta(
                 driver,
@@ -211,8 +226,11 @@ def _take_chat(
                 delta_keys=[message.key for message in delta],
                 episodes=cuts,
                 newest_at=max(moments) if moments else None,
+                calendar_events=events or None,
+                speakers=speakers,
+                sync_owner=sync_owner,
             )
-        except DeltaMoved:
+        except (DeltaMoved, ForgottenSource):
             continue
         if written is None:
             return
@@ -241,14 +259,57 @@ def take_in(
         raise TypeError("take_in needs a Screener")
     attempted = clock.now(world_id)
     chats = list(spec.parse(upload))
+    if any(message.calendar_event is not None for chat in chats for message in chat.messages):
+        raise InvalidRecord(
+            "invalid_arguments", "calendar_facts", "uploads cannot assert Calendar facts"
+        )
     connector_id = ensure_connector(
         driver, world_id, spec.connector_type, spec.provider, batch_rule=spec.batch_rule
     )
+    return take_parsed(
+        driver, world_id, spec, connector_id, chats, screener=screener, attempted_at=attempted
+    )
+
+
+def take_parsed(
+    driver: Driver,
+    world_id: str,
+    spec: ConnectorSpec,
+    connector_id: str,
+    chats: Sequence[ParsedChat],
+    *,
+    screener: Screener,
+    attempted_at: datetime | None = None,
+    record_coverage: bool = True,
+    sync_owner: str | None = None,
+) -> TakeInResult:
+    """Apply a code-owned connector read through the same screened, atomic ingest path.
+
+    The connector must already belong to this world and have the expected type and provider.
+    This is not an upload format: HTTP clients cannot label arbitrary uploads as artifacts.
+    """
+    rows = WorldQuery(driver, world_id).read(
+        "MATCH (c:Connector {id: $id}) RETURN c.type AS type, c.provider AS provider",
+        id=connector_id,
+    )
+    if not rows or rows[0] != {"type": spec.connector_type, "provider": spec.provider}:
+        raise InvalidRecord("invalid_arguments", "connector", "connector does not match the reader")
+    if not isinstance(screener, Screener):
+        raise TypeError("take_parsed needs a Screener")
+    if (spec.provider, spec.connector_type, spec.parser_version) != (
+        "google_calendar",
+        "calendar",
+        "google_calendar.v1",
+    ) and any(message.calendar_event is not None for chat in chats for message in chat.messages):
+        raise InvalidRecord(
+            "invalid_arguments", "calendar_facts", "Calendar facts need the dedicated reader"
+        )
+    attempted = attempted_at or clock.now(world_id)
     result = TakeInResult(state=NOTHING_NEW, provider=spec.provider, connector_id=connector_id)
     result.chats = len(chats)
     for chat in chats:
         try:
-            _take_chat(driver, world_id, spec, connector_id, chat, screener, result)
+            _take_chat(driver, world_id, spec, connector_id, chat, screener, result, sync_owner)
         except (KeyChanged, DeltaMoved, InvalidRecord):
             result.failed_chats += 1
     if result.messages_kept:
@@ -257,12 +318,13 @@ def take_in(
         result.state = KEPT_OUT
     elif result.failed_chats:
         result.state = FAILED
-    record_read(
-        driver,
-        world_id,
-        connector_id,
-        outcome=_OUTCOME[result.state],
-        failed=result.failed_chats,
-        attempted_at=attempted,
-    )
+    if record_coverage:
+        record_read(
+            driver,
+            world_id,
+            connector_id,
+            outcome=_OUTCOME[result.state],
+            failed=result.failed_chats,
+            attempted_at=attempted,
+        )
     return result

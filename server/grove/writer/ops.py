@@ -150,6 +150,25 @@ OPS: dict[str, OpSpec] = {
         ("version",),
         "x",
     ),
+    # D6 decisions keep their own caller boundary; nested operations retain theirs too.
+    "accept_proposal": OpSpec(
+        _callers("PHK"),
+        ("op_id", "proposal", "reason"),
+        ("version", "operations", "evidence_refs", "apply_mark"),
+        "*",
+    ),
+    "reject_proposal": OpSpec(
+        _callers("PHK"),
+        ("op_id", "proposal", "reason"),
+        ("version",),
+        "*",
+    ),
+    "resolve_mark": OpSpec(
+        _callers("CKPH"),
+        ("op_id", "mark", "disposition", "reason"),
+        ("version", "evidence_refs"),
+        "~",
+    ),
     # D8's ontology operations (B.2: propose U C K; the rest K P). grove.writer.ontology checks
     # the declared fields, the neighbours and the judgments; the shape is checked here.
     "propose_word": OpSpec(
@@ -586,7 +605,7 @@ def _check_fields(name: str, op: dict[str, Any]) -> None:
         if key in op:
             rule = "required_field" if key == "title" else "type"
             _text(op[key], key, rule=rule)
-    for key in (*REF_FIELDS, "evidence", "ev_id", "evidence_id", "change_set"):
+    for key in (*REF_FIELDS, "evidence", "ev_id", "evidence_id", "change_set", "proposal", "mark"):
         if key in op:
             _text(op[key], key)
     for key in ("summary", "body"):
@@ -638,6 +657,40 @@ def _check_fields(name: str, op: dict[str, Any]) -> None:
         _word_op_fields(name, op)
     if name in BELIEF_OPS:
         _belief_fields(name, op)
+    if name == "resolve_mark":
+        _enum(op["disposition"], "disposition", ("still_holding", "revised", "dismissed"))
+    if name == "accept_proposal":
+        _proposal_fields(op)
+
+
+def _proposal_fields(op: dict[str, Any]) -> None:
+    if "apply_mark" in op and not isinstance(op["apply_mark"], bool):
+        raise Refused("invalid_arguments", "type", "apply_mark is a boolean", {})
+    if "operations" not in op:
+        return
+    nested = op["operations"]
+    if not isinstance(nested, list) or len(nested) > MAX_OPS:
+        raise Refused("invalid_arguments", "ops_count", "operations is a bounded list", {})
+    for operation in nested:
+        if not isinstance(operation, dict) or operation.get("op") not in {
+            "change_status",
+            "end_link",
+            "create_link",
+        }:
+            raise Refused(
+                "invalid_arguments",
+                "proposal_operation",
+                "a proposal decision permits only scoped status or link operations",
+                {},
+            )
+        _check_op(operation)
+        if operation.get("temp_id") is not None or temp_refs(operation):
+            raise Refused(
+                "invalid_arguments",
+                "proposal_scope",
+                "proposal operations name stored items and links, never temp ids",
+                {},
+            )
 
 
 def _belief_fields(name: str, op: dict[str, Any]) -> None:
@@ -855,6 +908,10 @@ def cited_ev_ids(op: dict[str, Any]) -> list[str]:
     example = op.get("worked_example") if op.get("op") == "propose_word" else None
     if isinstance(example, dict) and isinstance(example.get("ev_id"), str):
         cited.append(example["ev_id"])
+    if op.get("op") == "accept_proposal" and isinstance(op.get("operations"), list):
+        for operation in op["operations"]:
+            if isinstance(operation, dict):
+                cited.extend(cited_ev_ids(operation))
     return cited
 
 
@@ -924,8 +981,24 @@ def shape_refusals(batch: Any) -> tuple[list[Refusal], dict[int, Refusal]]:
             )
         else:
             observations[ev_id] = observation
-    seen_ids: set[str] = set()
+    expanded = list(ops)
     for op in ops:
+        if isinstance(op, dict) and op.get("op") == "accept_proposal":
+            if isinstance(op.get("operations"), list):
+                expanded.extend(op["operations"])
+    if len(expanded) > MAX_OPS:
+        faults.append(
+            Refusal(
+                None,
+                None,
+                "invalid_arguments",
+                "ops_count",
+                f"a batch includes at most {MAX_OPS} operations, including proposal operations",
+                {},
+            )
+        )
+    seen_ids: set[str] = set()
+    for op in expanded:
         op_id, _ = op_label(op)
         if op_id is not None and op_id in seen_ids:
             faults.append(

@@ -474,7 +474,7 @@ def test_a_minted_words_capability_row_applies_only_once_the_second_model_accept
         at=NOW + timedelta(minutes=30),
         locator=f"key:{GIT_TOKEN}",
         message_key=GIT_TOKEN,
-        statement_class="report_happened",
+        statement_class="artifact",
     )
     judgment = judge(driver, w, f"item:{hall}", commit)
     ops = [verify(hall, [{"ev_id": "g1", "judgment_id": judgment}])]
