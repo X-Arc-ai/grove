@@ -38,8 +38,19 @@ deployed_sha() {
 }
 
 compose() {
+    local overlay=()
+    if [ -e "$GROVE_STATE/cutover.json" ] || [ -L "$GROVE_STATE/cutover.json" ]; then
+        [ -f "$GROVE_STATE/cutover-compose.json" ] || die "maintenance override is absent"
+        overlay=(--file "$GROVE_STATE/cutover-compose.json")
+    fi
     GROVE_BUILD_SHA=${GROVE_BUILD_SHA:-$(deployed_sha)} docker compose \
-        --project-name "$GROVE_PROJECT" --file "$GROVE_SRC/deploy/compose.yml" "$@"
+        --project-name "$GROVE_PROJECT" --file "$GROVE_SRC/deploy/compose.yml" "${overlay[@]}" "$@"
+}
+
+maintenance_guard() {
+    if [ -e "$GROVE_STATE/cutover.json" ] || [ -L "$GROVE_STATE/cutover.json" ]; then
+        die "cutover maintenance is active; explicit recovery is required"
+    fi
 }
 
 # `compose run` keeps stdin open, so a script fed on stdin (ssh host 'bash -s' <<EOF) would lose

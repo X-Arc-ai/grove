@@ -12,6 +12,7 @@ sha=$1
 ref=$2
 [ "${GROVE_LOCK_HELD:-}" = 1 ] || die "run deploy.sh, which takes the box lock"
 [ "$(git -C "$GROVE_SRC" rev-parse HEAD)" = "$sha" ] || die "the checkout is not at $sha"
+maintenance_guard
 
 # Gateway construction refuses absent configuration before it can answer health checks.
 # Validate the files this deploy will consume, before any host-file or service mutation.
@@ -76,43 +77,14 @@ export GROVE_BUILD_SHA=$sha
 previous=$(served_sha)
 record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: start"
 
-compose build api runner
-compose up --detach --wait neo4j
-# The migrations run from the image's copy of the checkout's server/ folder (store-map open point).
-compose_run api python -m grove.writer.migrate
-
-# From here compose replaces the containers, so this sha is what the box runs, healthy or not. The
-# build it replaced stays on record for a roll back, also when one sha is deployed twice.
-if [ -n "$previous" ] && [ "$previous" != "$sha" ]; then
-    write_state previous.sha "$previous"
-fi
-write_state deployed.sha "$sha"
-if ! compose up --detach --wait --remove-orphans api gateway runner; then
-    record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: runs, services NOT healthy"
-    exit 1
-fi
-
-if "$here/smoke.sh" "$(public_base_url)" "$sha" </dev/null; then
+export GROVE_CUTOVER_PUBLIC_BASE_URL
+GROVE_CUTOVER_PUBLIC_BASE_URL=$(public_base_url)
+# The protocol owns migration, target creation and smoke. Markers alone never
+# authorize recovery. Its durable barrier also covers the old deploy parent.
+if python3 "$here/cutover.py" run "$sha" "$previous"; then
     record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: served, smoke ok"
 else
-    record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: served, smoke FAILED"
+    record deploy.log "deploy $sha ref=$ref previous=${previous:-none}: cutover FAILED; inspect maintenance state"
     exit 1
 fi
-
-# Keep the images of this build and of the one it replaced, for a fast roll back; drop the rest.
-rollback=""
-if [ -s "$GROVE_STATE/previous.sha" ]; then
-    rollback=$(tr -d '[:space:]' <"$GROVE_STATE/previous.sha")
-fi
-keep=" $sha $rollback "
-docker image ls --format '{{.Repository}}:{{.Tag}}' | while read -r image; do
-    case $image in
-        grove-api:* | grove-runner:*)
-            case $keep in
-                *" ${image#*:} "*) ;;
-                *) docker image rm "$image" >/dev/null || log "could not remove $image" ;;
-            esac
-            ;;
-    esac
-done
-docker image prune --force >/dev/null
+# Retained images stay available. Compatibility, not a tag, authorizes recovery.

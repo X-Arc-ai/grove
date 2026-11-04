@@ -8,10 +8,12 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
+from neo4j import Query
 
 from grove.config import ConfigError, load_settings
 from grove.store.catalogue import FULLTEXT_INDEXES, TABLES
@@ -387,3 +389,116 @@ def test_no_stray_schema_on_an_exclusive_store(driver, migrated):
 )
 def test_only_the_exact_generation_initializer_is_allowed(statement):
     assert not is_generation_initializer(statement)
+
+
+class _ProbeResult:
+    def __init__(self, count):
+        self.count = count
+        self.consumed = False
+
+    def single(self, *, strict):
+        assert strict is True
+        return {"active_transactions": self.count}
+
+    def consume(self):
+        self.consumed = True
+
+
+class _ProbeDriver:
+    def __init__(self, count):
+        self.result = _ProbeResult(count)
+        self.calls = []
+
+    def session(self, *, database):
+        assert database == DATABASE
+        return nullcontext(self)
+
+    def run(self, query, **parameters):
+        self.calls.append((query, parameters))
+        return self.result
+
+
+def test_quiescent_probe_excludes_only_its_fresh_metadata():
+    driver = _ProbeDriver(0)
+    assert migrate.check_quiescent(driver) == {"active_transactions": 0}
+    assert migrate.check_quiescent(driver) == {"active_transactions": 0}
+    assert driver.result.consumed
+    probes = []
+    for query, parameters in driver.calls:
+        assert isinstance(query, Query)
+        assert str(query) == (
+            "SHOW TRANSACTIONS YIELD database, metaData "
+            "WHERE database = $database AND coalesce(metaData.grove_cutover_probe, '') <> $probe "
+            "RETURN count(*) AS active_transactions"
+        )
+        assert query.metadata == {"grove_cutover_probe": parameters["probe"]}
+        assert parameters["database"] == DATABASE
+        assert query.timeout == 30.0
+        probes.append(parameters["probe"])
+    assert probes[0] != probes[1]
+
+
+@pytest.mark.parametrize("count", [1, 2, None, True, -1, 1.5, "0"])
+def test_quiescent_probe_refuses_active_or_invalid_counts(count):
+    driver = _ProbeDriver(count)
+    with pytest.raises(migrate.CutoverRefused):
+        migrate.check_quiescent(driver)
+    assert driver.result.consumed
+    assert len(driver.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("flag", "operation", "result"),
+    [
+        ("--check-quiescent", "check_quiescent", {"active_transactions": 0}),
+        ("--quiescent-reconcile", "reconcile_generations", {"worlds": 2, "initialized": 1}),
+    ],
+)
+def test_quiescent_cli_uses_only_the_explicit_operation(
+    monkeypatch, capsys, flag, operation, result
+):
+    driver = object()
+    monkeypatch.setattr(migrate, "open_driver", lambda: nullcontext(driver))
+
+    def selected(actual):
+        assert actual is driver
+        return result
+
+    monkeypatch.setattr(migrate, operation, selected)
+    monkeypatch.setattr(migrate, "run_migrations", lambda *a, **kw: pytest.fail("migration ran"))
+    assert main([flag]) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == result
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("flag", ["--check-quiescent", "--quiescent-reconcile"])
+@pytest.mark.parametrize("connection_failure", [False, True])
+def test_quiescent_cli_failure_hides_driver_details(monkeypatch, capsys, flag, connection_failure):
+    def fail(*args, **kwargs):
+        raise RuntimeError("invented-private-store-value")
+
+    monkeypatch.setattr(
+        migrate, "open_driver", fail if connection_failure else lambda: nullcontext(object())
+    )
+    monkeypatch.setattr(migrate, "check_quiescent", fail)
+    monkeypatch.setattr(migrate, "reconcile_generations", fail)
+    assert main([flag]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "quiescent operation failed\n"
+
+
+def test_quiescent_cli_refusal_has_no_success_json(monkeypatch, capsys):
+    monkeypatch.setattr(migrate, "open_driver", lambda: nullcontext(_ProbeDriver(1)))
+    assert main(["--check-quiescent"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == "other database transactions remain\n"
+
+
+def test_quiescent_cli_flags_are_exclusive_before_connection(monkeypatch):
+    monkeypatch.setattr(migrate, "open_driver", lambda: pytest.fail("the store was reached"))
+    with pytest.raises(SystemExit) as refused:
+        main(["--check-quiescent", "--quiescent-reconcile"])
+    assert refused.value.code == 2
