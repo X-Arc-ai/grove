@@ -2,15 +2,25 @@
 
 import pytest
 
+from grove.store.primitives import KIND_BELIEF
 from grove.store.replay import FORGOTTEN_MARKER, ReplayRefused
 from tests.store.test_replay import Book, item, recorded, registry, world
 
 
 def paired():
     book = Book()
-    kinds = registry(book)
-    item_id = item(book, book.op(), kinds["place"], "Paired belief")
-    belief = book.row(book.op(), "belief", "beliefs", {"item_id": item_id})
+    registry(book)
+    item_id = item(book, book.op(), KIND_BELIEF, "Paired belief")
+    belief = book.row(
+        book.op(),
+        "belief",
+        "beliefs",
+        {
+            "item_id": item_id,
+            "state": "tentative",
+            "origin": "earned_from_episodes",
+        },
+    )
     return book, item_id, belief
 
 

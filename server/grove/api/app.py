@@ -16,7 +16,18 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from grove.api import cascade, connectors, forget, health, mcp, oauth, pipedream, uploads, wellknown
+from grove.api import (
+    belief_tools,
+    cascade,
+    connectors,
+    forget,
+    health,
+    mcp,
+    oauth,
+    pipedream,
+    uploads,
+    wellknown,
+)
 from grove.api.assets import add_public_assets
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
@@ -222,6 +233,7 @@ def create_app(
     app.include_router(pipedream.router)
     app.include_router(auth_router)
     app.include_router(internal_router)
+    app.include_router(belief_tools.router)
     app.include_router(cascade.router)
     folder = os.environ.get(WEB_DIST_ENV)
     if folder:
