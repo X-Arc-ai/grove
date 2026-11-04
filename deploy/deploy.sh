@@ -57,6 +57,10 @@ git -C "$GROVE_SRC" checkout --quiet --detach "$sha"
 # still to run.
 status=0
 "$GROVE_SRC/deploy/apply.sh" "$sha" "$ref" || status=$?
+if [ "$status" -eq 78 ]; then
+    log "the journal prerequisite refused before apply mutation; no installer fallback"
+    exit "$status"
+fi
 if [ "$status" != 0 ]; then
     # The old parent's fallback may still run on the first upgrade. Installed
     # drop-ins outlive it; this parent also avoids replacing the target source.
