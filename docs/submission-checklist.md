@@ -4,6 +4,10 @@ Status: preparation only. Repository visibility stays **PRIVATE**.
 The recorded baseline and deployment are in [submission status](submission-status.md).
 This checklist does not authorize publication, account actions, or a deployment.
 
+PR #60 is published source in the recorded baseline. The next API deployment is not yet executed.
+The materials candidate remains unpublished; its migration `0019_material_revisions.cypher`
+requires a separate release decision. Files remain `held_provenance` with no file Request.
+
 ## Select and verify the release
 
 - [ ] Sequence the accepted UI and backend changes through the release owner.

@@ -6,9 +6,10 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 ROOT = Path(__file__).resolve().parents[3]
-SOURCE = "756de68e00a1d69b9ea2448408754d85d7e2cbf8"
+SOURCE = "564cc99b9c8a718f163503cc23227a8f2908fcd1"
 API = "cbcfe574e03880569bfcdb9a9732f79a7ef3daea"
 WORKERS = "266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e"
+MATERIALS = "b4b804acf94250c2092f2e3c7623d6e79ee8bb59"
 DOCUMENTS = (
     "README.md",
     "HACKATHON.md",
@@ -55,6 +56,40 @@ def test_release_record_separates_source_and_each_deployed_revision():
     assert "PRs #58 and #59" in status
     assert "not deployed" in status
     assert "unpublished" in status
+
+
+def test_published_ui_keeps_deployment_and_materials_boundaries():
+    for name in ("docs/submission-status.md", "docs/architecture.md"):
+        text = (ROOT / name).read_text()
+        assert SOURCE in text, name
+        assert "PR #60" in text, name
+        assert "published source" in text.lower(), name
+        assert "not deployed in Request17" in text, name
+        assert "next API deployment is not yet executed" in text, name
+        assert MATERIALS in text, name
+        assert "unpublished" in text, name
+        assert "held_provenance" in text, name
+        assert "no file Request" in text, name
+        assert "0019_material_revisions.cypher" in text, name
+    draft = (ROOT / "docs/drafts/submission-writeup.txt").read_text()
+    assert SOURCE in draft
+    assert "published UI repair in PR #60" in draft
+    assert "not deployed acceptance" in draft
+    assert MATERIALS in draft and "remains unpublished" in draft
+    assert "held_provenance with no file Request" in draft
+
+
+def test_source_update_preserves_the_dated_event_table():
+    readme = (ROOT / "README.md").read_text()
+    assert SOURCE in readme
+    assert "published UI repair in PR #60" in readme
+    assert "next API deployment is not yet executed" in readme
+    record = (ROOT / "HACKATHON.md").read_text()
+    assert "GitHub snapshot: 2026-11-04 at 18:36 UTC" in record
+    rows = [line for line in record.splitlines() if line.startswith("| [#")]
+    assert len(rows) == 59
+    assert rows[-1].startswith("| [#59]")
+    assert "PR #60 belongs to the newer [source snapshot]" in record
 
 
 def test_event_record_preserves_pr18_as_merged_source():

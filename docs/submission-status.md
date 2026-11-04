@@ -1,6 +1,6 @@
 # Submission status
 
-Documentation snapshot: 2026-11-04 at 18:36 UTC. Repository: **PRIVATE**.
+Documentation source snapshot: 2026-11-04, after PR #60. Repository: **PRIVATE**.
 This package records accepted source and existing release receipts. It does not report a new
 host check, complete product acceptance, or external submission. The current owner manual
 login/upload/Muse flow is paused and remains **NOT RUN** for this release.
@@ -9,13 +9,17 @@ login/upload/Muse flow is paused and remains **NOT RUN** for this release.
 
 | Surface | Recorded revision | Evidence boundary |
 |---|---|---|
-| Accepted source baseline | `756de68e00a1d69b9ea2448408754d85d7e2cbf8` | Includes PRs #58 and #59; these repairs are not deployed in the receipt below |
+| Accepted source baseline | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Includes PRs #58 and #59 plus PR #60; these repairs are not deployed in the receipt below |
 | Request17 API | `cbcfe574e03880569bfcdb9a9732f79a7ef3daea` | API-only release; anonymous root redirects to `/login` |
 | Request17 runner and gateway | `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e` | Existing services retained their source and did not restart |
-| Later UI and materials work | Separate unpublished candidates at this baseline | Not included in this source snapshot or the recorded deployment |
+| Published UI repair, PR #60 | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Published source in this snapshot; not deployed in Request17 |
+| Separate materials candidate | `b4b804acf94250c2092f2e3c7623d6e79ee8bb59`, unpublished | Excluded from this snapshot and deployment; requires separate migration `0019_material_revisions.cypher` |
 
 The document commit belongs in its PR receipt because a commit cannot contain its own final SHA.
-The [event record](../HACKATHON.md) is a GitHub snapshot, not a deployment or acceptance list.
+The controller's public health read still reports the Request17 API revision above.
+The next API deployment is not yet executed. Published source does not prove deployed acceptance.
+The [event record](../HACKATHON.md) remains the dated GitHub snapshot at 18:36 UTC through PR #59;
+it is not a deployment or acceptance list.
 
 ## Recorded evidence
 
@@ -35,9 +39,10 @@ passes for account status, catalog, scopes, and confirmed account-scoped disconn
 Those saved source checks do not prove deployed behavior or live provider consent.
 Their later automatic Validate runs failed at Ruff under the existing publication waiver.
 
-The unpublished UI candidate has separate author and independent evidence for its exact heads.
-The unpublished materials candidate records 222 focused native controls and requires migration
-0019 plus release integration. Neither candidate is certified by this documentation snapshot.
+The published UI repair in PR #60 has separate author and independent evidence for its exact heads.
+Those checks do not establish deployed acceptance. The unpublished materials candidate records
+222 focused native controls and requires migration 0019 plus release integration. Files report
+`held_provenance` and create no file Request. This documentation does not certify materials acceptance.
 
 ## Capability boundaries
 
@@ -49,10 +54,10 @@ The unpublished materials candidate records 222 focused native controls and requ
 | General MCP | `DEFAULT_TOOLS = ()`; the restricted pair does not establish general `store`/`recall` acceptance |
 | Calendar/Git | Read-only connector source exists; actual consent and configured live-source acceptance remain open |
 | Pipedream | Authorization, status, catalog, and disconnect source; no content import or synchronization |
-| Files and notes | A separate unpublished candidate supplies material storage and note processing; typed-file graph admission remains separate |
+| Files and notes | A separate unpublished candidate supplies material storage and note processing; files remain `held_provenance` with no file Request; typed-file graph admission remains separate |
 | Workers and Questions | Status and inactive protocol components exist; complete D7/D10/D11/D14 runtime acceptance remains open |
 | Privacy, reset, and restore | Source components and guards exist; complete delete-brain and physical/runtime restore acceptance remain open |
-| UI | Source and independent checks apply only to their recorded heads; full control and responsive acceptance remain open |
+| UI | PR #60 is published source, not deployed acceptance; source checks apply only to their recorded heads; full control and responsive acceptance remain open |
 | Performance | Earlier HTML and asset measurements are historical; total initial transfer and current first-paint acceptance remain unverified |
 
 Unavailable controls do not satisfy the required feature scope. CI or source publication does

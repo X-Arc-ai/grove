@@ -4,7 +4,7 @@ Grove gives AI assistants a dated, sourced memory of projects, decisions, and pl
 
 The implementation includes a Neo4j store, FastAPI routes, real sign-in and OAuth, a browser graph, screened chat retention, read-only Calendar/Git connector source, and model and worker components. The prepared synthetic demo supports restricted recall through Grove's MCP connection. The ordinary upload scene retains screened sources; it does not create the prepared graph.
 
-The documented source baseline is 756de68e00a1d69b9ea2448408754d85d7e2cbf8. Request17 records API cbcfe574e03880569bfcdb9a9732f79a7ef3daea with the earlier runner/gateway revision. Later ordinary-upload and Pipedream repairs are source changes, not demonstrated live behavior. The separate UI and file/note candidates need their release sequence.
+The documented source baseline is 564cc99b9c8a718f163503cc23227a8f2908fcd1, including the published UI repair in PR #60. Request17 records API cbcfe574e03880569bfcdb9a9732f79a7ef3daea with the earlier runner/gateway revision. The next API deployment is not yet executed. Ordinary-upload, Pipedream, and UI repairs are published source, not deployed acceptance. The separate file/note candidate b4b804acf94250c2092f2e3c7623d6e79ee8bb59 remains unpublished and requires migration 0019_material_revisions.cypher. Files report held_provenance with no file Request.
 
 The demo questions use saved synthetic projects. Set Grove as the main memory once, then ask a natural question such as “Where and when is the Cedar demo?” Require an actual successful tool result. Current owner login, upload, and Muse rehearsal remain NOT RUN. Natural question routing and instruction persistence remain unverified.
 
