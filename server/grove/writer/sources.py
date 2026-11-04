@@ -24,11 +24,21 @@ from typing import Any
 from neo4j import Driver
 
 from grove import clock
+from grove.demo_policy import (
+    DEMO_INPUTS,
+    DEMO_VERSION,
+    DemoDenied,
+    designation_in_tx,
+    has_designation,
+    require_designation_in_tx,
+)
 from grove.ids import new_id
 from grove.screening import ScreenedSource
 from grove.store.enums import ENUMS
+from grove.writer.calendar_facts import calendar_facts_json
 from grove.writer.clocks import ClockError, parse_instant
 from grove.writer.errors import InvalidRecord
+from grove.writer.forget_sources import refuse_forgotten_source
 from grove.writer.history import compact
 from grove.writer.tx import WorldTx, WorldWriter
 
@@ -52,6 +62,45 @@ def _instant(value: Any, name: str) -> datetime:
         return parse_instant(value)
     except ClockError as error:
         raise InvalidRecord("invalid_arguments", error.rule, f"{name}: {error}") from error
+
+
+_SPEAKER_KINDS = frozenset(ENUMS["speaker_kind"])
+_SPEAKER_KEYS = frozenset({"kind", "sender", "original_author", "locator"})
+_META_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,128}")
+
+
+def speakers_json(speakers: Any) -> str | None:
+    """The speakers the connector's code read from a source's own metadata (S51): message key to
+    {kind, locator, sender, original_author}. `locator` is where that message sits in the source,
+    so no row can borrow the key for another place. `sender` is a code the connector chose (never
+    an address), and `original_author` an item id. Only code that parses a source sets these, so
+    the writer lets them win over a caller's classification (D5: metadata first)."""
+    if speakers is None:
+        return None
+    if not isinstance(speakers, Mapping):
+        raise InvalidRecord("invalid_arguments", "type", "speakers maps message keys to speakers")
+    checked: dict[str, dict[str, str]] = {}
+    for key, entry in speakers.items():
+        if not isinstance(key, str) or _META_CODE.fullmatch(key) is None:
+            raise InvalidRecord("invalid_arguments", "type", "a speakers key is a message key")
+        if not isinstance(entry, Mapping) or set(entry) - _SPEAKER_KEYS:
+            raise InvalidRecord(
+                "invalid_arguments", "type", "a speaker is {kind, sender, original_author}"
+            )
+        if entry.get("kind") not in _SPEAKER_KINDS:
+            raise InvalidRecord("invalid_arguments", "enum", "a speaker kind is a speaker_kind")
+        if not isinstance(entry.get("locator"), str) or not entry["locator"].strip():
+            raise InvalidRecord(
+                "invalid_arguments", "type", "a speaker names the locator of its message"
+            )
+        for name in ("sender", "original_author", "locator"):
+            value = entry.get(name)
+            if value is not None and (
+                not isinstance(value, str) or _META_CODE.fullmatch(value) is None
+            ):
+                raise InvalidRecord("invalid_arguments", "type", f"{name} is a code")
+        checked[key] = {name: value for name, value in entry.items() if value is not None}
+    return json.dumps(checked, sort_keys=True) if checked else None
 
 
 def _connector(tx: WorldTx, connector_id: str) -> dict[str, Any]:
@@ -81,6 +130,8 @@ def record_connector(
         raise InvalidRecord("invalid_arguments", "type", "staleness_limit is whole days")
 
     def work(tx: WorldTx) -> str:
+        if has_designation(designation_in_tx(tx) or {}):
+            raise DemoDenied()
         at = _now(world_id)
         row = compact(
             {
@@ -108,8 +159,11 @@ def record_source(
     content_pointer: str | None = None,
     parser_version: str,
     untrusted: bool = False,
+    speakers: Mapping[str, Mapping[str, str]] | None = None,
+    document: bool = False,
 ) -> str:
     _text(connector_id, "connector_id")
+    speakers_text = speakers_json(speakers)
     _text(external_locator, "external_locator")
     _text(parser_version, "parser_version")
     if (content is None) == (content_pointer is None):
@@ -122,7 +176,20 @@ def record_source(
         _text(content_pointer, "content_pointer")
 
     def work(tx: WorldTx) -> str:
-        _connector(tx, connector_id)
+        refuse_forgotten_source(tx, external_locator)
+        connector = _connector(tx, connector_id)
+        if has_designation(designation_in_tx(tx) or {}):
+            require_designation_in_tx(tx)
+            if not (
+                connector.get("type") == "person_in_views"
+                and parser_version == "signin.v1"
+                and content is None
+                and content_pointer == external_locator == "signin:email"
+                and speakers is None
+                and document is False
+                and untrusted is False
+            ):
+                raise DemoDenied()
         at = _now(world_id)
         row = compact(
             {
@@ -134,6 +201,8 @@ def record_source(
                 "content_pointer": content_pointer,
                 "parser_version": parser_version,
                 "untrusted": bool(untrusted),
+                "speakers": speakers_text,
+                "document": True if document is True else None,
                 "forget_state": _KEPT,
                 "version": _FIRST_VERSION,
                 "touched_at": at,
@@ -284,8 +353,15 @@ def write_screened_source(
     source_id: str,
     connector_id: str,
     parser_version: str,
+    speakers: Mapping[str, Mapping[str, str]] | None = None,
+    document: bool = False,
+    calendar_events: Mapping[str, Mapping[str, Any]] | None = None,
+    demo_request_id: str | None = None,
 ) -> dict[str, Any]:
     """Write one :Source and its :ScreeningReceipt in the caller's transaction.
+
+    `document` (S51) is the connector's word that the source is an uploaded file or picture (a
+    PDF, an image, a scan), not text the person typed: only such a source can be an artifact.
 
     It returns the source id, the counts per class and the number of kept messages: no text.
     """
@@ -299,7 +375,44 @@ def write_screened_source(
     if type(parser_version) is not str or _CODE.fullmatch(parser_version) is None:
         raise ValueError("parser_version is not a code")
     counts = _checked_counts(screened.counts)
-    _connector(tx, connector_id)
+    refuse_forgotten_source(tx, screened.locator, (message.key for message in screened.messages))
+    speakers_text = speakers_json(speakers)
+    connector = _connector(tx, connector_id)
+    demo_columns = {}
+    if has_designation(designation_in_tx(tx) or {}):
+        require_designation_in_tx(tx)
+        request = (
+            tx.run("MATCH (r:Request {id: $id}) RETURN r", id=demo_request_id)
+            if isinstance(demo_request_id, str)
+            else []
+        )
+        row = request[0]["r"] if len(request) == 1 else {}
+        if not (
+            connector.get("type") == "ai_host"
+            and connector.get("auth_reference") == "oauth"
+            and connector.get("batch_rule") == "host_request"
+            and re.fullmatch(r"host:[0-9a-f]{64}", connector.get("provider", ""))
+            and row.get("caller") == connector["provider"]
+            and row.get("status") == "queued"
+            and row.get("source_id") is None
+            and row.get("relay") is None
+            and not row.get("about")
+            and parser_version == "mcp-store-1"
+            and speakers is None
+            and document is False
+            and calendar_events is None
+            and len(screened.messages) == 1
+            and screened.messages[0].text in DEMO_INPUTS
+            and screened.messages[0].sender is None
+            and screened.locator == ""
+        ):
+            raise DemoDenied()
+        demo_columns = {"demo_version": DEMO_VERSION, "demo_request_id": demo_request_id}
+    if calendar_events is not None and connector.get("type") != "calendar":
+        raise InvalidRecord(
+            "invalid_arguments", "calendar_facts", "Calendar facts need a Calendar connector"
+        )
+    calendar_text = calendar_facts_json(calendar_events, screened.messages)
 
     at = clock.now(_world_of(tx))
     tx.run(
@@ -312,9 +425,13 @@ def write_screened_source(
             "content": screened.content(),
             "parser_version": parser_version,
             "untrusted": True,
+            **({"speakers": speakers_text} if speakers_text else {}),
+            **({"document": True} if document is True else {}),
+            **({"calendar_events": calendar_text} if calendar_text else {}),
             "forget_state": _KEPT,
             "version": _FIRST_VERSION,
             "touched_at": at,
+            **demo_columns,
         },
     )
     tx.run(
@@ -336,6 +453,9 @@ def add_screened_source(
     connector_id: str,
     parser_version: str,
     source_id: str | None = None,
+    speakers: Mapping[str, Mapping[str, str]] | None = None,
+    document: bool = False,
+    calendar_events: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """write_screened_source in a transaction of its own. With no source_id it mints one."""
 
@@ -349,6 +469,9 @@ def add_screened_source(
             source_id=chosen,
             connector_id=connector_id,
             parser_version=parser_version,
+            speakers=speakers,
+            document=document,
+            calendar_events=calendar_events,
         )
 
     return writer.transaction(work)

@@ -22,7 +22,7 @@ No step calls a model. Nothing here logs, and no repr or error holds a value.
 import json
 from collections import Counter
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from types import MappingProxyType
 
@@ -50,6 +50,11 @@ from grove.screening.names import (
     load_denylist,
     load_rename_map,
 )
+from grove.source_facts import TextSourceFacts, check_text_transport
+from grove.store.enums import ENUMS
+
+_SPEAKER_KINDS = frozenset(ENUMS["speaker_kind"])
+_MODALITIES = frozenset(ENUMS["modality"])
 
 # The step number of each span decides who wins an overlap: the lower step.
 STEP_DENYLIST = 1
@@ -78,6 +83,11 @@ class Message:
     sender: str | None
     text: str
     at: datetime | None = None
+    # Who spoke and in what form, from the source's metadata (D5). Closed codes: screening passes
+    # them through as they are, and a connector that knows neither leaves them None.
+    speaker_kind: str | None = None
+    modality: str | None = None
+    source_facts: TextSourceFacts | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str):
@@ -90,6 +100,17 @@ class Message:
             not isinstance(self.at, datetime) or self.at.utcoffset() is None
         ):
             raise ValueError("Message.at must be an aware datetime or None")
+        # type() and not isinstance(): a str subclass could carry text past the closed list.
+        if self.speaker_kind is not None and (
+            type(self.speaker_kind) is not str or self.speaker_kind not in _SPEAKER_KINDS
+        ):
+            raise ValueError("Message.speaker_kind must be a speaker_kind code or None")
+        if self.modality is not None and (
+            type(self.modality) is not str or self.modality not in _MODALITIES
+        ):
+            raise ValueError("Message.modality must be a modality code or None")
+        if self.source_facts is not None:
+            _check_message_facts(self.source_facts, self.at, self.speaker_kind, self.modality)
 
     def __repr__(self) -> str:
         return (
@@ -104,20 +125,49 @@ class ScreenedMessage:
     sender: str | None
     text: str
     at: datetime | None = None
+    speaker_kind: str | None = None
+    modality: str | None = None
+    source_facts: TextSourceFacts | None = None
 
-    def as_row(self) -> dict[str, str | None]:
-        return {
+    def __post_init__(self) -> None:
+        if self.source_facts is not None:
+            _check_message_facts(self.source_facts, self.at, self.speaker_kind, self.modality)
+
+    def as_row(self) -> dict:
+        row = {
             "key": self.key,
             "sender": self.sender,
             "text": self.text,
             "at": None if self.at is None else self.at.isoformat(),
         }
+        # Only when a connector set them, so a source without them keeps its four fields.
+        if self.speaker_kind is not None:
+            row["speaker_kind"] = self.speaker_kind
+        if self.modality is not None:
+            row["modality"] = self.modality
+        if self.source_facts is not None:
+            _check_message_facts(self.source_facts, self.at, self.speaker_kind, self.modality)
+            row["source_facts"] = self.source_facts.as_row()
+            row["speaker_kind"] = self.speaker_kind
+        return row
 
     def __repr__(self) -> str:
         return (
             f"ScreenedMessage(key_length={len(self.key)}, sender_length={_length(self.sender)}, "
             f"text_length={len(self.text)}, at={'set' if self.at else None})"
         )
+
+
+def _check_message_facts(facts, at, speaker_kind, modality) -> None:
+    if type(facts) is not TextSourceFacts:
+        raise ValueError("source facts must be typed")
+    facts.check_at(at)
+    if type(modality) is not str or modality != "text":
+        raise ValueError("text source facts require text modality")
+    if speaker_kind is not None and (
+        type(speaker_kind) is not str or speaker_kind not in _SPEAKER_KINDS
+    ):
+        raise ValueError("text source speaker must be a closed code or None")
 
 
 # Only this module holds the token, so only the Screener makes a ScreenedSource.
@@ -279,12 +329,24 @@ class Screener:
         """One message with no locator: a remember request or a note."""
         return self.screen_source("", [Message(key=key, sender=sender, text=text)])
 
-    def screen_source(self, locator: str, messages: Iterable[Message]) -> ScreenedSource:
+    def screen_source(
+        self,
+        locator: str,
+        messages: Iterable[Message],
+        *,
+        source_identity: tuple[str, str] | None = None,
+    ) -> ScreenedSource:
         if not isinstance(locator, str):
             raise TypeError("the locator must be a str")
         items = list(messages)
         if not all(isinstance(message, Message) for message in items):
             raise TypeError("screen_source takes Message objects")
+        if any(message.source_facts is not None for message in items):
+            for message in items:
+                check_text_transport(source_identity, message.source_facts, message.at)
+                _check_message_facts(
+                    message.source_facts, message.at, message.speaker_kind, message.modality
+                )
         run = _Run()
 
         place = _Text(locator, file_name=True)
@@ -298,6 +360,8 @@ class Screener:
             for message in items:
                 screened = self._screen_message(run, message)
                 if screened is not None:
+                    if message.source_facts is not None:
+                        screened = replace(screened, source_facts=message.source_facts)
                     kept.append(screened)
 
         counts = {cls: run.counts[cls] for cls in CLASSES if run.counts[cls] > 0}
@@ -325,7 +389,12 @@ class Screener:
         screened_text = self._screen(run, text, TEXT_STEPS, _said_by(sender))
         screened_key = self._screen(run, _Text(message.key), KEY_STEPS)
         return ScreenedMessage(
-            key=screened_key, sender=screened_sender, text=screened_text, at=message.at
+            key=screened_key,
+            sender=screened_sender,
+            text=screened_text,
+            at=message.at,
+            speaker_kind=message.speaker_kind,
+            modality=message.modality,
         )
 
     @staticmethod

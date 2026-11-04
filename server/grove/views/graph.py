@@ -1,7 +1,11 @@
 """The view payloads: graph, node, schema, health and session, in the simulation's shapes.
 
-as_of and known_as_of filter the current head of each row (there is no history read yet):
-known_as_of=T keeps rows recorded at or before T; as_of=T keeps rows whose world interval holds T.
+as_of and known_as_of filter the current head of each row: known_as_of=T keeps rows recorded at or
+before T; as_of=T keeps rows whose world interval holds T. The history reads that answer both
+(grove.store.asof.world_as_of, the record axis's known_as_of) are wired to the slider by views-c.
+
+Every node carries its standing now and its successors (D3: no read serves an overtaken claim
+without its successor), from grove.store.current, the one liveness function.
 """
 
 import json
@@ -10,7 +14,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from grove.store.current import Standing, standings_of
 from grove.store.query import WorldQuery
+from grove.store.words import clock_words, provenance_timezone
 from grove.views.registry import Registry, read_registry
 from grove.views.session import ViewSession
 from grove.views.times import instant, iso_z
@@ -22,8 +28,9 @@ HEALTHY = "healthy"
 SUMMARY_READY = "Your Grove is ready"
 SUMMARY_EMPTY = "Your Grove is empty"
 
-# The graph reads only what node_data, edge_data and the time filters use: never an item's body,
-# search terms or property values. world_id rides along so the WorldLeak guard checks each row.
+# The graph reads only what node_data, edge_data, the time filters and the standing use: never an
+# item's body, search terms or property values. world_id rides along so the WorldLeak guard checks
+# each row.
 _INTERVAL_FIELDS = (
     "became_true_earliest",
     "became_true_latest",
@@ -44,6 +51,13 @@ _ITEM_FIELDS = (
     "version",
     "properties",
     *_INTERVAL_FIELDS,
+    # What grove.store.current.standing reads.
+    "end_class",
+    "status_role",
+    "stopped_being_true_precision",
+    "became_true_precision",
+    "derived_source_type",
+    "derivation",
 )
 _LINK_FIELDS = (
     "id",
@@ -147,11 +161,24 @@ def _properties(value: object) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def successors_data(found: Standing, registry: Registry) -> list[dict[str, str]]:
+    """The successors on a standing, each by its item id, its link id and its meaning's name."""
+    return [
+        {
+            "id": after.item_id,
+            "link_id": after.link_id,
+            "meaning": registry.meaning(after.meaning)[0],
+        }
+        for after in found.successors
+    ]
+
+
 def node_data(
     item: dict,
     registry: Registry,
     position: tuple[float, float] | None,
     self_item_id: str | None,
+    found: Standing,
 ) -> dict[str, Any]:
     version = _version(item.get("version"))
     data: dict[str, Any] = {
@@ -170,6 +197,8 @@ def node_data(
         "version": version,
         "properties": _properties(item.get("properties")),
         "has_changes": version > 1,
+        "standing": found.state,
+        "successors": successors_data(found, registry),
     }
     if position is not None:
         data["x"], data["y"] = position
@@ -222,11 +251,15 @@ def graph_payload(
 ) -> dict[str, Any]:
     registry = read_registry(world, primitives)
     positions = _positions(world)
-    items = world.read(_ITEMS)
-    nodes = [
-        node_data(item, registry, positions.get(item["id"]), self_item_id)
-        for item in sorted(items, key=lambda item: item["id"])
+    items = [
+        item
+        for item in sorted(world.read(_ITEMS), key=lambda item: item["id"])
         if in_window(item, window)
+    ]
+    found = standings_of(world, items, at=now)
+    nodes = [
+        node_data(item, registry, positions.get(item["id"]), self_item_id, found[item["id"]])
+        for item in items
     ]
     shown = {node["id"] for node in nodes}
     links = world.read(_ACTIVE_LINKS if window.as_of is None else _ALL_LINKS)
@@ -273,11 +306,20 @@ def node_payload(
     registry = read_registry(world, primitives)
     placed = world.read(_POSITION, id=item_id)
     position = (float(placed[0]["x"]), float(placed[0]["y"])) if placed else None
-    node = node_data(item, registry, position, self_item_id)
+    found = standings_of(world, [item])[item_id]
+    node = node_data(item, registry, position, self_item_id, found)
     content = _text(item.get("summary")) or _text(item.get("body"))
+    # The clocks in words (D4): only the item page shows them, so the graph list never pays for
+    # them. Dates read in the person's timezone from the creating row, else UTC.
+    clocks = clock_words(world, item_id, timezone=provenance_timezone(world, item))
     return {
         "node": node
-        | {"title": node["label"], "content": content, "status_field_value": node["status"]},
+        | {
+            "title": node["label"],
+            "content": content,
+            "status_field_value": node["status"],
+            "clocks": clocks,
+        },
         "required_props": [],
         "optional_props": registry.optional_props(item.get("kind")),
         "required_prop_names": [],

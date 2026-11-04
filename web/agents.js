@@ -6,6 +6,22 @@
 (function () {
   'use strict';
 
+  // The accepted API has no worker timeline yet. Keep the panel and toggle,
+  // but never synthesize work, freshness, or graph mutations in a live account.
+  if (window.GroveSimulation && window.GroveSimulation.isLive && window.GroveSimulation.isLive()) {
+    var livePanel=document.createElement('aside');
+    livePanel.className='hood-score';livePanel.setAttribute('aria-label','Your Grove workers');
+    livePanel.innerHTML='<div class="hood-panel-heading"><span>Your Grove workers</span></div>'+[['U','Learner','learner'],['L','Curator','curator'],['O','Connector','connector']].map(function(w){return '<button class="hood-score-row" data-a="'+w[0]+'" disabled><span class="hood-score-dot gp-worker-'+w[2]+'"></span><span class="hood-score-description"><strong>'+w[1]+'</strong><span class="hood-score-counts">Activity unavailable</span></span><span class="hood-follow-label">Follow</span></button>';}).join('')+'<div class="hood-legend-slot"><span>Freshness unavailable</span></div>';
+    document.body.appendChild(livePanel);
+    var liveToggle=document.getElementById('agents-toggle');
+    liveToggle.checked=false;document.body.classList.remove('hood-on');
+    liveToggle.addEventListener('change',function(){document.body.classList.toggle('hood-on',liveToggle.checked);});
+    window.addEventListener('grove:change',function(){if(!window.GroveSimulation.getState().onboardingComplete){liveToggle.checked=false;document.body.classList.remove('hood-on');}});
+    window.GroveCare={summary:function(){return {updated:null,connections:null,tended:null,fresh:null,areas:null,working:null,enabled:liveToggle.checked,running:false};}};
+    window.__hood={agents:function(){return {};},at:function(){return {t:0,total:0,turn:null,cycle:0,ready:false};},turns:function(){return [];},score:function(){return {};},following:function(){return null;}};
+    return;
+  }
+
   var AGENTS = {
     U: { name: 'Learner', role: 'Brings in new context' },
     L: { name: 'Curator', role: 'Keeps memories useful' },

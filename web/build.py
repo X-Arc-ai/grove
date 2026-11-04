@@ -1,23 +1,50 @@
-"""Build Grove's pages into self-contained HTML files in web/dist: the views (index.html), the
-public homepage (home.html), the privacy page (privacy.html) and the consent page (consent.html).
+"""Build Grove's HTML and content-hashed public assets in web/dist: the views (index.html), the
+public homepage (home.html), privacy, consent and forget pages.
 
 Standard library only; runs under the Mac's /usr/bin/python3 (3.9) and under 3.12.
 The views load no fixture. The checks inject a synthetic one into the unbundled sources
 (window.GROVE_FIXTURE); the bundle compiles that hook out, so it always runs live.
-The privacy page's table comes from docs/data-flow.md, so the page cannot say less than that file.
+The privacy generator writes docs/data-flow.md; the page includes every generated table row.
 The consent page is a template: the API fills its two marks at each /authorize (grove.oauth.consent).
 """
-from pathlib import Path
 import base64
 import html as html_text
+import hashlib
+import importlib.util
 import json
 import re
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 FIXTURE_HOOK = "window.GROVE_FIXTURE"
 DATA_FLOW = ROOT.parent / "docs" / "data-flow.md"
 TABLE_MARK = "<!-- data-flow-table -->"
 CONSENT_MARKS = ("<!--grove:title-->", "<!--grove:consent-->")
+FLOW_SOURCE = ROOT.parent / "server" / "grove" / "privacy.py"
+
+
+def generate_data_flow():
+    """The same fixed vocabulary serves the build and the runtime configuration endpoint."""
+    if not FLOW_SOURCE.is_file():
+        raise SystemExit("build.py: the data-flow generator is missing")
+    spec = importlib.util.spec_from_file_location("grove_build_privacy", FLOW_SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    DATA_FLOW.parent.mkdir(parents=True, exist_ok=True)
+    DATA_FLOW.write_text(module.markdown_statement(), encoding="utf-8")
+
+
+ASSET_MANIFEST = {}
+DEFERRED = {"app-screens.js": "guides", "integrations.js": "catalog"}
+
+
+def emit_asset(data, suffix, content_type):
+    name = hashlib.sha256(data).hexdigest() + suffix
+    folder = ROOT / "dist" / "assets"
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / name).write_bytes(data)
+    ASSET_MANIFEST[name] = content_type
+    return "/assets/grove/" + name
 
 
 def asset_url(raw, base):
@@ -25,6 +52,8 @@ def asset_url(raw, base):
     if name.startswith("data:"):
         return raw
     path = ROOT / name.lstrip("/") if name.startswith("/") else base / name
+    if path.suffix in (".woff2", ".woff"):
+        return emit_asset(path.read_bytes(), path.suffix, "font/" + path.suffix[1:])
     mime = {".woff2": "font/woff2", ".woff": "font/woff", ".svg": "image/svg+xml"}.get(path.suffix, "application/octet-stream")
     # A data: URL is percent-decoded before its base64 is read, so %41 and %61 give the browser
     # the same bytes. Encoding every A and a keeps any word that holds an a from appearing in the
@@ -35,6 +64,8 @@ def asset_url(raw, base):
 
 screens = json.loads((ROOT / "app-screens.json").read_text(encoding="utf-8"))
 (ROOT / "app-screens.js").write_text("/* Static illustrative screens from an earlier walkthrough. */\nwindow.GroveAppScreenCSS=" + json.dumps((ROOT / "app-screens.css").read_text(encoding="utf-8")) + ";\nwindow.GroveAppScreens=" + json.dumps(screens) + ";\n", encoding="utf-8")
+
+
 def css(match):
     path = ROOT / match[1].removeprefix("./")
     text = path.read_text(encoding="utf-8")
@@ -44,6 +75,10 @@ def css(match):
 
 def script(match):
     text = (ROOT / match[1].removeprefix("./")).read_text(encoding="utf-8")
+    name = Path(match[1]).name
+    if name in DEFERRED:
+        url = emit_asset(text.encode("utf-8"), ".js", "text/javascript")
+        return "<script>GroveDeferred.register(" + json.dumps(DEFERRED[name]) + "," + json.dumps(url) + ");</script>"
     # The bundle never reads a fixture: the hook becomes undefined, so the page runs live.
     text = text.replace(FIXTURE_HOOK, "undefined")
     return "<script>\n" + text.replace("</script", "<\\/script") + "\n</script>"
@@ -105,7 +140,8 @@ def bundle(name):
     return html
 
 
-pages = {name: bundle(name) for name in ("index.html", "home.html", "privacy.html", "consent.html")}
+generate_data_flow()
+pages = {name: bundle(name) for name in ("index.html", "home.html", "privacy.html", "consent.html", "forget.html")}
 for mark in CONSENT_MARKS:
     if pages["consent.html"].count(mark) != 1:
         raise SystemExit("build.py: consent.html must hold the mark " + mark + " exactly once")
@@ -117,3 +153,5 @@ dist.mkdir(exist_ok=True)
 for name, html in pages.items():
     (dist / name).write_text(html, encoding="utf-8")
     print(f"Built {(dist / name).relative_to(ROOT.parent)} ({len(html.encode()):,} bytes)")
+
+(dist / "assets" / "manifest.json").write_text(json.dumps(ASSET_MANIFEST, sort_keys=True), encoding="utf-8")

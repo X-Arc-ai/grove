@@ -55,13 +55,13 @@ def compact(row: dict[str, Any]) -> dict[str, Any]:
 
 def add_text(tx: WorldTx, stamp: Stamp, text: str) -> str:
     value_id = new_id(stamp.world_id)
-    tx.run(_ADD_VALUE, row={"id": value_id, "value": text})
+    tx.run(_ADD_VALUE, row={"id": value_id, "value": text, "version": 1, "touched_at": stamp.at})
     return value_id
 
 
 def add_value(tx: WorldTx, stamp: Stamp, value: Any, *, past_of_item: str | None = None) -> str:
     value_id = new_id(stamp.world_id)
-    row = {"id": value_id, "value": encode(value)}
+    row = {"id": value_id, "value": encode(value), "version": 1, "touched_at": stamp.at}
     if past_of_item is None:
         tx.run(_ADD_VALUE, row=row)
     else:
@@ -87,6 +87,7 @@ def add_entry(
     reason_id: str | None = None,
     evidence_id: str | None = None,
     history_only: bool = False,
+    inverse_of: str | None = None,
 ) -> None:
     past_of = entity_id if entity_type == "item" and field in CONTENT_FIELDS else None
     old_id = None
@@ -109,6 +110,7 @@ def add_entry(
         "run_id": stamp.run_id,
         "commit_id": stamp.commit_id,
         "change_set_id": stamp.change_set_id,
+        "inverse_of": inverse_of,
         "history_only": history_only,
     }
     tx.run(_ADD_ENTRY, entry=compact(entry))
