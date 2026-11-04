@@ -74,7 +74,13 @@ def setup(monkeypatch):
             query = request.url.params.get("q", "").lower()
             return httpx.Response(
                 200,
-                json=page([app_row(key) for key in TEST_APPS if query in TEST_APPS[key].lower()]),
+                json=page(
+                    [
+                        app_row(key)
+                        for key in TEST_APPS
+                        if key != "slack_v2" and query in TEST_APPS[key].lower()
+                    ]
+                ),
             )
         if request.url.path.startswith("/v1/connect/apps/"):
             key = request.url.path.rsplit("/", 1)[1]
@@ -148,7 +154,7 @@ def test_documented_account_list_contract(setup):
     response = client.get(pipedream.PREFIX + "/accounts")
     assert response.status_code == 200
     assert {row["status"] for row in response.json()["providers"]} == {"not_connected"}
-    assert len(calls) == 4
+    assert len(calls) == 7
 
 
 def test_nonproduction_is_unavailable(setup, monkeypatch):
@@ -197,9 +203,12 @@ def test_status_is_owner_scoped_and_never_exposes_account_data(setup):
         "connected",
         "not_connected",
         "attention",
+        "not_connected",
+        "not_connected",
+        "not_connected",
     ]
     assert "private" not in response.text
-    assert len(calls) == 4
+    assert len(calls) == 7
     assert all(request.headers["x-pd-environment"] == "production" for request in calls[1:])
     assert all("someone-else" not in str(request.url) for request in calls)
     # A different authenticated user derives a different filter, independent of World selection.
@@ -357,7 +366,16 @@ def test_catalog_search_is_bounded_and_returns_only_public_fields(setup):
     assert response.json() == {
         "account": session.user_id,
         "configured": True,
-        "apps": [{"provider": "slack", "name": "Slack", "auth_type": "oauth", "connectable": True}],
+        "apps": [
+            {
+                "provider": "slack",
+                "name": "Slack",
+                "auth_type": "oauth",
+                "connectable": True,
+                "logo": None,
+                "category": None,
+            }
+        ],
         "next_cursor": None,
         "total": 1,
     }
@@ -365,8 +383,8 @@ def test_catalog_search_is_bounded_and_returns_only_public_fields(setup):
     assert dict(calls[-1].url.params) == {
         "q": "slack",
         "limit": "30",
-        "sort_key": "name",
-        "sort_direction": "asc",
+        "sort_key": "featured_weight",
+        "sort_direction": "desc",
     }
 
 
@@ -678,3 +696,14 @@ def test_catalog_accepts_leading_underscores_through_status_and_connect(setup, s
     assert [row["provider"] for row in response.json()["apps"]] == [slug, "gmail"]
     assert client.get(pipedream.PREFIX + "/accounts", params={"provider": slug}).status_code == 200
     assert client.post(pipedream.PREFIX + "/" + slug + "/connect", json={}).status_code == 200
+
+
+def test_catalog_row_keeps_only_a_pipedream_logo_and_a_short_category():
+    row = {"name_slug": "gmail", "name": "Gmail", "auth_type": "oauth"}
+    good = "https://assets.pipedream.net/s.v0/app_OQYhq7/logo/orig"
+    shown = pipedream._app_row({**row, "img_src": good, "categories": ["Communication"]})
+    assert (shown["logo"], shown["category"]) == (good, "Communication")
+    bad = pipedream._app_row(
+        {**row, "img_src": "https://evil.example/x.png", "categories": ["x" * 61]}
+    )
+    assert (bad["logo"], bad["category"]) == (None, None)

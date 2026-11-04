@@ -128,6 +128,7 @@ def _grant(agent: str) -> dict[str, Any]:
         "gateway_token": "g1.test",
         "agent": agent,
         "run_id": "run-test-1",
+        "world_id": "world-test",
         "time_cap_seconds": RUN_TIMEOUT,
     }
 

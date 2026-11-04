@@ -5,7 +5,7 @@ import json
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from ui_fidelity import Handler, Preview
 
@@ -37,19 +37,34 @@ class OnboardingHandler(Handler):
         if path == "/v1/views/pipedream/accounts":
             # The catalog works, but the status service fails before the first consent.
             return self.send({"error": {"message": "Synthetic status failure"}}, 503)
-        if path == "/v1/materials":
+        if path == "/v1/agent-files":
             return self.send(
-                {
-                    "account": self.server.account,
-                    "generation": 0,
-                    "materials": [],
-                    "next_cursor": None,
-                }
+                {"account": self.server.account, "files": self.server.agent_files}
             )
         return super().do_GET()
 
+    def do_DELETE(self):
+        name = unquote(urlparse(self.path).path.rsplit("/", 1)[-1])
+        self.server.agent_files = [
+            row for row in self.server.agent_files if row["name"] != name
+        ]
+        return self.send({"account": self.server.account, "removed": name})
+
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/v1/agent-files":
+            size = int(self.headers.get("Content-Length", "0"))
+            data = self.rfile.read(size)
+            name = parse_qs(urlparse(self.path).query)["name"][0]
+            assert self.headers["Content-Type"] == "application/octet-stream"
+            row = {"name": name, "kind": "file", "bytes": len(data)}
+            self.server.agent_files.append(row)
+            return self.send({"account": self.server.account, "file": row})
+        if path == "/v1/agent-files/notes":
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            row = {"name": body["title"] + ".md", "kind": "note", "bytes": len(body["body"])}
+            self.server.agent_files.append(row)
+            return self.send({"account": self.server.account, "file": row})
         if path == "/v1/views/pipedream/gmail/connect":
             self.rfile.read(int(self.headers.get("Content-Length", "0")))
             self.server.connections += 1
@@ -89,11 +104,12 @@ def serve():
     server.signed_in = True
     server.connections = 0
     server.positions = []
+    server.agent_files = []
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
 
-def main(shots, production_base=False):
+def main(shots):
     from playwright.sync_api import expect, sync_playwright
 
     shots.mkdir(parents=True, exist_ok=True)
@@ -107,6 +123,7 @@ def main(shots, production_base=False):
                 server.signed_in = True
                 server.connections = 0
                 server.positions = []
+                server.agent_files = []
                 context = browser.new_context(
                     viewport={"width": width, "height": height}
                 )
@@ -157,12 +174,8 @@ def main(shots, production_base=False):
                 expect(
                     page.get_by_role("heading", name="Bring your world closer")
                 ).to_be_visible()
-                page.get_by_role("button", name="Gmail connection", exact=True).click()
-                expect(
-                    page.get_by_role("button", name="Connect Gmail", exact=True)
-                ).to_be_enabled()
                 with context.expect_page() as popup:
-                    page.get_by_role("button", name="Connect Gmail", exact=True).click()
+                    page.locator('[data-pipedream-select="gmail"]').click()
                 expect(
                     popup.value.get_by_role(
                         "heading", name="Synthetic provider authorization"
@@ -177,36 +190,34 @@ def main(shots, production_base=False):
                 expect(
                     page.get_by_role("heading", name="Add what matters")
                 ).to_be_visible()
-                if production_base:
-                    # The deployed base predates the separate materials release.
-                    expect(page.get_by_role("button", name="Add files +", exact=True)).to_be_disabled()
-                    expect(page.get_by_role("button", name="Add note +", exact=True)).to_be_disabled()
-                else:
-                    expect(page.locator('[data-materials="onboarding"]')).to_be_visible()
-                    page.get_by_role("button", name="Add note +", exact=True).click()
-                    page.get_by_label("Title", exact=True).fill("Synthetic note")
-                    body = page.get_by_label("Note", exact=True)
-                    body.fill("Keep this draft and its focus during graph growth.")
-                    before_tick = page.evaluate(
-                        "GroveSimulation.getState().conversationPreview.step"
-                    )
-                    page.wait_for_function(
-                        "before => GroveSimulation.getState().conversationPreview.step > before",
-                        arg=before_tick,
-                    )
-                    # Wait for the asynchronous graph response and its UI change event too.
-                    page.wait_for_function(
-                        "document.querySelector('#graph-status').dataset.state === 'ready'"
-                    )
-                    expect(body).to_be_focused()
-                    expect(body).to_have_value(
-                        "Keep this draft and its focus during graph growth."
-                    )
-                    page.keyboard.type(" Continued.")
-                    expect(body).to_have_value(
-                        "Keep this draft and its focus during graph growth. Continued."
-                    )
-                    page.get_by_role("button", name="Cancel", exact=True).click()
+                # The original defect: both buttons were disabled in live mode.
+                with page.expect_file_chooser() as chooser:
+                    page.get_by_role("button", name="Add files +", exact=True).click()
+                chooser.value.set_files(
+                    [
+                        {"name": "plan.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1"},
+                        {"name": "ideas.txt", "mimeType": "text/plain", "buffer": b"Ideas"},
+                    ]
+                )
+                expect(page.locator('[data-agent-files="file"]')).to_contain_text("plan.pdf")
+                expect(page.locator('[data-agent-files="file"]')).to_contain_text("ideas.txt")
+                expect(page.locator('[data-agent-files="file"]')).not_to_contain_text("Adding")
+                assert sorted(row["name"] for row in server.agent_files) == ["ideas.txt", "plan.pdf"], server.agent_files
+                page.get_by_role("button", name="Remove ideas.txt", exact=True).click()
+                expect(page.locator('[data-agent-files="file"]')).not_to_contain_text("ideas.txt")
+                page.get_by_role("button", name="Add note +", exact=True).click()
+                page.get_by_label("Title", exact=True).fill("Synthetic note")
+                body = page.get_by_label("Note", exact=True)
+                body.fill("Keep this draft and its focus during graph growth.")
+                before_tick = page.evaluate("GroveSimulation.getState().conversationPreview.step")
+                page.wait_for_function(
+                    "before => GroveSimulation.getState().conversationPreview.step > before",
+                    arg=before_tick,
+                )
+                expect(body).to_be_focused()
+                expect(body).to_have_value("Keep this draft and its focus during graph growth.")
+                page.get_by_role("button", name="Add note", exact=True).click()
+                expect(page.locator('[data-agent-files="note"]')).to_contain_text("Synthetic note.md")
                 page.screenshot(
                     animations="disabled", path=str(shots / f"{width}-03-materials.png")
                 )
@@ -269,7 +280,7 @@ def main(shots, production_base=False):
                 )
                 assert server.uploads == []
                 print(
-                    f"PASS {width}px: four steps, Gmail consent control, setup and AI controls, six tour steps, no Claude upload",
+                    f"PASS {width}px: four steps, one-click Gmail consent, working file and note buttons, AI controls, six tour steps, no Claude upload",
                     flush=True,
                 )
                 context.close()
@@ -282,6 +293,5 @@ def main(shots, production_base=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--shots", type=Path, required=True)
-    parser.add_argument("--production-base", action="store_true")
     args = parser.parse_args()
-    main(args.shots, args.production_base)
+    main(args.shots)

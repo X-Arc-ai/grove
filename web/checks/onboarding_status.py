@@ -61,10 +61,10 @@ def main(shots):
                     else route.abort()
                 ),
             )
-            # Control only the 3-second illustration timer, without waiting for 54 seconds.
+            # Control only the 1.5-second illustration timer, without waiting for 54 seconds.
             context.add_init_script("""(() => {
                 const original = window.setTimeout; const ticks = [];
-                window.setTimeout = (fn, ms, ...args) => ms === 3000 ? (ticks.push(() => fn(...args)), -ticks.length) : original(fn, ms, ...args);
+                window.setTimeout = (fn, ms, ...args) => ms === 1500 ? (ticks.push(() => fn(...args)), -ticks.length) : original(fn, ms, ...args);
                 window.advanceClaudeTick = () => { const fn = ticks.shift(); if (!fn) throw Error('No preview tick'); fn(); };
             })();""")
             page = context.new_page()
@@ -85,15 +85,20 @@ def main(shots):
             expect(
                 page.get_by_role("heading", name="Start with your conversations")
             ).to_be_visible()
+            # The green check marks the upload, before the graph finishes growing.
+            check = page.locator('[data-source-choice="claude"] .gp-source-check')
+            expect(check).to_have_css("opacity", "1")
+            assert check.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(22, 163, 74)"
             expect(page.locator(".gp-complete-check")).to_have_count(0)
-            for step in range(1, 19):
+            for step in range(1, 37):
                 page.evaluate("advanceClaudeTick()")
                 page.wait_for_function(
                     "step => GroveConversationPreview.view().step === step", arg=step
                 )
             expect(
                 page.locator('[data-source-choice="claude"] strong small')
-            ).to_have_text("Done")
+            ).to_have_text("")
+            expect(check).to_have_css("opacity", "1")
             expect(page.locator(".gp-complete-check")).to_be_visible()
             assert (
                 page.locator(".gp-complete-check").evaluate(
@@ -105,22 +110,26 @@ def main(shots):
                 path=str(shots / "claude-complete.png"), animations="disabled"
             )
             page.get_by_role("button", name="Next step", exact=True).click()
-            for name in ("0codekit connection", "1msg connection", "Gmail connection"):
-                expect(
-                    page.get_by_role("button", name=name, exact=True)
-                ).to_be_visible()
             expect(page.locator(".gp-complete-check")).to_be_visible()
-            page.get_by_role("button", name="Gmail connection", exact=True).click()
-            expect(
-                page.get_by_role("button", name="Connect Gmail", exact=True)
-            ).to_be_enabled()
+            # Six fixed rows, Gmail first, with no catalog dump and none of the old copy.
+            names = page.locator("[data-pipedream-select] strong").all_inner_texts()
+            assert names == [
+                "Gmail", "Google Calendar", "Notion", "Slack", "Linear", "Dropbox",
+            ], names
+            for text in ("Check connections", "apps in the catalog", "Connect your accounts", "All apps", "0codekit"):
+                expect(page.get_by_text(text)).to_have_count(0)
+            # A search ranks apps with a logo first, and shows no app without an account.
+            page.get_by_role("searchbox").fill("code")
+            expect(page.locator("[data-pipedream-select]").first).to_contain_text("Gmail")
+            page.get_by_role("searchbox").fill("")
+            expect(page.locator("[data-pipedream-select]")).to_have_count(6)
             page.screenshot(
                 path=str(shots / "pipedream-catalog.png"), animations="disabled"
             )
             assert not errors, errors
             assert not server.uploads
             print(
-                "PASS green Claude completion check, retained next-step check, underscore catalog and Gmail control"
+                "PASS green check on upload, six fixed rows with Gmail first, logo ranking, no old copy"
             )
             browser.close()
     finally:

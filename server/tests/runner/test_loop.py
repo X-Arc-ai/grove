@@ -451,6 +451,7 @@ def test_a_pass_that_fails_to_start_still_removes_its_folder(tmp_path):
     prepare_home(settings.home, settings.config_dir)
     grant = {
         "run_id": "01a19fe3-690c-7976-a621-4e49cd31497e",
+        "world_id": "world-one",
         "agent": "learner",
         "pass_token": "p1.x",
         "gateway_token": "g1.x",

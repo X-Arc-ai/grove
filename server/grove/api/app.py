@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from grove.api import (
+    agent_files,
     belief_tools,
     cascade,
     connectors,
@@ -242,6 +243,7 @@ def create_app(
     app.include_router(forget.public_router)
     app.include_router(connectors.router)
     app.include_router(pipedream.router)
+    app.include_router(agent_files.router)
     app.include_router(auth_router)
     app.include_router(internal_router)
     app.include_router(belief_tools.router)

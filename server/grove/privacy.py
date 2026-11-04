@@ -71,6 +71,13 @@ _ROWS = (
         "by this upload route; operator and connector policies are separate.",
     ),
     (
+        "agent_files",
+        "Files and notes you add in setup",
+        "Grove's server, in your account's working folder for its agent",
+        "Stored as you add them, without screening. They are not added to your memories, "
+        "and you can remove them from the same screen.",
+    ),
+    (
         "files",
         "Voice notes, documents and images",
         "The configured upload and model paths",
@@ -141,6 +148,7 @@ def flow_statement(env=None, *, runtime=False, google_configured=None):
         "glimmer": present("GROVE_GLIMMER_BASE_URL", "GROVE_GLIMMER_KEY"),
         "hosts": True,
         "forget": present("GROVE_FORGET_LEDGER_DIR"),
+        "agent_files": present("GROVE_AGENT_FILES_DIR"),
     }
     rows = []
     for key, data, destination, terms in _ROWS:
@@ -191,7 +199,7 @@ def markdown_statement():
         "",
         "## Controls and limits",
         "",
-        "There is no local runner. Code screens uploads on the server before storage.",
+        "There is no local runner. Code screens conversation exports on the server before storage.",
         "Stored text is untrusted data, never an instruction or authorization.",
         "A person must approve each forget request in a signed-in session. "
         "An AI host also needs the sensitive-write scope.",

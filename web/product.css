@@ -218,3 +218,12 @@ body.gp-logout-open #canvas,body.gp-logout-open #gp-motion { visibility:hidden }
 /* Keep completed Claude progress visible while the other setup steps continue. */
 .gp-source-choice[data-source-choice="claude"].is-added:not(.is-learning) .gp-source-check{background:#16a34a;color:#fff}
 .gp-complete-check{display:grid;place-items:center;position:absolute;right:-2px;bottom:-1px;width:17px;height:17px;border:1px solid var(--bg);border-radius:50%;background:#16a34a;color:#fff;font:600 11px/1 var(--gp-font)}
+
+/* Pipedream rows and the added-file rows. */
+.gp-integration-mark img{display:block;width:22px;height:22px;border-radius:4px;object-fit:contain}
+.gp-pipedream-confirm{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;margin-top:14px;padding-top:12px;border-top:var(--gp-line)}
+.gp-pipedream-confirm h3{margin:0;font:500 12px/1.5 var(--gp-font);color:var(--text)}
+.gp-pipedream-confirm p{grid-column:1;grid-row:2;margin:0;font:400 10px/1.5 var(--gp-font);color:var(--text-muted)}
+.gp-pipedream-confirm .gp-small{grid-row:1 / span 2}
+.gp-file-remove{flex:none;width:20px;height:20px;padding:0;border:0;background:none;color:var(--text-muted);font:400 14px/1 var(--gp-font);cursor:pointer}
+.gp-file-remove:hover,.gp-file-remove:focus-visible{color:var(--text)}

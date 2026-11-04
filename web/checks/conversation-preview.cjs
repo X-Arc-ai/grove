@@ -33,8 +33,8 @@ vm.runInContext(read('conversation-preview.js'),c);
   assert.equal(api.getState().onboardingStep,1);
   assert.equal(api.getState().account,'synthetic-owner');
   const before=api.getState().currentNodeCount;
-  for(let step=0;step<18;step++){
-    const [id,timer]=[...timers][0];assert.equal(timer.ms,3000);timers.delete(id);timer.fn();
+  for(let step=0;step<36;step++){
+    const [id,timer]=[...timers][0];assert.equal(timer.ms,1500);timers.delete(id);timer.fn();
   }
   assert.equal(api.getState().conversationPreview.status,'ready');
   assert(api.getState().currentNodeCount>before);

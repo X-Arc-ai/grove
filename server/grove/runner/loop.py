@@ -196,6 +196,15 @@ def opencode_env(
     return env
 
 
+def pass_folder(settings: LoopSettings, grant: dict[str, Any], work: Path) -> Path:
+    """OpenCode's working folder: the world's added files, once it has any.
+
+    The API writes that folder (grove.api.agent_files) and it outlives the pass. OpenCode's own
+    session store and logs stay in `work`, so the pass's folder still goes when the pass ends."""
+    folder = settings.home / "worlds" / grant["world_id"]
+    return folder if folder.is_dir() else work
+
+
 def pass_message(grant: dict[str, Any]) -> str:
     """Code writes it: the pass's agent and run id, no stored text."""
     return (
@@ -275,7 +284,7 @@ def run_pass(settings: LoopSettings, run: PassRun) -> tuple[str, str]:
         with open(events, "wb") as out, open(work / "opencode.log", "wb") as err:
             run.process = subprocess.Popen(
                 command,
-                cwd=work,
+                cwd=pass_folder(settings, grant, work),
                 env=opencode_env(settings, grant, work),
                 stdin=subprocess.DEVNULL,
                 stdout=out,
