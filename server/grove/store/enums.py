@@ -198,6 +198,13 @@ ENUMS: dict[str, tuple[str, ...]] = {
     # S25, lines 1252, 1264, 1265.
     "proposal_type": ("cascade", "cascade_failed", "wide_impact", "reopen"),
     # Line 1747.
+    "belief_retest_outcome": (
+        "supports",
+        "contradicts",
+        "complements",
+        "not_about_claim",
+        "disagreement",
+    ),
     "belief_resolution": ("standing_holds", "fresh_wins", "complement", "to_question"),
     "support_disposition": ("still_holding", "revised", "dismissed"),
     "belief_state": ("tentative", "established", "weakening", "superseded"),
