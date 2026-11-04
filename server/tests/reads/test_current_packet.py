@@ -1,5 +1,6 @@
 """Current cards from synthetic detached rows; no store, provider or model is used."""
 
+import json
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -550,6 +551,77 @@ def test_recheck_accepts_stored_or_detached_person_code(how):
 def test_hidden_connector_reference_is_not_exposed_in_recheck_method():
     with pytest.raises(PacketError, match="^missing_recheck_connector$"):
         card(rows(items=[item(recheck_how={"connector": "hidden", "query": "private"})]))
+
+
+@pytest.mark.parametrize("stored_json", [False, True])
+def test_recheck_connector_type_resolves_explicit_authorized_instance(stored_json):
+    how = {"connector": "web_pages", "locator_or_query": "synthetic page", "compare": "date"}
+    data = rows(items=[item(recheck_how=json.dumps(how) if stored_json else how)])
+    result = card(
+        data,
+        coverage=coverage(source_kind="web_pages"),
+        recheck_references={"subject": {"connector_ids": ["connector"], "complete": True}},
+    )
+    assert result["clocks"]["recheck_how"] == how
+    assert "by checking a fetched page again" in result["clocks"]["recheck_display"]
+    assert result["coverage_gap"] is None
+
+
+def test_recheck_kind_match_does_not_hide_an_unavailable_explicit_reference():
+    data = rows(items=[item(recheck_how={"connector": "web_pages"})])
+    with pytest.raises(PacketError, match="^missing_recheck_connector$"):
+        card(
+            data,
+            coverage=coverage(source_kind="web_pages"),
+            recheck_references={"subject": {"connector_ids": ["hidden"], "complete": True}},
+        )
+
+
+def test_recheck_explicit_instance_must_match_the_canonical_type():
+    web_coverage = coverage(source_kind="web_pages", connector_id="pages")
+    statement = replace(web_coverage, sources=(*web_coverage.sources, *coverage().sources))
+    data = rows(items=[item(recheck_how={"connector": "web_pages"})])
+    with pytest.raises(PacketError, match="^missing_recheck_connector$"):
+        card(
+            data,
+            coverage=statement,
+            recheck_references={"subject": {"connector_ids": ["connector"], "complete": True}},
+        )
+
+
+def test_recheck_unresolved_type_stays_incomplete_and_cannot_claim_complete_references():
+    data = rows(items=[item(recheck_how={"connector": "web_pages"})])
+    statement = coverage(source_kind="web_pages")
+    result = card(data, coverage=statement)
+    assert result["clocks"]["recheck_how"] == {"connector": "web_pages"}
+    assert result["coverage_gap"]["incomplete"] is True
+    with pytest.raises(PacketError, match="^missing_recheck_connector$"):
+        card(data, coverage=statement, recheck_references={"subject": {"complete": True}})
+
+
+def test_recheck_explicit_unconnected_type_has_a_safe_coverage_gap():
+    data = rows(items=[item(recheck_how={"connector": "web_pages"})])
+    statement = replace(coverage(), not_connected=("web_pages",))
+    result = card(
+        data,
+        coverage=statement,
+        recheck_references={"subject": {"missing_kinds": ["web_pages"], "complete": True}},
+    )
+    assert result["coverage_gap"]["not_connected"] == ("web_pages",)
+    assert result["coverage_gap"]["incomplete"] is False
+
+
+def test_recheck_type_resolution_uses_only_explicit_instances_for_coverage():
+    statement = coverage(source_kind="web_pages")
+    other = replace(statement.sources[0], connector_id="unrelated-pages", reasons=("failed",))
+    statement = replace(statement, sources=(*statement.sources, other))
+    data = rows(items=[item(recheck_how={"connector": "web_pages"})])
+    result = card(
+        data,
+        coverage=statement,
+        recheck_references={"subject": {"connector_ids": ["connector"], "complete": True}},
+    )
+    assert result["coverage_gap"] is None
 
 
 @pytest.mark.parametrize("claim", [None, "other"])
