@@ -1365,16 +1365,24 @@ def test_the_services_script_fails_when_only_the_gateway_is_unhealthy(box):
     box.index("ps --quiet gateway", box.index("start api gateway runner"))
 
 
-def test_a_backup_stops_the_gateway_before_its_first_fingerprint(box):
+@pytest.mark.parametrize("source_folder", ["source", "gateway-source"])
+def test_a_backup_stops_the_gateway_before_its_first_fingerprint(box, source_folder):
     # The gateway writes a model_calls row for each call: a row written between the two
     # fingerprints fails the backup with "the store changed across the dump".
+    # A source path may contain a service name; it is not a service argument.
+    source = box.root / source_folder
+    source.symlink_to(box.src, target_is_directory=True)
+    box.env["GROVE_SRC"] = str(source)
     box.deployed()
     done = box.run("backup.sh")
     assert done.returncode == 0, done.stderr
     stop = box.index("stop runner gateway api")
     first = box.index("grove.store.dump_fingerprint")
     assert stop < first
-    assert not [
-        call for call in box.calls()[stop:first] if " start " in f" {call} " and "gateway" in call
+    early_starts = [
+        call.rsplit(" start ", 1)[1].split()
+        for call in box.calls()[stop:first]
+        if " start " in call
     ]
+    assert all("gateway" not in services for services in early_starts)
     box.index("start api gateway runner", box.index(f"--expect {FP}", first))
