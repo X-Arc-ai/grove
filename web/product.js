@@ -116,6 +116,7 @@
     liveSessionReady=true;
     var previousAccount=api.getState().account;
     if(api.bindAccount(body.account)){
+      if(window.GroveMaterials)window.GroveMaterials.reset();
       if(previousAccount&&previousAccount!==body.account)live.notifySessionChange();
       liveUploads={};ui.reminderRequest=null;ui.reminderError='';
       ui.step=0;ui.guideStage=0;ui.editName=false;ui.nameDraft='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};ui.requestDrafts={};ui.uploadFile=null;ui.connecting={};ui.query='';ui.notice='';
@@ -191,6 +192,7 @@
   // sign-in ends, the graph leaves memory and the screen, panels close and the sign-in card shows.
   // A person already on the sign-in card (checking, the email code) keeps the step they are on.
   function endSession(){
+    if(window.GroveMaterials)window.GroveMaterials.reset();
     authEpoch++;live.invalidateSession();
     liveSessionReady=false;liveData={owner:null};
     liveUploads={};ui.reminderRequest=null;ui.reminderError='';
@@ -206,6 +208,7 @@
   }
   // Logout signs out here only when the server confirms it, or when the session is already gone.
   function logout(){
+    if(window.GroveMaterials)window.GroveMaterials.reset();
     authEpoch++;
     ui.logoutError='';
     var failed=function(){ui.logoutError=SIGNIN_COPY.logout;render(true);};
@@ -332,6 +335,7 @@
   window.addEventListener('grove:theme',function(){if(ui.guide||ui.host)render(true);});
   function info(copy){return '<span class="gp-info" tabindex="0" role="note" aria-label="'+esc(copy)+'">i<span class="gp-tooltip" role="tooltip">'+esc(copy)+'</span></span>';}
   function filesComposer(){
+    if(live)return '<div class="gp-materials" data-materials="'+(api.getState().onboardingComplete?'sources':'onboarding')+'"></div>';
     var all=live?[]:Object.values(api.getState().files||{}),notes=all.filter(function(f){return f.kind==='note';}),files=all.filter(function(f){return f.kind!=='note';});
     function rows(items){return '<div class="gp-file-added">'+items.map(function(f){var a=api.getState().accountImports[f.id];return '<div><span>'+icon('notes')+'</span><strong>'+esc(f.name)+'</strong><small class="gp-status" data-account-status="'+f.id+'">'+(a&&a.status==='importing'?a.progress+'%':'')+'</small></div>';}).join('')+'</div>';}
     var samples=['About me.md','Project direction.pptx','Research notes.pdf','Reading list.docx','Ideas.txt'];
@@ -360,6 +364,7 @@
   function groupedSources(s){
     var accounts=sourceAccounts(s);
     return (live?'<p class="gp-section-copy" role="status">'+esc(coverageMessage())+'</p><button class="gp-text" data-action="refresh-live-data">Check sources</button>':'')+[['chats','Chats'],['apps','Synced apps'],['files','Files & notes']].map(function(group){
+      if(live&&group[0]==='files')return '<section class="gp-source-group"><h3>Files &amp; notes</h3><div class="gp-materials" data-materials="settings"></div></section>';
       var pending=group[0]==='chats'?pendingRows(s):'';
       var rows=accounts.filter(function(a){return group[0]==='files'?a.kind==='file':a.kind!=='file'&&(group[0]==='chats'?AI_PROVIDERS.includes(a.id):!AI_PROVIDERS.includes(a.id));});
       return '<section class="gp-source-group"><header><h3>'+group[1]+'</h3><button class="gp-text" data-add-group="'+group[0]+'">Add +</button></header>'+pending+(rows.length?rows.map(sourceRow).join(''):pending?'':'<p class="gp-source-empty">'+{chats:'Your conversations can start here',apps:'Connect the places your work lives',files:'Add a document, a plan, or a note'}[group[0]]+'</p>')+'</section>';
@@ -533,6 +538,7 @@
     if(chrome.innerHTML!==bottom){chrome.innerHTML=bottom;bindChrome();}
     var rq=document.getElementById('requests-button'),pending=(s.requests||[]).filter(function(r){return r.status==='open';}).length;rq.hidden=onboard;rq.classList.toggle('has-pending',pending>0);rq.setAttribute('aria-label','Grove needs your input'+(pending?', '+pending+(pending===1?' question':' questions'):''));rq.setAttribute('aria-expanded',String(ui.panel==='requests'));
     sessionNote.textContent=ui.offline?SIGNIN_COPY.offline:(ui.reminderError||'');sessionNote.hidden=!sessionNote.textContent;
+    if(live&&window.GroveMaterials)window.GroveMaterials.mount(modalRoot);
     updateLive();renderTour();
     if(live)refreshLiveData(false);
   }
@@ -737,6 +743,7 @@
     document.title=(logoutPage()?'Log out':accountMode()==='signup'?'Create account':live.isAuthPage()?'Log in':'Grove')+' · Grove';
     window.addEventListener('grove:session-changed',function(){endSession();ui.authStage='checking';render(true);checkSession();});
     window.addEventListener('pagehide',function(){
+      if(window.GroveMaterials)window.GroveMaterials.reset();
       authEpoch++;live.invalidateSession();
       if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
       document.body.classList.add('gp-session-hidden');
