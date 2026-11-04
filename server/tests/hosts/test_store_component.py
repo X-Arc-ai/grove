@@ -24,6 +24,7 @@ from grove.mcp.tools import DEFAULT_TOOLS, INSTRUCTIONS, ToolContext, store_tool
 from grove.runner.brain import pass_input
 from grove.runner.passes import caller_for, end_pass, run_record, start_pass
 from grove.screening import Denylist, RenameMap, Screener, ScreeningConfig
+from grove.store.errors import Neo4jError
 from grove.store.query import WorldQuery
 from grove.writer import apply_request, request_state
 from grove.writer.requests import claim_next_request, fail_request
@@ -425,3 +426,96 @@ def test_identity_is_bounded_and_accepts_metadata_document_clients(context):
     assert key != request_identity(context, "x" * MAX_KEY)
     with pytest.raises(ApiError):
         request_identity(context, "x" * (MAX_KEY + 1))
+
+
+def transient(*args, **kwargs):
+    # A real driver exception, hydrated from a synthetic server response through the store boundary.
+    raise Neo4jError._hydrate_neo4j(
+        code="Neo.TransientError.General.DatabaseUnavailable",
+        message="synthetic private query parameters",
+    )
+
+
+def assert_retry_same_key(error):
+    assert error.code == "unavailable" and error.retryable is True
+    assert "same arguments and key" in error.message
+    assert "synthetic private query" not in json.dumps(error.body())
+
+
+def test_connector_transient_error_is_typed_unavailable(context, handler, monkeypatch):
+    monkeypatch.setattr(store, "ensure_connector", transient)
+    with pytest.raises(ApiError) as caught:
+        handler(context, ARGS)
+    assert_retry_same_key(caught.value)
+    assert not rows(context, "Request") and not rows(context, "Source")
+
+
+def test_receipt_poll_transient_error_is_typed_unavailable(context, handler, monkeypatch):
+    waiting = StoreHandler(
+        screener=Screener(ScreeningConfig()), wait_seconds=0.1, sleep=lambda seconds: None
+    )
+    with monkeypatch.context() as fault:
+        fault.setattr(store, "request_state", transient)
+        with pytest.raises(ApiError) as caught:
+            waiting(context, ARGS)
+    assert_retry_same_key(caught.value)
+    # The request committed before the failed read. The error must not claim otherwise.
+    assert handler(context, ARGS)["state"] == "saving"
+    assert len(rows(context, "Request")) == len(rows(context, "Source")) == 1
+
+
+def test_receipt_render_transient_error_is_typed_unavailable(context, handler, monkeypatch):
+    queued = handler(context, ARGS)
+    complete(context, queued["request_id"])
+    with monkeypatch.context() as fault:
+        fault.setattr(store, "render_receipt", transient)
+        with pytest.raises(ApiError) as caught:
+            handler(context, ARGS)
+    assert_retry_same_key(caught.value)
+    assert handler(context, ARGS)["state"] == "saved"
+    assert len(rows(context, "Request")) == len(rows(context, "Source")) == 1
+
+
+def test_mcp_batch_keeps_prior_result_when_store_database_is_transient(
+    driver, hosts_plant, handler, frozen, monkeypatch
+):
+    person = hosts_plant.person()
+    client_id = hosts_plant.client()
+    issued = issue(driver, person, client_id)
+    monkeypatch.setattr(store, "ensure_connector", transient)
+    tool = replace(store_tool(), handler=handler)
+    with TestClient(make_app(driver, [tool])) as client:
+        result = client.post(
+            "/mcp",
+            headers=bearer(issued.access),
+            json=[
+                {"jsonrpc": "2.0", "id": 1, "method": "ping"},
+                {
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": "store", "arguments": ARGS},
+                },
+            ],
+        )
+    assert result.status_code == 200
+    answers = result.json()
+    assert answers[0] == {"jsonrpc": "2.0", "id": 1, "result": {}}
+    assert answers[1]["result"]["isError"] is True
+    error = answers[1]["result"]["structuredContent"]["error"]
+    assert error["code"] == "unavailable" and error["retryable"] is True
+    assert "synthetic private query" not in result.text
+
+
+def test_nonretryable_database_error_is_typed_internal(context, handler, monkeypatch):
+    def fail(*args, **kwargs):
+        raise Neo4jError._hydrate_neo4j(
+            code="Neo.ClientError.Statement.SyntaxError",
+            message="synthetic private query parameters",
+        )
+
+    monkeypatch.setattr(store, "ensure_connector", fail)
+    with pytest.raises(ApiError) as caught:
+        handler(context, ARGS)
+    assert caught.value.code == "internal" and caught.value.retryable is False
+    assert "synthetic private query" not in json.dumps(caught.value.body())
