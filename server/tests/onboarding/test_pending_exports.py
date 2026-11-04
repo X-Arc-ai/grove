@@ -234,14 +234,8 @@ def test_session_and_size_guards(store):
 
 
 def setup_import(monkeypatch, *, state="taken_in", failed=0, callback=None, lumen=False):
-    if lumen:
-
-        def missing():
-            raise uploads._not_configured("screening is not configured")
-
-        monkeypatch.setattr(uploads, "_screener", missing)
-    else:
-        monkeypatch.setattr(uploads, "_screener", lambda: object())
+    # Lumen and ordinary bytes now share the same authenticated policy path.
+    monkeypatch.setattr(uploads, "_screener", lambda _world_id: object())
     calls = []
 
     def take_in(*args, **kwargs):
@@ -258,7 +252,7 @@ def setup_import(monkeypatch, *, state="taken_in", failed=0, callback=None, lume
 
 @pytest.mark.parametrize("lumen", [False, True])
 @pytest.mark.parametrize("state", ["taken_in", "nothing_new"])
-def test_both_upload_paths_clear_only_after_success(store, monkeypatch, lumen, state):
+def test_both_upload_inputs_clear_only_after_success(store, monkeypatch, lumen, state):
     request(store, "claude_ai")
     calls = setup_import(monkeypatch, lumen=lumen, state=state)
     response = client(store).post(
@@ -354,19 +348,25 @@ def test_upload_token_keeps_its_world_and_does_not_disclose_other_reminders(stor
     assert pending_exports(store, SESSION_B)["pending_exports"] == {}
 
 
-def test_cedar_and_lumen_byte_guards_remain_before_import(store, monkeypatch):
+def test_lumen_uses_the_ordinary_path_but_cedar_refuses_before_body_or_import(store, monkeypatch):
     calls = setup_import(monkeypatch, lumen=True)
     response = client(store).post(
         "/v1/sources/upload?provider=claude_ai",
         content=lumen_fixture() + b" ",
         headers={"Content-Type": "application/json"},
     )
-    assert response.status_code == 503
+    assert response.status_code == 200
+    assert calls == ["claude_ai"]
     store.worlds[WORLD_A]["demo_version"] = "cedar-v1"
+
+    async def no_body(*_args):
+        raise AssertionError("a designated demo must not read the upload body")
+
+    monkeypatch.setattr(uploads, "_spool_body", no_body)
     response = client(store).post(
         "/v1/sources/upload?provider=claude_ai",
         content=lumen_fixture(),
         headers={"Content-Type": "application/json"},
     )
     assert response.status_code == 403
-    assert calls == []
+    assert calls == ["claude_ai"]
