@@ -1,0 +1,13 @@
+DRAFT FOR ANAS. Snapshot: 2026-11-04 13:51 UTC. Refresh before submission.
+
+33 pull requests merged into develop at this checkpoint. The Request7 deployment record contains 14 host/Mac smoke checks, 15 exact public assets, and six refusal checks. These counts describe source and service checks, not a complete product release.
+
+Grove builds a dated, sourced model of a person's world for AI assistants. The source includes a Neo4j store, a validating writer with receipts, corrections and restore, truth-clock checks, a durable queue, source screening, chat uploads, Calendar/Git connectors, sign-in, OAuth, model calls, a runner, ontology, and bounded consequence components. Further text and media components are published but inactive.
+
+The public host served cac4b95cbc7ce5284c04fcb684ebb2f115162144 at this check. The demo separates a real, exact-byte Lumen source upload in an ordinary account from prepared Cedar memory in another account. The upload does not create the Cedar graph. Earlier controlled preparation saved one request and directly recalled one eligible item. Actual owner login, upload, and Muse acceptance remain NOT RUN.
+
+The restricted demo pair does not provide general memory access. General imports, complete D7/D14 privacy and reads, typed persistence, remaining feature scope, and the full public judge path remain incomplete. Pipedream supports authorization and status only; it imports no content. Actual provider consent remains unverified.
+
+HACKATHON.md records each event PR and its UTC date. The export guides, graph visualizer, worker renderer, and associated simulation assets predate the event. Earlier research motivated the design; it is not an evaluation of this implementation. No historical benchmark score is claimed for this build.
+
+CI and review were waived as publication gates for this refresh. Failed, cancelled, waived, and unrun checks do not count as passes. Before submission, complete and record the required acceptance, refresh the history and exact release-candidate scans, and supply the final video and public repository links. This is an unsent draft, not a submitted entry.
