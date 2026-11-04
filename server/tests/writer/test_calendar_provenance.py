@@ -14,7 +14,18 @@ from grove.writer.calendar_facts import MAX_CALENDAR_EVENTS, calendar_facts_json
 from grove.writer.errors import InvalidRecord
 from grove.writer.sources import add_screened_source
 from grove.writer.tx import WorldWriter
-from tests.writer.helpers import LEARNER, apply, create_item, created_id, observation
+from tests.writer.helpers import (
+    LEARNER,
+    apply,
+    assert_only_decline_log,
+    count_rows,
+    create_item,
+    create_link,
+    created_id,
+    make_source,
+    observation,
+)
+from tests.writer.test_contract_d2 import change_status, item_row
 
 NOW = datetime(2027, 3, 1, 9, tzinfo=UTC)
 PAST = datetime(2027, 2, 25, 9, tzinfo=UTC)
@@ -295,3 +306,57 @@ def test_calendar_facts_keep_schedule_and_revision_separate(driver, w):
     value = json.loads(stored["facts"])[KEY]
     assert value["scheduled_at"] == FUTURE.isoformat()
     assert value["updated_at"] == PAST.isoformat()
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_calendar_completion_premise_returns_a_typed_atomic_result(driver, w, monkeypatch, bound):
+    talk = make_source(driver, w, "whatsapp", ["Prepare the Orion session"] * 4)
+    parent = created_id(
+        apply(
+            driver,
+            w,
+            [
+                create_item(
+                    "task",
+                    "Prepare Orion session",
+                    "p1",
+                    status="open",
+                    recheck_by="2027-03-15T09:00:00+00:00",
+                )
+            ],
+            [observation(talk, "p1", 1, at=NOW)],
+        )
+    )
+    src = source(driver, w, PAST, binding=bound)
+    # Simulate only the old writer's Calendar typing when it wrote the legacy premise.
+    with monkeypatch.context() as legacy:
+        if not bound:
+            legacy.setattr(provenance, "calendar_logged", lambda *args, **kwargs: True)
+        made = apply(
+            driver,
+            w,
+            [
+                create_item(
+                    "task", "Complete Orion session part", "c1", temp_id="$part", status="done"
+                ),
+                create_link("$part", "step of", parent, "c1"),
+            ],
+            [obs(src)],
+            caller=LEARNER,
+        )
+    part = created_id(made)
+    [row] = WorldQuery(driver, w).read("MATCH (e:Evidence {target_id: $id}) RETURN e", id=part)
+    assert row["e"]["source_type"] == "confirmed"
+    rolled = observation(talk, "r1", 3, at=NOW, derivation="rolled_up", premises=[row["e"]["id"]])
+    ops = [create_item("person", "Mira Rowan", "p2"), change_status(parent, "done", "r1")]
+    evidence = [observation(talk, "p2", 2, at=NOW), rolled]
+    before = count_rows(driver, w)
+    if bound:
+        assert apply(driver, w, ops, evidence, caller=LEARNER).state == "saved"
+        assert item_row(driver, w, parent)["status"] == "done"
+    else:
+        with pytest.raises(BatchDeclined) as caught:
+            apply(driver, w, ops, evidence, caller=LEARNER)
+        assert {r.rule for r in caught.value.refusals} == {"calendar_binding"}
+        assert item_row(driver, w, parent)["status"] == "open"
+        assert_only_decline_log(driver, w, before, caught.value.refusals)

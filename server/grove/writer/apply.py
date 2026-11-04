@@ -1774,7 +1774,14 @@ def _finish(run: _Run, ops: list[Any]) -> None:
         except Refused as refused:
             run.refuse(late.index, ops[late.index], refused)
     for item_id, index in run.period_starts.items():
-        if index not in run.refused and not _confirmed_in_batch(run, item_id):
+        if index in run.refused:
+            continue
+        try:
+            confirmed = _confirmed_in_batch(run, item_id)
+        except Refused as refused:
+            run.refuse(index, ops[index], refused)
+            continue
+        if not confirmed:
             run.refuse(
                 index,
                 ops[index],
@@ -1787,7 +1794,14 @@ def _finish(run: _Run, ops: list[Any]) -> None:
                 ),
             )
     for item_id, index in run.done_items.items():
-        if index not in run.refused and not _confirmed_in_batch(run, item_id):
+        if index in run.refused:
+            continue
+        try:
+            confirmed = _confirmed_in_batch(run, item_id)
+        except Refused as refused:
+            run.refuse(index, ops[index], refused)
+            continue
+        if not confirmed:
             run.refuse(
                 index,
                 ops[index],
