@@ -346,7 +346,11 @@ def test_exact_partial_coverage_and_transfer_semantics():
         validate_coverage(two, replace(partial, effects=(("item", "other", 3, 4, "op1"),)))
     for action in ("return_to_sources", "resolution_transfer"):
         transferred = replace(
-            application(), resolved_ids=(), transferred_ids=("work1",), effects=()
+            application(),
+            resolved_ids=(),
+            pending_ids=("work1",),
+            transferred_ids=("work1",),
+            effects=(),
         )
         bound = replace(binding(), plans=(plan(action),))
         validate_coverage(bound, transferred)
@@ -470,7 +474,8 @@ SCHEMA = {
         "identity_day identity_week"
     ),
     "question_work": (
-        "question_id group_id state source_binding disposition_id intent_id waiting_operation_id "
+        "question_id group_id state source_binding intent_binding disposition_id intent_id "
+        "waiting_operation_id "
         "payload_value_id payload_version target retry_at lease_owner lease_until application_id "
         "transfer reason"
     ),
@@ -509,18 +514,20 @@ def test_exact_snapshot_schema_and_migration_indexes():
             *extra.split(),
         }
         assert not {"text_home", "json_home"} & {col.type for col in spec.columns}
+        statements = {
+            line.split()[2]: line for line in migration.splitlines() if line.startswith("CREATE ")
+        }
         for constraint in spec.uniques:
             props = ", ".join(f"n.{p}" for p in constraint.props)
             props = f"({props})" if len(constraint.props) > 1 else props
-            assert (
-                f"CREATE CONSTRAINT {constraint.name} IF NOT EXISTS FOR (n:{spec.label}) "
-                f"REQUIRE {props} IS UNIQUE;"
-            ) in migration
+            actual = statements[constraint.name]
+            assert actual.split()[:2] == ["CREATE", "CONSTRAINT"]
+            assert f"FOR (n:{spec.label}) REQUIRE {props} IS UNIQUE;" in actual
         for index in spec.indexes:
             props = ", ".join(f"n.{p}" for p in index.props)
-            assert (
-                f"CREATE INDEX {index.name} IF NOT EXISTS FOR (n:{spec.label}) ON ({props});"
-            ) in migration
+            actual = statements[index.name]
+            assert actual.split()[:2] == ["CREATE", "INDEX"]
+            assert f"FOR (n:{spec.label}) ON ({props});" in actual
     verification = {p: col.type for col in table("verifications").columns for p in col.props}
     for name, kind in {
         "attempt_kind": "code",
@@ -554,3 +561,22 @@ def test_exact_snapshot_schema_and_migration_indexes():
 def test_runtime_stays_unavailable():
     with pytest.raises(CleanupRefused, match="curator_authority_unavailable"):
         require_runtime()
+
+
+def test_zero_capture_generation_is_valid_and_versions_stay_positive():
+    value = replace(legwork(), capture_generation=0)
+    assert decode_json(type(value), canonical_json(value)) == value
+    with pytest.raises(CleanupRefused):
+        replace(target(), version=0)
+
+
+def test_transfer_remains_in_pending_work_and_has_no_candidate_requirement():
+    value = replace(
+        application(),
+        resolved_ids=(),
+        pending_ids=("work1",),
+        transferred_ids=("work1",),
+        effects=(),
+    )
+    validate_coverage(replace(binding(), plans=(plan("return_to_sources"),)), value)
+    assert replace(transfer(), candidate_targets=()).candidate_targets == ()

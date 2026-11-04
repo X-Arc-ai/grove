@@ -99,6 +99,10 @@ def _value(annotation, value, *, wire: bool, name: str):
     if annotation is str:
         return structural(value, limit=256 if name == "locator" else MAX_ID_CHARS)
     if annotation is int:
+        if name == "capture_generation":
+            if type(value) is not int or not 0 <= value <= MAX_VERSION:
+                raise CleanupRefused("question_generation_invalid")
+            return value
         return version(value)
     if annotation is datetime:
         if wire:
@@ -149,7 +153,8 @@ def _json_bound(value, limit: int) -> None:
                     size += 1 if char in "\b\f\n\r\t" else 5
             spend(size)
         elif type(node) is int:
-            version(node)
+            if not 0 <= node <= MAX_VERSION:
+                raise CleanupRefused("question_version_invalid")
             spend(len(str(node)))
         elif type(node) is list:
             if len(node) > 100:
@@ -262,7 +267,10 @@ def decode_json(cls: type[Record], raw: str | bytes) -> Record:
     def integer(token):
         if len(token) > 19:
             raise CleanupRefused("question_version_invalid")
-        return version(int(token))
+        value = int(token)
+        if not 0 <= value <= MAX_VERSION:
+            raise CleanupRefused("question_version_invalid")
+        return value
 
     def invalid_number(_):
         raise CleanupRefused("question_json_number_invalid")
@@ -384,7 +392,14 @@ class QuestionApplicationV1(Record):
     def _check(self):
         for group in (self.resolved_ids, self.pending_ids, self.transferred_ids):
             unique(group, limit=100)
-        unique(self.resolved_ids + self.pending_ids + self.transferred_ids, limit=100, minimum=1)
+        resolved, pending, transferred = map(
+            set, (self.resolved_ids, self.pending_ids, self.transferred_ids)
+        )
+        if (
+            resolved & (pending | transferred)
+            or not 1 <= len(resolved | pending | transferred) <= 100
+        ):
+            raise CleanupRefused("question_collection_invalid")
         unique(self.effects, limit=100)
         unique(tuple((effect[0], effect[1], effect[4]) for effect in self.effects), limit=100)
         for kind, _, before, after, _ in self.effects:
@@ -408,7 +423,8 @@ def validate_coverage(binding: QuestionBindingV1, application: QuestionApplicati
         raise CleanupRefused("question_application_plan_invalid")
     obligations = {key for p in binding.plans for key in p.obligation_ids}
     covered = set(application.resolved_ids + application.transferred_ids)
-    if covered != set(plan.obligation_ids) or set(application.pending_ids) != obligations - covered:
+    expected_pending = (obligations - covered) | set(application.transferred_ids)
+    if covered != set(plan.obligation_ids) or set(application.pending_ids) != expected_pending:
         raise CleanupRefused("question_application_coverage_invalid")
     if plan.action in ("return_to_sources", "resolution_transfer"):
         if application.resolved_ids or application.effects:

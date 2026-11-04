@@ -193,7 +193,7 @@ def test_legwork_question_deduplicates_and_waits_for_applied_verbatim_answer(
         raise_question(driver, w, "run1", CURATOR, question, screener=SCREENER, access=access)
         == question_id
     )
-    with pytest.raises(CleanupRefused, match="not_applied"):
+    with pytest.raises(CleanupRefused, match="binding_required"):
         close_question(
             driver, w, "run1", PERSON, question_id, answer_request_id="missing", access=access
         )
@@ -281,9 +281,7 @@ def test_missing_authority_or_screening_opens_no_socket(driver, w):
     assert not requests
 
 
-def test_question_closes_only_after_its_subject_change_and_replay_is_safe(
-    driver, w, access, make_layer
-):
+def test_legacy_touched_subject_receipt_cannot_close_question(driver, w, access, make_layer):
     claim = ferry_claim(driver, w)
     other = ferry_claim(driver, w, "The second ferry leaves at 08:00")
     retained = page(driver, w, access)
@@ -332,19 +330,17 @@ def test_question_closes_only_after_its_subject_change_and_replay_is_safe(
         return request_id
 
     unrelated = apply_answer(other)
-    with pytest.raises(CleanupRefused, match="subject_not_applied"):
+    with pytest.raises(CleanupRefused, match="binding_required"):
         close_question(
             driver, w, "run1", PERSON, question_id, answer_request_id=unrelated, access=access
         )
     applied = apply_answer(claim)
     for _ in range(2):
-        assert (
+        with pytest.raises(CleanupRefused, match="binding_required"):
             close_question(
                 driver, w, "run1", PERSON, question_id, answer_request_id=applied, access=access
             )
-            == question_id
-        )
     row = WorldQuery(driver, w).read("MATCH (q:Question {id: $id}) RETURN q", id=question_id)[0][
         "q"
     ]
-    assert row["state"] == "answered" and row["version"] == 2
+    assert row["state"] == "open" and row["version"] == 1

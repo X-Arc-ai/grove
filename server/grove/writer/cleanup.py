@@ -19,7 +19,6 @@ from grove.screening import ScreenedSource, Screener
 from grove.writer.caller import Caller
 from grove.writer.history import Stamp, add_text
 from grove.writer.provenance import check_locator
-from grove.writer.receipts import Receipt
 from grove.writer.sources import write_screened_source
 from grove.writer.tx import WorldWriter
 
@@ -245,11 +244,9 @@ def close_question(
     screener=None,
     access: Access | None = None,
 ):
-    """Close only after the interactive writer saved an answer, or a screened withdrawal.
-
-    An interrupted caller can repeat the same request. No close-then-apply window
-    exists: an unsaved, paraphrased or unrelated request leaves the question open.
-    """
+    """Legacy withdrawal only; answers require the typed atomic lifecycle writer."""
+    if answer_request_id is not None:
+        raise CleanupRefused("question_binding_required")
     if (answer_request_id is None) == (withdraw_reason is None):
         raise CleanupRefused("question_close_kind_invalid")
     _caller(caller, {"person", "ai_host"} if answer_request_id else {"cleanup", "person"})
@@ -261,79 +258,24 @@ def close_question(
             raise CleanupRefused("question_missing")
         question = rows[0]["q"]
         stamp = _stamp(world_id, run_id, caller)
-        if answer_request_id is not None:
-            requests = tx.run("MATCH (r:Request {id: $id}) RETURN r", id=answer_request_id)
-            row = requests[0]["r"] if len(requests) == 1 else {}
-            if not (
-                row.get("status") == "saved"
-                and row.get("relay") == "answer"
-                and question_id in (row.get("about") or [])
-                and row.get("source_id")
-                and row.get("receipt")
-            ):
-                raise CleanupRefused("question_answer_not_applied")
-            try:
-                applied = Receipt.from_json(json.loads(row["receipt"]))
-            except (TypeError, ValueError, KeyError):
-                raise CleanupRefused("question_answer_receipt_invalid") from None
-            if not (
-                applied.state == "saved"
-                and applied.request_id == answer_request_id
-                and applied.commit_id
-                and applied.commit_id == row.get("commit_id")
-                and applied.change_set_id
-                and applied.change_set_id == row.get("change_set_id")
-            ):
-                raise CleanupRefused("question_answer_receipt_invalid")
-            touched = {
-                line.entity_id
-                for line in applied.lines
-                if line.entity_type == "item" and not line.history_only
-            }
-            if not set(question["subject_items"]).issubset(touched):
-                raise CleanupRefused("question_answer_subject_not_applied")
-            sources = tx.run(
-                "MATCH (s:Source {id: $id}), (c:Connector) WHERE s.connector_id = c.id "
-                "RETURN s.forget_state AS state, c.type AS type",
-                id=row["source_id"],
-            )
-            source = sources[0] if len(sources) == 1 else {}
-            if source.get("state") != "kept" or source.get("type") not in (
-                "person_in_views",
-                "ai_host",
-            ):
-                raise CleanupRefused("question_answer_source_invalid")
-            if source["type"] == "ai_host" and not (
-                row.get("verbatim") is True and row.get("host_message_id")
-            ):
-                raise CleanupRefused("question_answer_not_verbatim")
-            receipt = json.dumps({"request_id": answer_request_id}, sort_keys=True)
-            if question["state"] == "answered" and question.get("receipt") == receipt:
-                return question_id
-            if question["state"] != "open":
-                raise CleanupRefused("question_already_closed")
-            columns = {
-                "state": "answered",
-                "answer_source_id": row["source_id"],
-                "applied_at": stamp.at,
-                "receipt": receipt,
-            }
-        else:
-            if (
-                question["state"] != "open"
-                or type(screener) is not Screener
-                or not isinstance(withdraw_reason, str)
-                or not withdraw_reason.strip()
-                or len(withdraw_reason) > 2000
-            ):
-                raise CleanupRefused("question_withdrawal_invalid")
-            screened = screener.screen_text(withdraw_reason)
-            if len(screened.messages) != 1 or screened.dropped_whole:
-                raise CleanupRefused("question_screening_refused")
-            columns = {
-                "state": "withdrawn",
-                "withdraw_reason": add_text(tx, stamp, screened.messages[0].text),
-            }
+        bound = tx.run("MATCH (b:QuestionBinding {question_id: $id}) RETURN b", id=question_id)
+        if bound:
+            raise CleanupRefused("question_typed_withdrawal_required")
+        if (
+            question["state"] != "open"
+            or type(screener) is not Screener
+            or not isinstance(withdraw_reason, str)
+            or not withdraw_reason.strip()
+            or len(withdraw_reason) > 2000
+        ):
+            raise CleanupRefused("question_withdrawal_invalid")
+        screened = screener.screen_text(withdraw_reason)
+        if len(screened.messages) != 1 or screened.dropped_whole:
+            raise CleanupRefused("question_screening_refused")
+        columns = {
+            "state": "withdrawn",
+            "withdraw_reason": add_text(tx, stamp, screened.messages[0].text),
+        }
         tx.run(
             "MATCH (q:Question {id: $id}) SET q += $columns, "
             "q.version = q.version + 1, q.touched_at = $at",

@@ -13,6 +13,8 @@ after both, because the request row says whether it committed. Every decline is 
 the refusals in README.md that never reached the request.
 """
 
+import json
+from dataclasses import dataclass
 from typing import Any
 
 from neo4j import Driver
@@ -137,6 +139,91 @@ def _log_decline(
         return
 
 
+@dataclass(frozen=True)
+class PreparedBatch:
+    """Immutable ordinary-operation input for a protected writer transaction.
+
+    This is data, not authority. Every execution repeats shape/caller validation
+    and both provenance checks; the caller owns request and completion state.
+    """
+
+    document: str
+    caller: Caller
+    request_id: str | None
+
+
+def prepare_batch(caller: Caller, batch: dict, *, request_id: str | None = None) -> PreparedBatch:
+    if not isinstance(caller, Caller) or not caller.can_write:
+        raise _declined(
+            _everyone_refused(
+                batch_ops(batch), "scope_denied", "write_scope", "the caller holds no write scope"
+            ),
+            len(batch_ops(batch)),
+            request_id,
+        )
+    ops = batch_ops(batch)
+    faults, by_index = shape_refusals(batch)
+    pre = {}
+    if not faults:
+        for index, op in enumerate(ops):
+            name = op.get("op") if isinstance(op, dict) else None
+            if name in OPS and caller.kind not in OPS[name].callers:
+                pre[index] = Refusal(
+                    *op_label(op),
+                    "scope_denied",
+                    "caller_kind",
+                    f"{name} does not accept a caller of kind {caller.kind}",
+                    {"caller_kind": caller.kind},
+                )
+            elif index in by_index:
+                pre[index] = by_index[index]
+    if faults or len(pre) == len(ops):
+        raise _declined(faults or [pre[i] for i in sorted(pre)], len(ops), request_id)
+    return PreparedBatch(json.dumps(batch, sort_keys=True, allow_nan=False), caller, request_id)
+
+
+def execute_prepared_in_tx(
+    tx: WorldTx, stamp: Stamp, prepared: PreparedBatch, request_row: dict | None = None
+) -> None:
+    """Execute validated ordinary operations without committing or completing a request.
+
+    Used by apply_batch and the inactive question writer. A future protected
+    Learner writer can use the same seam after its own complete owner checks.
+    There is no extension callback and no source-validation bypass.
+    """
+    if type(prepared) is not PreparedBatch or stamp.caller_kind != prepared.caller.kind:
+        raise TypeError("prepared writer caller mismatch")
+    batch = json.loads(prepared.document)
+    prepare_batch(prepared.caller, batch, request_id=prepared.request_id)
+    ops = batch_ops(batch)
+    _, by_index = shape_refusals(batch)
+    pre = dict(by_index)
+    for index, op in enumerate(ops):
+        if op.get("op") in OPS and prepared.caller.kind not in OPS[op["op"]].callers:
+            pre[index] = Refusal(
+                *op_label(op),
+                "scope_denied",
+                "caller_kind",
+                f"{op['op']} does not accept a caller of kind {prepared.caller.kind}",
+                {"caller_kind": prepared.caller.kind},
+            )
+    tx.lock_world()
+    check_batch_sources(tx, batch, request_row)
+    from grove.writer.verify import guard_scored_resolutions
+
+    guard_scored_resolutions(tx, stamp, ops)
+    apply_module.apply_ops(
+        tx,
+        stamp=stamp,
+        ops=ops,
+        observations={v["ev_id"]: v for v in (batch.get("evidence") or [])},
+        pre_refused=pre,
+        before_commit=False,
+        caller_kind=prepared.caller.kind,
+    )
+    check_batch_sources(tx, batch, request_row)
+
+
 def apply_batch(
     driver: Driver,
     world_id: str,
@@ -182,30 +269,12 @@ def apply_batch(
             return _answer_replay(driver, world_id, row, answer, len(ops))
     key = request_id if request_id is not None else new_id(world_id)
 
-    faults, by_index = shape_refusals(batch)
-    pre: dict[int, Refusal] = {}
-    if not faults:
-        for index, op in enumerate(ops):
-            name = op.get("op") if isinstance(op, dict) else None
-            if name in OPS and caller.kind not in OPS[name].callers:
-                pre[index] = Refusal(
-                    *op_label(op),
-                    "scope_denied",
-                    "caller_kind",
-                    f"{name} does not accept a caller of kind {caller.kind}",
-                    {"caller_kind": caller.kind},
-                )
-            elif index in by_index:
-                pre[index] = by_index[index]
-    if faults or len(pre) == len(ops):
-        refusals = faults or [pre[index] for index in sorted(pre)]
-        declined = _declined(refusals, len(ops), key)
+    try:
+        prepared = prepare_batch(caller, batch, request_id=key)
+    except BatchDeclined as declined:
         _log_decline(driver, world_id, caller, key, declined, fingerprint, run_id)
-        raise declined
+        raise
 
-    observations = {
-        observation["ev_id"]: observation for observation in (batch.get("evidence") or [])
-    }
     stamp = Stamp(
         world_id=world_id,
         at=clock.now(world_id),
@@ -224,16 +293,7 @@ def apply_batch(
         answer = replay_rule(row, fingerprint)
         if answer != APPLY:
             raise _Replay(row, answer)
-        apply_module.apply_ops(
-            tx,
-            stamp=stamp,
-            ops=ops,
-            observations=observations,
-            pre_refused=pre,
-            before_commit=False,
-            caller_kind=caller.kind,
-        )
-        check_sources(tx, row)
+        execute_prepared_in_tx(tx, stamp, prepared, row)
         mark_saved(tx, row, stamp, fingerprint, run_id)
         apply_module._before_commit()
 

@@ -79,7 +79,7 @@ class ResolutionTransferV1(Record):
 
     def _check(self):
         unique(self.obligation_ids, limit=100, minimum=1)
-        targets(self.candidate_targets, minimum=1)
+        targets(self.candidate_targets)
 
 
 def validate_accounting(
