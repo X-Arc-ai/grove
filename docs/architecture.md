@@ -76,9 +76,10 @@ measurement remain open. See [views](views.md).
 ## Sources and the current demo
 
 `server/grove/api/uploads.py` accepts screened chat exports and returns retention counts.
-With ordinary screening unavailable on the public host, only the exact 361-byte Lumen example is
-admitted through the bounded ordinary-session path. The prepared Cedar world refuses imports.
-Lumen retention does not create the prepared Cedar graph. The accounts and datasets are separate.
+Ordinary authenticated exports use a fresh code-supplied mandatory screening policy; they do
+not depend on global film rename/deny files. The Lumen example uses that same parser and policy,
+without a fixture-only exception. The prepared Cedar world still refuses imports.
+Source retention does not create graph Items or links. The prepared graph is a separate dataset.
 The upload notice states that the graph has not changed. [Ingest](ingest.md) records the contract.
 
 PR #20 adds read-only Calendar and Git connector source with source facts and revocation rules.

@@ -1,11 +1,13 @@
 """POST /v1/sources/upload and GET /v1/sources/connectors: who may upload, what is refused before
 a byte is read, screening on the way in, and the coverage a person sees afterwards.
 
-A test-only connector reads a tiny JSON format, so these tests prove the route and not a real
-parser. Every person, chat and id here is invented (R3).
+A test-only connector covers route limits and auth. Real Claude and ChatGPT exports also cover
+the ordinary policy and parser/store path. Every person, chat and id here is invented (R3).
 """
 
+import io
 import json
+import zipfile
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -25,11 +27,14 @@ from grove.ingest import (
     spec_for,
 )
 from grove.ingest.archive import json_document
+from grove.models.layer import ModelLayer
 from grove.store.query import WorldQuery
 from grove.writer.ingest import ensure_connector
 from grove.writer.testing import seed_test_world
 from grove.writer.upload_tokens import mint_upload_token, revoke_upload_token
 from tests.ingest.conftest import STORE_TIME, counts
+from tests.ingest.test_upload_policy import export_bytes, secret_texts
+from tests.screening._plants import CARD_DIGITS, OPENAI_KEY
 
 PROVIDER = "zz_upload_test"
 UPLOAD_PATH = f"/v1/sources/upload?provider={PROVIDER}"
@@ -140,6 +145,98 @@ def clean_env(monkeypatch):
 
 
 # The session upload and its re-import.
+
+
+def test_ordinary_claude_zip_uses_mandatory_screening_without_global_film_files(
+    driver, seeded_world, client_for, test_clock, clean_env
+):
+    """A normal export must not depend on the operator's unrelated film policy files."""
+    clean_env.setenv("GROVE_ENV", "production")
+    document = [
+        {
+            "uuid": "ordinary-garden-chat",
+            "chat_messages": [
+                {
+                    "uuid": "ordinary-garden-message",
+                    "sender": "human",
+                    "text": "The herb garden needs a cedar planter.",
+                    "created_at": FIRST_AT.isoformat(),
+                }
+            ],
+        }
+    ]
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("conversations.json", json.dumps(document))
+    response = upload(
+        client_for(seeded_world),
+        buffer.getvalue(),
+        headers={"content-type": "application/zip"},
+        path="/v1/sources/upload?provider=claude_ai",
+    )
+    assert response.status_code == 200
+    assert response.json()["state"] == "taken_in"
+    assert response.json()["messages_kept"] == 1
+    assert counts(driver, seeded_world) == {
+        "connectors": 1,
+        "sources": 1,
+        "episodes": 1,
+        "receipts": 1,
+    }
+    assert stored_texts(driver, seeded_world) == [document[0]["chat_messages"][0]["text"]]
+
+
+@pytest.mark.parametrize("provider", ["claude_ai", "chatgpt"])
+@pytest.mark.parametrize("zipped", [False, True], ids=["json", "zip"])
+def test_real_ordinary_exports_screen_store_and_reimport_without_graph_or_model_work(
+    driver, seeded_world, client_for, test_clock, clean_env, caplog, provider, zipped
+):
+    clean_env.setenv("GROVE_ENV", "production")
+
+    def no_model(*_args, **_kwargs):
+        raise AssertionError("an export upload must not call a model")
+
+    for name in ("respond", "chat", "transcribe"):
+        clean_env.setattr(ModelLayer, name, no_model)
+    query = WorldQuery(driver, seeded_world)
+    before_items = query.read("MATCH (n:Item) RETURN count(n) AS n")
+    before_links = query.read("MATCH ()-[r:LINK]->() RETURN count(r) AS n")
+    data = export_bytes(provider, secret_texts(), zipped=zipped)
+    client = client_for(seeded_world)
+    arguments = {
+        "path": f"/v1/sources/upload?provider={provider}",
+        "headers": {"content-type": "application/zip" if zipped else "application/json"},
+    }
+    response = upload(client, data, **arguments)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["state"] == "taken_in"
+    assert (body["messages_read"], body["messages_kept"], body["failed_chats"]) == (6, 4, 0)
+    assert body["screened"] == {
+        "credential": 1,
+        "payment_card": 1,
+        "one_time_code": 1,
+        "reset_link": 1,
+        "contact_email": 1,
+        "contact_phone": 1,
+        "contact_handle": 1,
+    }
+    stored = counts(driver, seeded_world)
+    assert stored == {"connectors": 1, "sources": 1, "episodes": 1, "receipts": 1}
+    content = " ".join(stored_texts(driver, seeded_world))
+    for value in (OPENAI_KEY, CARD_DIGITS, "482910", "synthetic-link", "garden@example.invalid"):
+        assert value not in content
+        assert value not in response.text
+        assert value not in caplog.text
+    assert "[credential]" in content and "[card]" in content
+    assert "cedar planter" in content and "cedar planter" not in response.text
+    assert query.read("MATCH (n:Item) RETURN count(n) AS n") == before_items
+    assert query.read("MATCH ()-[r:LINK]->() RETURN count(r) AS n") == before_links
+    assert query.read("MATCH (r:Request) RETURN r.id") == []
+    again = upload(client, data, **arguments)
+    assert again.status_code == 200
+    assert again.json()["state"] == "nothing_new"
+    assert counts(driver, seeded_world) == stored
 
 
 def test_a_session_upload_stores_each_chat(driver, seeded_world, client_for, test_clock):
@@ -384,24 +481,16 @@ def test_a_file_that_is_no_export_is_400_and_makes_no_connector(
 
 
 @pytest.mark.parametrize("unset", ["GROVE_RENAME_MAP", "GROVE_DENYLIST"])
-def test_production_without_a_screening_file_is_503_and_stores_nothing(
+def test_production_upload_does_not_require_global_film_files(
     driver, seeded_world, client_for, test_clock, clean_env, tmp_path, unset
 ):
     clean_env.setenv("GROVE_ENV", "production")
-    clean_env.setenv("GROVE_RENAME_MAP", str(private_file(tmp_path / "rename.json", "{}")))
-    clean_env.setenv("GROVE_DENYLIST", str(private_file(tmp_path / "deny.txt", "")))
+    clean_env.setenv("GROVE_RENAME_MAP", str(tmp_path / "absent-rename.json"))
+    clean_env.setenv("GROVE_DENYLIST", str(tmp_path / "absent-deny.txt"))
     clean_env.delenv(unset)
     response = upload(client_for(seeded_world))
-    assert response.status_code == 503
-    assert response.json() == {
-        "error": {
-            "code": "unavailable",
-            "message": "screening is not configured",
-            "details": {},
-            "retryable": False,
-        }
-    }
-    assert counts(driver, seeded_world) == EMPTY
+    assert response.status_code == 200
+    assert counts(driver, seeded_world)["sources"] == 2
 
 
 @pytest.mark.parametrize(
@@ -409,31 +498,40 @@ def test_production_without_a_screening_file_is_503_and_stores_nothing(
     [(export_of(), "64"), (b"not json at all", None), (b"", None)],
     ids=["over-the-cap", "no-export", "empty"],
 )
-def test_screening_is_checked_before_the_body_is_read(
+def test_policy_fault_is_checked_before_the_body_is_read(
     driver, seeded_world, client_for, test_clock, clean_env, body, cap
 ):
-    """A body the route would refuse still gets the 503: the settings are checked first, so a
-    box that cannot screen never reads or parses a byte of the file."""
+    from grove.config import ConfigError
+
+    def broken_policy(_world_id):
+        raise ConfigError("synthetic private policy detail")
+
+    async def unread(*_args):
+        raise AssertionError("a policy fault must not read the body")
+
     clean_env.setenv("GROVE_ENV", "production")
+    clean_env.setattr(uploads, "screener_for_upload", broken_policy)
+    clean_env.setattr(uploads, "_spool_body", unread)
     if cap is not None:
         clean_env.setenv(uploads.MAX_BYTES_VAR, cap)
     error = assert_refused(upload(client_for(seeded_world), body), 503, "unavailable")
     assert error["message"] == "screening is not configured"
+    assert "private" not in str(error)
     assert counts(driver, seeded_world) == EMPTY
 
 
-def test_a_screening_file_open_to_others_is_503(
+def test_an_unrelated_open_film_file_does_not_select_account_policy(
     driver, seeded_world, client_for, test_clock, clean_env, tmp_path
 ):
     loose = tmp_path / "rename.json"
-    loose.write_text("{}", encoding="utf-8")
+    loose.write_text("not a policy", encoding="utf-8")
     loose.chmod(0o644)
     clean_env.setenv("GROVE_RENAME_MAP", str(loose))
-    assert_refused(upload(client_for(seeded_world)), 503, "unavailable")
-    assert counts(driver, seeded_world) == EMPTY
+    assert upload(client_for(seeded_world)).status_code == 200
+    assert counts(driver, seeded_world)["sources"] == 2
 
 
-def test_production_screening_renames_and_drops(
+def test_global_personal_rules_do_not_cross_into_an_ordinary_account(
     driver, seeded_world, client_for, test_clock, clean_env, tmp_path
 ):
     rename = private_file(tmp_path / "rename.json", json.dumps({"Quillon Varga": "Person-Q"}))
@@ -454,12 +552,9 @@ def test_production_screening_renames_and_drops(
     response = upload(client_for(seeded_world), export_of(chats))
     assert response.status_code == 200
     body = response.json()
-    assert (body["messages_read"], body["messages_kept"]) == (3, 2)
-    assert body["screened"]["renamed"] == 1
-    assert body["screened"]["denylisted"] == 1
-    texts = stored_texts(driver, seeded_world)
-    assert texts == ["Ask Person-Q about the shelf brackets", "The stove needs a new valve"]
-    assert not any("Quillon" in text or "Zephrine" in text for text in texts)
+    assert (body["messages_read"], body["messages_kept"]) == (3, 3)
+    assert body["screened"] == {}
+    assert stored_texts(driver, seeded_world) == chats[0]["lines"]
 
 
 # The upload slots.

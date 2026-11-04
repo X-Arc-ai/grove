@@ -11,6 +11,7 @@ STATIC = "Deployment not checked"
 PRESENT = "Settings present"
 ABSENT = "Not configured"
 PENDING = "Implementation pending"
+CODE_POLICY = "Code policy available"
 
 _ROWS = (
     (
@@ -65,7 +66,9 @@ _ROWS = (
         "Supported conversation exports you upload",
         "Grove's server; code screens content before the `sources` table",
         "The upload is temporary. There is no local runner. "
-        "Ambiguous sensitive content is dropped or masked, never sent to a model for screening.",
+        "A code-supplied account policy drops or masks sensitive content before storage, "
+        "without a model call. Personal exclusions and identifier exemptions are not configured "
+        "by this upload route; operator and connector policies are separate.",
     ),
     (
         "files",
@@ -111,7 +114,7 @@ _ROWS = (
 
 
 def flow_statement(env=None, *, runtime=False, google_configured=None):
-    """A fixed vocabulary derived only from whether named settings exist."""
+    """A fixed vocabulary for installed code policy and the presence of named settings."""
     env = os.environ if env is None else env
 
     def present(*names):
@@ -133,7 +136,6 @@ def flow_statement(env=None, *, runtime=False, google_configured=None):
             "PIPEDREAM_PROJECT_ID", "PIPEDREAM_CLIENT_ID", "PIPEDREAM_CLIENT_SECRET"
         )
         and env.get("PIPEDREAM_ENVIRONMENT") == "production",
-        "uploads": screening_present,
         "spark": present("MODEL_API_KEY"),
         "voice": present("MODEL_API_KEY"),
         "glimmer": present("GROVE_GLIMMER_BASE_URL", "GROVE_GLIMMER_KEY"),
@@ -146,6 +148,8 @@ def flow_statement(env=None, *, runtime=False, google_configured=None):
             status = PENDING
         elif not runtime or key == "backups":
             status = STATIC
+        elif key == "uploads":
+            status = CODE_POLICY
         else:
             status = PRESENT if checks[key] else ABSENT
         rows.append(
@@ -156,7 +160,9 @@ def flow_statement(env=None, *, runtime=False, google_configured=None):
         "rows": rows,
         "notice": "Settings present means configuration exists. "
         "It does not prove that the path completed an operation. "
-        "Setting validity, file contents and owner consent are not checked.",
+        "Setting validity, file contents and owner consent are not checked. "
+        "Code policy available means screening code is installed, not that an import "
+        "completed or owner consent was checked.",
     }
 
 
@@ -171,6 +177,8 @@ def markdown_statement():
         "The privacy page reads `/v1/privacy` for this server's current configuration status.",
         "Settings present does not prove a successful connection, "
         "import, model call or deployment.",
+        "Code policy available describes installed screening code, not a completed import "
+        "or owner consent.",
         "",
         "| Data | Where it goes | Terms | Status |",
         "|---|---|---|---|",
