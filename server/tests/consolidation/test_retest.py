@@ -54,6 +54,10 @@ def test_retest_api_rejects_cross_world_and_forged_fields_before_io(
         ("contradicts", "contradicts", "weakening"),
         ("complements", "complements", "established"),
         ("not_about_claim", "not_about_claim", "established"),
+        ("complements", "not_about_claim", "established"),
+        ("not_about_claim", "complements", "established"),
+        ("complements", "contradicts", "established"),
+        ("supports", "complements", "established"),
         ("supports", "contradicts", "established"),
     ],
 )
@@ -140,7 +144,12 @@ def test_retest_read_two_judges_and_disposition_commit_through_real_api(
     assert state["state"] == expected_state
     assert state["last_retested_at"] == frozen.now()
     assert state["last_retest_reason"]
-    if first == second:
+    both_neutral = {first, second} <= {"complements", "not_about_claim"}
+    if both_neutral:
+        assert state["last_retest_outcome"] == (
+            "complements" if "complements" in {first, second} else "not_about_claim"
+        )
+    elif first == second:
         assert state["last_retest_outcome"] == first
     evidence = query.read(
         "MATCH (e:Evidence {target_id: $id, active: true}) RETURN e", id=claim["id"]
@@ -155,11 +164,13 @@ def test_retest_read_two_judges_and_disposition_commit_through_real_api(
         assert evidence == []
     judgments = query.read("MATCH (j:Judgment) RETURN j")
     assert {row["j"]["id"] for row in judgments} == set(answer["judgment_ids"])
+    assert {row["j"]["verdict"] for row in judgments} == {first, second}
     assert {row["j"]["subject"] for row in judgments} == {f"item:{claim['id']}"}
     assert {row["j"]["source_id"] for row in judgments} == {answer["read"]["source_id"]}
     ended = end_pass(driver, seeded, live.run_id, outcome="ok")
-    if first == second:
+    if first == second or both_neutral:
         assert ended["outcome"] == "ok"
+        assert query.read("MATCH (c:Contradiction {status: 'open'}) RETURN c") == []
     else:
         # A disagreeing pair must not silently consume the new contradiction.
         assert ended["outcome"] == "failed"
