@@ -43,8 +43,12 @@ def add_public_assets(app: FastAPI, folder: Path) -> None:
         if asset is None:
             return Response(status_code=404, headers={"Cache-Control": "no-store"})
         data, content_type = asset
-        return Response(data, media_type=content_type, headers={
-            "Cache-Control": "public, max-age=31536000, immutable",
-            "ETag": '"' + name.split(".", 1)[0] + '"',
-            "X-Content-Type-Options": "nosniff",
-        })
+        return Response(
+            data,
+            media_type=content_type,
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "ETag": '"' + name.split(".", 1)[0] + '"',
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
