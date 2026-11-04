@@ -489,7 +489,10 @@ class CurrentRenderer:
             )
         return sorted(result, key=lambda value: value["id"])
 
-    def render_item(self, item_id: str) -> RenderedItem:
+    def render_item(self, item_id: str, *, include_evidence: bool = False) -> RenderedItem:
+        """Optionally expand all active evidence, including contradicting evidence."""
+        if type(include_evidence) is not bool:
+            raise PacketError("invalid_packet_inputs")
         if item_id not in self.eligible_ids:
             raise PacketError("item_not_current")
         item = self.items[item_id]
@@ -579,6 +582,8 @@ class CurrentRenderer:
             "beliefs": self._beliefs(item_id),
             "coverage_gap": asdict(gap) if gap is not None else None,
         }
+        if include_evidence:
+            card["evidence"] = proofs
         if len(encode(card)) > MAX_CARD_BYTES:
             raise PacketError("item_card_too_large")
         return RenderedItem(deepcopy(card), tuple(value["id"] for value in links))
