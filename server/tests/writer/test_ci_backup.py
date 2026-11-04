@@ -2,6 +2,7 @@
 
 import io
 import json
+import os
 import tarfile
 from pathlib import Path
 
@@ -219,9 +220,9 @@ def test_inbound_archive_has_only_private_numeric_owned_members(tmp_path):
     folder = tmp_path / "source"
     folder.mkdir()
     (folder / "data").write_bytes(b"synthetic")
-    value = archive_tree(tmp_path, folder, "grove-d14-123-2/restore-1/data", 7474, 7474)
-    with tarfile.open(fileobj=io.BytesIO(value)) as archive:
-        members = archive.getmembers()
+    with archive_tree(tmp_path, folder, "grove-d14-123-2/restore-1/data", 7474, 7474) as path:
+        with tarfile.open(path) as archive:
+            members = archive.getmembers()
     assert len(members) == 4
     assert all(m.uid == 7474 and m.gid == 7474 for m in members)
     assert all(m.uname == m.gname == "" for m in members)
@@ -237,7 +238,8 @@ def test_inbound_archive_rejects_outside_member_paths(tmp_path, member):
     source = tmp_path / "source"
     source.mkdir()
     with pytest.raises(Refused, match="archive_path_escape"):
-        archive_tree(tmp_path, source, member, 7474, 7474)
+        with archive_tree(tmp_path, source, member, 7474, 7474):
+            pytest.fail("invalid path accepted")
 
 
 def test_inbound_archive_rejects_even_internal_links(tmp_path):
@@ -246,7 +248,8 @@ def test_inbound_archive_rejects_even_internal_links(tmp_path):
     (source / "data").write_bytes(b"synthetic")
     (source / "link").symlink_to(source / "data")
     with pytest.raises(Refused, match="archive_link"):
-        archive_tree(tmp_path, source, "safe", 7474, 7474)
+        with archive_tree(tmp_path, source, "safe", 7474, 7474):
+            pytest.fail("symlink accepted")
 
 
 @pytest.mark.parametrize("setting", [DATA_SETTING, TX_SETTING])
@@ -333,6 +336,7 @@ def test_forced_kill_cannot_count_as_clean_stop(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(drill, "inspect", lambda: next(states))
     monkeypatch.setattr(drill, "docker", lambda *args, **kwargs: "")
+    monkeypatch.setattr(drill, "service_checkpoint", lambda: None)
     with pytest.raises(Refused, match="unclean_service_stop"):
         drill.stop()
 
@@ -376,7 +380,16 @@ def test_orchestration_checks_loaded_data_before_acceptance(tmp_path, monkeypatc
             return call
 
     drill = Drill(identity, tmp_path, object())
-    for name in ("preflight", "_remote_size", "stop", "copy_stopped_data", "dump", "load", "start"):
+    for name in (
+        "preflight",
+        "_remote_size",
+        "stop",
+        "copy_stopped_data",
+        "dump",
+        "load",
+        "start",
+        "service_checkpoint",
+    ):
         monkeypatch.setattr(drill, name, lambda *args, name=name: order.append((name,)))
     monkeypatch.setattr(
         drill, "select_data", lambda local, number: (f"data-{number}", f"tx-{number}")
@@ -439,8 +452,13 @@ def test_work_deadline_covers_python_and_restores_signal_handler(monkeypatch):
 
 @pytest.mark.parametrize("config_dir", ["/var/lib/neo4j/conf", "/conf"])
 def test_config_copy_uses_canonical_directory_parent(tmp_path, monkeypatch, config_dir):
+    from tests.writer.physical_backup import Capacity
+
     drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
     drill.config_dir, drill.uid, drill.gid = config_dir, 7474, 7474
+    drill.last_service_capacity = {"service_tmp": Capacity(2**40, 2**24)}
+    monkeypatch.setattr(drill, "runner_checkpoint", lambda: None)
+    monkeypatch.setattr(drill, "monitor", lambda: None)
     copied = []
     monkeypatch.setattr(drill, "inspect", lambda: {"state": {"Running": False}})
     monkeypatch.setattr(drill, "docker", lambda *args, **kwargs: copied.append(args))
@@ -460,14 +478,15 @@ def test_total_deadline_reaps_its_child_group(tmp_path, monkeypatch):
     class Child:
         pid = 12345
         returncode = None
-
-        def communicate(self, data, timeout):
-            raise Refused("drill_deadline")
+        waited = False
 
         def poll(self):
             return self.returncode
 
         def wait(self, timeout):
+            if not self.waited:
+                self.waited = True
+                raise Refused("drill_deadline")
             self.returncode = -15
 
     child = Child()
@@ -478,3 +497,444 @@ def test_total_deadline_reaps_its_child_group(tmp_path, monkeypatch):
         commands.run("synthetic", ["never-executed"])
     assert killed == [(child.pid, signal.SIGTERM)]
     assert commands.receipts == [{"stage": "synthetic", "exit": -15, "interrupted": True}]
+
+
+def test_amendment_fixed_budgets_and_retained_peak():
+    from tests.writer import physical_backup as backup
+
+    assert backup.DATA_LIMIT == 1073741824
+    assert backup.RUNTIME_LIMIT == 1073741824
+    assert backup.OUTPUT_LIMIT == 1048576
+    assert backup.WORK_SECONDS == 476
+
+
+@pytest.mark.parametrize("size", [832563058, 1073741823, 1073741824])
+def test_amended_remote_data_boundary_accepts_measured_input(tmp_path, monkeypatch, size):
+    from tests.writer import physical_backup as backup
+
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    monkeypatch.setattr(drill, "docker", lambda *args: f"{size}\t/data\n")
+    assert drill._remote_size("/data", backup.DATA_LIMIT) == size
+
+
+def test_inbound_archive_rejects_hardlink_before_transport(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "data").write_bytes(b"synthetic")
+    os.link(source / "data", source / "second")
+    with pytest.raises(Refused, match="archive_hardlink"):
+        with archive_tree(tmp_path, source, "safe", 7474, 7474):
+            pytest.fail("hardlink accepted")
+
+
+def test_manifest_byte_ceiling_refuses_before_excess_write(tmp_path, monkeypatch):
+    from tests.writer import physical_scenario as scenario
+
+    monkeypatch.setattr(scenario, "MANIFEST_LIMIT", 16, raising=False)
+    with pytest.raises(Refused, match="manifest_size_limit"):
+        scenario.private_manifest(tmp_path, "baseline.json", {"text": "x" * 17})
+    path = tmp_path / "baseline.json"
+    assert not path.exists() or path.stat().st_size <= 16
+
+
+def test_tree_entry_limit_refuses_small_files(tmp_path, monkeypatch):
+    from tests.writer import physical_backup as backup
+
+    source = tmp_path / "source"
+    source.mkdir()
+    for n in range(4):
+        (source / str(n)).write_bytes(b"")
+    monkeypatch.setattr(backup, "ENTRY_LIMIT", 4, raising=False)
+    with pytest.raises(Refused, match="entry_limit"):
+        tree_size(tmp_path, source, DATA_LIMIT)
+
+
+def test_peak_and_capacity_constants_remain_fixed():
+    from tests.writer import physical_backup as b
+
+    assert b.ARCHIVE_LIMIT == b.DATA_LIMIT + 16777216
+    assert b.AUX_LIMIT == 268435456
+    assert b.AUX_ENTRY_LIMIT == 8192
+    assert b.ENTRY_LIMIT == 65536
+    assert b.INITIAL_CAPACITY == 17179869184
+    assert b.INITIAL_INODES == 1048576
+    assert b.FREE_FLOOR == 1073741824
+    assert b.INODE_FLOOR == 65536
+    retained_peak = b.RUNTIME_LIMIT + 10 * b.DATA_LIMIT + b.ARCHIVE_LIMIT + 2 * b.AUX_LIMIT
+    assert retained_peak == 13438550016
+    assert retained_peak + 2147483648 + b.FREE_FLOOR <= b.INITIAL_CAPACITY
+
+
+@pytest.mark.parametrize("initial", [True, False])
+def test_capacity_exact_threshold_passes_without_summing_surfaces(initial):
+    from tests.writer import physical_backup as b
+
+    charged = b.Usage(1234, 321)
+    needed = b.capacity_requirement(charged, initial=initial)
+    assert needed.bytes == b.INITIAL_CAPACITY - (0 if initial else charged.bytes)
+    assert needed.inodes == b.INITIAL_INODES - (0 if initial else charged.entries)
+    assert (
+        b.check_capacity({"runner": needed, "service_tmp": needed}, charged, initial=initial)
+        == needed
+    )
+
+
+@pytest.mark.parametrize("field", ["bytes", "inodes"])
+@pytest.mark.parametrize("initial", [True, False])
+def test_capacity_one_below_refuses_each_surface(field, initial):
+    from tests.writer import physical_backup as b
+
+    charged = b.Usage(16384, 128)
+    needed = b.capacity_requirement(charged, initial=initial)
+    low = b.Capacity(needed.bytes - (field == "bytes"), needed.inodes - (field == "inodes"))
+    high = b.Capacity(needed.bytes * 2, needed.inodes * 2)
+    with pytest.raises(Refused):
+        b.check_capacity({"runner": high, "service_tmp": low}, charged, initial=initial)
+
+
+def test_capacity_retains_byte_and_inode_floors():
+    from tests.writer import physical_backup as b
+
+    needed = b.capacity_requirement(b.Usage(b.INITIAL_CAPACITY, b.INITIAL_INODES))
+    assert needed == b.Capacity(b.FREE_FLOOR, b.INODE_FLOOR)
+
+
+@pytest.mark.parametrize("text", ["", "-1 100", "100 -1", "1.5 2", "unknown", "٢ 100", "1 2 3 4"])
+def test_malformed_capacity_is_never_guessed(text):
+    from tests.writer import physical_backup as b
+
+    with pytest.raises(Refused):
+        b.parse_capacity(text)
+
+
+def test_no_capacity_observation_refuses():
+    from tests.writer import physical_backup as b
+
+    with pytest.raises(Refused):
+        b.check_capacity({}, b.Usage(0, 0), initial=True)
+
+
+def test_tar_limit_refuses_before_the_excess_write():
+    from tests.writer import physical_backup as b
+
+    target = io.BytesIO()
+    writer = b.BoundedWriter(target, limit=5)
+    writer.write(b"12345")
+    with pytest.raises(Refused, match="archive_size_limit"):
+        writer.write(b"6")
+    assert target.getvalue() == b"12345"
+
+
+@pytest.mark.parametrize("size,passes", [(3, True), (4, True), (5, False)])
+def test_local_tree_byte_boundary_without_large_allocation(tmp_path, size, passes):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "data").write_bytes(b"x" * size)
+    if passes:
+        assert tree_size(tmp_path, source, 4) == size
+    else:
+        with pytest.raises(Refused, match="copy_size_limit"):
+            tree_size(tmp_path, source, 4)
+
+
+def test_runtime_budget_is_aggregate_across_components(tmp_path, monkeypatch):
+    from tests.writer import physical_backup as b
+
+    monkeypatch.setattr(b, "RUNTIME_LIMIT", 6)
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    drill.runtime.mkdir()
+    for name in ("bin", "lib", "java"):
+        (drill.runtime / name).mkdir()
+        (drill.runtime / name / "part").write_bytes(b"xx")
+    assert drill.runner_usage().bytes == 6
+    (drill.runtime / "conf").write_bytes(b"x")
+    with pytest.raises(Refused, match="copy_size_limit"):
+        drill.runner_usage()
+
+
+def test_runner_auxiliary_files_and_entries_cannot_escape_accounting(tmp_path, monkeypatch):
+    from tests.writer import physical_backup as b
+
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    monkeypatch.setattr(b, "AUX_LIMIT", 4)
+    (tmp_path / "baseline.json").write_bytes(b"1234")
+    assert drill.runner_usage().bytes == 4
+    (tmp_path / "unknown-output").write_bytes(b"5")
+    with pytest.raises(Refused):
+        drill.runner_usage()
+    (tmp_path / "unknown-output").unlink()
+    monkeypatch.setattr(b, "AUX_ENTRY_LIMIT", 1)
+    (tmp_path / "second").write_bytes(b"")
+    with pytest.raises(Refused):
+        drill.runner_usage()
+
+
+def test_command_output_excess_stops_its_owned_child(tmp_path, monkeypatch):
+    import sys
+
+    from tests.writer import physical_backup as b
+
+    monkeypatch.setattr(b, "OUTPUT_LIMIT", 16)
+    commands = b.Commands(tmp_path)
+    with pytest.raises(Refused, match="command_output_limit"):
+        commands.run(
+            "bounded_stdout",
+            [
+                sys.executable,
+                "-c",
+                "import sys,time;sys.stdout.write('x'*17);sys.stdout.flush();time.sleep(10)",
+            ],
+            timeout=2,
+        )
+    assert commands.receipts[-1]["exit"] is not None
+
+
+def test_command_stderr_excess_is_independently_bounded(tmp_path, monkeypatch):
+    import sys
+
+    from tests.writer import physical_backup as b
+
+    monkeypatch.setattr(b, "OUTPUT_LIMIT", 16)
+    with pytest.raises(Refused, match="command_output_limit"):
+        b.Commands(tmp_path).run(
+            "bounded_stderr",
+            [
+                sys.executable,
+                "-c",
+                "import sys,time;sys.stderr.write('x'*17);sys.stderr.flush();time.sleep(10)",
+            ],
+            timeout=2,
+        )
+
+
+def test_command_monitor_rejects_active_output_and_reaps_child(tmp_path):
+    import sys
+
+    from tests.writer import physical_backup as b
+
+    output = tmp_path / "active-output"
+
+    def monitor():
+        if output.exists():
+            raise Refused("synthetic_active_limit")
+
+    commands = b.Commands(tmp_path)
+    with pytest.raises(Refused, match="synthetic_active_limit"):
+        commands.run(
+            "active_tree",
+            [
+                sys.executable,
+                "-c",
+                "import pathlib,sys,time;"
+                "pathlib.Path(sys.argv[1]).write_bytes(b'x');time.sleep(10)",
+                str(output),
+            ],
+            timeout=2,
+            monitor=monitor,
+        )
+    assert commands.receipts[-1]["exit"] is not None
+
+
+def test_private_cleanup_failure_prevents_acceptance(tmp_path, monkeypatch, capsys):
+    from tests.writer import physical_backup as b
+
+    for key, value in environment(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr("tests.writer.physical_scenario.make_scenario", lambda root: object())
+    monkeypatch.setattr(Drill, "execute", lambda self, scenario: {})
+
+    def fail_cleanup(root):
+        raise OSError("synthetic refusal")
+
+    monkeypatch.setattr(b.shutil, "rmtree", fail_cleanup)
+    assert main() == 1
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["cleanup_error"] == "private_cleanup_failed"
+    assert receipt["physical_acceptance"] is False
+    assert receipt["private_files_removed"] is False
+
+
+@pytest.mark.parametrize("surface", ["stdout", "stderr", "tree"])
+def test_child_exit_race_still_checks_final_output(tmp_path, monkeypatch, surface):
+    from tests.writer import physical_backup as b
+
+    monkeypatch.setattr(b, "OUTPUT_LIMIT", 16)
+    active = tmp_path / "active-tree"
+
+    class Child:
+        pid = 12345
+        returncode = None
+
+        def __init__(self, **kwargs):
+            self.output = kwargs.get(surface)
+
+        def poll(self):
+            if self.returncode is None:
+                if surface == "tree":
+                    active.write_bytes(b"x")
+                else:
+                    self.output.write(b"x" * 17)
+                    self.output.flush()
+                self.returncode = 0
+            return self.returncode
+
+    def monitor():
+        if active.exists():
+            raise Refused("active_tree_limit")
+
+    monkeypatch.setattr(b.subprocess, "Popen", lambda args, **kwargs: Child(**kwargs))
+    expected = "active_tree_limit" if surface == "tree" else "command_output_limit"
+    with pytest.raises(Refused, match=expected):
+        b.Commands(tmp_path).run("exit_race", ["synthetic"], monitor=monitor)
+
+
+def test_archive_removed_capacity_is_recomputed(tmp_path):
+    from tests.writer import physical_backup as b
+
+    source = tmp_path / "baseline-data"
+    source.mkdir()
+    (source / "data").write_bytes(b"synthetic")
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    before = drill.runner_usage()
+    with archive_tree(tmp_path, source, "safe", 7474, 7474) as path:
+        during = drill.runner_usage()
+        assert during.bytes == before.bytes + path.stat().st_size
+        assert during.entries == before.entries + 1
+        assert path.stat().st_mode & 0o777 == 0o600
+        with pytest.raises((FileExistsError, Refused)):
+            with archive_tree(tmp_path, source, "safe", 7474, 7474):
+                pytest.fail("two archives accepted")
+        assert path.exists()
+    assert not path.exists()
+    assert drill.runner_usage() == before
+    assert b.capacity_requirement(before).bytes > b.capacity_requirement(during).bytes
+
+
+@pytest.mark.parametrize("mode", ["success", "error", "timeout", "cancel"])
+def test_file_stdin_and_archive_close_on_every_command_exit(tmp_path, monkeypatch, mode):
+    import sys
+
+    from tests.writer import physical_backup as b
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "data").write_bytes(b"synthetic")
+    captured = []
+    original = b.subprocess.Popen
+
+    def child(*args, **kwargs):
+        captured.append(kwargs["stdin"])
+        assert not isinstance(kwargs["stdin"], (bytes, int))
+        return original(*args, **kwargs)
+
+    def no_whole_file(*args, **kwargs):
+        raise AssertionError("whole file read forbidden")
+
+    def monitor():
+        if captured and mode == "cancel":
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr(b.subprocess, "Popen", child)
+    monkeypatch.setattr(Path, "read_bytes", no_whole_file)
+    command = {
+        "success": "import sys; sum(len(p) for p in iter(lambda:sys.stdin.buffer.read(4096),b''))",
+        "error": "raise SystemExit(3)",
+        "timeout": "import time;time.sleep(10)",
+        "cancel": "import time;time.sleep(10)",
+    }[mode]
+    path = tmp_path / b.ARCHIVE_NAME
+
+    def run():
+        with archive_tree(tmp_path, source, "safe", 7474, 7474) as archive:
+            assert archive == path
+            b.Commands(tmp_path).run(
+                "file_input",
+                [sys.executable, "-c", command],
+                file_stdin=archive,
+                timeout=0.25,
+                monitor=monitor,
+            )
+
+    if mode == "success":
+        run()
+    elif mode == "cancel":
+        with pytest.raises(KeyboardInterrupt):
+            run()
+    else:
+        with pytest.raises(
+            Refused, match="command_failed" if mode == "error" else "command_timeout"
+        ):
+            run()
+    assert captured and all(handle.closed for handle in captured)
+    assert not path.exists()
+
+
+def test_archive_payload_bound_is_separate_from_tar_bound(tmp_path, monkeypatch):
+    from tests.writer import physical_backup as b
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "data").write_bytes(b"12345")
+    monkeypatch.setattr(b, "DATA_LIMIT", 4)
+    with pytest.raises(Refused, match="copy_size_limit"):
+        with archive_tree(tmp_path, source, "safe", 7474, 7474):
+            pytest.fail("oversized payload accepted")
+    assert not (tmp_path / b.ARCHIVE_NAME).exists()
+
+
+@pytest.mark.parametrize("operation", ["copy", "dump", "load"])
+@pytest.mark.parametrize("size", [3, 4, 5])
+def test_data_operation_enforces_complete_tree_boundary(tmp_path, monkeypatch, operation, size):
+    from tests.writer import physical_backup as b
+
+    monkeypatch.setattr(b, "DATA_LIMIT", 4)
+    destination = (
+        tmp_path
+        / {"copy": "baseline-data", "dump": "old-dump", "load": "restore-1-data"}[operation]
+    )
+
+    class Commands:
+        def run(self, *args, **kwargs):
+            destination.mkdir(exist_ok=True)
+            (destination / ("neo4j.dump" if operation == "dump" else "data")).write_bytes(
+                b"x" * size
+            )
+            return ""
+
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, Commands())
+    monkeypatch.setattr(drill, "runner_checkpoint", lambda: None)
+    monkeypatch.setattr(drill, "inspect", lambda: {"state": {"Running": False}})
+    monkeypatch.setattr(drill, "_admin_config", lambda path: path.mkdir(exist_ok=True))
+
+    def action():
+        if operation == "copy":
+            drill.copy_stopped_data(destination)
+        elif operation == "dump":
+            drill.dump(tmp_path / "baseline-data", destination)
+        else:
+            drill.load(tmp_path / "old-dump", destination)
+
+    if size <= 4:
+        action()
+    else:
+        with pytest.raises(Refused, match="copy_size_limit"):
+            action()
+
+
+def test_capacity_loss_prevents_the_next_stop(tmp_path, monkeypatch):
+    from tests.writer import physical_backup as b
+
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    commands = []
+    monkeypatch.setattr(drill, "inspect", lambda: {"state": {"Running": True}})
+    monkeypatch.setattr(drill, "docker", lambda *args, **kwargs: commands.append(args))
+
+    def lost():
+        b.check_capacity(
+            {"service_data": b.Capacity(b.INITIAL_CAPACITY - 1, b.INITIAL_INODES)}, b.Usage()
+        )
+
+    monkeypatch.setattr(drill, "service_checkpoint", lost)
+    with pytest.raises(Refused, match="capacity_bytes"):
+        drill.stop()
+    assert commands == []
