@@ -152,6 +152,10 @@ def _request_input(query: WorldQuery, request_id: str, n0: int) -> tuple[dict, l
 
 def pass_input(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str, Any]:
     """The input packet (3.5 rule 3): the pass's requests or job, and the batch form."""
+    if record["agent"] == "curator":
+        from grove.cleanup.runtime import require_runtime
+
+        require_runtime()
     if record["agent"] == "connector":
         from grove.consolidation.packet import packet
 

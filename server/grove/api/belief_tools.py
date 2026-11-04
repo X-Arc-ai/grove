@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 
 from grove.api.errors import ApiError, invalid_arguments
-from grove.api.internal import MAX_SMALL_BODY, Pass
+from grove.api.internal import MAX_SMALL_BODY, Pass, _curator_guard
 from grove.api.uploads import _screener
 from grove.api.views import read_json_body
 from grove.models.belief_judge import judge_belief
@@ -19,6 +19,7 @@ router = APIRouter(prefix="/v1/internal/brain")
 
 
 def _call(request: Request, live, body: dict, *, retest: bool) -> dict:
+    _curator_guard(live)
     if live.claims.agent not in ("connector", "learner", "curator"):
         raise ApiError(403, "scope_denied", "this agent cannot request belief judgments")
     if retest and live.claims.agent != "connector":
@@ -75,6 +76,7 @@ def _call(request: Request, live, body: dict, *, retest: bool) -> dict:
 
 @router.post("/judge")
 async def belief_judge(request: Request, live: Pass) -> dict:
+    _curator_guard(live)
     body = await read_json_body(request, MAX_SMALL_BODY)
     if not isinstance(body, dict):
         raise invalid_arguments("the judgment input must be an object", "body")
@@ -83,6 +85,7 @@ async def belief_judge(request: Request, live: Pass) -> dict:
 
 @router.post("/retest")
 async def belief_retest(request: Request, live: Pass) -> dict:
+    _curator_guard(live)
     body = await read_json_body(request, MAX_SMALL_BODY)
     if not isinstance(body, dict):
         raise invalid_arguments("the retest input must be an object", "body")
