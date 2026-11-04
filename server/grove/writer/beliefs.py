@@ -129,7 +129,10 @@ def _stage_change(
     rank = {"planned": 0, "said": 1, "reported_done": 2, "confirmed": 3}
     strongest = max(
         rows,
-        key=lambda row: (rank.get(row.get("source_type"), -1), row.get("source_time") or run.at),
+        key=lambda row: (
+            rank.get(row.get("source_type"), -1) if row.get("derivation") == "observed" else -1,
+            row.get("source_time") or run.at,
+        ),
         default={},
     )
     original = strongest.get("source_type", "said")
@@ -1107,11 +1110,14 @@ def resolve_contradiction(run, index, op):
 
 
 def queue_support_changes(run):
+    from grove.writer.composite import STILL_MARKERS
+
     changed = run.tx.run(
         "MATCH (e:ChangeEntry {change_set_id: $id, entity_type: 'item'}) "
-        "WHERE e.field <> 'row' AND e.history_only = false "
+        "WHERE e.field <> 'row' AND NOT e.field IN $markers AND e.history_only = false "
         "RETURN e.entity_id AS id, max(e.sequence) AS sequence",
         id=run.stamp.change_set_id,
+        markers=sorted(STILL_MARKERS),
     )
     evidence_changes = run.tx.run(
         "MATCH (e:ChangeEntry {change_set_id: $id, entity_type: 'evidence', field: 'row'}) "
@@ -1220,6 +1226,9 @@ def guard_consolidation(run, index, op):
     supplied = {(row["target"], row["cause_change_id"]) for row in op["support_change_refs"]}
     if pending != supplied:
         refuse("consolidation_stale", "the support-change queue changed after the packet read")
+    from grove.writer.consolidation import guard
+
+    guard(run, op)
     ops = run.cache["all_ops"]
     resolved = {
         entry.get("contradiction") for entry in ops if entry.get("op") == "resolve_contradiction"

@@ -16,7 +16,18 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 
-from grove.api import belief_tools, cascade, connectors, forget, health, mcp, oauth, pipedream, uploads, wellknown
+from grove.api import (
+    belief_tools,
+    cascade,
+    connectors,
+    forget,
+    health,
+    mcp,
+    oauth,
+    pipedream,
+    uploads,
+    wellknown,
+)
 from grove.api.assets import add_public_assets
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router

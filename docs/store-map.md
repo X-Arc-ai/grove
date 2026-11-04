@@ -480,9 +480,13 @@ D8's floor (Appendix D, P0 item 8): provisional mints with a recorded reason, th
 `docs/cascade.md` states the single R1/R2/R4 planner, transaction adapter, and explanation path.
 An R2 mark has low stakes and its trigger's world clock. Unknown time stays unknown. Impact and
 CascadeProposal remain snapshot rows; the affected-by link and R1 endings have ordinary history.
-The five `cascade_*` history markers retain metadata without projecting user properties or
+The `cascade_*` history markers retain metadata without projecting user properties or
 creating undo version conflicts. Explanations, decision reasons, and suggested status text use
 HistoryValue IDs. The explanation job changes only that cache and job metadata after commit.
+`cascade_trigger` retains the actual D9 event's rank, world time, and provenance for D12.
+`cascade_review` retains the dependent, cause sequence, checked sources, disposition, path
+versions, and reason/gap value IDs. A deferred proposal keeps its existing open state and
+stores `question_id` in its existing detail JSON. These changes add no table or migration.
 
 The ordinary-item report gate writes existing Contradiction rows with the exact standing entry
 and fresh contrary evidence ID. D9 owns the belief state machine and the general contradiction

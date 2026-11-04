@@ -428,7 +428,13 @@ def end_pass(
             "MATCH (r:Request {run_id: $run, status: 'saved'}) RETURN r.id AS id LIMIT 1",
             run=run_id,
         )
-        if open_rows or pending_support or due_retest or not saved:
+        from grove.consolidation.cascades import pending_proposals, pending_reviews
+        from grove.consolidation.packet import successful_cursor
+
+        cascades_pending = pending_proposals(query) or pending_reviews(
+            query, since=successful_cursor(query), now=clock.now(world_id)
+        )
+        if open_rows or pending_support or due_retest or cascades_pending or not saved:
             outcome = "failed"
             summary = "The Connector left required work unresolved or committed no guarded batch."
     if agent == "learner":

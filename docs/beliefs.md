@@ -8,7 +8,8 @@ judgments, and proposes one atomic batch. The runner selects Spark at high effor
 
 `brain pass` returns `grove.consolidate.v1` for a Connector token. Code binds `run.run_id` to the
 live pass and computes `run.triggers`. The triggers cover open contradictions, ten changed
-items, changed supports, subject drift, and due externally testable beliefs. An idle poll can
+items, changed supports, subject drift, dependency reviews, stored cascade proposals, and due
+externally testable beliefs. An idle poll can
 queue a due re-test. Requests have priority over Curator jobs, which have priority over Connector
 jobs. The existing world lock, budget ceiling, watchdog, and preemption remain in force.
 
@@ -17,8 +18,9 @@ revisions. A queued job keeps its existing retry delay. Once a job exhausts its 
 unchanged input cannot create a fresh job on every poll; new input can trigger a new job.
 
 The packet starts with contradictions, then changed supports, beliefs, complete histories,
-evidence, and source blocks. Incoming dependents of changed items are included even when a
-meaning's consequence flag is false, so the Connector can report a missed consequence check.
+evidence, and source blocks. Three-hop downstream dependents of changed items are included even
+when a meaning's consequence flag is false. The single D6 planner supplies expected effects;
+the Connector must record a disposition for each candidate and report a missed check.
 Stored prose appears only inside escaped `untrusted_data` blocks. Control fields carry IDs,
 fixed codes, counts, and dates. Each selected entity's complete history is returned. A packet
 above 2 MiB refuses as a whole instead of silently dropping history.
@@ -38,6 +40,7 @@ The agent submits the packet's `batch_form.batch` through `brain propose`. Its k
 | `operations` | The supported item, link, evidence, and correction operations from the writer catalogue. |
 | `contradictions` | New `open_contradiction` operations. |
 | `support_changes` | `resolve_support_change` operations with their exact cause and recorded judgments. |
+| `cascade_reviews` | One `review_cascade` per candidate, with its trigger, target, cause, source IDs, disposition and reason. |
 | `ontology_ops`, `walk`, `questions`, `declines` | Empty in this core schema. Non-empty sections refuse explicitly. |
 
 `operation_catalogue` comes from the writer's `OPS` definitions and lists the exact required and
@@ -53,7 +56,8 @@ two distinct readings and at least one retained source in `checked_source_ids`.
 A `to_question` resolution cannot carry an operation that changes the standing
 claim. The question is created by the writer in the same transaction.
 
-The pass cannot end `ok` with an open contradiction or pending support change. It becomes a
+The pass cannot end `ok` with an open contradiction, pending support change, dependency review,
+or undecided cascade proposal. It becomes a
 failed pass and its job follows the normal retry rule. The Connector cannot hide unresolved
 work in its final prose.
 
@@ -165,9 +169,11 @@ meaning. Reads must keep world scope and the existing privacy checks.
 
 Ontology hygiene, record compression, and the walk between areas are P1 work. This core envelope
 does not silently accept those sections. Its refusal does not establish their acceptance.
-The D6 dependent planner remains a separate acceptance dependency. The current packet exposes
-incoming dependents, and support dispositions can record gaps. This is not yet the required
-call to the shared cascade planner. Integration must follow the accepted walk merge on develop.
+The D6 dependent planner is now connected through the accepted transaction adapter and the D12
+safety-net reader. `docs/belief-writer.md` defines trigger authority, complete dependency reviews,
+gap records, and stored proposal decisions. A `question_proposal` in `operations` creates a
+question; the top-level `questions` section remains unsupported. Live provider and full public
+acceptance remain separate from the source integration and its focused tests.
 
 `server/tests/consolidation` exercises idle triggers, queue completion, run binding, world
 isolation, escaped complete histories, API refusal paths, question creation, and a concurrent

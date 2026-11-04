@@ -97,8 +97,37 @@ undo; their integration tests cover the complete operation path.
 It stages only effective state mutations and never invokes a planner. Events contain item ID,
 change-set ID, source world time, source type, terminal/reopened flags, authenticated person
 correction, optional end clock, changed fields, evidence IDs, episode IDs, original source type,
-derivation, reason ID, cause, and before/after states. Inferred evidence is capped to `said` for
-D6 proposal-only behavior. A contradiction queue operation alone emits no event.
+derivation, reason ID, cause, and before/after states. The trigger selects the strongest observed
+premise, then the newest time at that rank. An inferred event is capped to `said`; a `planned`
+premise stays `planned`. A contradiction queue operation alone emits no event.
 
-The accepted walk adapter must consume this seam after the walk lane merges to `origin/develop`.
-This component does not contain a second planner or copy any unpublished walk code.
+The published D6 adapter consumes this seam in the same transaction as the belief change.
+It retains each event in a `cascade_trigger` history marker and calls the sole `grove.cascade.plan`.
+The accepted D6 policy permits low-stakes R2 marks at inferred rank; R1 automatic endings require
+confirmed evidence or authenticated person correction. Lower-rank endings remain proposals.
+This supersedes the earlier proposal-only description of every inferred effect. D9 does not
+gain permission to assert a confirmed belief. Undo covers the belief and D6 effects together.
+
+## D12 dependency reviews
+
+The Connector packet uses the same D6 planner and discovers three-hop dependency paths,
+including declared downstream meanings with a false consequence flag, described subjects and
+support items. Legacy changes without a retained trigger receive conservative `said` authority,
+their own world time, and no person-correction authority. The packet never borrows a current
+item's stronger source rank. More than 400 pending reviews refuses the complete packet.
+
+Every `cascade_reviews` entry requires one `review_cascade` disposition: `still_holding`,
+`revised`, or `queued`. It echoes the packet review_token and cites retained sources in this world and a reason.
+The token binds the disposition to the target and path versions at the packet read. A revision must
+actually change the target in the same batch; a queued result cites an earlier stored
+contradiction. A false consequence flag or missing mark also requires `gap_reason`. Missing
+R2 marks use the accepted D6 adapter. The reason and gap text live in HistoryValue rows;
+`cascade_review` retains their IDs and the disposition without changing the claim's version.
+The guard re-reads the complete work list, target versions and link-path versions under the
+world lock. A concurrent change refuses the whole batch.
+
+Stored proposals require `accept_proposal`, `reject_proposal`, or `question_proposal`. Acceptance
+and rejection use the existing D6 checks. A question needs two distinct readings and retained
+legwork sources. The proposal stays open with `detail.question_id`; an open linked Question
+satisfies this pass's disposition obligation without asserting acceptance. The pass cannot end
+successfully while any dependency review or undecided proposal remains.

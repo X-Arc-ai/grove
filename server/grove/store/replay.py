@@ -76,6 +76,8 @@ _MARKERS: dict[str, frozenset[str]] = {
             "merged_into",
             "verified",
             "cascade_mark",
+            "cascade_trigger",
+            "cascade_review",
             "cascade_proposal",
             "cascade_disposition",
         }
@@ -95,6 +97,8 @@ _NO_VERSION = frozenset(
         "no_head_update",
         "verified",
         "cascade_mark",
+        "cascade_trigger",
+        "cascade_review",
         "cascade_proposal",
         "cascade_disposition",
         "cascade_end",

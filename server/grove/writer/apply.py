@@ -1904,8 +1904,9 @@ def apply_ops(
     from grove.writer.beliefs import HANDLERS as BELIEFS
     from grove.writer.cascade_decisions import HANDLERS as CASCADE_DECISIONS
     from grove.writer.composite import HANDLERS as COMPOSITE
+    from grove.writer.consolidation import HANDLERS as CONSOLIDATION
 
-    handlers = {**_HANDLERS, **COMPOSITE, **BELIEFS, **CASCADE_DECISIONS}
+    handlers = {**_HANDLERS, **COMPOSITE, **BELIEFS, **CASCADE_DECISIONS, **CONSOLIDATION}
     run = _Run(tx, stamp, observations, caller_kind)
     run.cache["all_ops"] = ops
     run.cache["done_ops"] = {}

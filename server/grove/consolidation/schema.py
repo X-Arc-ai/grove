@@ -6,6 +6,7 @@ binding; it never grants a caller an operation the writer would refuse.
 
 from typing import Any
 
+from grove.consolidation.cascades import review_key
 from grove.consolidation.packet import QUESTION_AGE, work
 from grove.writer.errors import BatchDeclined, Refusal
 from grove.writer.ops import OPS, check_shape
@@ -19,6 +20,7 @@ SECTIONS = (
     "operations",
     "contradictions",
     "support_changes",
+    "cascade_reviews",
     "ontology_ops",
     "walk",
     "questions",
@@ -38,6 +40,10 @@ GENERIC = frozenset(
         "correct",
         "refute",
         "supersede",
+        "accept_proposal",
+        "reject_proposal",
+        "question_proposal",
+        "resolve_mark",
     }
 )
 BELIEF = {
@@ -56,6 +62,7 @@ EXTRA = frozenset(
         "open_contradiction",
         "resolve_contradiction",
         "resolve_support_change",
+        "review_cascade",
     }
 )
 MAX_ENTRIES = 500
@@ -146,8 +153,9 @@ def translate(
     support_ops = [
         _operation(row, {"resolve_support_change"}) for row in sections["support_changes"]
     ]
+    review_ops = [_operation(row, {"review_cascade"}) for row in sections["cascade_reviews"]]
     by_id = {}
-    for op in [*candidates, *support_ops]:
+    for op in [*candidates, *support_ops, *review_ops]:
         op_id = op.get("op_id")
         if (
             not isinstance(op_id, str)
@@ -186,6 +194,25 @@ def translate(
         actual_support, key=lambda r: r["target"]
     ):
         refuse("consolidation_support", "every pending support change needs a disposition")
+    review_refs = pending["cascade_reviews"]
+    if len(review_ops) != len(review_refs) or {review_key(op) for op in review_ops} != {
+        review_key(row) for row in review_refs
+    }:
+        refuse("consolidation_cascade", "every dependent needs exactly one recorded review")
+    proposal_ops = [
+        op
+        for op in candidates
+        if op["op"] in {"accept_proposal", "reject_proposal", "question_proposal"}
+    ]
+    proposal_refs = [
+        {"id": row["id"], "version": row.get("version", 1)} for row in pending["cascade_proposals"]
+    ]
+    if len(proposal_ops) != len(proposal_refs) or {op["proposal"] for op in proposal_ops} != {
+        row["id"] for row in proposal_refs
+    }:
+        refuse(
+            "consolidation_proposals", "every stored cascade proposal needs exactly one decision"
+        )
     ordered = [
         {
             "op": "guard_consolidation",
@@ -193,6 +220,8 @@ def translate(
             "run_id": record["id"],
             "contradiction_ids": list(queue),
             "support_change_refs": support_refs,
+            "cascade_review_refs": review_refs,
+            "cascade_proposal_refs": proposal_refs,
             "reason": "Validate this pass and its complete work queues before any change.",
         }
     ]
@@ -255,6 +284,7 @@ def translate(
     if set(pending["drift"]) - reviewed:
         refuse("consolidation_drift", "every drifting belief needs a recorded disposition")
     ordered.extend(op for op in candidates if op["op_id"] not in used)
+    ordered.extend(review_ops)
     batch = {"ops": ordered, "evidence": sections["evidence"]}
     faults = check_shape(batch)
     if faults:
