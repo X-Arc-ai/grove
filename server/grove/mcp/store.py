@@ -173,6 +173,8 @@ class StoreHandler:
         self.sleep = sleep
 
     def __call__(self, context: ToolContext, arguments: dict) -> dict:
+        from grove.demo_policy import DemoDenied
+
         _scope(context, "grove.write")
         checked, said_at = _arguments(arguments)
         request_id = request_identity(context, checked["idempotency_key"])
@@ -183,6 +185,10 @@ class StoreHandler:
             return self._enqueue(context, checked, said_at, at, request_id)
         except ConfigError:
             raise unavailable("input screening is not configured") from None
+        except DemoDenied:
+            raise ApiError(
+                403, "scope_denied", "the restricted demo operation is refused"
+            ) from None
         except BatchDeclined as error:
             refusal = error.refusals[0]
             raise ApiError(
@@ -246,6 +252,7 @@ class StoreHandler:
                 source_id=source_id,
                 connector_id=connector,
                 parser_version="mcp-store-1",
+                demo_request_id=request_id,
             )
             return source_id
 
@@ -285,3 +292,23 @@ class StoreHandler:
         if state.api_state == "saved":
             result["receipt_text"] = render_receipt(context.driver, context.world_id, state.receipt)
         return result
+
+
+class DemoStoreHandler:
+    """Allow only code-owned invented input in the designated demo world."""
+
+    def __init__(self, store: StoreHandler | None = None) -> None:
+        self.store = store or StoreHandler()
+
+    def __call__(self, context: ToolContext, arguments: dict) -> dict:
+        from grove.demo_policy import DEMO_TEXT, DemoDenied, require_designation
+
+        _scope(context, "grove.write")
+        checked, _ = _arguments(arguments)
+        if checked["text"] != DEMO_TEXT or checked["about"]:
+            raise invalid_arguments("only the published Cedar demo fact is accepted", "text")
+        try:
+            require_designation(context.driver, context.world_id, context.user_id)
+        except DemoDenied:
+            raise ApiError(403, "scope_denied", "the restricted demo is not available") from None
+        return self.store(context, arguments)
