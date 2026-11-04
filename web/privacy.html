@@ -43,7 +43,9 @@
           <h2>What Grove reads</h2>
           <p>At sign-in, Grove reads what Google sends (your name, your address and a flag that says Google verified the address), or the address you type to get an email code.</p>
           <p>After that, Grove reads only what you bring or connect: chats, notes, files and images you upload, voice notes, and your calendar if you connect it. The table under <a href="#where-your-data-goes">Where your data goes</a> distinguishes available code, configuration and pending work.</p>
-          <p>Grove does not ask Google for your mail or your files.</p>
+          <p>The direct Git connector reads commit metadata from a local clone approved for your world. It does not fetch remote changes, run hooks or read worktree files. A commit does not prove deployment.</p>
+          <p>Pipedream connections use a separate hosted authorization page and account-status checks. Grove sends an opaque owner identifier and the selected app to Pipedream. This component imports no source content and runs no provider actions. A connection status is not an import result.</p>
+          <p>Grove's Google sign-in and direct Calendar connector do not request Gmail or Drive access. Pipedream requests provider consent separately; review its scopes on the hosted page.</p>
           <p>Grove's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
         </section>
         <section id="what-grove-asks-google-for">

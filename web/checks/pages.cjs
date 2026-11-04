@@ -36,7 +36,7 @@ const htmlRows=[...table.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map(m=>[...m[1].matc
 assert.deepStrictEqual(htmlRows,[mdHead,...mdBody].map(r=>r.map(c=>c.replace(/`/g,''))),'The table is every row of docs/data-flow.md');
 assert(!privacy.includes('data-flow-table'),'The mark is gone');
 assert(table.includes('<code>sources</code>'),'Backticks become code');
-for(const [needle,status] of [['Resend','Deployment not checked'],['Google sign-in','Deployment not checked'],['Items, links, history','Deployment not checked'],['Backups','Deployment not checked'],['conversation exports','Deployment not checked'],['Calendar','Implementation pending'],['Screened text for extraction','Deployment not checked'],['Voice notes','Implementation pending'],['Muse Glimmer','Deployment not checked'],['Evidence returned','Deployment not checked'],['Forget targets','Deployment not checked']]){
+for(const [needle,status] of [['Resend','Deployment not checked'],['Google sign-in','Deployment not checked'],['Items, links, history','Deployment not checked'],['Backups','Deployment not checked'],['conversation exports','Deployment not checked'],['Calendar','Deployment not checked'],['Git repository','Deployment not checked'],['Pipedream','Deployment not checked'],['Screened text for extraction','Deployment not checked'],['Voice notes','Implementation pending'],['Muse Glimmer','Deployment not checked'],['Evidence returned','Deployment not checked'],['Forget targets','Deployment not checked']]){
   const row=mdBody.find(r=>r[0].includes(needle)||r[1].includes(needle));assert(row,'docs/data-flow.md has a row for '+needle);assert.equal(row[3],status,needle+' is '+status);
 }
 assert(mdBody.every(r=>r[3]==='Deployment not checked'||r[3]==='Implementation pending'),'A static build never asserts a deployed operation');
@@ -47,6 +47,9 @@ assert(mdBody.find(r=>r[1].includes('Voice Transcribe'))[2].includes('Audio leav
 assert(mdBody.find(r=>r[1].includes('Modal'))[2].includes('synthetic data only'));
 assert(flow.includes('Generated from `server/grove/privacy.py`'));
 assert(flow.includes('isolated CI proof'));
+for(const text of ['opaque owner identifier','imports no source content','runs no provider actions','review its scopes on the hosted page'])assert(privacyText.includes(text),'The privacy page preserves the connection limit: '+text);
+assert(mdBody.find(r=>r[1].includes('Pipedream'))[2].includes('executes no provider actions'));
+assert(mdBody.find(r=>r[0].includes('Git repository'))[2].includes('without fetching'));
 
 // For both: no em dash, none of the banned words, and nothing that needs a server or a script.
 const banned=new RegExp([['ham','za'],['ham','py'],['aa','tar']].map(p=>p.join('')).join('|'),'i');

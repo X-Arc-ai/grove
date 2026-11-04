@@ -42,7 +42,23 @@ _ROWS = (
         "calendar",
         "Calendar events, if you connect a calendar",
         "Google Calendar to Grove, with separate read-only consent",
-        "The later consent requests `calendar.readonly`; sign-in does not request it.",
+        "The separate consent requests `calendar.readonly` and `openid`; "
+        "sign-in does not request Calendar access. Provider credentials are encrypted "
+        "in the store; the key stays outside it.",
+    ),
+    (
+        "git",
+        "Commit metadata from a configured Git repository",
+        "A world-approved local Git clone to Grove's screened sources",
+        "Grove reads commit objects without fetching, hooks or worktree files. "
+        "A commit is not proof of deployment.",
+    ),
+    (
+        "pipedream",
+        "An opaque owner identifier, the selected app and account connection status",
+        "Pipedream's hosted authorization and account-status API",
+        "Provider consent occurs on the hosted page. This component imports no source content "
+        "and executes no provider actions. A configured path does not prove owner consent.",
     ),
     (
         "uploads",
@@ -101,14 +117,23 @@ def flow_statement(env=None, *, runtime=False, google_configured=None):
     def present(*names):
         return all(bool(env.get(name)) for name in names)
 
+    google_present = (
+        present("GROVE_GOOGLE_OAUTH_FILE") if google_configured is None else bool(google_configured)
+    )
+    screening_present = env.get("GROVE_ENV") != "production" or present(
+        "GROVE_RENAME_MAP", "GROVE_DENYLIST"
+    )
     checks = {
         "email": present("RESEND_API_KEY", "MAIL_FROM"),
-        "google": present("GROVE_GOOGLE_OAUTH_FILE")
-        if google_configured is None
-        else bool(google_configured),
+        "google": google_present,
         "store": present("NEO4J_AUTH"),
-        "uploads": env.get("GROVE_ENV") != "production"
-        or present("GROVE_RENAME_MAP", "GROVE_DENYLIST"),
+        "calendar": google_present and present("GROVE_CONNECTOR_KEY_FILE") and screening_present,
+        "git": present("GROVE_GIT_REPOSITORIES_FILE") and screening_present,
+        "pipedream": present(
+            "PIPEDREAM_PROJECT_ID", "PIPEDREAM_CLIENT_ID", "PIPEDREAM_CLIENT_SECRET"
+        )
+        and env.get("PIPEDREAM_ENVIRONMENT") == "production",
+        "uploads": screening_present,
         "spark": present("MODEL_API_KEY"),
         "voice": present("MODEL_API_KEY"),
         "glimmer": present("GROVE_GLIMMER_BASE_URL", "GROVE_GLIMMER_KEY"),
@@ -117,7 +142,7 @@ def flow_statement(env=None, *, runtime=False, google_configured=None):
     }
     rows = []
     for key, data, destination, terms in _ROWS:
-        if key in {"calendar", "files"}:
+        if key == "files":
             status = PENDING
         elif not runtime or key == "backups":
             status = STATIC
@@ -130,7 +155,8 @@ def flow_statement(env=None, *, runtime=False, google_configured=None):
         "runtime": runtime,
         "rows": rows,
         "notice": "Settings present means configuration exists. "
-        "It does not prove that the path completed an operation.",
+        "It does not prove that the path completed an operation. "
+        "Setting validity, file contents and owner consent are not checked.",
     }
 
 
