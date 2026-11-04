@@ -781,7 +781,19 @@ def verify_op(run: "_Run", index: int, op: dict[str, Any]) -> None:
             )
             columns["recheck_by"] = recheck
         if op.get("recheck_how") is not None:
-            columns["recheck_how"] = json.dumps(op["recheck_how"], sort_keys=True)
+            old_how = claim.get("recheck_how")
+            old_how = json.loads(old_how) if old_how is not None else None
+            if old_how != op["recheck_how"]:
+                run.entry(
+                    entity_type=claim_type,
+                    entity_id=claim_id,
+                    field="recheck_how",
+                    old=old_how,
+                    new=op["recheck_how"],
+                    world_time=world_time,
+                    reason_id=reason_id,
+                )
+                columns["recheck_how"] = json.dumps(op["recheck_how"], sort_keys=True)
     run.entry(
         entity_type=claim_type,
         entity_id=claim_id,
