@@ -227,3 +227,66 @@ def test_missing_and_unsafe_guard_configuration_refuses(demo, monkeypatch):
     monkeypatch.setenv("GROVE_DEMO_EMAIL_HASH", "not-a-hash")
     with pytest.raises(ConfigError):
         configuration()
+
+
+def test_incomplete_body_does_not_block_real_revocation(driver, demo, hosts_plant):
+    token = issue(driver, demo, hosts_plant.client())
+
+    async def run():
+        entered, finish = asyncio.Event(), asyncio.Event()
+        sent = []
+
+        async def receive():
+            entered.set()
+            await finish.wait()
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        async def inner(scope, receive, send):
+            await receive()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"{}"})
+
+        async def send(message):
+            sent.append(message)
+
+        middleware = DemoReleaseMiddleware(inner, configuration())
+        task = asyncio.create_task(middleware(_scope(driver, token), receive, send))
+        await asyncio.wait_for(entered.wait(), 5)
+        try:
+            assert _exclusive_probe(), "an unfinished body must not hold the release guard"
+            assert revoke_grant(
+                driver, grant_id=token.grant_id, world_id=demo.world_id, at=clock.now()
+            )
+        finally:
+            finish.set()
+            await task
+        assert sent[0]["status"] == 401
+
+    asyncio.run(run())
+
+
+def test_incomplete_body_has_a_deadline_without_authority_lock(
+    driver, demo, hosts_plant, monkeypatch
+):
+    from grove.mcp import demo as transport
+
+    monkeypatch.setattr(transport, "BODY_TIMEOUT_SECONDS", 0.02)
+    token = issue(driver, demo, hosts_plant.client())
+
+    async def run():
+        sent = []
+
+        async def receive():
+            await asyncio.Event().wait()
+
+        async def inner(scope, receive, send):
+            pytest.fail("incomplete request reached a handler")
+
+        async def send(message):
+            assert _exclusive_probe()
+            sent.append(message)
+
+        await DemoReleaseMiddleware(inner, configuration())(_scope(driver, token), receive, send)
+        assert sent[0]["status"] == 408
+
+    asyncio.run(run())

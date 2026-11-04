@@ -17,7 +17,34 @@ from grove.store.errors import Neo4jError
 from grove.store.query import PlatformQuery
 
 MAX_RELEASE_BYTES = 1_048_576
+BODY_TIMEOUT_SECONDS = 10.0
 _AUTHORITY_KEY = "grove.demo.authority"
+
+
+async def _request_body(receive) -> bytes | None:
+    """Bound network intake before any authority lock can block a revoke."""
+    from grove.api.mcp import MAX_BODY_BYTES
+
+    parts, size = [], 0
+    try:
+        async with asyncio.timeout(BODY_TIMEOUT_SECONDS):
+            while True:
+                message = await receive()
+                if message["type"] == "http.disconnect":
+                    return None
+                if message["type"] != "http.request":
+                    raise ApiError(400, "invalid_arguments", "the request body is invalid")
+                part = message.get("body", b"")
+                size += len(part)
+                if size > MAX_BODY_BYTES:
+                    raise ApiError(413, "invalid_arguments", "the request body is too large")
+                parts.append(part)
+                if not message.get("more_body", False):
+                    return b"".join(parts)
+    except TimeoutError:
+        raise ApiError(
+            408, "invalid_arguments", "the request body did not arrive in time"
+        ) from None
 
 
 def tools_for_request(request: Request, token: TokenRow):
@@ -96,6 +123,18 @@ class DemoReleaseMiddleware:
         guard = None
         released = False
         try:
+            body = await _request_body(receive)
+            if body is None or abandoned.is_set():
+                return
+            replayed = False
+
+            async def replay_receive():
+                nonlocal replayed
+                if replayed:
+                    return await receive()
+                replayed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+
             guard = ReleaseFile(self.config)
             while not guard.try_shared():
                 if abandoned.is_set():
@@ -127,7 +166,7 @@ class DemoReleaseMiddleware:
                     parts.append(part)
                     complete = not message.get("more_body", False)
 
-            await self.app(scope, receive, capture)
+            await self.app(scope, replay_receive, capture)
             if abandoned.is_set():
                 return
             if start is None or not complete:
