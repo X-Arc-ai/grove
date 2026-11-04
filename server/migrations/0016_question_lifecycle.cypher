@@ -1,0 +1,31 @@
+// Inactive question lifecycle. No legacy bindings, backfill, or question closure.
+// CuratorRunOrder is the sole ordinal authority; RunRecord remains unchanged.
+CREATE CONSTRAINT question_bindings_id_unique IF NOT EXISTS FOR (n:QuestionBinding) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT question_bindings_world_id_question_id_unique IF NOT EXISTS FOR (n:QuestionBinding) REQUIRE (n.world_id, n.question_id) IS UNIQUE;
+CREATE CONSTRAINT question_bindings_world_id_open_topic_key_unique IF NOT EXISTS FOR (n:QuestionBinding) REQUIRE (n.world_id, n.open_topic_key) IS UNIQUE;
+CREATE INDEX question_bindings_world_id_identity_day_idx IF NOT EXISTS FOR (n:QuestionBinding) ON (n.world_id, n.identity_day);
+CREATE INDEX question_bindings_world_id_identity_week_idx IF NOT EXISTS FOR (n:QuestionBinding) ON (n.world_id, n.identity_week);
+CREATE CONSTRAINT question_work_id_unique IF NOT EXISTS FOR (n:QuestionWork) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT question_work_world_id_disposition_id_unique IF NOT EXISTS FOR (n:QuestionWork) REQUIRE (n.world_id, n.disposition_id) IS UNIQUE;
+CREATE INDEX question_work_world_id_question_id_idx IF NOT EXISTS FOR (n:QuestionWork) ON (n.world_id, n.question_id);
+CREATE INDEX question_work_world_id_intent_id_idx IF NOT EXISTS FOR (n:QuestionWork) ON (n.world_id, n.intent_id);
+CREATE INDEX question_work_world_id_state_idx IF NOT EXISTS FOR (n:QuestionWork) ON (n.world_id, n.state);
+CREATE CONSTRAINT question_applications_id_unique IF NOT EXISTS FOR (n:QuestionApplication) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT question_applications_world_id_request_id_unique IF NOT EXISTS FOR (n:QuestionApplication) REQUIRE (n.world_id, n.request_id) IS UNIQUE;
+CREATE INDEX question_applications_world_id_question_id_idx IF NOT EXISTS FOR (n:QuestionApplication) ON (n.world_id, n.question_id);
+CREATE INDEX question_applications_world_id_commit_id_idx IF NOT EXISTS FOR (n:QuestionApplication) ON (n.world_id, n.commit_id);
+CREATE CONSTRAINT question_events_id_unique IF NOT EXISTS FOR (n:QuestionEvent) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT question_events_world_id_sequence_unique IF NOT EXISTS FOR (n:QuestionEvent) REQUIRE (n.world_id, n.sequence) IS UNIQUE;
+CREATE INDEX question_events_world_id_question_id_sequence_idx IF NOT EXISTS FOR (n:QuestionEvent) ON (n.world_id, n.question_id, n.sequence);
+CREATE INDEX question_events_world_id_commit_id_idx IF NOT EXISTS FOR (n:QuestionEvent) ON (n.world_id, n.commit_id);
+CREATE CONSTRAINT curator_legwork_id_unique IF NOT EXISTS FOR (n:CuratorLegwork) REQUIRE n.id IS UNIQUE;
+CREATE INDEX curator_legwork_world_id_work_id_idx IF NOT EXISTS FOR (n:CuratorLegwork) ON (n.world_id, n.work_id);
+CREATE INDEX curator_legwork_world_id_run_id_idx IF NOT EXISTS FOR (n:CuratorLegwork) ON (n.world_id, n.run_id);
+CREATE CONSTRAINT curator_escalations_id_unique IF NOT EXISTS FOR (n:CuratorEscalation) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT curator_escalations_world_id_claim_type_claim_id_streak_start_unique IF NOT EXISTS FOR (n:CuratorEscalation) REQUIRE (n.world_id, n.claim_type, n.claim_id, n.streak_start) IS UNIQUE;
+CREATE INDEX curator_escalations_world_id_state_idx IF NOT EXISTS FOR (n:CuratorEscalation) ON (n.world_id, n.state);
+CREATE CONSTRAINT curator_run_order_id_unique IF NOT EXISTS FOR (n:CuratorRunOrder) REQUIRE n.id IS UNIQUE;
+CREATE CONSTRAINT curator_run_order_world_id_run_id_unique IF NOT EXISTS FOR (n:CuratorRunOrder) REQUIRE (n.world_id, n.run_id) IS UNIQUE;
+CREATE CONSTRAINT curator_run_order_world_id_ordinal_unique IF NOT EXISTS FOR (n:CuratorRunOrder) REQUIRE (n.world_id, n.ordinal) IS UNIQUE;
+CREATE CONSTRAINT verifications_world_id_attempt_id_unique IF NOT EXISTS FOR (n:Verification) REQUIRE (n.world_id, n.attempt_id) IS UNIQUE;
+CREATE INDEX verifications_world_id_claim_id_commit_sequence_idx IF NOT EXISTS FOR (n:Verification) ON (n.world_id, n.claim_id, n.commit_sequence);

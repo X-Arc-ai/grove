@@ -33,12 +33,9 @@ flag enables them. Other agents retain their existing dispatch paths.
   or the other judge's output. The ordinary borderline path uses the ordinary
   second-opinion budget; load-bearing checks retain the published D4 path.
   The fixed D4 private prompt/recorder helpers are a current source dependency.
-- The question writer requires recorded unsuccessful legwork, screens question
-  prose, coalesces open questions by subject, and records only bound options.
-  It closes an answer only after a saved interactive receipt covers every
-  subject. AI-host answers require verbatim metadata. The same close request is
-  idempotent. A withdrawal requires a screened reason. Ordering puts risk first,
-  decisions next and oldest questions first within a class.
+- Legacy question creation remains readable but has no inferred action binding.
+  A touched-item receipt cannot close it. The typed lifecycle below owns bound
+  questions, exact answer application, partial work, and replay.
 - Ambiguity narrowing intersects owner-supplied participant, co-mention and
   time context. It never picks by candidate order or lexical score. Unresolved
   mentions retain candidates, source/episode/locator identity, context rules,
@@ -74,16 +71,14 @@ top-level packet fields or public routes.
 4. Complete Area discovery, disjoint partitions, budgets, dirty queues, audit
    coverage and within-Area merges. Persist versioned record-axis Area history;
    current definitions must never stand in for historical definitions.
-5. Integrate the question queue with the real interactive answer writer,
-   complete source-search legwork, check-sources jobs and permission handling.
-   A saved receipt alone does not establish semantic answer quality. The current
-   helper does not apply an answer itself and does not implement UI endpoints.
-6. Persist and execute third-consecutive-deferral escalation. The current helper
-   returns a question or retirement proposal only. Implement partial-resolution
-   and three-run oscillation handling, D10 link/alias integration and expiry work.
-7. Decide the no-source deferral operation with the D4 owner. The published
-   writer requires a nonempty piece list; the current deferred drill uses a
-   recorded `not_about_claim` judgment. No empty-source success is claimed.
+5. Integrate the inactive question transactions with real current-principal,
+   source-search, permission, API and UI services. Add durable D10 consumers for
+   transferred waiting operations and aliases. A transfer is pending work.
+6. Consume pending third-deferral destinations through real question or retirement
+   proposal services. Complete the orchestration that records an oscillation
+   finding after the scored path refuses repeated resolution.
+7. Integrate the no-source command into an authorized Curator dispatcher. The
+   ordinary untagged verify operation still requires evidence pieces.
 8. Run the full labelled D11 quality drills, including false questions, missed
    questions, false dispositions, omission rate, paraphrase contamination,
    partial resolution, oscillation and Area coverage. Run live providers and
@@ -91,3 +86,72 @@ top-level packet fields or public routes.
 
 The prompt states the full behavior goal, including still-open orchestration.
 The runtime refusal prevents those instructions from implying an active feature.
+
+
+## Inactive question lifecycle
+
+Migration `0016_question_lifecycle.cypher` registers seven snapshot tables:
+QuestionBinding, QuestionWork, QuestionApplication, QuestionEvent, CuratorLegwork,
+CuratorEscalation and CuratorRunOrder. It adds bounded structural fields to Request
+and Verification. It performs no legacy binding, closure or backfill. Applying
+this migration does not activate the component.
+
+`cleanup.question_lifecycle`, `cleanup.legwork` and `cleanup.question_intents`
+provide closed immutable inputs and bounded JSON codecs. IDs, versions, option
+plans and exact source/message bindings are separate from text. Unknown fields,
+duplicate JSON keys, invalid versions and excessive inputs refuse.
+
+`writer.question_lifecycle.create_or_join_question` uses a stable topic and the
+world lock. Compatible occurrences retain every obligation. Changed plans or
+versions require an explicit future rebind service; automatic overwrites refuse.
+Identity caps are three per day and ten per labelled backfill week. Excess work
+remains pending and the result does not claim a created question.
+
+An answer must cite an existing screened Source, exact retained message, Source
+and Episode versions, principal, binding revision and stored plan. Accepted text
+must match the retained message exactly. This component does not retain new answer
+sources. The source owner and complete authority provider remain prerequisites.
+Host answers require exact retained verbatim message metadata. A host never uses
+the view-only D4 no-judge shortcut.
+
+`submit_answer` creates an immutable `question_answer_v1` Request. Generic batch,
+request, queue completion and replay paths refuse protected requests. `apply_answer`
+executes a bound plan, writes its exact application, updates obligations and changes
+the question in one WorldWriter transaction. Cancellation takes the same lock.
+An uncertain commit needs reconciliation with the same request key. A successful
+application remains committed if the final release check refuses disclosure.
+
+The `confirm` plan uses ordinary D4 checks. A claim with a horizon requires an
+explicit stored batch that supplies the new date. `apply_batch` plans reference
+bounded HistoryValue payloads with exact answer evidence and bound existing
+targets; unsupported unbound operations refuse. D9/D12 protections still apply.
+No API accepts arbitrary client operations or caller-selected authority.
+
+`return_to_sources` and `resolution_transfer` apply durable answer transfers.
+They may close a question while related work remains pending. They never confirm
+a claim or mark a D10 waiting operation as applied. Partial answers keep the
+remaining obligations open. A withdrawal records its reason and a complete
+cancel/transfer disposition for each outstanding obligation.
+
+`writer.api.prepare_batch` and `execute_prepared_in_tx` are the shared internal
+transaction seam. They retain ordinary shape/caller checks, both source checks,
+all operation finalization, and WorldWriter summary/generation behavior. The
+caller owns protected request validation and completion. There is no generic
+before-commit callback.
+
+`writer.verify.record_no_source_deferral` records a checked unsuccessful attempt,
+zero evidence weight and absent ratio. It changes operational recheck fields
+only and preserves truth clocks, confirmation, status, evidence and judgments.
+Committed verification history supplies the streak; CuratorRunOrder supplies
+the sole accepted-run order. The third deferral stores one pending destination.
+A pending destination is not a created question or retirement proposal.
+
+QuestionEvent snapshots preserve structural before/after states. Restore checks
+these states and their application/request identities separately from the existing
+D3 fingerprint. Answer prose stays in Source; generated prose and operation
+payloads stay in HistoryValue. D14 must register every new reference and history
+home before runtime activation. The pure authority codec does not perform erasure.
+
+Immediate component tests use synthetic in-memory transactions and controlled
+graph executors. They do not prove native Neo4j commit durability, process-kill
+recovery, live current-principal authority, or public API/UI acceptance.

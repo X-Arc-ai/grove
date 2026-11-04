@@ -965,6 +965,13 @@ REQUESTS = Table(
         _ruling("said_at", "instant", "S41: B.3 remember, for the later pass"),
         _ruling("about", "ids", "S41: B.3 remember, for the later pass"),
         _ruling("relay", "enum:relay", "S53: remember, answer or correction"),
+        _ruling("protocol", "code", "Optional protected protocol: question_answer_v1"),
+        _ruling("question_id", "id", "Optional immutable question answer binding"),
+        _ruling("question_binding_revision", "int", "Optional positive binding revision"),
+        _ruling("answer_command", "json_ids", "Optional canonical AnswerCommandV1; <=16 KiB"),
+        _ruling("answer_state", "enum:question_answer_state", "Optional answer attempt state"),
+        _ruling("application_id", "id", "Optional committed QuestionApplication reference"),
+        _ruling("principal_id", "id", "Optional authenticated principal reference; <=128 chars"),
     ),
     uniques=_keys("requests", ("world_id", "id")),
     indexes=_ranges("requests", ("world_id", "status")),
@@ -1230,9 +1237,24 @@ VERIFICATIONS = Table(
         _col("reason", "value_id"),
         _col("request id", "id"),
         _col("commit id", "id"),
+        _ruling("attempt_kind", "code", "scored or no_source; absent legacy rows remain scored"),
+        _ruling("attempt_id", "id", "Optional deduplication identity; <=128 chars"),
+        _ruling("claim_type", "code", "Optional typed claim identity"),
+        _ruling("claim_version", "int", "Optional positive claim version"),
+        _ruling("work_id", "id", "Optional QuestionWork reference"),
+        _ruling("run_ordinal", "int", "Optional CuratorRunOrder ordinal; sole order authority"),
+        _ruling("commit_sequence", "int", "Optional durable commit order; legacy uses ChangeEntry"),
+        _ruling("legwork_ids", "ids", "Optional checked legwork references; at most 50"),
+        _ruling("command", "json_ids", "Optional NoSourceDeferralV1; <=256 KiB; no source prose"),
+        _ruling("change_set_id", "id", "Optional committed change set reference"),
     ),
-    uniques=_keys("verifications", ("id",)),
-    indexes=_ranges("verifications", ("world_id", "claim_id", "at"), ("run_id",)),
+    uniques=_keys("verifications", ("id",), ("world_id", "attempt_id")),
+    indexes=_ranges(
+        "verifications",
+        ("world_id", "claim_id", "at"),
+        ("run_id",),
+        ("world_id", "claim_id", "commit_sequence"),
+    ),
     notes="Columns are D4's (line 985); every check is one appended row.",
 )
 
@@ -1456,6 +1478,217 @@ QUESTIONS = Table(
     ),
     uniques=_keys("questions", ("id",)),
     indexes=_ranges("questions", ("world_id", "state", "priority")),
+)
+
+# Reserved by migration 0016. All lifecycle rows restore as snapshots.
+
+QUESTION_BINDINGS = Table(
+    name="question_bindings",
+    label="QuestionBinding",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D11",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("question_id", "id", "<=128 structural characters"),
+        _ruling("revision", "int", "Exact int, 1..2^63-1"),
+        _ruling("topic_key", "code", "<=128 structural characters"),
+        _ruling("open_topic_key", "code", "Optional. <=128 structural characters"),
+        _ruling("binding", "json_ids", "Structural JSON only; <=256 KiB"),
+        _ruling("state", "enum:question_state", "Closed lifecycle value"),
+        _ruling("created_at", "instant", "Aware operational instant"),
+        _ruling("identity_day", "date", "Optional. Closed lifecycle value"),
+        _ruling("identity_week", "date", "Optional. Closed lifecycle value"),
+        *_version_touched(),
+    ),
+    uniques=_keys(
+        "question_bindings", ("id",), ("world_id", "question_id"), ("world_id", "open_topic_key")
+    ),
+    indexes=_ranges(
+        "question_bindings", ("world_id", "identity_day"), ("world_id", "identity_week")
+    ),
+    notes="IDs <=128; version and touched_at are mandatory. "
+    "Structural data only; generated prose and payloads use HistoryValue references.",
+)
+
+QUESTION_WORK = Table(
+    name="question_work",
+    label="QuestionWork",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D11",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("question_id", "id", "Optional. <=128 structural characters"),
+        _ruling("group_id", "code", "<=128 structural characters"),
+        _ruling("state", "enum:question_work_state", "Closed lifecycle value"),
+        _ruling(
+            "intent_binding",
+            "json_ids",
+            "D11: exact prospective D10 execution, request, run and disposition; <=16 KiB",
+        ),
+        _ruling("source_binding", "json_ids", "Optional. Structural JSON only; <=256 KiB"),
+        _ruling("disposition_id", "id", "Optional. <=128 structural characters"),
+        _ruling("intent_id", "id", "Optional. <=128 structural characters"),
+        _ruling("waiting_operation_id", "id", "Optional. <=128 structural characters"),
+        _ruling("payload_value_id", "value_id", "Optional. <=128 structural characters"),
+        _ruling("payload_version", "int", "Optional. Exact int, 1..2^63-1"),
+        _ruling("target", "json_ids", "Optional. Structural JSON only; <=256 KiB"),
+        _ruling("retry_at", "instant", "Optional. Aware operational instant"),
+        _ruling("lease_owner", "id", "Optional. <=128 structural characters"),
+        _ruling("lease_until", "instant", "Optional. Aware operational instant"),
+        _ruling("application_id", "id", "Optional. <=128 structural characters"),
+        _ruling("transfer", "json_ids", "Optional. Structural JSON only; <=256 KiB"),
+        _ruling("reason", "value_id", "Optional. <=128 structural characters"),
+        *_version_touched(),
+    ),
+    uniques=_keys("question_work", ("id",), ("world_id", "disposition_id")),
+    indexes=_ranges(
+        "question_work",
+        ("world_id", "question_id"),
+        ("world_id", "intent_id"),
+        ("world_id", "state"),
+    ),
+    notes="IDs <=128; version and touched_at are mandatory. "
+    "Structural data only; generated prose and payloads use HistoryValue references.",
+)
+
+QUESTION_APPLICATIONS = Table(
+    name="question_applications",
+    label="QuestionApplication",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D11",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("request_id", "id", "<=128 structural characters"),
+        _ruling("question_id", "id", "<=128 structural characters"),
+        _ruling("binding_revision", "int", "Exact int, 1..2^63-1"),
+        _ruling("principal_id", "id", "<=128 structural characters"),
+        _ruling("source_binding", "json_ids", "Structural JSON only; <=256 KiB"),
+        _ruling("plan_id", "id", "<=128 structural characters"),
+        _ruling("commit_id", "id", "<=128 structural characters"),
+        _ruling("change_set_id", "id", "<=128 structural characters"),
+        _ruling("application", "json_ids", "Structural JSON only; <=256 KiB"),
+        _ruling("applied_at", "instant", "Aware operational instant"),
+        *_version_touched(),
+    ),
+    uniques=_keys("question_applications", ("id",), ("world_id", "request_id")),
+    indexes=_ranges(
+        "question_applications", ("world_id", "question_id"), ("world_id", "commit_id")
+    ),
+    notes="Append-only; version=1. IDs <=128; version and touched_at are mandatory. "
+    "Structural data only; generated prose and payloads use HistoryValue references.",
+)
+
+QUESTION_EVENTS = Table(
+    name="question_events",
+    label="QuestionEvent",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D11",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("question_id", "id", "Optional. <=128 structural characters"),
+        _ruling("work_id", "id", "Optional. <=128 structural characters"),
+        _ruling("event", "code", "<=128 structural characters"),
+        _ruling("commit_id", "id", "<=128 structural characters"),
+        _ruling("change_set_id", "id", "<=128 structural characters"),
+        _ruling("sequence", "int", "Exact int, 1..2^63-1"),
+        _ruling("at", "instant", "Aware operational instant"),
+        _ruling("snapshot", "json_ids", "Structural JSON only; <=256 KiB"),
+        _ruling("reason", "value_id", "Optional. <=128 structural characters"),
+        _ruling("application_id", "id", "Optional. <=128 structural characters"),
+        *_version_touched(),
+    ),
+    uniques=_keys("question_events", ("id",), ("world_id", "sequence")),
+    indexes=_ranges(
+        "question_events", ("world_id", "question_id", "sequence"), ("world_id", "commit_id")
+    ),
+    notes="Append-only; version=1. IDs <=128; version and touched_at are mandatory. "
+    "Structural data only; generated prose and payloads use HistoryValue references.",
+)
+
+CURATOR_LEGWORK = Table(
+    name="curator_legwork",
+    label="CuratorLegwork",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D11",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("work_id", "id", "<=128 structural characters"),
+        _ruling("run_id", "id", "<=128 structural characters"),
+        _ruling("target", "json_ids", "Structural JSON only; <=256 KiB"),
+        _ruling("result", "enum:legwork_result", "Closed lifecycle value"),
+        _ruling("attempt", "json_ids", "Structural JSON only; <=256 KiB"),
+        _ruling("recorded_at", "instant", "Aware operational instant"),
+        _ruling("reason", "value_id", "<=128 structural characters"),
+        *_version_touched(),
+    ),
+    uniques=_keys("curator_legwork", ("id",)),
+    indexes=_ranges("curator_legwork", ("world_id", "work_id"), ("world_id", "run_id")),
+    notes="Append-only; version=1. IDs <=128; version and touched_at are mandatory. "
+    "Structural data only; generated prose and payloads use HistoryValue references.",
+)
+
+CURATOR_ESCALATIONS = Table(
+    name="curator_escalations",
+    label="CuratorEscalation",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D11",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("claim_id", "id", "<=128 structural characters"),
+        _ruling("claim_type", "code", "<=128 structural characters"),
+        _ruling("streak_start", "id", "<=128 structural characters"),
+        _ruling("attempt_id", "id", "<=128 structural characters"),
+        _ruling("destination", "code", "<=128 structural characters"),
+        _ruling("state", "code", "<=128 structural characters; pending or completed"),
+        _ruling("destination_id", "id", "Optional. <=128 structural characters"),
+        _ruling("prerequisite", "code", "<=128 structural characters"),
+        _ruling("created_at", "instant", "Aware operational instant"),
+        *_version_touched(),
+    ),
+    uniques=_keys(
+        "curator_escalations", ("id",), ("world_id", "claim_type", "claim_id", "streak_start")
+    ),
+    indexes=_ranges("curator_escalations", ("world_id", "state")),
+    notes="IDs <=128; version and touched_at are mandatory. "
+    "Structural data only; generated prose and payloads use HistoryValue references.",
+)
+
+CURATOR_RUN_ORDER = Table(
+    name="curator_run_order",
+    label="CuratorRunOrder",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D11",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("run_id", "id", "<=128 structural characters"),
+        _ruling("ordinal", "int", "Exact int, 1..2^63-1"),
+        _ruling("accepted_at", "instant", "Aware operational instant"),
+        *_version_touched(),
+    ),
+    uniques=_keys("curator_run_order", ("id",), ("world_id", "run_id"), ("world_id", "ordinal")),
+    notes="Append-only; version=1. IDs <=128; version and touched_at are mandatory. "
+    "Structural data only; generated prose and payloads use HistoryValue references.",
 )
 
 AREA_AUDITS = Table(
@@ -2028,6 +2261,13 @@ B1_GROUPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
             CONTRADICTIONS,
             SUPPORT_CHANGED,
             QUESTIONS,
+            QUESTION_BINDINGS,
+            QUESTION_WORK,
+            QUESTION_APPLICATIONS,
+            QUESTION_EVENTS,
+            CURATOR_LEGWORK,
+            CURATOR_ESCALATIONS,
+            CURATOR_RUN_ORDER,
             AREA_AUDITS,
             WALK_ROTATION,
         ),
