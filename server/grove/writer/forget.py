@@ -62,7 +62,10 @@ def write_inventory(tx: WorldTx, before: dict, after: dict) -> None:
             elif previous is None:
                 if _TABLES[name].element == "relationship":
                     raise ValueError("forget cannot create a relationship")
-                tx.run(f"CREATE {pattern} SET n += $row", row=following)
+                tx.run(
+                    f"CREATE {pattern} SET n += $row",
+                    row={k: v for k, v in following.items() if k != "world_id"},
+                )
             else:
                 removed = sorted(previous.keys() - following.keys() - {"world_id"})
                 remove = " REMOVE " + ", ".join(f"n.{prop}" for prop in removed) if removed else ""

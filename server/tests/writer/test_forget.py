@@ -197,3 +197,49 @@ def test_wrong_world_target_changes_neither_world(driver, subject, make_world, t
         erase(driver, other, {"type": "item", "item_id": item_id}, tmp_path)
     assert inventory(driver, world) == before
     assert WorldQuery(driver, other).read("MATCH (i:Item) RETURN i") == []
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_loaded_restore_refuses_missing_or_changed_stored_intent_before_write(
+    driver, subject, tmp_path, changed
+):
+    world, item_id = subject
+    erase(driver, world, {"type": "field_value", "item_id": item_id, "field": "title"}, tmp_path)
+    snapshot = take_snapshot(driver, world)
+    ledger = read_ledger(tmp_path, world)
+    if changed:
+        ledger[0]["internal_ids"] = []
+    else:
+        ledger = []
+    before = inventory(driver, world)
+    with pytest.raises(ValueError, match="omits or changes"):
+        restore_loaded(driver, world, snapshot, ledger)
+    assert inventory(driver, world) == before
+
+
+def test_latest_ledger_can_mix_legacy_and_planned_erasure(driver, subject, tmp_path):
+    from grove import clock
+
+    world, item_id = subject
+    value = plant_node(driver, world, "HistoryValue", value="Legacy removable text")
+    snapshot = take_snapshot(driver, world)
+    erase(driver, world, {"type": "field_value", "item_id": item_id, "field": "title"}, tmp_path)
+    ledger = [
+        {
+            "id": new_id(world),
+            "world_id": world,
+            "target_type": "named_value",
+            "internal_ids": [value["id"]],
+            "approved_at": clock.now(world),
+        },
+        *read_ledger(tmp_path, world),
+    ]
+    purge_world_rows(driver, world)
+    restore(driver, world, snapshot, ledger)
+    after = inventory(driver, world)
+    assert "Legacy removable text" not in json.dumps(after, default=str)
+    assert "Cobalt orchard" not in json.dumps(after, default=str)
+    assert (
+        next(r for r in after["items"] if r["id"] == item_id)["summary"]
+        == "Quiet trees near the hill"
+    )

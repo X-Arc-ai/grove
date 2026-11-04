@@ -27,7 +27,7 @@ class LedgerUnavailable(RuntimeError):
 
 def _json(value: Any) -> str:
     def native(part):
-        if isinstance(part, datetime | date) or hasattr(part, "isoformat"):
+        if isinstance(part, (datetime, date)) or hasattr(part, "isoformat"):
             return part.isoformat()
         raise TypeError("invalid ledger value")
 
