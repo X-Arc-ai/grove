@@ -7,12 +7,12 @@
   --surface: #111113;
   --border: #222225;
   --text: #f0f0f0;
-  --text-secondary: #888;
-  --text-muted: #555;
+  --text-secondary: #b0b0b4;
+  --text-muted: #8b8b92;
   --accent: #22c55e;
 
   /* Constellation node-body — warm cream that reads as "stamped on equipment". */
-  --cream: #f0eede;
+  --cream: #191d23;
 
   /* Type rings — Material palette, each type a distinct semantic hue.
      Each must read clearly at 1.5–3px stroke against the cream disk. */
@@ -33,6 +33,7 @@
   --ring-pattern:       #7986cb;     /* indigo — distinct from every existing hue */
 
   --edge: rgba(240, 238, 222, 0.18);
+  --edge-live: rgba(218, 223, 225, 0.22);
   --edge-bright: rgba(240, 238, 222, 0.6);
   --edge-faded: rgba(240, 238, 222, 0.06);
   --edge-label: rgba(240, 238, 222, 0.5);
@@ -74,6 +75,7 @@
   --ring-pattern:       #5c6bc0;     /* indigo — distinct from every existing hue */
 
   --edge: rgba(60, 55, 40, 0.22);
+  --edge-live: rgba(80, 76, 64, 0.14);
   --edge-bright: rgba(60, 55, 40, 0.55);
   --edge-faded: rgba(60, 55, 40, 0.06);
   --edge-label: rgba(60, 55, 40, 0.65);

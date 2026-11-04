@@ -279,11 +279,13 @@
       cream: v('--cream'),
       accent: v('--accent'),
       edge: v('--edge'),
+      liveEdge: v('--edge-live'),
       edgeBright: v('--edge-bright'),
       edgeFaded: v('--edge-faded'),
       edgeLabel: v('--edge-label'),
       labelHalo: v('--label-halo'),
       hubText: '#1a1a1a',   // dark ink reads on the cream hub disk in both themes
+      ownerText: v('--text'),
       ring: ring,
       ringInactive: ringInactive,
     };
@@ -300,6 +302,7 @@
 
   // ---------------- boot ----------------
 
+  graphRequest=0;
   rebuildThemeCache();
   loadSchema();
   loadGraph(false);
@@ -312,13 +315,14 @@
     var epoch = viewEpoch;
     schemaAsked = true;
     window.groveApi('/api/schema').then(function (r) { return r.json(); }).then(function (s) {
-      if (epoch !== viewEpoch) return;   // the session ended while this read was out
+      if (epoch !== viewEpoch || request!==graphRequest) return;   // stale reads cannot change the view
       if (s && !s.error) schemaByType = s; else schemaAsked = false;
     }).catch(function () { /* schema is optional; panel falls back */ if (epoch === viewEpoch) schemaAsked = false; });
   }
 
   document.getElementById('refresh-data').addEventListener('click', function () { loadGraph(true); });
   document.getElementById('theme-toggle').addEventListener('click', toggleTheme);
+  document.getElementById('active-only').addEventListener('change',function(){activeOnly=this.checked;clearSelection({silent:true});applyVisibility();scheduleRedraw();});
   document.getElementById('search-btn').addEventListener('click', toggleSearch);
   document.getElementById('detail-close').addEventListener('click', closePanel);
   document.addEventListener('keydown', function (e) {
@@ -389,8 +393,9 @@
   var layoutCache = null, stableFrame = null;
   var lastNodeCount = null, lastEdgeCount = null, manualCamera = false;
   function renderStats() {
-    var state=window.GroveSimulation.getState();
-    statsEl.innerHTML='<span>'+rawNodes.length+' nodes</span>'+(state.nodeDelta?' <button class="stats-delta gp-count-delta" data-kind="nodes" aria-label="Show '+state.nodeDelta+' new nodes">(+'+state.nodeDelta+')</button>':'')+' <span class="gp-stat-divider">·</span> <span>'+rawEdges.length+' connections</span>'+(state.edgeDelta?' <button class="stats-delta gp-count-delta" data-kind="edges" aria-label="Show '+state.edgeDelta+' new connections">(+'+state.edgeDelta+')</button>':'');
+    var state=window.GroveSimulation.getState(),live=window.GroveSimulation.isLive();
+    function delta(kind,count,removed){return count?' <button class="stats-delta gp-count-delta'+(removed?' is-removed':'')+'" data-kind="'+kind+'" aria-label="Show '+count+' '+(removed?'removed ':'new ')+(kind.includes('nodes')?'nodes':'connections')+'">('+(removed?'−':'+')+count+')</button>':'';}
+    statsEl.innerHTML='<span>'+(live?state.currentNodeCount:rawNodes.length)+' nodes</span>'+delta('nodes',state.nodeDelta)+delta('removed-nodes',state.removedNodes,true)+' <span class="gp-stat-divider">·</span> <span>'+(live?state.currentEdgeCount:rawEdges.length)+' connections</span>'+delta('edges',state.edgeDelta)+delta('removed-edges',state.removedEdges,true)+(live?'<span class="stats-baseline"> · '+(state.graphBaselineAt?'Since previous graph check':'First graph check is the baseline')+'</span>':'');
     statsEl.querySelectorAll('[data-kind]').forEach(function(el){el.onclick=function(){selectChangesOnCanvas(el.dataset.kind);};});
     lastNodeCount=rawNodes.length;lastEdgeCount=rawEdges.length;
   }
@@ -428,14 +433,24 @@
     stableFrame = laid.frame;
   }
 
-  // Live mode: every load seeds the sim's layout of the current graph, then placeNew
-  // (layout-keep.js) keeps each stored position exactly and finds each new item a free spot
-  // near its hub or neighbours. Items the store has no position for are saved (insert-only);
-  // a failed save is retried on the next load. livePlaced keeps this session's placements, so
-  // a reload before a save lands shows the same map.
+  // Live layout is a projection of current adjacency, separate from the stored map.
+  // Never send these display coordinates to the positions endpoint.
   var livePlaced = {}, liveSaving = {};
-  var SELF_R_FAR = 90;   // drawNode's identity disc on the map at the zooms that frame a large world
+  var SELF_R_FAR = 90;
   function prepareLiveLayout(payload) {
+    keepStoredLayout(payload);
+    var el=payload.elements,all=el.nodes.map(function(w){return Object.assign({},w.data);});
+    adoptKinds(all);
+    var es=el.edges.map(function(w){return w.data;});
+    var metadata=simLayout(all.filter(function(n){return n.id!=='grove-self';}),es);
+    var view=window.GroveLayoutKeep.organicView(all,es);
+    layoutCache={};
+    var x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
+    all.forEach(function(n){var p=view.positions[n.id];layoutCache[n.id]=Object.assign({},metadata.cache[n.id]||{},p,{_primaryHubId:view.primary[n.id]===n.id?null:view.primary[n.id],_hubR:view.radii[n.id],_demoted:false});x0=Math.min(x0,p.x);x1=Math.max(x1,p.x);y0=Math.min(y0,p.y);y1=Math.max(y1,p.y);});
+    stableFrame=all.length?{x0:x0-65,x1:x1+65,y0:y0-65,y1:y1+65}:metadata.frame;
+  }
+  // Retain the original insert-only map independently of the visual projection.
+  function keepStoredLayout(payload) {
     var el = (payload && payload.elements) || { nodes: [], edges: [] };
     var serverStored = {};
     el.nodes.forEach(function (w) {
@@ -466,15 +481,10 @@
       return isHub(n) ? Math.max(r, HUB_R_MAX) : r;
     };
     var kept = window.GroveLayoutKeep.placeNew(Object.assign({}, livePlaced, serverStored), items, edges, seed, room);
-    layoutCache = {};
-    var x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     all.forEach(function (n) {
       var p = kept.positions[n.id];
-      layoutCache[n.id] = Object.assign({}, laid.cache[n.id] || {}, { x: p.x, y: p.y });
       livePlaced[n.id] = { x: p.x, y: p.y };
-      x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y);
     });
-    stableFrame = all.length ? { x0: x0 - 65, x1: x1 + 65, y0: y0 - 65, y1: y1 + 65 } : laid.frame;
     saveNewPositions(all.filter(function (n) { return !serverStored[n.id]; }).map(function (n) { return n.id; }), kept.positions);
   }
   function saveNewPositions(ids, positions) {
@@ -538,14 +548,14 @@
   // in local storage, and no placement of it is kept for the next person. The workers panel
   // hears 'grove:graph-cleared' and drops its own copy.
   function clearGraph() {
-    viewEpoch++;
+    viewEpoch++;graphRequest++;setGraphStatus('','');
     rawNodes = []; rawEdges = []; byId = {};
     fgNodes = []; fgLinks = []; fgNodeById = {}; neighborsOf = {};
     focusedNode = null; hoverNode = null; hoverLink = null; hopDist = {};
     livePlaced = {}; liveSaving = {}; layoutCache = null; stableFrame = null; _evoSig = null;
     schemaByType = {}; schemaAsked = false;
     hiddenTypes = {}; storage.removeItem('grove-minimal-codex-hidden-types');
-    manualCamera = false;
+    manualCamera = false;activeOnly=false;document.getElementById('active-only').checked=false;
     clearSelection({ silent: true });
     document.getElementById('selection-pill').innerHTML = '';
     document.getElementById('search-overlay').setAttribute('hidden', '');
@@ -563,11 +573,16 @@
   }
   canvasEl.addEventListener('pointerdown', function () { manualCamera=true; });
 
+  var graphRequest;
+  function placeToolbarControls(){var bar=document.querySelector('.topbar');if(bar)document.documentElement.style.setProperty('--grove-toolbar-bottom',bar.getBoundingClientRect().bottom+'px');}
+  window.addEventListener('resize',placeToolbarControls);
+  function setGraphStatus(state,text){var el=document.getElementById('graph-status');if(el){el.dataset.state=state;el.textContent=text;}var button=document.getElementById('refresh-data');if(button)button.setAttribute('aria-busy',String(state==='pending'));requestAnimationFrame(placeToolbarControls);}
   function loadGraph(refresh) {
-    var epoch = viewEpoch;
+    var epoch = viewEpoch,request=++graphRequest;
+    setGraphStatus('pending',refresh?'Refresh in progress':'Load in progress');
     return window.groveApi('/api/graph').then(function(r){return r.json();}).then(function(payload){
       if (payload.error) { var failed = new Error(payload.error); failed.code = payload.code; throw failed; }
-      if (epoch !== viewEpoch) return;   // the session ended while this read was out
+      if (epoch !== viewEpoch || request!==graphRequest) return;   // stale reads cannot change the view
       if (!schemaAsked) loadSchema();    // a sign-in in the same page: the first read answered 401
       prepareLayout(payload);
       var previous = fgNodeById || {};
@@ -582,7 +597,7 @@
       buildAdjacency(); renderStats(); buildFgPayload();
       fgNodes=fgNodes.map(function(n){
         var old=previous[n.id];
-        if(old) { old.title=n.title; old._hubR=n._hubR; return old; }
+        if(old) { var x=old.x,y=old.y,fx=old.fx,fy=old.fy;Object.assign(old,n);old.x=x;old.y=y;old.fx=fx;old.fy=fy;return old; }
         n.__home=[n.x,n.y]; n.__born=performance.now(); return n;
       });
       fgNodeById={}; fgNodes.forEach(function(n){fgNodeById[n.id]=n;});
@@ -593,12 +608,19 @@
         var ids={};visible.forEach(function(n){ids[n.id]=1;});
         Graph.graphData({nodes:visible,links:fgLinks.filter(function(l){return ids[l.source]&&ids[l.target];})});
       }
+      applyVisibility();
+      if(focusedNode&&!fgNodeById[focusedNode.id]){focusedNode=null;closePanel();}
+      clearSelection({silent:true});
       renderLegend();
       if (!focusedNode && !manualCamera && (!refresh || !previous["grove-self"])) frameGrove(0);
       if (!rawNodes.length) { focusedNode=null; manualCamera=false; detailEl.classList.remove('open'); }
       loadingEl.classList.add('hidden');
+      setGraphStatus('ready','Graph updated · '+new Date().toLocaleTimeString());
       window.dispatchEvent(new CustomEvent('grove:graph-rendered'));
+      window.dispatchEvent(new CustomEvent('grove:change'));
     }).catch(function(err){
+      if(epoch!==viewEpoch||request!==graphRequest||err&&err.code==='superseded')return;
+      setGraphStatus('error','Refresh failed. Your last graph stays visible. Try again.');
       // Live mode, signed out: the sign-in card takes the screen, so the loading cover steps aside.
       if (err && err.code === 'unauthenticated') { loadingEl.classList.add('hidden'); return; }
       // Live mode with no local sign-in: the sign-in card takes the screen, and it says what failed.
@@ -628,17 +650,8 @@
     // Live mode with no local sign-in: the sign-in card has the screen, and no graph goes behind it.
     if (!window.GROVE_FIXTURE && !window.GroveSimulation.getState().auth) return;
     if (hasSelection() || focusedNode || hoverNode) return;   // never mid-interaction
-    var epoch = viewEpoch;
-    window.groveApi('/api/graph').then(function (r) { return r.json(); }).then(function (payload) {
-      if (!payload || !payload.elements || epoch !== viewEpoch) return;
-      var ns = (payload.elements.nodes || []).map(function (w) { return w.data; });
-      var es = (payload.elements.edges || []).map(function (w) { return w.data; });
-      var sig = _graphSignature(ns, es);
-      if (_evoSig === null) { _evoSig = _graphSignature(rawNodes, rawEdges); }
-      if (sig === _evoSig) return;
-      _evoSig = sig;
-      loadGraph(false);   // full re-derive: placement, tiers, sizes, stats
-    }).catch(function () {});
+    loadGraph(false);   // One accepted snapshot updates both the map and its comparison.
+
   }, 180000);
 
   function buildAdjacency() {
@@ -1429,7 +1442,7 @@
       return visibleSet[s] && visibleSet[t];
     });
 
-    // Live mode: a legend click only hides and shows. Every place on the map is a stored place, so
+    // Live mode: a legend click only hides and shows. Preserve the current display positions, so
     // nothing below runs: no hub moves, no pin is dropped (a hidden hub keeps its own), and the
     // camera stays. Fixture mode keeps the sim's relayout.
     if (!window.GROVE_FIXTURE) { Graph.graphData({ nodes: visibleNodes, links: visibleLinks }); return; }
@@ -1602,7 +1615,7 @@
       ctx.globalAlpha=1;ctx.fillStyle=THEME.cream;ctx.beginPath();ctx.arc(node.x,node.y,r,0,Math.PI*2);ctx.fill();
       ctx.strokeStyle=THEME.ring.person;ctx.lineWidth=2/scale;ctx.stroke();
       ctx.globalAlpha=.8;drawPersonGlyph(ctx,node.x,node.y,r,THEME.ring.person);
-      ctx.globalAlpha=1;ctx.fillStyle=THEME.hubText;ctx.font='500 '+(10/scale)+'px "JetBrains Mono",monospace';ctx.textAlign='center';ctx.textBaseline='top';
+      ctx.globalAlpha=1;ctx.fillStyle=THEME.ownerText;ctx.font='500 '+(10/scale)+'px "JetBrains Mono",monospace';ctx.textAlign='center';ctx.textBaseline='top';
       ctx.lineWidth=4/scale;ctx.strokeStyle=THEME.cream;ctx.strokeText(node.title,node.x,node.y+r+8/scale);ctx.fillText(node.title,node.x,node.y+r+8/scale);return;
     }
     // Orbit mode: hub disks size continuously by cluster mass (_hubR, area ∝
@@ -1678,7 +1691,7 @@
     else if (tier === 4) ringW = 2.0;
     else if (tier === 5) ringW = 1.4;
     else ringW = 1.2; // tier 6 — event/observation/status_change
-    ctx.lineWidth = ringW / Math.max(scale, 0.85);
+    ctx.lineWidth = (window.GROVE_FIXTURE ? ringW : ringW*.48) / Math.max(scale, 0.85);
     ctx.strokeStyle = ringColor;
     ctx.stroke();
 
@@ -1967,6 +1980,7 @@
     // density. Dense lever 2: edgeRest sits above edgeFaded so the connective
     // tissue is visible at rest (edgeRest == edgeFaded when the flag is off;
     // interaction dimming states above keep edgeFaded either way).
+    if (!window.GROVE_FIXTURE) return THEME.liveEdge;
     if (l.inactive) return THEME.edgeRest;
     return THEME.edge;
   }
@@ -1984,7 +1998,7 @@
     }
 
     if (hoverNode && (hoverNode.id === s || hoverNode.id === t)) return 1.4;
-    return ALWAYS_LABELED_VERBS[l.verb] ? 0.9 : 0.5;
+    return window.GROVE_FIXTURE ? (ALWAYS_LABELED_VERBS[l.verb] ? 0.9 : 0.5) : 0.55;
   }
 
   // ---------------- interaction ----------------
@@ -2083,7 +2097,7 @@
 
     var epoch = viewEpoch;
     window.groveApi('/api/node/' + encodeURIComponent(node.id)).then(function (r) { return r.json(); }).then(function (extra) {
-      if (epoch !== viewEpoch) return;   // the session ended while this read was out
+      if (epoch !== viewEpoch || request!==graphRequest) return;   // stale reads cannot change the view
       var apiNode = (extra && extra.node) || {};
       var fullSummary = apiNode.content || apiNode.summary || raw.summary || '';
       var apiProps = apiNode.properties || localProps;
@@ -2523,6 +2537,7 @@
   function selectChangesOnCanvas(kind, provider) {
     Promise.resolve(window.GroveSimulation.getChanges(provider)).then(function(data){
       if (!data || data.error) return;
+      if(kind==='removed-nodes'||kind==='removed-edges'){clearSelection({silent:true});var nodes=kind==='removed-nodes',count=nodes?data.removed_nodes:data.removed_edges;showSelectionPill(count+' '+(nodes?'node':'connection')+(count===1?'':'s')+' removed since the previous graph check. Removed details are not retained.');scheduleRedraw();return;}
       // Reset any previous selection or single-node focus.
       clearSelection({ silent: true });
       focusedNode = null;
@@ -2623,6 +2638,7 @@
     var next = cur === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
     storage.setItem('grove-minimal-codex-theme', next);
+    window.dispatchEvent(new CustomEvent('grove:theme',{detail:{theme:next}}));
     rebuildThemeCache();
     renderLegend();
     scheduleRedraw();

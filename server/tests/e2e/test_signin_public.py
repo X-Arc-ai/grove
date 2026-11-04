@@ -96,13 +96,17 @@ def _wait_for_card(page) -> None:
     page.get_by_role("button", name="Continue with Google").wait_for(timeout=WAIT_MS)
 
 
-def test_the_homepage_links_privacy_and_sign_in(page, shots):
+def test_root_enters_login_with_signup_and_privacy_links(page, shots):
+    redirect = page.request.get("/", max_redirects=0)
+    assert redirect.status == 303
+    assert redirect.headers["location"] == "/login"
     answer = page.goto("/")
     assert answer.status == 200
-    assert page.locator("#grove-product").count() == 0, "/ with no cookie is not the homepage"
+    assert urlsplit(page.url).path == "/login"
+    _wait_for_card(page)
     assert page.locator('a[href="/privacy"]').first.is_visible()
-    assert page.locator('a[href="/signin"]').first.is_visible()
-    _shot(page, shots, "home")
+    assert page.locator('a[href="/signup"]').first.is_visible()
+    _shot(page, shots, "root-login")
 
 
 def test_the_privacy_page(page, shots):
