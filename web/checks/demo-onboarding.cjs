@@ -44,7 +44,7 @@ async function demo(search, expectedProvider) {
     },
     localStorage: {getItem() { throw new Error('Live storage read'); }, setItem() { throw new Error('Live storage write'); }},
     fetch() { throw new Error('Real API request'); },
-    setTimeout: fn => { timers.set(++sequence, fn); return sequence; },
+    setTimeout: (fn, delay) => { timers.set(++sequence, {fn, delay, at: now + delay}); return sequence; },
     clearTimeout: id => timers.delete(id),
     addEventListener: (name, fn) => { (events[name] ||= []).push(fn); },
     dispatchEvent: event => (events[event.type] || []).forEach(fn => fn(event)),
@@ -54,6 +54,7 @@ async function demo(search, expectedProvider) {
   context.window = context;
   vm.createContext(context);
   vm.runInContext(read('demo-onboarding.js'), context);
+  assert.equal(context.__GROVE_SIM_TICK_MS__, 3000);
   // Use exactly the memory boundary emitted by the demo builder.
   vm.runInContext('(function(localStorage){' + read('simulation.js') + '\n})(window.GroveDemo.storage);', context);
   await Promise.resolve();
@@ -61,16 +62,34 @@ async function demo(search, expectedProvider) {
   await Promise.resolve();
   const api = context.GroveSimulation;
   assert.equal(api.isLive(), false);
-  assert(markers[0].innerHTML.includes('Your file was not uploaded or saved'));
-  assert(markers[0].innerHTML.includes('href="/"'));
+  assert.equal(context.document.title, 'Grove');
+  assert.equal(markers.length, 0);
   if (expectedProvider) {
     assert.equal(api.getState().onboardingComplete, true);
     assert.equal(api.getState().accountImports[expectedProvider].status, 'importing');
     const before = api.getState().currentNodeCount;
-    now += 18000;
-    const callbacks = [...timers.values()];
-    timers.clear();
-    callbacks.forEach(fn => fn());
+    const started = now;
+    function advance(ms) {
+      now += ms;
+      for (const [id, timer] of [...timers]) {
+        if (timer.at <= now) {
+          timers.delete(id);
+          timer.fn();
+        }
+      }
+    }
+    for (let step = 1; step <= 18; step++) {
+      assert.equal(timers.size, 1);
+      assert.equal([...timers.values()][0].delay, 3000);
+      const prior = api.getState().currentNodeCount;
+      advance(2999);
+      assert.equal(api.getState().currentNodeCount, prior);
+      assert.equal(api.getState().accountImports[expectedProvider].status, 'importing');
+      advance(1);
+      if (step < 18) assert.equal(api.getState().accountImports[expectedProvider].status, 'importing');
+    }
+    assert.equal(now - started, 54000);
+    assert.equal(timers.size, 0);
     assert.equal(api.getState().accountImports[expectedProvider].status, 'ready');
     assert(api.getState().currentNodeCount > before);
     assert(api.getState().currentNodeCount >= 2000);
@@ -97,6 +116,12 @@ async function demo(search, expectedProvider) {
   assert(artifact.includes('})(window.GroveDemo.storage);'));
   assert(!artifact.includes('window.GroveLive ='));
   assert(artifact.includes('Automatic '));
+  assert(!read('style.css').includes('#grove-demo-marker'));
+  assert(!artifact.includes('grove-demo-marker'));
+  assert(!artifact.includes('Simulation · Grove'));
+  assert(!ordinary.includes('window.__GROVE_SIM_TICK_MS__ = 3000;'));
+  const demoTick = artifact.indexOf('window.__GROVE_SIM_TICK_MS__ = 3000;');
+  assert(demoTick >= 0 && demoTick < artifact.indexOf('var TICK_MS ='));
   assert(product.includes("if((live||demo)&&el.dataset.guide==='muse')"));
-  console.log('PASS demo upload trigger, memory isolation, synthetic growth, restart and artifact boundaries');
+  console.log('PASS demo upload trigger, memory isolation, 54-second growth, banner absence, restart and artifact boundaries');
 })().catch(error => { console.error(error); process.exitCode = 1; });
