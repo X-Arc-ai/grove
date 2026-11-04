@@ -288,20 +288,13 @@ def _rank(source_type: str | None, derivation: str | None) -> int:
     return RANK[source_type]
 
 
-def _check_rank(run: ap._Run, claim: dict[str, Any], plans: list[ap._Plan]) -> None:
-    """B.2: evidence at or above the claim's rank. The person's own word outranks every source
-    (D9 rule 1), so a person caller passes."""
+def _check_rank(run: ap._Run, claim: dict[str, Any], proof: ap._Plan) -> None:
+    """B.2: the recorded proof must meet the claim's rank. The person's own word outranks
+    every source (D9 rule 1), so a person caller passes."""
     if run.caller_kind == "person":
         return
     claim_rank = _rank(claim.get("derived_source_type"), claim.get("derivation"))
-    best = max(
-        (
-            _rank(plan.columns.get("source_type"), plan.columns.get("derivation"))
-            for plan in plans
-            if plan.polarity == "contradicts"
-        ),
-        default=-1,
-    )
+    best = _rank(proof.columns.get("source_type"), proof.columns.get("derivation"))
     if best < claim_rank:
         raise Refused(
             "invalid_arguments",
@@ -341,8 +334,8 @@ def _refute_item(run: ap._Run, index: int, op: dict[str, Any], item_id: str) -> 
 
     if defer_refutation(run, index, op, item, plans):
         return
-    _check_rank(run, item, plans)
     proof = refutation_proof(plans)
+    _check_rank(run, item, proof)
     world_time = proof.source_time
     reason_id = run.text(op["reason"])
     # Refuted: never true, so no world end time is stored (D3, "end classes").
@@ -368,8 +361,10 @@ def _refute_link(run: ap._Run, op: dict[str, Any], link_id: str) -> None:
         raise Refused("invalid_arguments", "already_ended", "the link has already ended", {})
     plans = ap._plans(run, op["evidence_refs"])
     ap._settle(run, plans, link_id)
-    _check_rank(run, link, plans)
-    proof = refutation_proof(plans)
+    # Link refutation follows B.2's inherited source rank. Item cascades additionally
+    # require observed confirmation; both paths authorize the exact proof they record.
+    proof = refutation_proof(plans, rank=_rank)
+    _check_rank(run, link, proof)
     world_time = proof.source_time
     reason_id = run.text(op["reason"])
     ap._end_entry(run, "link", link_id, None, "refuted", world_time, reason_id, proof.id)
