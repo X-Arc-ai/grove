@@ -966,6 +966,8 @@ REQUESTS = Table(
         _ruling("about", "ids", "S41: B.3 remember, for the later pass"),
         _ruling("relay", "enum:relay", "S53: remember, answer or correction"),
         _ruling("protocol", "code", "Optional protected protocol: question_answer_v1"),
+        _ruling("learner_work_id", "id", "Optional immutable protected Learner work reference"),
+        _ruling("learner_completion_id", "id", "Optional immutable Learner completion reference"),
         _ruling("question_id", "id", "Optional immutable question answer binding"),
         _ruling("question_binding_revision", "int", "Optional positive binding revision"),
         _ruling("answer_command", "json_ids", "Optional canonical AnswerCommandV1; <=16 KiB"),
@@ -974,7 +976,12 @@ REQUESTS = Table(
         _ruling("principal_id", "id", "Optional authenticated principal reference; <=128 chars"),
     ),
     uniques=_keys("requests", ("world_id", "id")),
-    indexes=_ranges("requests", ("world_id", "status")),
+    indexes=_ranges(
+        "requests",
+        ("world_id", "status"),
+        ("world_id", "learner_work_id"),
+        ("world_id", "learner_completion_id"),
+    ),
     notes=(
         "A request commits once, in one batch, and `saved` moves in the same transaction as that "
         "commit (S41). A filter in MATCH or WHERE reads with no lock, so a transition checks the "
@@ -2205,7 +2212,338 @@ FORGET_APPROVALS = Table(
     indexes=_ranges("forget_approvals", ("world_id",)),
 )
 
-LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS, FORGET_APPROVALS)
+# Inactive D10 protocol homes. No producer or runtime registration accompanies this schema.
+LEARNER_WORK = Table(
+    name="learner_work",
+    label="LearnerWork",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D10",
+    columns=(
+        _ID,
+        _WORLD,
+        *_version_touched(),
+        _ruling("episode_id", "id", "Immutable same-world origin"),
+        _ruling("source_id", "id", "Immutable same-world origin"),
+        _ruling("connector_id", "id", "Immutable same-world origin"),
+        _ruling("generation", "int", "Positive source-owner generation"),
+        _ruling("profile", "enum:learner_profile", "Exact inactive v1 profile"),
+        _ruling("request_id", "id", "Immutable one-to-one protected Request"),
+        _ruling(
+            "initial_input_value_id", "value_id", "Immutable canonical initial binding; <=1 MiB"
+        ),
+        _ruling("latest_execution_id", "id", "Current append-only revision"),
+        _ruling("state", "enum:learner_state", "Exact current execution projection"),
+        _ruling("retry_at", "instant", "Optional current retry time"),
+        _ruling("completion_id", "id", "Optional immutable successful completion"),
+        _ruling("supersedes_work_id", "id", "Optional prior terminal generation"),
+        _ruling("created_at", "instant", "Immutable operational creation time"),
+    ),
+    uniques=_keys(
+        "learner_work",
+        ("id",),
+        ("world_id", "episode_id", "generation", "profile"),
+        ("world_id", "request_id"),
+    ),
+    indexes=_ranges(
+        "learner_work",
+        ("world_id", "state", "retry_at"),
+        ("world_id", "source_id"),
+        ("world_id", "connector_id"),
+    ),
+    notes=(
+        "Inactive durable Learner source. Private values require complete D14 closure "
+        "before runtime use."
+    ),
+)
+
+LEARNER_EXECUTIONS = Table(
+    name="learner_executions",
+    label="LearnerExecution",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D10",
+    columns=(
+        _ID,
+        _WORLD,
+        *_version_touched(),
+        _ruling("work_id", "id", "Exact same-world associations"),
+        _ruling("request_id", "id", "Exact same-world associations"),
+        _ruling("run_id", "id", "Exact same-world associations"),
+        _ruling("ordinal", "int", "Append-only revision, starts at zero; at most 63"),
+        _ruling("binding_revision", "int", "Positive semantic revision; at most two"),
+        _ruling("claim_epoch", "int", "Checked protocol epoch"),
+        _ruling("predecessor_id", "id", "Optional only at ordinal zero"),
+        _ruling("event_id", "id", "Immutable command replay key"),
+        _ruling("event_kind", "enum:learner_event", "Exact accepted protocol event"),
+        _ruling("state", "enum:learner_state", "Exact reducer result"),
+        _ruling("binding_value_id", "value_id", "Canonical private value; <=1 MiB"),
+        _ruling("event_value_id", "value_id", "Canonical private value; <=1 MiB"),
+        _ruling("state_value_id", "value_id", "Canonical private state wrapper; <=256 KiB"),
+        _ruling("proposal_value_id", "value_id", "Optional canonical private payload; <=512 KiB"),
+        _ruling("batch_value_id", "value_id", "Optional canonical private payload; <=512 KiB"),
+        _ruling("triage_value_id", "value_id", "Optional canonical private trace; <=256 KiB"),
+        _ruling("dependency_ids", "ids", "Complete context reference union; <=1536"),
+        _ruling("commit_id", "id", "Journal transaction identity"),
+        _ruling("change_set_id", "id", "Journal transaction identity"),
+        _ruling("at", "instant", "Operational event acceptance time"),
+    ),
+    uniques=_keys(
+        "learner_executions",
+        ("id",),
+        ("world_id", "work_id", "ordinal"),
+        ("world_id", "work_id", "event_id"),
+    ),
+    indexes=_ranges(
+        "learner_executions",
+        ("world_id", "work_id"),
+        ("world_id", "run_id"),
+        ("world_id", "commit_id"),
+    ),
+    notes=(
+        "Inactive durable Learner source. Private values require complete D14 closure "
+        "before runtime use."
+    ),
+)
+
+LEARNER_CALLS = Table(
+    name="learner_calls",
+    label="LearnerCall",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D10",
+    columns=(
+        _ID,
+        _WORLD,
+        *_version_touched(),
+        _ruling("work_id", "id", "Immutable actual-attempt association"),
+        _ruling("prepared_execution_id", "id", "Immutable actual-attempt association"),
+        _ruling("run_id", "id", "Immutable actual-attempt association"),
+        _ruling("ordinal", "int", "One through five across all claims and rebinds"),
+        _ruling("claim_epoch", "int", "Exact prepared claim and binding"),
+        _ruling("binding_revision", "int", "Exact prepared claim and binding"),
+        _ruling("stage", "enum:learner_stage", "Exact PR41 stage"),
+        _ruling("route", "code", "Exact PR41 model-step tuple; <=80 ASCII characters"),
+        _ruling("model", "code", "Exact PR41 model-step tuple; <=80 ASCII characters"),
+        _ruling("job", "code", "Exact PR41 model-step tuple; <=80 ASCII characters"),
+        _ruling("effort", "code", "Exact PR41 model-step tuple; <=80 ASCII characters"),
+        _ruling("state", "enum:learner_call_state", "Current journal-justified attempt state"),
+        _ruling(
+            "request_value_id", "value_id", "Exact private normalized and wire request; <=512 KiB"
+        ),
+        _ruling(
+            "result_value_id", "value_id", "Optional screened wire/normalized result; <=512 KiB"
+        ),
+        _ruling(
+            "binding_value_id", "value_id", "Private digest and metering association; <=16 KiB"
+        ),
+        _ruling("model_call_id", "id", "Optional reciprocal owner-issued metering reference"),
+        _ruling("latest_execution_id", "id", "Revision that justifies current attempt state"),
+        _ruling("prepared_at", "instant", "Immutable reservation time"),
+        _ruling("sent_at", "instant", "Optional owner event time, set once"),
+        _ruling("settled_at", "instant", "Optional owner event time, set once"),
+        _ruling("validation_code", "enum:learner_validation", "Optional closed result code"),
+    ),
+    uniques=_keys(
+        "learner_calls", ("id",), ("world_id", "work_id", "ordinal"), ("world_id", "model_call_id")
+    ),
+    indexes=_ranges(
+        "learner_calls", ("world_id", "work_id"), ("world_id", "state"), ("world_id", "run_id")
+    ),
+    notes=(
+        "Inactive durable Learner source. Private values require complete D14 closure "
+        "before runtime use."
+    ),
+)
+
+LEARNER_DISPOSITIONS = Table(
+    name="learner_dispositions",
+    label="LearnerDisposition",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D10",
+    columns=(
+        _ID,
+        _WORLD,
+        *_version_touched(),
+        _ruling("work_id", "id", "Exact same-world origin"),
+        _ruling("execution_id", "id", "Exact same-world origin"),
+        _ruling("source_id", "id", "Exact same-world origin"),
+        _ruling("episode_id", "id", "Exact same-world origin"),
+        _ruling("binding_revision", "int", "Immutable positive source versions"),
+        _ruling("source_version", "int", "Immutable positive source versions"),
+        _ruling("episode_version", "int", "Immutable positive source versions"),
+        _ruling("message_ordinal", "int", "Exact retained-message position, zero through 127"),
+        _ruling("locator", "locator", "Exact retained key locator; <=1024 characters"),
+        _ruling("state", "enum:learner_disposition", "Complete message disposition"),
+        _ruling(
+            "detail_value_id",
+            "value_id",
+            "Private provenance and complete class outcomes; <=16 KiB",
+        ),
+        _ruling("operation_ids", "ids", "Local descriptor IDs; <=500"),
+        _ruling("evidence_ids", "ids", "Local observation IDs; <=1024"),
+        _ruling("hold_id", "id", "Optional future references; absent for v1 success"),
+        _ruling("mention_id", "id", "Optional future references; absent for v1 success"),
+        _ruling("handoff_id", "id", "Optional future references; absent for v1 success"),
+        _ruling("at", "instant", "Operational disposition time"),
+    ),
+    uniques=_keys(
+        "learner_dispositions",
+        ("id",),
+        ("world_id", "work_id", "binding_revision", "message_ordinal"),
+    ),
+    indexes=_ranges(
+        "learner_dispositions",
+        ("world_id", "source_id"),
+        ("world_id", "episode_id"),
+        ("world_id", "state"),
+    ),
+    notes=(
+        "Inactive durable Learner source. Private values require complete D14 closure "
+        "before runtime use."
+    ),
+)
+
+LEARNER_COMPLETIONS = Table(
+    name="learner_completions",
+    label="LearnerCompletion",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D10",
+    columns=(
+        _ID,
+        _WORLD,
+        *_version_touched(),
+        _ruling("work_id", "id", "Exact final associations"),
+        _ruling("request_id", "id", "Exact final associations"),
+        _ruling("execution_id", "id", "Exact final associations"),
+        _ruling("run_id", "id", "Exact final associations"),
+        _ruling("binding_revision", "int", "Final checked semantic revision and claim epoch"),
+        _ruling("claim_epoch", "int", "Final checked semantic revision and claim epoch"),
+        _ruling("commit_id", "id", "Same transaction as all accepted effects"),
+        _ruling("change_set_id", "id", "Same transaction as all accepted effects"),
+        _ruling("outcome", "enum:learner_completion", "Successful whole-work result only"),
+        _ruling(
+            "detail_value_id",
+            "value_id",
+            "Private completion plan, effect ledger and versions; <=256 KiB",
+        ),
+        _ruling("disposition_ids", "ids", "Exact complete disposition set; one through 128"),
+        _ruling("operation_count", "int", "Derived bounded count, never a supplied estimate"),
+        _ruling("message_count", "int", "Derived bounded count, never a supplied estimate"),
+        _ruling("blank_count", "int", "Derived bounded count, never a supplied estimate"),
+        _ruling("empty_count", "int", "Derived bounded count, never a supplied estimate"),
+        _ruling("extracted_count", "int", "Derived bounded count, never a supplied estimate"),
+        _ruling("created_item_count", "int", "Derived bounded count, never a supplied estimate"),
+        _ruling("completed_at", "instant", "Operational commit time"),
+    ),
+    uniques=_keys(
+        "learner_completions", ("id",), ("world_id", "work_id"), ("world_id", "request_id")
+    ),
+    indexes=_ranges("learner_completions", ("world_id", "completed_at"), ("world_id", "commit_id")),
+    notes=(
+        "Inactive durable Learner source. Private values require complete D14 closure "
+        "before runtime use."
+    ),
+)
+
+LEARNER_EPISODE_PROGRESS = Table(
+    name="learner_episode_progress",
+    label="LearnerEpisodeProgress",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D10",
+    columns=(
+        _ID,
+        _WORLD,
+        *_version_touched(),
+        _ruling("episode_id", "id", "Immutable same-world source-stream lineage"),
+        _ruling("connector_id", "id", "Immutable same-world source-stream lineage"),
+        _ruling("stream_anchor_source_id", "id", "Immutable same-world source-stream lineage"),
+        _ruling("profile", "enum:learner_profile", "Exact inactive v1 profile"),
+        _ruling("position", "int", "Stable source-owner order, starts at zero; <=255"),
+        _ruling("predecessor_progress_id", "id", "Optional only at position zero"),
+        _ruling("required_generation", "int", "Latest positive registered requirement"),
+        _ruling("required_work_id", "id", "Latest required source-owner work"),
+        _ruling("completed_generation", "int", "Optional latest completed generation"),
+        _ruling("completion_id", "id", "Optional latest successful completion"),
+        _ruling(
+            "historical_contribution",
+            "enum:learner_contribution",
+            "Extracted contribution never downgrades",
+        ),
+        _ruling("source_start", "instant", "Optional exact source start; absence means unknown"),
+        _ruling("created_at", "instant", "Immutable operational creation time"),
+    ),
+    uniques=_keys(
+        "learner_episode_progress",
+        ("id",),
+        ("world_id", "episode_id", "profile"),
+        ("world_id", "stream_anchor_source_id", "profile", "position"),
+    ),
+    indexes=_ranges(
+        "learner_episode_progress", ("world_id", "connector_id"), ("world_id", "required_work_id")
+    ),
+    notes=(
+        "Inactive durable Learner source. Private values require complete D14 closure "
+        "before runtime use."
+    ),
+)
+
+LEARNER_HANDOFFS = Table(
+    name="learner_handoffs",
+    label="LearnerHandoff",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D10",
+    columns=(
+        _ID,
+        _WORLD,
+        *_version_touched(),
+        _ruling("work_id", "id", "Immutable accepted origin"),
+        _ruling("execution_id", "id", "Immutable accepted origin"),
+        _ruling("completion_id", "id", "Exactly one optional origin class must be present"),
+        _ruling("disposition_id", "id", "Exactly one optional origin class must be present"),
+        _ruling(
+            "kind",
+            "enum:learner_handoff_kind",
+            "Bounded aggregate intent; future questions cannot complete v1",
+        ),
+        _ruling("contract_version", "int", "Exactly one"),
+        _ruling("payload_value_id", "value_id", "Private typed intent; <=256 KiB"),
+        _ruling("target_ids", "ids", "Complete same-world target set; <=256"),
+        _ruling("state", "enum:learner_handoff_state", "Pending, acknowledged or revoked"),
+        _ruling("consumer_receipt_id", "id", "Optional immutable durable consumer transaction"),
+        _ruling("created_at", "instant", "Immutable operational creation time"),
+        _ruling("acknowledged_at", "instant", "Optional operational acknowledgement time"),
+    ),
+    uniques=_keys("learner_handoffs", ("id",), ("world_id", "execution_id", "kind")),
+    indexes=_ranges("learner_handoffs", ("world_id", "state"), ("world_id", "work_id")),
+    notes=(
+        "Inactive durable Learner source. Private values require complete D14 closure "
+        "before runtime use."
+    ),
+)
+
+LEARNER_TABLES: tuple[Table, ...] = (
+    LEARNER_WORK,
+    LEARNER_EXECUTIONS,
+    LEARNER_CALLS,
+    LEARNER_DISPOSITIONS,
+    LEARNER_COMPLETIONS,
+    LEARNER_EPISODE_PROGRESS,
+    LEARNER_HANDOFFS,
+)
+
+LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS, FORGET_APPROVALS) + LEARNER_TABLES
 
 # B.1's five groups, in B.1 order.
 B1_GROUPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
