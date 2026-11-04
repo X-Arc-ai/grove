@@ -194,3 +194,100 @@ world_id, expires_at}` once: the raw token appears nowhere else. The row stores 
 Life: 60 minutes by default, at most 24 hours. `token revoke --id <id>`; `token list --world
 <id>` (ids and times, never a hash). On the box the command runs inside the api container
 (`docs/deploy.md`).
+
+## Internal text-export fact transport
+
+The WhatsApp and text/Markdown adapters remain unregistered. Their `as_chat()` methods return
+`ParsedMessage.source_facts` from `grove.source_facts`; they do not invoke the upload pipeline,
+write sources or episodes, or call a model. No public input or accepted connector changes.
+
+`TextSourceFacts` contains the exact artifact SHA-256, a typed byte/line/page locator and typed
+source-time candidates. The contract is `text_export.v1`, with identity basis `export_digest`.
+Facts are immutable, strictly typed and limited to 2,048 canonical UTF-8 bytes per message.
+The JSON decoder rejects duplicate, missing and extra fields. Integers reject booleans.
+Positions fit a nonnegative signed 64-bit integer; lines and pages start at one. Byte ranges
+are nonempty and half-open. Each text parser checks the range against its original input.
+The page variant exists as a validated type only; no PDF adapter uses this contract yet.
+
+The message's `at` is the sole instant. An `instant` fact must match it exactly. A `local`,
+`ambiguous` or `absent` fact requires `at=None`. Short years retain their width and unresolved
+century. Invalid dates, UTC overflow, conflicting zone/offset values and falsely resolved
+repeated-hour times refuse. A source offset or zone never establishes a person's timezone.
+
+`ParsedMessage` permits a null speaker only with these typed facts. Calendar facts cannot
+coexist with text facts. The internal adapters leave speakers unknown; display names, bot
+names, forwarded text, caller arguments and upload ownership establish no speaker authority.
+
+For internal in-memory screening, pass `source_identity=WHATSAPP_TEXT` or
+`source_identity=DOCUMENT_TEXT` to `Screener.screen_source`. The exact tuples are
+`("whatsapp", "whatsapp.export.v1")` and `("document", "document.text.v1")`; their locator
+kinds must be `line_bytes` and `bytes`, respectively. They are a code whitelist, not provider
+registrations. Dictionaries, mixed typed/legacy messages and other tuples refuse before
+screening. These Python types and tuples are internal contracts, not authentication tokens.
+No HTTP option or model field can select this path. Future persistence still requires an
+independent transactional producer/tuple check and must not trust decoded JSON as authority.
+
+The real Screener still processes text, sender, key and external locator. It carries facts
+only beside retained messages, with an explicit null `speaker_kind` when unknown. A dropped
+message or whole source leaves no facts in the result. Legacy serialized bytes stay unchanged
+when facts are absent. Facts remain private content, with no erasure exemption.
+
+WhatsApp adapters restore original source order even when the component's presentation view
+sorts local wall times. Text and equivalent ZIP wrappers share transcript identity and keys.
+Documents retain original bytes and section offsets as identity inputs. The chat namespace
+is `export_digest:<sha256>`. Different overlapping exports remain different artifacts;
+identical unrelated transcripts cannot be distinguished by bytes alone. These tests prove
+repeat parser identity, not transactional re-import idempotence or independent evidence.
+
+Persistence, extraction, holds, cross-artifact evidence deduplication, speaker resolution,
+production counts and typed-content erasure remain separate integration work. No complete
+D5/D10, media, or release acceptance follows from this internal transport.
+See `docs/ingest-media.md` for the component limits.
+
+## Internal pure retention prerequisite
+
+`grove.ingest.text_retention.prepare_text_delta` prepares an immutable `TextDeltaDraft` in
+memory only. No production consumer imports it, and the four registered providers stay
+unchanged. The draft is not a `ScreenedSource`, writer token, admission result or import
+success. Its statuses are `empty_delta`, `kept_out` and `draft_only`.
+
+The two exact internal identities use `whatsapp.export.v1` and `document.text.v1`.
+WhatsApp accepts transcript bytes only; ZIP and binary signatures refuse. Documents use
+`parse_text(markdown=True, source_at=None)` with no caller speaker metadata. Original keys,
+artifact identity and source order stay intact. `already_stored` only simulates a delta;
+actual replay and erasure fences require later transaction-local checks.
+
+Only bounded synthetic `DraftScreeningRules` reach the real Screener. The wrapper never loads
+privacy configuration from files or the environment. Fact values remain unadmitted. Real
+fact-policy screening, erasure/restore compatibility, provenance guards and an authorized
+writer integration remain prerequisites for any persistence.
+
+| Internal draft limit | Bound |
+|---|---|
+| Exact input bytes | 16 MiB before parser allocation |
+| Parsed messages / stored keys | 1,000 each; stored keys are an exact frozenset |
+| Key size | 1,024 characters; aggregate key UTF-8 bytes at most 1,024,000 |
+| Synthetic rules | 32 rename pairs, 32 denylist terms, 32 own identifiers |
+| Rule strings | 128 characters / 512 bytes; rename labels at most 64 bytes; aggregate 32,768 bytes |
+| Preliminary screening group | Locator/key/sender/text total 31,250 characters; canonical facts total 2,048,000 bytes |
+| Final parts | At most 64; 4,000,000 UTF-8 bytes each; 16,000,000 total |
+
+Pre-screen groups refuse an oversized single row. Retained JSON uses the existing
+`ScreenedMessage.as_row()` fields and `json.dumps(sort_keys=True, ensure_ascii=False)`
+spacing. Exact byte accounting includes metadata, escaping and array punctuation. Final
+parts stay within their screening group. Group receipt counts attach once to its first
+part; an entirely dropped group retains one empty diagnostic part and no episode.
+
+Cuts operate across all retained rows, independently of final part boundaries. Fully timed
+WhatsApp rows split only at a forward adjacent gap greater than 90 minutes. Each cut uses
+its true minimum/maximum time. Any retained unknown time selects one null-bound WhatsApp
+cut. Documents use one cut with absent times. Unknown speaker/time counts overlap;
+`held_source_messages` counts their union. No display sender establishes speaker authority.
+
+`grove.source_fact_values` is separately pure: standard library plus `grove.source_facts`
+only. Its `text_fact_values.v1` projection preserves every local candidate, year width,
+precision, exact UTC seconds, explicit signed offset and retained timezone spelling.
+Explicit typed selectors match whole message keys. Full-batch validation includes
+nonmatches, duplicates, Unicode, a 1,000-row limit and a 4,000,000-byte canonical record
+limit. Only this budget view serializes `at` as null or canonical UTC seconds; it does not
+change Source JSON. These helpers do not authenticate intent or perform erasure.
