@@ -731,6 +731,7 @@ class Drill:
                     require(
                         "${" not in resolved
                         and PurePosixPath(resolved).is_absolute()
+                        and ".." not in PurePosixPath(resolved).parts
                         and PurePosixPath(resolved).is_relative_to(PurePosixPath(logs)),
                         "service_log_path_unmeasured",
                     )

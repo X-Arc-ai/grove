@@ -938,3 +938,58 @@ def test_capacity_loss_prevents_the_next_stop(tmp_path, monkeypatch):
     with pytest.raises(Refused, match="capacity_bytes"):
         drill.stop()
     assert commands == []
+
+
+@pytest.mark.parametrize("attribute", ["fileName", "filePattern"])
+@pytest.mark.parametrize(
+    ("target", "refused"),
+    [
+        ("/logs/debug.log", False),
+        ("${config:server.directories.logs}/debug.log", False),
+        ("/logs/../unmeasured/debug.log", True),
+        ("${config:server.directories.logs}/nested/../../outside.log", True),
+    ],
+)
+def test_service_log_target_cannot_escape_measured_directory(
+    tmp_path, monkeypatch, attribute, target, refused
+):
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    daemon_log = tmp_path / "daemon.log"
+    daemon_log.write_bytes(b"")
+    rows = [
+        {"name": "server.directories.logs", "value": "/logs"},
+        {"name": "server.logs.config", "value": "/conf/server.xml"},
+        {"name": "server.logs.user.config", "value": "/conf/user.xml"},
+    ]
+    session = SimpleNamespace(run=lambda *args, **kwargs: SimpleNamespace(data=lambda: rows))
+    driver = SimpleNamespace(session=lambda **kwargs: nullcontext(session))
+    monkeypatch.setattr("grove.store.connection.open_driver", lambda **kwargs: nullcontext(driver))
+
+    def docker(tag, *args, **kwargs):
+        if tag == "resolve_log_surface":
+            return args[-1]
+        if tag == "read_log_config":
+            return (
+                f'<Configuration><Appenders><File {attribute}="{target}"/>'
+                "</Appenders></Configuration>"
+            )
+        if tag == "service_log_identity":
+            return json.dumps(
+                {
+                    "id": drill.identity.service,
+                    "log": str(daemon_log),
+                    "driver": {"Type": "json-file", "Config": {}},
+                }
+            )
+        raise AssertionError(tag)
+
+    monkeypatch.setattr(drill, "docker", docker)
+    if refused:
+        with pytest.raises(Refused, match="service_log_path_unmeasured"):
+            drill.discover_service_surfaces()
+    else:
+        drill.discover_service_surfaces()
+        assert drill.service_surfaces["service_logs"] == "/logs"
