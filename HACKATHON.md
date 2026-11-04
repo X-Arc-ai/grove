@@ -6,6 +6,10 @@ A merged PR proves source inclusion, not deployment, CI success, or user accepta
 The table preserves PR18 and its actual merge. Later candidates require a later snapshot.
 This table remains fixed through PR #59 at the time above. The later published UI source in
 PR #60 belongs to the newer [source snapshot](docs/submission-status.md), not this event-table snapshot.
+The source snapshot at 2026-11-04 19:04 UTC also includes PR #61, merged as
+`0682eb201ad0ccfb8a8a9d074d07759ec8eb31a1` from `d17151421e027a4fe19b269a9f06cf6dcd17fe33`,
+and the separate PR #63 source helper, merged as `c145cf8b450f3ae7ab43989cf07969ee5b493057`.
+These later merges do not alter the fixed event table or prove runtime acceptance.
 
 ## Event pull requests
 
@@ -100,8 +104,8 @@ PR table. No independent public citation for the private experiments is supplied
 
 ## Release evidence
 
-[Submission status](docs/submission-status.md) records the source baseline, the Request17
-service revisions, and open acceptance. [The operator checklist](docs/submission-checklist.md)
+[Submission status](docs/submission-status.md) records the source baseline, the PR60 API,
+the retained runner/gateway revision, the FAILED Request18 result, and open Request19 closure. [The operator checklist](docs/submission-checklist.md)
 records the remaining rehearsal, video, final links, and release decisions.
 
 CI and independent review were waived as source-publication gates for this run. Failed,

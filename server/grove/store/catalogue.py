@@ -2695,8 +2695,57 @@ AUTHORITY_TABLES: tuple[Table, ...] = (
     AUTHORITY_APPROVAL_USES,
 )
 
+MATERIAL_REVISIONS = Table(
+    name="material_revisions",
+    label="MaterialRevision",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="materials",
+    columns=(
+        _ID,
+        _WORLD,
+        *tuple(
+            _ruling(name, kind, "Material revision metadata; no source text")
+            for name, kind in (
+                ("material_id", "id"),
+                ("revision", "int"),
+                ("kind", "code"),
+                ("format", "code"),
+                ("state", "code"),
+                ("title_source_id", "id"),
+                ("source_ids", "ids"),
+                ("episode_id", "id"),
+                ("request_id", "id"),
+                ("request_key_hash", "code"),
+                ("input_digest", "code"),
+                ("input_bytes", "int"),
+                ("retained_characters", "int"),
+                ("part_count", "int"),
+                ("held_count", "int"),
+                ("created_at", "instant"),
+            )
+        ),
+        *_version_touched(),
+    ),
+    uniques=_keys(
+        "material_revisions",
+        ("id",),
+        ("world_id", "material_id", "revision"),
+        ("world_id", "request_key_hash"),
+    ),
+    indexes=_ranges(
+        "material_revisions",
+        ("world_id", "state", "kind", "created_at"),
+        ("world_id", "material_id"),
+    ),
+    notes="Screened text lives only in Sources. Deleted metadata prevents idempotent resurrection.",
+)
+
 LATER_TABLES: tuple[Table, ...] = (
-    (MAP_POSITIONS, OAUTH_GRANTS, FORGET_APPROVALS) + LEARNER_TABLES + AUTHORITY_TABLES
+    (MAP_POSITIONS, OAUTH_GRANTS, FORGET_APPROVALS, MATERIAL_REVISIONS)
+    + LEARNER_TABLES
+    + AUTHORITY_TABLES
 )
 
 # B.1's five groups, in B.1 order.

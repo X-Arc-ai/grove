@@ -378,6 +378,47 @@ def write_screened_source(
     refuse_forgotten_source(tx, screened.locator, (message.key for message in screened.messages))
     speakers_text = speakers_json(speakers)
     connector = _connector(tx, connector_id)
+    if parser_version in {
+        "document.text.v1",
+        "document.pdf.v1",
+        "document.docx.v1",
+        "document.pptx.v1",
+    }:
+        from grove.source_facts import check_text_transport
+
+        if (
+            connector.get("provider") != "document"
+            or connector.get("type") != "notes_files_releases"
+            or not document
+        ):
+            raise ValueError("document facts require the exact material connector")
+        for message in screened.messages:
+            check_text_transport(("document", parser_version), message.source_facts, message.at)
+            if (
+                message.at is not None
+                or message.speaker_kind is not None
+                or message.source_facts.time.status != "absent"
+            ):
+                raise ValueError("material file provenance must remain unknown")
+    if parser_version == "material.title.v1":
+        if len(screened.messages) > 1 or any(
+            m.key != "title" or m.source_facts is not None for m in screened.messages
+        ):
+            raise ValueError("invalid material title source")
+    if parser_version == "material.note.v1":
+        if (
+            connector.get("type") != "person_in_views"
+            or connector.get("provider") != "material-note"
+        ):
+            raise ValueError("material note requires the exact person connector")
+        if len(screened.messages) > 1 or any(
+            m.key != "note"
+            or m.at is None
+            or m.speaker_kind != "person"
+            or m.source_facts is not None
+            for m in screened.messages
+        ):
+            raise ValueError("invalid material note provenance")
     demo_columns = {}
     if has_designation(designation_in_tx(tx) or {}):
         require_designation_in_tx(tx)

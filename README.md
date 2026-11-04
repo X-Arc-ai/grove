@@ -8,9 +8,10 @@ The repository is **PRIVATE**. This is a pre-release build: the complete user jo
 **not yet passed**. Start with [the recorded status](docs/submission-status.md) for the
 source baseline, deployed service revisions, and open acceptance.
 
-The documented source snapshot is `564cc99b9c8a718f163503cc23227a8f2908fcd1`.
-It includes the published UI repair in PR #60. The recorded API remains on Request17;
-the next API deployment is not yet executed. Published source does not prove deployed acceptance.
+The documented source snapshot at 2026-11-04 19:04 UTC is `c145cf8b450f3ae7ab43989cf07969ee5b493057`.
+It includes the published UI repair in PR #60, materials in PR #61, and the separate
+source helper in PR #63. The recorded API serves PR #60. Request18 remains FAILED;
+Request19 closure has no completed receipt in this snapshot. Published source does not prove deployed acceptance.
 
 ## What is here
 
@@ -19,8 +20,9 @@ the next API deployment is not yet executed. Published source does not prove dep
 - OAuth and MCP transport, a separate restricted demo, and model/runner components.
 
 General public MCP tools are not available: `DEFAULT_TOOLS` remains empty outside the
-restricted demo. Source retention does not prove graph extraction. File/note integration,
-complete worker behavior, and full privacy/restore acceptance remain incomplete.
+restricted demo. Source retention does not prove graph extraction. Files remain `held_provenance` with
+no file Request. Notes use ordinary Requests; local synthetic proof does not establish
+deployed processing. Complete worker behavior and full privacy/restore acceptance remain incomplete.
 See [architecture and capability limits](docs/architecture.md).
 
 ## Local setup
@@ -59,6 +61,11 @@ GROVE_WEB_DIST=../web/dist GROVE_PUBLIC_BASE_URL=http://127.0.0.1:8000 \
 Open `http://127.0.0.1:8000`. The anonymous root redirects to `/login`.
 The build also regenerates `docs/data-flow.md` from its source; review any resulting diff.
 
+Materials require private `GROVE_FORGET_LEDGER_DIR` configuration and migration
+`0019_material_revisions.cypher`. Material note processing requires coordinated API/runner
+source and canonical external ledger equality. The recorded deployment excludes this component.
+Use the [material boundary](docs/architecture.md#browser-material-boundary) before a separate materials release.
+
 This starts the API and UI, not the model gateway or runner. Email sign-in needs secure
 `RESEND_API_KEY` and `MAIL_FROM` configuration. Google sign-in needs `GROVE_GOOGLE_OAUTH_FILE`
 and a registered callback for the configured origin. Apple sign-in is unavailable.
@@ -95,7 +102,7 @@ Submit it once and inspect the server receipt. Repeat it to check **No new messa
 Require the notice **Your graph has not changed from this upload.**
 
 The accepted source also supports ordinary ChatGPT/Claude JSON and ZIP exports through
-mandatory screening. That repair is not in the recorded Request17 deployment. The upload
+mandatory screening. That repair is in the recorded PR60 API; the paused owner flow remains unverified. The upload
 retains screened sources; it does not create the prepared graph. A reminder does not request
 an export from a provider. Log out before the prepared-account exercise.
 
@@ -156,8 +163,8 @@ If `store` executes, stop and record it without a retry. Finish with `muse mcp l
 ## Further reading
 
 [Pipedream](docs/pipedream.md) supports authorization and status only for provider data;
-it imports no content. The newer catalog and confirmed disconnect source are not deployed
-in the recorded snapshot. Real provider consent remains unverified.
+it imports no content. The catalog and confirmed disconnect source are in the recorded PR60 API.
+Real provider consent remains unverified.
 
 - [Architecture](docs/architecture.md) and [store map](docs/store-map.md)
 - [Submission status](docs/submission-status.md) and [operator checklist](docs/submission-checklist.md)

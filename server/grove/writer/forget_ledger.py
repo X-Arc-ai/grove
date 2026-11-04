@@ -145,3 +145,50 @@ def append_intent(root: Path, world_id: str, row: dict, database_rows: list[dict
     finally:
         if temporary and os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def checked_under_lock(root: Path, world_id: str, database_rows: list[dict]) -> list[dict]:
+    """Caller owns the ledger lock. No disclosure while an approved intent is pending."""
+    from grove.writer.forget import validate_ledger_rows
+
+    try:
+        external = validate_ledger_rows(world_id, _read(root, world_id, missing=not database_rows))
+        committed = validate_ledger_rows(world_id, database_rows)
+        if {r["id"]: _json(r) for r in external} != {r["id"]: _json(r) for r in committed}:
+            raise ValueError
+        return external
+    except (ValueError, KeyError, TypeError):
+        raise LedgerUnavailable("the material ledger requires recovery") from None
+
+
+@contextmanager
+def material_request_guard(
+    driver, world_id: str, request_ids: list[str] | None = None, *, due_at: datetime | None = None
+):
+    """Serialize material Request work with canonical erasure, before any World lock.
+
+    Request source identities are immutable. A claim supplies its exact candidate ids;
+    a pass supplies its frozen input ids. Ordinary nonmaterial Requests need no ledger.
+    Only start preflight supplies due_at; completed or deferred material is not its work.
+    The caller keeps this context through its read or writer transaction.
+    """
+    from grove.store.query import WorldQuery
+    from grove.writer.requests import _DUE
+
+    query = WorldQuery(driver, world_id)
+    due_filter = " AND (" + _DUE + ")" if due_at is not None else ""
+    material = query.read(
+        "MATCH (r:Request), (s:Source) WHERE r.source_id = s.id "
+        "AND s.parser_version = 'material.note.v1' "
+        "AND ($ids IS NULL OR r.id IN $ids)" + due_filter + " RETURN r.id AS id LIMIT 1",
+        ids=request_ids,
+        now=due_at,
+    )
+    if not material:
+        yield
+        return
+    with locked_ledger(None) as root:
+        checked_under_lock(
+            root, world_id, [r["f"] for r in query.read("MATCH (f:ForgetLedger) RETURN f")]
+        )
+        yield

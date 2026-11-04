@@ -1,7 +1,7 @@
 # Submission status
 
-Documentation source snapshot: 2026-11-04, after PR #60. Repository: **PRIVATE**.
-This package records accepted source and existing release receipts. It does not report a new
+Documentation source snapshot: 2026-11-04 at 19:04 UTC. Repository: **PRIVATE**.
+This package records accepted source and dated release evidence. It does not report a new
 host check, complete product acceptance, or external submission. The current owner manual
 login/upload/Muse flow is paused and remains **NOT RUN** for this release.
 
@@ -9,40 +9,56 @@ login/upload/Muse flow is paused and remains **NOT RUN** for this release.
 
 | Surface | Recorded revision | Evidence boundary |
 |---|---|---|
-| Accepted source baseline | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Includes PRs #58 and #59 plus PR #60; these repairs are not deployed in the receipt below |
-| Request17 API | `cbcfe574e03880569bfcdb9a9732f79a7ef3daea` | API-only release; anonymous root redirects to `/login` |
-| Request17 runner and gateway | `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e` | Existing services retained their source and did not restart |
-| Published UI repair, PR #60 | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Published source in this snapshot; not deployed in Request17 |
-| Separate materials candidate | `b4b804acf94250c2092f2e3c7623d6e79ee8bb59`, unpublished | Excluded from this snapshot and deployment; requires separate migration `0019_material_revisions.cypher` |
+| Accepted source baseline | `c145cf8b450f3ae7ab43989cf07969ee5b493057` | Includes PRs #58 and #59, UI PR #60, materials PR #61, and the separate PR #63 source helper |
+| Recorded served API, PR #60 | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Request18 diagnosis confirmed exact runtime files; Root separately recorded healthy `/healthz`; Request18 remains FAILED |
+| Retained runner and gateway | `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e` | The diagnosis recorded unchanged services and zero restarts |
+| Merged materials, PR #61 | `0682eb201ad0ccfb8a8a9d074d07759ec8eb31a1` | Accepted source `d17151421e027a4fe19b269a9f06cf6dcd17fe33`; all 43 component paths match; not deployed in the recorded PR60 API |
+| Source helper, PR #63 | `c145cf8b450f3ae7ab43989cf07969ee5b493057` | Source `f9c29e7e9afcdedcfce8190c9569b9bc71fd294a`; separates checkout and production image manifests; does not change the served application |
+| Historical Request17 API and stale `deployed.sha` | `cbcfe574e03880569bfcdb9a9732f79a7ef3daea` | Historical release/marker value, not the currently recorded served API |
 
 The document commit belongs in its PR receipt because a commit cannot contain its own final SHA.
-The controller's public health read still reports the Request17 API revision above.
-The next API deployment is not yet executed. Published source does not prove deployed acceptance.
-The [event record](../HACKATHON.md) remains the dated GitHub snapshot at 18:36 UTC through PR #59;
-it is not a deployment or acceptance list.
+Published source does not prove deployed acceptance. The [event record](../HACKATHON.md)
+retains its distinct GitHub snapshot at 18:36 UTC through PR #59, with later source merges noted separately.
 
-## Recorded evidence
+## Request18 failure and Request19 closure
 
-Request17 records 24 successful public smoke checks, including 15 exact assets; the root
-redirect and login page passed. Anonymous protected reads refused access. The retained graph
-contained 1,355 nodes and 4,082 edges with valid endpoints. The core Cedar proof contained two
-saved Items. The corpus record contained 26 Sources, 26 saved Requests, and 26 receipts.
-These are receipt values, not fresh counts measured by this document task.
+The Request18 diagnosis ended on 2026-11-04 at 18:54:49 UTC. All 20 runtime paths matched
+exact hashes, and five policy controls passed. The production image correctly excludes four
+`web/checks` paths. The wrapper incorrectly expected those paths, so Request18 remains FAILED.
+Root separately recorded `/healthz` HTTP 200 at exact PR60 with status/store `ok`.
+The API revision is distinct from the stale `deployed.sha` marker. No new host probe ran here.
 
-The complete 40-story corpus remains incomplete. Four richer topics passed an earlier backend
-read, but Request17 final verification repeated only the accepted core Cedar proof. The natural
-Muse questions and automatic Grove use remain unverified. Backend recall is not a Muse rehearsal.
+Request19 preparation records seven source tests and 24 local wrapper tests passed, with the
+original missing-file failure preserved. That is local proof, not operational closure.
+Root later issued one closure grant after PR #63 merged. Request19 closure has no completed
+receipt in this snapshot. Its fixed application target remains PR60; it does not deploy materials.
+A later closure result requires its own dated receipt and separate verification. Request18 stays FAILED.
 
-PR #58 records 213 focused passes for real ordinary JSON/ZIP parsing, mandatory screening,
+## Recorded source and historical evidence
+
+PR #58 records 213 focused passes for ordinary JSON/ZIP parsing, mandatory screening,
 retention, receipts, isolation, idempotency, and no graph mutation. PR #59 records 58 focused
 passes for account status, catalog, scopes, and confirmed account-scoped disconnection.
-Those saved source checks do not prove deployed behavior or live provider consent.
+Those saved source checks do not prove owner acceptance or live provider consent.
 Their later automatic Validate runs failed at Ruff under the existing publication waiver.
-
 The published UI repair in PR #60 has separate author and independent evidence for its exact heads.
-Those checks do not establish deployed acceptance. The unpublished materials candidate records
-222 focused native controls and requires migration 0019 plus release integration. Files report
-`held_provenance` and create no file Request. This documentation does not certify materials acceptance.
+Those checks do not establish complete deployed UI acceptance.
+
+PR #61 original component proof passed 225 tests. The final repair passed 70 tests and seven
+source checks. The final independent F4 source review is PASS at
+`d17151421e027a4fe19b269a9f06cf6dcd17fe33`, not full R4. Earlier F1-F3, recovery, F4,
+UI failures, and the immediate lock refusal remain preserved. These counts refer to different
+source snapshots; they are not one combined run. No materials runtime acceptance is claimed.
+Files remain `held_provenance` with no file Request. Notes use ordinary Requests.
+Migration `0019_material_revisions.cypher`, the canonical external ledger, and coordinated
+API/runner source require a future materials release. See [the material boundary](architecture.md#browser-material-boundary).
+
+Historical Request17 recorded 24 public smoke checks, including 15 exact assets. It recorded
+1,355 nodes, 4,082 edges, two core Cedar saved Items, and 26 Sources, saved Requests, and receipts.
+These are historical receipt values, not fresh counts. The complete 40-story corpus remains
+incomplete. Four richer topics passed an earlier backend read; Pebble remains INCOMPLETE.
+The Request18 diagnosis did not repeat corpus, core-data, or public-route proof.
+The natural Muse questions and automatic Grove use remain unverified. Backend recall is not a Muse rehearsal.
 
 ## Capability boundaries
 
@@ -54,10 +70,10 @@ Those checks do not establish deployed acceptance. The unpublished materials can
 | General MCP | `DEFAULT_TOOLS = ()`; the restricted pair does not establish general `store`/`recall` acceptance |
 | Calendar/Git | Read-only connector source exists; actual consent and configured live-source acceptance remain open |
 | Pipedream | Authorization, status, catalog, and disconnect source; no content import or synchronization |
-| Files and notes | A separate unpublished candidate supplies material storage and note processing; files remain `held_provenance` with no file Request; typed-file graph admission remains separate |
+| Files and notes | Merged PR #61 supplies screened storage and ordinary note Requests; files remain `held_provenance` with no file Request; typed-file graph admission remains separate |
 | Workers and Questions | Status and inactive protocol components exist; complete D7/D10/D11/D14 runtime acceptance remains open |
 | Privacy, reset, and restore | Source components and guards exist; complete delete-brain and physical/runtime restore acceptance remain open |
-| UI | PR #60 is published source, not deployed acceptance; source checks apply only to their recorded heads; full control and responsive acceptance remain open |
+| UI | PR #60 is the recorded served API; source checks apply only to their recorded heads; full control and responsive acceptance remain open |
 | Performance | Earlier HTML and asset measurements are historical; total initial transfer and current first-paint acceptance remain unverified |
 
 Unavailable controls do not satisfy the required feature scope. CI or source publication does
@@ -79,9 +95,9 @@ findings. Later repairs do not erase those failures. The original provenance fai
 
 ## Next release action
 
-The release owner must sequence accepted UI/backend source, refresh the exact service revisions,
-and complete the [operator checklist](submission-checklist.md). Keep the repository private.
-Do not resume the paused owner flow or submit externally without the corresponding authority.
+Root owns CI observations and merge. The release owner must record Request19 closure separately,
+sequence any future materials release, and complete the [operator checklist](submission-checklist.md).
+Keep the repository private. Do not resume the paused owner flow or submit externally without authority.
 
 CI and independent review are **WAIVED as source-publication gates**, not passed.
 This package runs focused document controls only. New browser, Muse, account, provider,

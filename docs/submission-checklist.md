@@ -4,14 +4,19 @@ Status: preparation only. Repository visibility stays **PRIVATE**.
 The recorded baseline and deployment are in [submission status](submission-status.md).
 This checklist does not authorize publication, account actions, or a deployment.
 
-PR #60 is published source in the recorded baseline. The next API deployment is not yet executed.
-The materials candidate remains unpublished; its migration `0019_material_revisions.cypher`
-requires a separate release decision. Files remain `held_provenance` with no file Request.
+Source snapshot: 2026-11-04 19:04 UTC. PR #60 is the recorded served API. Request18 remains FAILED.
+Request19 has a closure grant but no completed receipt in this snapshot. PR #61 materials and
+PR #63 source helpers are merged; neither changes the recorded served application.
+Materials require migration `0019_material_revisions.cypher`, the canonical external ledger,
+and coordinated API/runner source in a future release. Files remain `held_provenance`
+with no file Request. Notes use ordinary Requests; deployed material acceptance remains open.
 
 ## Select and verify the release
 
 - [ ] Sequence the accepted UI and backend changes through the release owner.
 - [ ] Record the final source commit and the API, runner, and gateway revisions separately.
+- [ ] Obtain the Request19 closure and separate verification receipts; preserve Request18 as FAILED.
+- [ ] Verify material ledger equality, recovery, and coordinated API/runner source before material activation.
 - [ ] Confirm the required migrations and private runtime configuration for that exact release.
 - [ ] Complete focused tests and preserve the original failures and final results.
 - [ ] Run final-candidate restricted-name, secret, and attribution checks with no secret values in evidence.

@@ -1,1 +1,1 @@
-Grove gives AI assistants dated, sourced memory. Our private build includes a graph and a prepared synthetic recall demo. Upload retention is separate from graph extraction. Full runtime and Muse acceptance remain open. Submission preparation is in progress.
+Grove gives AI assistants dated, sourced memory. Our private build includes a graph, screened material storage, and a prepared synthetic recall demo. Files remain outside graph extraction. Full runtime and Muse acceptance remain open. This is an unsent draft.
