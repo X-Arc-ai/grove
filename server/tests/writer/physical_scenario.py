@@ -16,13 +16,17 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from grove import clock
 from grove.api.app import create_app
 from grove.api.config import ApiSettings
 from grove.ids import new_id
+from grove.store.asof import world_as_of
 from grove.store.catalogue import FULLTEXT_INDEXES, PLATFORM_LABELS
 from grove.store.connection import open_driver
 from grove.store.history_reads import item_history
 from grove.store.query import WorldQuery, plain
+from grove.store.replay import known_as_of
+from grove.views.graph import Window, node_payload
 from grove.views.session import SESSION_COOKIE
 from grove.writer.migrate import run_migrations
 from grove.writer.resolver import lexical_candidates
@@ -307,6 +311,25 @@ class PhysicalScenario:
         )
         for name in ("item", "field", "control", "belief"):
             self._assert_no_canary(item_history(query, self.fixture["ids"][name]))
+        from tests.writer.forget_drill import AT
+
+        for at in (AT, clock.now(self.world)):
+            for axis in (world_as_of(query, at), known_as_of(query, at)):
+                self._assert_no_canary([held.row for held in axis.items.values()])
+                self._assert_no_canary([held.row for held in axis.links.values()])
+                require(self.fixture["ids"]["item"] not in axis.items, "forgotten_asof_item")
+        for name in ("item", "field", "control", "belief"):
+            detail = node_payload(
+                query,
+                WorldQuery.primitives(driver),
+                self.fixture["ids"][name],
+                window=Window(),
+                self_item_id=None,
+            )
+            self._assert_no_canary(detail)
+            if name == "item":
+                require(detail is None, "forgotten_item_page")
+        self._assert_no_canary(take_snapshot(driver, self.world))
         current = [
             row
             for row in inventory(driver, self.world, self.owner)["nodes"]
@@ -318,6 +341,9 @@ class PhysicalScenario:
             "trigram": "PASS",
             "item_history": "PASS",
             "history_structure": "PASS",
+            "asof_axes": "PASS",
+            "item_page": "PASS",
+            "logical_export": "PASS",
         }
 
     def assert_clean(self, stage: str) -> None:

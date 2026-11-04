@@ -243,3 +243,32 @@ def test_latest_ledger_can_mix_legacy_and_planned_erasure(driver, subject, tmp_p
         next(r for r in after["items"] if r["id"] == item_id)["summary"]
         == "Quiet trees near the hill"
     )
+
+
+def test_failed_database_write_retains_approved_intent_for_restore(
+    driver, subject, tmp_path, monkeypatch
+):
+    import importlib
+
+    operation = importlib.import_module("grove.writer.forget")
+    world, item_id = subject
+    snapshot = take_snapshot(driver, world)
+    target = {"type": "item", "item_id": item_id}
+    token = approve(driver, world, target)
+    before = inventory(driver, world)
+
+    def fail_write(*args):
+        raise RuntimeError("synthetic database failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(operation, "write_inventory", fail_write)
+        with pytest.raises(RuntimeError, match="synthetic database failure"):
+            forget(
+                driver, world, target, actor="u_t_owner", approval_token=token, ledger_dir=tmp_path
+            )
+    assert inventory(driver, world) == before
+    ledger = read_ledger(tmp_path, world)
+    assert len(ledger) == 1
+    purge_world_rows(driver, world)
+    restore(driver, world, snapshot, ledger)
+    assert "Cobalt orchard" not in json.dumps(inventory(driver, world), default=str)
