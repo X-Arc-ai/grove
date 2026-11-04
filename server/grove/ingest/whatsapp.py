@@ -18,12 +18,15 @@ from grove.ingest.archive import MAX_MEMBERS, is_zip, zip_members
 from grove.ingest.connector import (
     MAX_MESSAGE_CHARS,
     NotAnExport,
+    ParsedChat,
+    ParsedMessage,
     Upload,
     bounded_id,
     clean_text,
     kept_text,
     message_key,
 )
+from grove.source_facts import LocalParts, SourceLocator, SourceTimeFacts, TextSourceFacts
 
 PARSER_VERSION = "whatsapp.export.v1"
 CUT_RULE = "silence_90m.export_local.v1"
@@ -156,6 +159,7 @@ class ExportMessage:
     sender_identity: None = None
     original_author: None = None
     modality: str = "text"
+    source_facts: TextSourceFacts | None = field(default=None, repr=False)
 
     @property
     def locator(self) -> str:
@@ -185,6 +189,61 @@ class WhatsAppExport:
     @property
     def windows(self) -> tuple[ExportWindow, ...]:
         return cut_windows(self.messages)
+
+    def as_chat(self) -> ParsedChat:
+        """Internal text transport in original source order, without inferred speakers."""
+        messages = []
+        for message in sorted(self.messages, key=lambda item: item.byte_start):
+            if message.source_facts is None:
+                raise NotAnExport("the export lacks validated text source facts")
+            messages.append(
+                ParsedMessage(
+                    message.key,
+                    message.text,
+                    message.time.at,
+                    None,
+                    sender=message.sender,
+                    source_facts=message.source_facts,
+                )
+            )
+        times = [message.at for message in messages]
+        known = bool(times) and all(at is not None for at in times)
+        return ParsedChat(
+            bounded_id(f"export_digest:{self.artifact_sha256}"),
+            tuple(messages),
+            min(times) if known else None,
+            max(times) if known else None,
+        )
+
+
+def _time_facts(time: ExportTime) -> SourceTimeFacts:
+    candidates = tuple(
+        dict.fromkeys(
+            LocalParts(
+                int(candidate.year_text),
+                len(candidate.year_text),
+                candidate.month,
+                candidate.day,
+                candidate.hour,
+                candidate.minute,
+                candidate.second,
+                time.precision,
+            )
+            for candidate in time.candidates
+        )
+    )
+    status = (
+        "ambiguous"
+        if len(candidates) > 1 or candidates[0].year_width == 2
+        else ("instant" if time.at is not None else "local")
+    )
+    return SourceTimeFacts(
+        status,
+        tuple(dict.fromkeys(c.date_order for c in time.candidates)),
+        candidates,
+        time.offset_minutes,
+        time.timezone_name,
+    )
 
 
 def _safe_name(name: str) -> str:
@@ -335,6 +394,7 @@ def _parse_transcript(
     attachment_count = 0
     current = None
     orders = {"dmy", "mdy", "ymd"}
+    line_no = 0
 
     def finish():
         if current is not None:
@@ -427,6 +487,11 @@ def _parse_transcript(
             ensure_ascii=True,
             separators=(",", ":"),
         )
+        locator = SourceLocator(
+            "line_bytes", row["line_start"], row["line_end"], row["byte_start"], row["byte_end"]
+        )
+        locator.check_extent(byte_count=len(data), line_count=line_no)
+        facts = TextSourceFacts(artifact, locator, _time_facts(timestamp))
         messages.append(
             ExportMessage(
                 key=message_key("wa", artifact, identity),
@@ -441,6 +506,7 @@ def _parse_transcript(
                 byte_end=row["byte_end"],
                 ordinal_in_minute=ordinal,
                 attachments=tuple(row["attachments"]),
+                source_facts=facts,
             )
         )
     ordered, basis = _ordered(messages, final_orders)

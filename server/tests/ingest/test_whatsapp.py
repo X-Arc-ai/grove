@@ -42,6 +42,59 @@ def test_export_only_keeps_unknown_chat_timezone_and_instant():
     assert message.sender_identity is None
 
 
+def test_internal_adapter_preserves_source_order_and_explicit_unknown_speakers():
+    data = (
+        "13/04/2026, 12:00 - Delivery Bot: Last local time.\n"
+        "13/04/2026, 09:00 - Orla: Forwarded from Cai: First local time.\n"
+        "13/04/2026, 10:00 - Messages are encrypted.\n"
+    )
+    export = parse_export(upload(data))
+    assert [m.line_start for m in export.messages] == [2, 3, 1]
+    chat = export.as_chat()
+    assert [m.source_facts.locator.line_start for m in chat.messages] == [1, 2, 3]
+    assert all(m.speaker_kind is None and m.at is None for m in chat.messages)
+    assert chat.started_at is None and chat.ended_at is None
+    assert chat.chat_id == f"export_digest:{hashlib.sha256(data.encode()).hexdigest()}"
+    assert chat == parse_export(upload(archive(("other-name.txt", data)))).as_chat()
+
+
+def test_internal_adapter_retains_exact_instant_facts_and_original_locators():
+    first = "\ufeff2026-04-13, 12:20:03+02:00 - Orla: Café.\r\nContinuation.\r\n"
+    second = "2026-04-13, 08:00:00Z - Cai: Earlier.\r\n"
+    chat = parse_export(upload(first + second)).as_chat()
+    one, two = chat.messages
+    assert one.at == datetime(2026, 4, 13, 10, 20, 3, tzinfo=UTC)
+    assert chat.started_at == two.at and chat.ended_at == one.at
+    assert one.source_facts.locator.byte_start == 0
+    assert one.source_facts.locator.byte_end == len(first.encode())
+    assert one.source_facts.locator.line_end == 2
+    assert one.source_facts.time.status == "instant"
+    assert one.source_facts.time.source_offset_minutes == 120
+    assert one.source_facts.time.source_timezone is None
+
+
+def test_internal_adapter_preserves_ambiguous_short_year_and_same_date_candidates():
+    for stamp, expected_status, count, year, width in (
+        ("03/04/2026", "ambiguous", 2, 2026, 4),
+        ("13/04/26", "ambiguous", 1, 26, 2),
+        ("04/04/2026", "local", 1, 2026, 4),
+    ):
+        message = parse_export(upload(f"{stamp}, 09:00 - Orla: A note.")).as_chat().messages[0]
+        time = message.source_facts.time
+        assert time.status == expected_status and len(time.local_candidates) == count
+        assert time.local_candidates[0].year == year
+        assert time.local_candidates[0].year_width == width
+        assert message.at is None
+
+
+def test_internal_adapter_does_not_register_a_provider():
+    from grove.ingest.connector import providers
+
+    before = providers()
+    parse_export(upload("13/04/2026, 09:00 - Orla: A note.")).as_chat()
+    assert providers() == before and "whatsapp" not in before
+
+
 def test_locale_is_detected_from_all_dates_without_a_host_setting():
     result = parse_export(
         upload("04/05/2026, 10:00 - Orla: A choice.\n04/13/2026, 10:00 - Cai: A later statement.\n")

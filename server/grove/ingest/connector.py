@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from typing import BinaryIO
 
 from grove.screening import Denylist, Message, RenameMap, Screener, ScreeningConfig
+from grove.source_facts import TextSourceFacts
 from grove.store.enums import ENUMS
 
 SPEAKER_KINDS = frozenset(ENUMS["speaker_kind"])
@@ -225,10 +226,11 @@ class ParsedMessage:
     key: str
     text: str
     at: datetime | None
-    speaker_kind: str
+    speaker_kind: str | None
     modality: str = "text"
     sender: str | None = None
     calendar_event: CalendarEvent | None = None
+    source_facts: TextSourceFacts | None = None
 
     def __post_init__(self) -> None:
         if not _is_code(self.key, limit=80):
@@ -239,7 +241,19 @@ class ParsedMessage:
             not isinstance(self.at, datetime) or self.at.utcoffset() is None
         ):
             raise ValueError("ParsedMessage.at must be an aware datetime or None")
-        if self.speaker_kind not in SPEAKER_KINDS:
+        if self.source_facts is not None:
+            if type(self.source_facts) is not TextSourceFacts:
+                raise ValueError("ParsedMessage.source_facts must be typed")
+            self.source_facts.check_at(self.at)
+            if self.calendar_event is not None:
+                raise ValueError("Calendar and text source facts cannot be mixed")
+            if self.modality != "text" or type(self.modality) is not str:
+                raise ValueError("text source facts require text modality")
+            if self.speaker_kind is not None and type(self.speaker_kind) is not str:
+                raise ValueError("text source speaker must be a closed code or None")
+        if self.speaker_kind not in SPEAKER_KINDS and not (
+            self.speaker_kind is None and self.source_facts is not None
+        ):
             raise ValueError("ParsedMessage.speaker_kind must be a speaker_kind code")
         if self.modality not in MODALITIES:
             raise ValueError("ParsedMessage.modality must be a modality code")

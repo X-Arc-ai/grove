@@ -12,6 +12,19 @@ Source metadata dates describe the source; they do not establish that a narrated
 An image-only PDF page remains pending image extraction rather than disappearing from the result.
 The document remains one logical episode even when it has several parts.
 
+The internal text/Markdown `as_chat()` adapter now carries bounded typed source facts.
+It preserves exact original byte spans and the artifact digest. Its speaker and instant
+remain null. A caller-supplied `source_at` remains component metadata only and cannot become
+a source-established time through this adapter. Caller speaker/sender arguments refuse.
+The internal tuple is `("document", "document.text.v1")`; it registers no upload provider.
+PDF components retain their previous behavior and do not carry these new facts.
+
+The internal WhatsApp `as_chat()` adapter uses transcript bytes only, with the tuple
+`("whatsapp", "whatsapp.export.v1")`. It preserves original source order, line/byte ranges,
+date-order candidates, short-year width and source offsets. Its speakers remain unknown.
+Local-wall presentation windows in the older component are not accepted elapsed-time
+episodes. Typed episode persistence is not implemented in this internal phase.
+
 PDF parsing uses a separate bounded worker. The parent supplies bytes through stdin and suppresses
 worker diagnostics that could expose source text. The worker has CPU, decompression, page, and
 output bounds. Linux also has an address-space bound; the parent enforces a timeout on every OS.
@@ -66,3 +79,9 @@ The document and media tests use invented fixtures. The two `live` adapter probe
 and a generated receipt image. They exercise the provider route and metering only. They do not
 establish a public deployment, durable image retention, WhatsApp identity, or complete D5/D10
 acceptance.
+
+The internal fact-transport checks use synthetic text and the real in-memory Screener.
+They exclude PDF subprocesses, media admission, storage, extraction and model calls.
+Production media policy, visible/spoken-secret inspection, typed erasure and durable
+retention still require separate contracts and acceptance. Metadata removal alone does
+not admit arbitrary image or audio bytes for a hosted call.

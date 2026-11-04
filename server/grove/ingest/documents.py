@@ -25,6 +25,7 @@ from grove.ingest.connector import (
     kept_text,
     message_key,
 )
+from grove.source_facts import DOCUMENT_TEXT, SourceLocator, SourceTimeFacts, TextSourceFacts
 
 MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
 MAX_PDF_OUTPUT_BYTES = 8 * 1024 * 1024
@@ -42,6 +43,7 @@ class DocumentPart:
     byte_end: int | None = None
     page: int | None = None
     needs_image: bool = False
+    source_facts: TextSourceFacts | None = field(default=None, repr=False)
 
     @property
     def locator(self) -> str:
@@ -63,10 +65,22 @@ class ParsedDocument:
     def pending_image_pages(self) -> tuple[int, ...]:
         return tuple(part.page for part in self.parts if part.needs_image)
 
-    def as_chat(self, *, speaker_kind: str, sender: str | None = None) -> ParsedChat:
+    def as_chat(self, *, speaker_kind: str | None = None, sender: str | None = None) -> ParsedChat:
         """Keep all document sections in one chat. Pending image pages cannot disappear."""
         if self.pending_image_pages:
             raise NotAnExport("the document has pages that still need image reading")
+        if self.parser_version == DOCUMENT_TEXT[1]:
+            if speaker_kind is not None or sender is not None:
+                raise NotAnExport("text source facts cannot use caller-supplied speaker metadata")
+            if any(part.source_facts is None for part in self.parts):
+                raise NotAnExport("the document lacks validated text source facts")
+            return ParsedChat(
+                f"export_digest:{self.sha256}",
+                tuple(
+                    ParsedMessage(part.key, part.text, None, None, source_facts=part.source_facts)
+                    for part in self.parts
+                ),
+            )
         return ParsedChat(
             self.sha256,
             tuple(
@@ -139,12 +153,20 @@ def parse_text(
         if not text:
             continue
         upload.budget.take_message(len(text))
+        locator = SourceLocator("bytes", byte_start=start, byte_end=end)
+        locator.check_extent(byte_count=len(data))
         parts.append(
-            DocumentPart(message_key("doc", digest, "bytes", start), kept_text(text), start, end)
+            DocumentPart(
+                message_key("doc", digest, "bytes", start),
+                kept_text(text),
+                start,
+                end,
+                source_facts=TextSourceFacts(digest, locator, SourceTimeFacts("absent")),
+            )
         )
     if not parts:
         raise NotAnExport("the document contains no text")
-    return ParsedDocument(digest, tuple(parts), source_at)
+    return ParsedDocument(digest, tuple(parts), source_at, DOCUMENT_TEXT[1], "document.export.v1")
 
 
 def _pdf_pages(data: bytes) -> dict:
