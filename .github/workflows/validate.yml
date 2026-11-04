@@ -141,3 +141,14 @@ jobs:
             python3 web/build.py
             for f in web/checks/*.cjs; do node "$f"; done
           fi
+
+      - name: D14 physical backup drill
+        if: github.event_name == 'pull_request'
+        timeout-minutes: 10
+        env:
+          GROVE_DRILL_SERVICE_ID: ${{ job.services.neo4j.id }}
+          GROVE_DRILL_NETWORK: ${{ job.services.neo4j.network }}
+          GROVE_DRILL_HEAD: ${{ github.event.pull_request.head.sha }}
+          GROVE_STORE_EXCLUSIVE: "1"
+          GROVE_SLICE_ID: ci-forget
+        run: uv run python -m tests.writer.physical_backup
