@@ -426,6 +426,15 @@ class Commands:
                         process.wait(timeout=min(0.1, left))
                     except subprocess.TimeoutExpired:
                         continue
+                # The child can finish and write after the last pre-poll check.
+                # Recheck its final files before any output read or acceptance.
+                require(
+                    stdout.stat().st_size <= OUTPUT_LIMIT
+                    and stderr.stat().st_size <= OUTPUT_LIMIT,
+                    "command_output_limit",
+                )
+                if monitor is not None:
+                    monitor()
             except subprocess.TimeoutExpired:
                 self._stop_child(process)
                 self.receipts.append({"stage": tag, "exit": process.returncode, "timeout": True})
