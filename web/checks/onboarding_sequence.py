@@ -93,7 +93,7 @@ def serve():
     return server
 
 
-def main(shots):
+def main(shots, production_base=False):
     from playwright.sync_api import expect, sync_playwright
 
     shots.mkdir(parents=True, exist_ok=True)
@@ -177,31 +177,36 @@ def main(shots):
                 expect(
                     page.get_by_role("heading", name="Add what matters")
                 ).to_be_visible()
-                expect(page.locator('[data-materials="onboarding"]')).to_be_visible()
-                page.get_by_role("button", name="Add note +", exact=True).click()
-                page.get_by_label("Title", exact=True).fill("Synthetic note")
-                body = page.get_by_label("Note", exact=True)
-                body.fill("Keep this draft and its focus during graph growth.")
-                before_tick = page.evaluate(
-                    "GroveSimulation.getState().conversationPreview.step"
-                )
-                page.wait_for_function(
-                    "before => GroveSimulation.getState().conversationPreview.step > before",
-                    arg=before_tick,
-                )
-                # Wait for the asynchronous graph response and its UI change event too.
-                page.wait_for_function(
-                    "document.querySelector('#graph-status').dataset.state === 'ready'"
-                )
-                expect(body).to_be_focused()
-                expect(body).to_have_value(
-                    "Keep this draft and its focus during graph growth."
-                )
-                page.keyboard.type(" Continued.")
-                expect(body).to_have_value(
-                    "Keep this draft and its focus during graph growth. Continued."
-                )
-                page.get_by_role("button", name="Cancel", exact=True).click()
+                if production_base:
+                    # The deployed base predates the separate materials release.
+                    expect(page.get_by_role("button", name="Add files +", exact=True)).to_be_disabled()
+                    expect(page.get_by_role("button", name="Add note +", exact=True)).to_be_disabled()
+                else:
+                    expect(page.locator('[data-materials="onboarding"]')).to_be_visible()
+                    page.get_by_role("button", name="Add note +", exact=True).click()
+                    page.get_by_label("Title", exact=True).fill("Synthetic note")
+                    body = page.get_by_label("Note", exact=True)
+                    body.fill("Keep this draft and its focus during graph growth.")
+                    before_tick = page.evaluate(
+                        "GroveSimulation.getState().conversationPreview.step"
+                    )
+                    page.wait_for_function(
+                        "before => GroveSimulation.getState().conversationPreview.step > before",
+                        arg=before_tick,
+                    )
+                    # Wait for the asynchronous graph response and its UI change event too.
+                    page.wait_for_function(
+                        "document.querySelector('#graph-status').dataset.state === 'ready'"
+                    )
+                    expect(body).to_be_focused()
+                    expect(body).to_have_value(
+                        "Keep this draft and its focus during graph growth."
+                    )
+                    page.keyboard.type(" Continued.")
+                    expect(body).to_have_value(
+                        "Keep this draft and its focus during graph growth. Continued."
+                    )
+                    page.get_by_role("button", name="Cancel", exact=True).click()
                 page.screenshot(
                     animations="disabled", path=str(shots / f"{width}-03-materials.png")
                 )
@@ -264,7 +269,7 @@ def main(shots):
                 )
                 assert server.uploads == []
                 print(
-                    f"PASS {width}px: four steps, Gmail consent control, live material and AI controls, six tour steps, no Claude upload",
+                    f"PASS {width}px: four steps, Gmail consent control, setup and AI controls, six tour steps, no Claude upload",
                     flush=True,
                 )
                 context.close()
@@ -277,4 +282,6 @@ def main(shots):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--shots", type=Path, required=True)
-    main(parser.parse_args().shots)
+    parser.add_argument("--production-base", action="store_true")
+    args = parser.parse_args()
+    main(args.shots, args.production_base)
