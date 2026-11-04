@@ -238,9 +238,8 @@ not prove that a stored value follows that type.
 | Where a search term's type and language live. `items.search_terms` holds the text of each term. | 2076, 2098 | `ingest-b` |
 | The deferral count: stored, or derived from `verifications`. | 2159, 2174 | `cleanup` |
 | The grade rows of controls, and findings raised by agent runs: their run id and their text. | 2198, 2376, 2427 | `evals`, `cleanup` |
-| Rows outside the S12 list that change after they are written carry no version: `support_changed.taken_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, and the finished times of `audit_runs` and `area_audits`. Each owner adds the pair when it writes the row. `requests` has it (S41); `jobs` and `run_records` have it (`runner`), and `ontology_change_log` (`ontology`, O10). | 3081 | `beliefs` (`support_changed`), `models` (`budgets`), `truth-clock` (`horizon_stats`), `walk` (`walk_rotation`), `evals` (`checks`, `audit_runs`), `cleanup` (`area_audits`) |
+| Rows outside the S12 list that change after they are written carry no version: `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, and the finished times of `audit_runs` and `area_audits`. Each owner adds the pair when it writes the row. `requests` has it (S41); `jobs` and `run_records` have it (`runner`), and `ontology_change_log` (`ontology`, O10). `support_changed` has version and touched time (`beliefs`, `docs/belief-writer.md`). | 3081 | `models` (`budgets`), `truth-clock` (`horizon_stats`), `walk` (`walk_rotation`), `evals` (`checks`, `audit_runs`), `cleanup` (`area_audits`) |
 | The 5 second wait of remember, built from `request_state`. A hash of the host's idempotency key as the request id, prefixed with the OAuth client id (S41). `to_api()` has no receipt text, so a host renders through `render_receipt`. A surfaced failure answers remember with the typed error `unavailable`. `verbatim` requires `host_message_id`, and the schema of remember checks that: the queue only stores the two. | 754, 3195, 3294 | `hosts-b` |
-| `why` of a contradiction from `grove.cleanup.v1` (the `grove.extract.v1` form) has no value-id column in `contradictions`. | 2087, 2199, 3133 | `beliefs` |
 | Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. Closed by `deploy-a`: the API image holds `server/` as in a checkout with an editable install, and a deploy runs the migrations from it (`docs/deploy.md`). | none; a build fact | `deploy-a` |
 | `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. Closed by `deploy-a`: `deploy/compose.yml` sets it for `api` and `runner`, and a test checks it. | 354, 991 | `deploy-a` |
 | The runner still reaches the host's sshd and nginx through the gateway of its internal network. Its bridge now has the fixed name `grove-runner`; the host firewall rule on that interface goes with the egress allowlist. | none; a build fact | `deploy-b`, `models` |
@@ -262,7 +261,6 @@ not prove that a stored value follows that type.
 | The session contract the views read: the cookie `grove_session`; `:Session.token_hash` is the lowercase sha256 hex of the cookie value; a session is valid while `revoked_at` is absent and `expires_at` is later than the clock's now; `:Session.user_id` leads to the oldest `:World` with that `owner_user_id`. `docs/views.md` states it in full. Closed by `signin`: `server/grove/writer/accounts.py` and `server/grove/api/auth.py` write these rows and this cookie, and `docs/signin.md` states them. | none; a build fact | `signin` |
 | The views' account, sources, questions and workers still use the simulation's local browser state. A sign-in that brings another account resets that state in the tab that signs in (`signin`). A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b` |
 | The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`. Closed by `deploy-a`: the API image runs `web/build.py` and sets that variable, and the deploy smoke asks for the page. | none; a build fact | `deploy-a` |
-| A judgment marked correlated counts toward the two judges of a contradiction: D9 and B.2 ask only for two models. | 3165 | `beliefs` |
 | `grove.extract.v1` must offer the statement class `artifact` (S51), and the connectors must write `sources.speakers` from each message's own metadata (an automated sender, a forwarded message's author, each with its locator), and `sources.document` true for an uploaded file or picture, or an automated booking confirmation stays a chat line and an uploaded receipt stays `said`. | 1086, 1112, 1129 | `ingest-a1`, `ingest-b` |
 | Closed for the synthetic connector path by `ingest-a3`: typed Calendar facts pass from the dedicated reader through the atomic chat transaction to `write_screened_source(calendar_events=...)`, only for retained keys. S51 checks new and reused evidence. Provider consent, configured deployment and live acceptance remain separate. | 1097, 1099 | `ingest-a3`, deploy owner |
 | The two middle bands open a contradiction row (S52); `verify` records the band and the deferral, and the row waits for `open_contradiction`. | 957, 1841 | `beliefs` |
@@ -285,7 +283,6 @@ not prove that a stored value follows that type.
 | A capability row has no status column, so no operation ends one: an undo of a mint that wrote a capability is refused (rule `no_ending`, S46). A capability's ending, and what its readers do with a retired word's capability, belong to the lane that reads capabilities (D5). | 1577, 3089 | `truth-clock` |
 | B.2 lets cleanup merge "within an area". The writer checks no area, because no area membership is stored yet; the runner's curator (cleanup) can send merge through `/brain/propose`. | 3170 | `cleanup` |
 | Every read path the hosts serve (recall, neighbours, hops, what changed, export, the MCP tools) attaches the successors of an overtaken item, through `standings`, `world_as_of` or `known_as_of`, each tested by name, as `test_d3_integration.py` does for the paths that exist now. | 832 | `hosts-b` |
-| Belief items are refused by correct, refute, supersede, merge and undo (rule `belief_transition`; an undo of a belief entry, rule `not_undoable`). The beliefs lane's transitions and their one-step undo replace that refusal. | 1809, 1811 | `beliefs` |
 | The update agent owns these coverage fields of a connector row: `held_nothing_count`, `extracted_count` and `items_taken_in_over_7_days`; it sets an episode's `run_id` when a pass takes it and moves `oldest_unprocessed_item` to the oldest episode still without one (S50, `docs/ingest.md`). | 2001, 3101 | `ingest-b` |
 | An upload is parsed, screened and stored inside its request, which nginx holds for 600 s. An export too large for that needs a job of its own, with its state readable by the views. | 2041 | `ingest-b`, `views-b` |
 | A message that screening drops is counted again in a later read's receipt when that read stores new messages of the same chat, because the delta is the keys not stored. | 2505 | `forget` |
@@ -294,6 +291,9 @@ A point that a later lane resolves leaves the table above and is listed here wit
 
 | Point | Spec lines | Resolved by |
 |---|---|---|
+| Contradiction reasons lacked a value-id column. | 2087, 2199, 3133 | `beliefs`: `why` is a HistoryValue ID; `docs/belief-writer.md` |
+| Typed belief transitions and one-step undo replace the former blanket refusal. Generic item mutations still refuse belief targets. | 1809, 1811 | `beliefs`: `grove.writer.beliefs`, typed replay, and actual-operation inverse and restore tests in `tests/belief_history` |
+| Correlated second-opinion acceptance for D9. | 1839 to 1842, 3165 | `beliefs`: two distinct ModelCall IDs; distinct models or explicit correlated fallback; `docs/belief-writer.md` |
 | A value the person names inside source text has no index path. | 2518, 2525, 2560 | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
 | The value index must gain the status words, `items.status` and `kinds.status_vocabulary` (S31). Until then, a forget of a status word renames the word in the kind. | 2560, 2561 | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
 | `docs/data-flow.md` had no rows for the mail provider, Google sign-in, Calendar and backups. Closed by `signin`: the rows are there, and `web/build.py` generates the table of the privacy page from them. `forget` still replaces the page with a statement from the deployed configuration. | 2540 to 2552 | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
@@ -482,9 +482,13 @@ D8's floor (Appendix D, P0 item 8): provisional mints with a recorded reason, th
 `docs/cascade.md` states the single R1/R2/R4 planner, transaction adapter, and explanation path.
 An R2 mark has low stakes and its trigger's world clock. Unknown time stays unknown. Impact and
 CascadeProposal remain snapshot rows; the affected-by link and R1 endings have ordinary history.
-The five `cascade_*` history markers retain metadata without projecting user properties or
+The `cascade_*` history markers retain metadata without projecting user properties or
 creating undo version conflicts. Explanations, decision reasons, and suggested status text use
 HistoryValue IDs. The explanation job changes only that cache and job metadata after commit.
+`cascade_trigger` retains the actual D9 event's rank, world time, and provenance for D12.
+`cascade_review` retains the dependent, cause sequence, checked sources, disposition, path
+versions, and reason/gap value IDs. A deferred proposal keeps its existing open state and
+stores `question_id` in its existing detail JSON. These changes add no table or migration.
 
 The ordinary-item report gate writes existing Contradiction rows with the exact standing entry
 and fresh contrary evidence ID. D9 owns the belief state machine and the general contradiction
@@ -969,6 +973,7 @@ Indexes: `evidence_world_id_target_type_target_id_polarity_active_idx` (world_id
 | (none) | `person_timezone` | `code` | ruling | S3, line 914: an IANA code |
 | target type | `target_type` | `enum:evidence_target_type` | b1 |  |
 | target id | `target_id` | `id` | b1 | a belief's id is its item's id (S13) |
+| (none) | `judgment_ids` | `ids` | ruling | D9: recorded verdicts for a contradicting belief row |
 | polarity | `polarity` | `enum:polarity` | b1 |  |
 | statement class | `statement_class` | `enum:statement_class` | b1 |  |
 | source type | `source_type` | `enum:source_type` | b1 | derived by the writer |
@@ -1437,6 +1442,14 @@ The statement is the item's title and body. The clocks and the horizon are the i
 | last retrieved | `last_retrieved` | `instant` | b1 |  |
 | cited | `cited` | `int` | b1 |  |
 | (none) | `end_class` | `enum:belief_end_class` | ruling | S25, line 1752 |
+| (none) | `transition_episodes` | `ids` | ruling | D9: episodes already used by state transitions |
+| (none) | `last_retest_outcome` | `enum:belief_retest_outcome` | ruling | D9: completed check, distinct from confirmation |
+| (none) | `last_retested_at` | `instant` | ruling | D9: time the completed check was recorded |
+| (none) | `last_retest_reason` | `value_id` | ruling | D9: retained explanation of the check |
+| (none) | `last_retest_source_ids` | `ids` | ruling | D9: checked sources even for a neutral verdict |
+| (none) | `last_retest_judgment_ids` | `ids` | ruling | D9: recorded verdicts behind the last check |
+| (none) | `support_items` | `ids` | ruling | D9: item targets of the cited supporting evidence |
+| (none) | `person_change_notice` | `bool` | ruling | D9: new confirmed evidence changed the person's decision |
 | version | `version` | `int` | ruling | S12, line 3081 |
 | touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 
@@ -1458,6 +1471,11 @@ Indexes: `contradictions_world_id_status_detected_at_idx` (world_id, status, det
 | fresh side | `fresh_evidence_id` | `id` | b1 | S14: absent when the judges disagree |
 | (none) | `fresh_source_id` | `id` | ruling | S14: what was read when no evidence row exists |
 | (none) | `fresh_locator` | `locator` | ruling | S14: what was read when no evidence row exists |
+| (none) | `fresh_episode_id` | `id` | ruling | D9: episode when no evidence row is admissible |
+| (none) | `fresh_source_time` | `instant` | ruling | D9: original source time of the fresh side |
+| (none) | `fresh_source_type` | `enum:source_type` | ruling | D9: code-derived fresh source type |
+| (none) | `fresh_derivation` | `enum:derivation` | ruling | D9: derivation of the fresh side |
+| (none) | `judgment_ids` | `ids` | ruling | D9: recorded conflicting readings |
 | detected by | `detected_by` | `code` | b1 |  |
 | detected at | `detected_at` | `instant` | b1 |  |
 | request id | `request_id` | `id` | b1 |  |
@@ -1466,6 +1484,9 @@ Indexes: `contradictions_world_id_status_detected_at_idx` (world_id, status, det
 | resolved at | `resolved_at` | `instant` | b1 |  |
 | resolved by | `resolved_by` | `code` | b1 |  |
 | question id | `question_id` | `id` | b1 |  |
+| (none) | `why` | `value_id` | ruling | D9: why the conflict was queued |
+| (none) | `resolution_outcome` | `enum:belief_resolution` | ruling | D9: the coded disposition |
+| (none) | `resolution_operation_ids` | `ids` | ruling | D9: operations in the resolving batch |
 | version | `version` | `int` | ruling | S12, line 3081 |
 | touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 
@@ -1484,6 +1505,11 @@ Indexes: none.
 | cause change id | `cause_change_id` | `int` | b1 | a change entry sequence (S10) |
 | queued at | `queued_at` | `instant` | b1 |  |
 | taken at | `taken_at` | `instant` | b1 |  |
+| (none) | `disposition` | `enum:support_disposition` | ruling | D9: the re-judgment result |
+| (none) | `reason` | `value_id` | ruling | D9: why this support change was resolved |
+| (none) | `gap_reason` | `value_id` | ruling | D12: a gap found by the safety net |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 
 ### questions
 
