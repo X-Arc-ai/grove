@@ -25,7 +25,7 @@ import sys
 
 REFUSED_EXIT = 126
 MAX_COMMAND_BYTES = 3 * 1024 * 1024
-VERBS = frozenset({"status", "pass", "recall", "get", "propose", "finish", "--help", "-h"})
+VERBS = frozenset({"status", "pass", "recall", "get", "fetch", "propose", "finish", "--help", "-h"})
 _SPECIAL = frozenset(";&|<>()$`\\*?[]{}~!#")
 _DOUBLE_QUOTE_SPECIAL = frozenset("$`\\")
 _HEREDOC = re.compile(

@@ -172,17 +172,40 @@ async def runner_end(run_id: str, request: Request, _: Service) -> dict[str, Any
 
 @router.get("/brain/status")
 def brain_status(request: Request, live: Pass) -> dict[str, Any]:
+    _curator_guard(live)
     return brain.status(request.app.state.driver, live.world_id, live.record)
 
 
 @router.get("/brain/pass")
 def brain_pass(request: Request, live: Pass) -> dict[str, Any]:
+    _curator_guard(live)
     return brain.pass_input(request.app.state.driver, live.world_id, live.record)
+
+
+def _curator_guard(live: LivePass) -> None:
+    if live.claims.agent == "curator":
+        from grove.cleanup.access import CleanupRefused
+        from grove.cleanup.runtime import require_runtime
+
+        try:
+            require_runtime()
+        except CleanupRefused:
+            raise unavailable("Curator authority is not configured") from None
+
+
+@router.post("/brain/fetch")
+async def brain_fetch(request: Request, live: Pass) -> dict[str, Any]:
+    if live.claims.agent != "curator":
+        raise ApiError(403, "scope_denied", "only the Curator may fetch a verification source")
+    _curator_guard(live)
+    # No request URL or content is read before the complete authority provider exists.
+    raise unavailable("Curator authority is not configured")
 
 
 @router.post("/brain/recall")
 async def brain_recall(request: Request, live: Pass) -> dict[str, Any]:
     """The text comes in the body: a URL, and so an access log line, never holds it."""
+    _curator_guard(live)
     body = await read_json_body(request, MAX_SMALL_BODY)
     if not isinstance(body, dict):
         raise invalid_arguments("the body is {q, limit?}", "body")
@@ -202,6 +225,7 @@ async def brain_recall(request: Request, live: Pass) -> dict[str, Any]:
 
 @router.get("/brain/items/{item_id}")
 def brain_get(item_id: str, request: Request, live: Pass) -> dict[str, Any]:
+    _curator_guard(live)
     if _ITEM_ID.fullmatch(item_id) is None:
         raise not_found("no item with that id in this world")
     found = brain.get_item(request.app.state.driver, live.world_id, item_id)
@@ -260,6 +284,7 @@ def _declined(error: BatchDeclined) -> JSONResponse:
 
 @router.post("/brain/propose")
 async def brain_propose(request: Request, live: Pass) -> JSONResponse:
+    _curator_guard(live)
     body = await read_json_body(request, MAX_BATCH_BYTES)
     if not isinstance(body, dict) or not isinstance(body.get("batch"), dict):
         raise invalid_arguments("the body is {request_id?, batch}", "batch")
@@ -347,6 +372,7 @@ def _receipt_block(driver: Any, world_id: str, receipt: Receipt) -> str:
 @router.post("/brain/finish")
 async def brain_finish(request: Request, live: Pass) -> dict[str, Any]:
     """A request this pass read and found nothing to write for: saved with no commit."""
+    _curator_guard(live)
     body = await read_json_body(request, MAX_SMALL_BODY)
     if not isinstance(body, dict):
         raise invalid_arguments("the body is {request_id}", "body")
