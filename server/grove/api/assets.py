@@ -9,7 +9,7 @@ from fastapi import FastAPI, Response
 
 _NAME = re.compile(r"([a-f0-9]{64})\.(js|css|woff2|woff)\Z")
 _TYPES = {"js": "text/javascript", "css": "text/css", "woff2": "font/woff2", "woff": "font/woff"}
-_MAX_ASSET = 4 * 1024 * 1024
+_MAX_ASSET = 8 * 1024 * 1024
 
 
 def add_public_assets(app: FastAPI, folder: Path) -> None:
