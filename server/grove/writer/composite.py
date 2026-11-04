@@ -66,7 +66,7 @@ _FORGOTTEN_REASON = "a value this change set holds was forgotten"
 
 # A lock that changes nothing on the row: a correction leaves the record byte-identical, and the
 # lock still makes a concurrent end of the same row wait for this transaction.
-_MARK_ITEM = "MATCH (i:Item {id: $id}) SET i.lock_marker = true REMOVE i.lock_marker RETURN i"
+_MARK_ITEM = "MATCH (i:Item {id: $id}) RETURN i"
 _SUCCESSORS_OUT = (
     "MATCH (:Item)-[l:LINK]->(:Item) WHERE l.from_item = $id AND l.meaning IN $meanings "
     "AND l.active_key IS NOT NULL RETURN l.id AS id"

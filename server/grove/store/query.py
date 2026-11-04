@@ -7,6 +7,7 @@ for it, and Community has no roles. The real wall is the writer lint plus scope_
 import math
 import re
 import unicodedata
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from neo4j import Driver, Result, unit_of_work
@@ -161,6 +162,65 @@ def lucene_terms(text: str, *, fuzzy: bool) -> list[str]:
     return terms
 
 
+def _search_query(
+    world_id: str, index: str, text: str, *, limit: int, fuzzy: bool, post_filter: bool = True
+) -> tuple[str, dict] | None:
+    if index not in _FULLTEXT_NAMES:
+        raise ScopeError(f"no such full-text index: {index!r}")
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ScopeError("limit must be a positive integer")
+    if world_id == PRIMITIVE_WORLD:
+        raise ScopeError("the primitive rows have no world term to search on")
+    terms = lucene_terms(text, fuzzy=fuzzy)
+    if not terms:
+        return None
+    group = " ".join(f"{field}:{term}" for field in _TEXT_FIELDS[index] for term in terms)
+    guard_clause = "WHERE n.world_id = $world_id " if post_filter else ""
+    return (
+        f"MATCH (n) SEARCH n IN (FULLTEXT INDEX {index} FOR $q LIMIT $limit) SCORE AS score "
+        f"{guard_clause}RETURN n, labels(n) AS labels, score",
+        {"q": f'+world_id:"{world_id}" +({group})', "limit": limit, WORLD_PARAM: world_id},
+    )
+
+
+async def transaction_search(
+    run: Callable[[str, dict], Awaitable[list[dict]]],
+    world_id: str,
+    index: str,
+    text: str,
+    *,
+    fuzzy: bool = False,
+) -> list[dict]:
+    """Complete membership in one native transaction; deliberately discard shared-corpus scores.
+
+    SEARCH requires LIMIT. The exact world inventory supplies an upper bound for every possible
+    match, not a page size. The outer generation bracket rejects an intervening target-world write.
+    Only the fixed catalogue supplies identifiers; run must guard and detach every returned row.
+    """
+    check_world_id(world_id)
+    # Do not silently filter a foreign Lucene hit after LIMIT. An exceptional analyzer collision
+    # must reach the native result guard and refuse, not hide an omitted target-world candidate.
+    prepared = _search_query(world_id, index, text, limit=1, fuzzy=fuzzy, post_filter=False)
+    if prepared is None:
+        return []
+    definition = next(entry for entry in FULLTEXT_INDEXES if entry.name == index)
+    labels = " OR ".join(f"n:{label}" for label in definition.labels)
+    inventory = await run(
+        f"MATCH (n) WHERE n.world_id = $world_id AND ({labels}) RETURN count(n) AS total",
+        {WORLD_PARAM: world_id},
+    )
+    total = inventory[0]["total"] if len(inventory) == 1 else None
+    if type(total) is not int or not 0 <= total <= 2_147_483_647:
+        raise ScopeError("the complete search inventory is unavailable")
+    if total == 0:
+        return []
+    cypher, params = prepared
+    params["limit"] = total
+    rows = await run(cypher, params)
+    candidates = [{"node": row["n"], "labels": sorted(row["labels"])} for row in rows]
+    return sorted(candidates, key=lambda row: row["node"]["id"])
+
+
 class WorldQuery:
     def __init__(self, driver: Driver, world_id: str, *, timeout: float = 30.0) -> None:
         self._driver = driver
@@ -184,33 +244,13 @@ class WorldQuery:
         return _run_read(self._driver, scoped, bound, self._world_id, self._timeout)
 
     def search(self, index: str, text: str, *, limit: int, fuzzy: bool = False) -> list[dict]:
-        if index not in _FULLTEXT_NAMES:
-            raise ScopeError(f"no such full-text index: {index!r}")
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-            raise ScopeError("limit must be a positive integer")
-        if self._world_id == PRIMITIVE_WORLD:
-            raise ScopeError("the primitive rows have no world term to search on")
-        terms = lucene_terms(text, fuzzy=fuzzy)
-        if not terms:
+        prepared = _search_query(self._world_id, index, text, limit=limit, fuzzy=fuzzy)
+        if prepared is None:
             return []
-        # world_id is an indexed field, so a bare term would also match it: every term names the
-        # text fields.
-        group = " ".join(f"{field}:{term}" for field in _TEXT_FIELDS[index] for term in terms)
         # SEARCH filters after LIMIT, so only a filter inside the Lucene query gives a true top k
         # (S17). The world id form of S36 makes the phrase exact in practice; the WHERE stays as
         # the exact check.
-        rows = _run_read(
-            self._driver,
-            f"MATCH (n) SEARCH n IN (FULLTEXT INDEX {index} FOR $q LIMIT $limit) SCORE AS score "
-            "WHERE n.world_id = $world_id RETURN n, labels(n) AS labels, score",
-            {
-                "q": f'+world_id:"{self._world_id}" +({group})',
-                "limit": limit,
-                WORLD_PARAM: self._world_id,
-            },
-            self._world_id,
-            self._timeout,
-        )
+        rows = _run_read(self._driver, *prepared, self._world_id, self._timeout)
         return [
             {"node": row["n"], "labels": sorted(row["labels"]), "score": row["score"]}
             for row in rows

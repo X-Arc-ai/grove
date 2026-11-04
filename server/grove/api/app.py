@@ -30,8 +30,9 @@ from grove.api.views import PREFIX, router
 from grove.demo_guard import ReleaseFile, configuration
 from grove.mcp.demo import DemoReleaseMiddleware
 from grove.mcp.tools import DEFAULT_TOOLS, Tool
+from grove.reads.runtime import ReadRuntime
 from grove.runner.passes import PassSettings, RunnerAuth
-from grove.store.connection import Driver, open_driver
+from grove.store.connection import Driver, open_driver, open_read_driver
 from grove.views.session import SESSION_COOKIE
 from grove.writer.errors import InvalidRecord
 
@@ -99,6 +100,7 @@ def create_app(
     oauth_deps: OAuthDeps | None = None,
     runner_auth: RunnerAuth | None = None,
     pass_settings: PassSettings | None = None,
+    read_runtime: ReadRuntime | None = None,
     explanation_dispatcher_factory: Callable[[Driver], cascade.ExplanationDispatcher] | None = None,
     connector_deps: connectors.ConnectorDeps | None = None,
 ) -> FastAPI:
@@ -107,8 +109,11 @@ def create_app(
     mcp_tools is the tool set of /mcp (None means grove.mcp.tools.DEFAULT_TOOLS); oauth_deps hands
     the OAuth routes a fake resolver and transport for metadata documents, or a smaller window.
     With no runner_auth, the internal routes read GROVE_GATEWAY_SECRET and
-    GROVE_RUNNER_TOKEN_SHA256 at first use. The explanation dispatcher starts only for an owned
-    driver, unless explanation_dispatcher_factory explicitly enables it for an injected driver."""
+    GROVE_RUNNER_TOKEN_SHA256 at first use. Production owns a separate D7 async runtime.
+    An injected synchronous driver does not implicitly open a second real connection pool;
+    callers may inject read_runtime and retain its ownership. The explanation dispatcher starts
+    only for an owned driver, unless explanation_dispatcher_factory explicitly enables it for
+    an injected driver."""
     settings = settings or load_api_settings()
     demo_config = configuration()
     if demo_config is not None:
@@ -120,16 +125,20 @@ def create_app(
         # Opening a driver does not connect, so the API starts while the store is still down.
         if driver is None:
             app.state.driver = driver_factory()
+        owned_read_runtime = None
         dispatcher = None
         poll_stop = asyncio.Event()
         poll_task = None
-        if os.environ.get("GROVE_CONNECTOR_POLL") == "1":
-            from grove.connectors.poll import run_poll
-
-            poll_task = asyncio.create_task(
-                run_poll(app.state.driver, settings, connector_config, poll_stop)
-            )
         try:
+            if read_runtime is None and driver is None:
+                owned_read_runtime = ReadRuntime(open_read_driver())
+                app.state.read_runtime = owned_read_runtime
+            if os.environ.get("GROVE_CONNECTOR_POLL") == "1":
+                from grove.connectors.poll import run_poll
+
+                poll_task = asyncio.create_task(
+                    run_poll(app.state.driver, settings, connector_config, poll_stop)
+                )
             if driver is None or explanation_dispatcher_factory is not None:
                 factory = explanation_dispatcher_factory or cascade.ExplanationDispatcher
                 candidate = factory(app.state.driver)
@@ -142,10 +151,14 @@ def create_app(
                 if poll_task is not None:
                     await poll_task
             finally:
-                if dispatcher is not None:
-                    dispatcher.stop()
-                elif driver is None:
-                    app.state.driver.close()
+                try:
+                    if owned_read_runtime is not None:
+                        await owned_read_runtime.close()
+                finally:
+                    if dispatcher is not None:
+                        dispatcher.stop()
+                    elif driver is None:
+                        app.state.driver.close()
 
     # redirect_slashes=False: Starlette builds that redirect from the request, and uvicorn runs
     # without proxy headers, so it would name plain http and a client would send its body in clear.
@@ -168,6 +181,7 @@ def create_app(
         app.state.demo_tools = demo_tools()
     app.state.runner_auth = runner_auth
     app.state.pass_settings = pass_settings
+    app.state.read_runtime = read_runtime
     app.state.connectors = connector_config
     if driver is not None:
         app.state.driver = driver

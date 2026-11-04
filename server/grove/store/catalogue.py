@@ -1696,6 +1696,12 @@ WORLDS = _platform(
         _p("owner_user_id", "id"),
         _p("created_at", "instant"),
         _p("next_sequence", "int", "S10: starts at 0; advanced by one direct SET"),
+        _p(
+            "read_generation",
+            "int",
+            "D7: nonnegative operational capture generation; "
+            "monotonic per mutating world transaction",
+        ),
         _p("seed_version", "code"),
         _p(
             "self_item_id",

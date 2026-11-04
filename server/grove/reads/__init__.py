@@ -1,1 +1,1 @@
-"""Public read adapters with explicitly bounded contracts."""
+"""Model-free read components and explicitly bounded public adapters."""
