@@ -7,6 +7,10 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/lib.sh
 . "$here/lib.sh"
 
+# These files live outside the checkout. A first-upgrade fallback to the old
+# installer replaces base units but cannot remove the maintenance drop-ins.
+python3 "$here/cutover.py" install
+
 command -v nginx >/dev/null || die "nginx is not installed"
 host=$(public_host)
 sites="$GROVE_NGINX_DIR/sites-available"
