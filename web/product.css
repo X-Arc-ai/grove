@@ -236,3 +236,6 @@ body.gp-logout-open #canvas,body.gp-logout-open #gp-motion { visibility:hidden }
   #grove-product .gp-materials .gp-material-section>header { flex-wrap:wrap; gap:12px }
   #grove-product .gp-materials input:not([type="file"]),#grove-product .gp-materials textarea { font-size:16px }
 }
+
+/* The phone tour keeps the live worker panel below its explanatory card. */
+@media(max-width:700px){body.gp-tour-workers.hood-on aside.hood-score.hood-live{top:var(--grove-tour-card-bottom,270px)}}
