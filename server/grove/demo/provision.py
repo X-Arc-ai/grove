@@ -20,7 +20,7 @@ from grove.demo_policy import (
     configured_email_hash,
     require_designation,
 )
-from grove.mcp.store import StoreHandler
+from grove.mcp.store import DemoStoreHandler, StoreHandler
 from grove.mcp.tools import ToolContext
 from grove.store.connection import open_driver
 from grove.writer.accounts import default_world_id, email_hash, ensure_demo_account
@@ -83,7 +83,7 @@ def provision(
         frozenset({"grove.read", "grove.write"}),
         "operator-demo-provision",
     )
-    store = handler or StoreHandler(wait_seconds=0)
+    store = handler or DemoStoreHandler(wait_seconds=0)
     arguments = [
         {
             "text": text,
