@@ -205,7 +205,7 @@ def test_foreign_app_response_is_not_accepted(setup):
     assert client.get(pipedream.PREFIX + "/accounts").status_code == 503
 
 
-def test_persisted_designation_refuses_all_connect_tokens_without_runtime_config(
+def test_persisted_designation_refuses_status_and_connect_without_runtime_config(
     driver, migrated, monkeypatch
 ):
     made = Accounts()
@@ -248,6 +248,9 @@ def test_persisted_designation_refuses_all_connect_tokens_without_runtime_config
         client = TestClient(app)
         client.cookies.set(SESSION_COOKIE, token)
         assert client.get("/v1/views/session").json()["account"] == account.user_id
+        response = client.get(pipedream.PREFIX + "/accounts")
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "scope_denied"
         for provider in pipedream.PROVIDERS:
             response = client.post(pipedream.PREFIX + f"/{provider}/connect", json={})
             assert response.status_code == 403
