@@ -1,5 +1,5 @@
 'use strict';
-// Focused auth regressions. Run only when tests are authorized.
+// Focused auth regressions.
 // Real product auth functions, live transport and simulation state; synthetic HTTP only.
 // No browser, build, third-party dependency or real email/account action.
 // GROVE_EMAIL_CODE_WEB can select an unchanged source tree for a baseline control.
@@ -22,7 +22,8 @@ function sourceFunction(name) {
 }
 const authSource = [
   'accountMode', 'wordmark', 'esc', 'icon', 'signIn', 'signInEmail', 'setAddress',
-  'arrive', 'finishSignIn', 'startEmail', 'verifyEmail', 'showSigninError',
+  'arrive', 'finishSignIn', 'startEmail', 'verifyEmail', 'holdEmailCard', 'dropEmailCard',
+  'heldEmailCard', 'showCard', 'showSigninError',
   'sessionUnknown', 'checkSession', 'endSession', 'logout', 'handle',
 ].map(sourceFunction).join('\n');
 // Use the real event handlers, including their invalidation and recheck order.
@@ -31,10 +32,13 @@ const unauthenticated = between("  window.addEventListener('grove:unauthenticate
 const settle = async () => { for (let i = 0; i < 40; i++) await Promise.resolve(); };
 const signedIn = account => ({ signed_in: true, account, method: 'email', has_items: false });
 const MAIN = 'grove-minimal-codex-v3';
+const HELD = 'grove-email-code';
+const CODE_LIFE_MS = 10 * 60 * 1000;
 const checks = [];
 const check = (name, run) => checks.push([name, run]);
 
-function page(initialStore = {}) {
+// `tab` is this tab's session storage. Pass it on to open a new page load in the same tab.
+function page(initialStore = {}, tab = {}) {
   const store = { ...initialStore }, listeners = {}, requests = [], classes = new Set();
   const counts = { clears: 0, renders: 0, invalidations: 0, notifications: 0 };
   const box = {
@@ -48,6 +52,11 @@ function page(initialStore = {}) {
     localStorage: {
       getItem: key => store[key] || null,
       setItem: (key, value) => { store[key] = String(value); },
+    },
+    sessionStorage: {
+      getItem: key => (key in tab ? tab[key] : null),
+      setItem: (key, value) => { tab[key] = String(value); },
+      removeItem: key => { delete tab[key]; },
     },
     document: { body: { classList: {
       add: name => classes.add(name), remove: name => classes.delete(name),
@@ -90,7 +99,7 @@ function page(initialStore = {}) {
     assert(index >= 0, 'Expected pending request: ' + url);
     return requests.splice(index, 1)[0];
   }
-  return { box, counts, store, classes, requests, take,
+  return { box, counts, store, tab, classes, requests, take,
     fire: (type, extra = {}) => box.dispatchEvent({ type, ...extra }),
   };
 }
@@ -123,6 +132,15 @@ async function focus401(p) {
   p.take('/v1/views/session').reply(401);
   await settle();
 }
+// A new page load in the same tab, after a reload or a trip to another page.
+async function reopen(p) {
+  const next = page(p.store, p.tab), pending = next.box.checkSession();
+  next.take('/v1/views/session').reply(401);
+  await pending;
+  await settle();
+  return next;
+}
+function held(email, age) { return JSON.stringify({ email, sent: Date.now() - age }); }
 function assertAnonymous(p) {
   assert.equal(p.box.api.getState().auth, null);
   assert.equal(p.box.api.getState().account, null);
@@ -255,7 +273,7 @@ check('An anonymous card with a locally bound account still receives expiry clea
   await focus401(p);
   assertAnonymous(p);
   assert.equal(p.box.api.getState().name, '');
-  assert.equal(p.box.ui.authStage, 'signin');
+  assert.equal(p.box.ui.authStage, 'code', 'The cleanup removes private state, not the held card');
 });
 
 check('A 503 or rejected session request does not expire a signed-in account', async () => {
@@ -339,7 +357,190 @@ check('Pagehide invalidates a pending verification before browser cache restorat
   p.fire('pageshow', { persisted: true });
   p.take('/v1/views/session').reply(401);
   await settle();
+  assert.equal(p.box.ui.authStage, 'code');
+  assertAnonymous(p);
+});
+
+check('A new page load in the same tab brings back the card, and its code signs in', async () => {
+  const p = await anonymous();
+  await send(p, 'held@example.test');
+  const next = await reopen(p);
+  assert.equal(next.box.ui.authStage, 'code');
+  assert.equal(next.box.ui.email, 'held@example.test');
+  assert.match(next.box.html, /data-code-form/);
+  assert.match(next.box.html, /held@example\.test/);
+  assertAnonymous(next);
+  const pending = next.box.verifyEmail('123456'), verify = next.take('/v1/auth/email/verify');
+  assert.equal(JSON.parse(verify.init.body).email, 'held@example.test');
+  verify.reply(200, signedIn('synthetic-account-a'));
+  await pending;
+  assert.equal(next.box.api.getState().account, 'synthetic-account-a');
+  assert.equal(next.box.ui.authStage, null);
+  assert.deepEqual(next.tab, {}, 'A finished sign-in holds no card');
+});
+
+check('A graph 401 during a page load cannot lose the held card', async () => {
+  // The order a real page load gives: a views call answers first and ends the session check.
+  const p = await anonymous();
+  await send(p, 'held@example.test');
+  const next = page(p.store, p.tab), pending = next.box.checkSession();
+  next.fire('grove:unauthenticated');
+  next.take('/v1/views/session').reply(401);
+  await pending;
+  await settle();
+  assert.equal(next.box.ui.authStage, 'code');
+  assert.equal(next.box.ui.email, 'held@example.test');
+  assert.match(next.box.html, /data-code-form/);
+});
+
+check('A session check that fails during a page load keeps the held card', async () => {
+  const p = page({}, { [HELD]: held('held@example.test', 0) }), pending = p.box.checkSession();
+  p.take('/v1/views/session').reply(503);
+  await pending;
+  await settle();
+  assert.equal(p.box.ui.authStage, 'code');
+  assert.equal(p.box.ui.email, 'held@example.test');
+  assert.equal(p.box.ui.error, 'Grove could not be reached. Try again in a moment.');
+});
+
+check('The held card keeps the address and its time, never a code', async () => {
+  const p = await anonymous();
+  await send(p, 'held@example.test');
+  p.box.ui.code = '654321';
+  const pending = p.box.verifyEmail('654321');
+  p.take('/v1/auth/email/verify').reply(401, { error: { code: 'unauthenticated' } });
+  await pending;
+  assert.equal(p.box.ui.authStage, 'code');
+  assert.deepEqual(Object.keys(p.tab), [HELD]);
+  assert.deepEqual(Object.keys(JSON.parse(p.tab[HELD])).sort(), ['email', 'sent']);
+  assert.doesNotMatch(p.tab[HELD], /654321/);
+  assert.doesNotMatch(p.store[MAIN] || '', /held@example|654321/);
+});
+
+check('Use another email drops the held card', async () => {
+  const p = await anonymous();
+  await send(p);
+  p.box.handle('auth-back');
+  assert.deepEqual(p.tab, {});
+  const next = await reopen(p);
+  assert.equal(next.box.ui.authStage, 'signin');
+  assert.match(next.box.html, /data-email-form/);
+});
+
+check('Closing the card drops the held card', async () => {
+  const p = await anonymous();
+  await send(p);
+  p.box.handle('auth-close');
+  assert.deepEqual(p.tab, {});
+});
+
+check('The card comes back for the life of a code and no longer', async () => {
+  const fresh = page({}, { [HELD]: held('late@example.test', CODE_LIFE_MS - 5000) });
+  let pending = fresh.box.checkSession();
+  fresh.take('/v1/views/session').reply(401);
+  await pending;
+  await settle();
+  assert.equal(fresh.box.ui.authStage, 'code');
+  const old = page({}, { [HELD]: held('late@example.test', CODE_LIFE_MS) });
+  pending = old.box.checkSession();
+  old.take('/v1/views/session').reply(401);
+  await pending;
+  await settle();
+  assert.equal(old.box.ui.authStage, 'signin');
+  assert.deepEqual(old.tab, {});
+});
+
+check('A held value that makes no card is dropped', async () => {
+  const values = ['not json', 'null', '7', '{}', '{"email":5,"sent":1}',
+    JSON.stringify({ email: '', sent: Date.now() }), held('future@example.test', -60000),
+    JSON.stringify({ email: 'nosent@example.test' })];
+  for (const value of values) {
+    const p = page({}, { [HELD]: value }), pending = p.box.checkSession();
+    p.take('/v1/views/session').reply(401);
+    await pending;
+    await settle();
+    assert.equal(p.box.ui.authStage, 'signin', value);
+    assert.deepEqual(p.tab, {}, value);
+  }
+});
+
+check('A send that fails holds no card and drops an older one', async () => {
+  const p = await anonymous();
+  await send(p, 'first@example.test');
+  p.box.handle('auth-back');
+  p.tab[HELD] = held('first@example.test', 0);
+  for (const status of [429, 503]) {
+    const pending = p.box.startEmail('second@example.test');
+    p.take('/v1/auth/email/start').reply(status);
+    await pending;
+    assert.equal(p.box.ui.authStage, 'signin');
+    assert.deepEqual(p.tab, {});
+  }
+});
+
+check('A cancelled send holds no card', async () => {
+  const p = await anonymous(), pending = p.box.startEmail('old@example.test');
+  const request = p.take('/v1/auth/email/start');
+  p.box.handle('auth-back');
+  request.reply(200);
+  await pending;
+  assert.deepEqual(p.tab, {});
+});
+
+check('A session found on load drops the held card', async () => {
+  const p = page({}, { [HELD]: held('held@example.test', 0) }), pending = p.box.checkSession();
+  p.take('/v1/views/session').reply(200, signedIn('synthetic-account-a'));
+  await pending;
+  await settle();
+  assert.equal(p.box.api.getState().account, 'synthetic-account-a');
+  assert.deepEqual(p.tab, {});
+});
+
+check('A blocked session storage leaves the card for the life of the page', async () => {
+  const p = await anonymous();
+  const blocked = () => { throw new Error('Synthetic blocked storage'); };
+  p.box.sessionStorage = { getItem: blocked, setItem: blocked, removeItem: blocked };
+  await send(p);
+  await focus401(p);
+  assert.equal(p.box.ui.authStage, 'code');
+  p.fire('pageshow', { persisted: true });
+  p.take('/v1/views/session').reply(401);
+  await settle();
   assert.equal(p.box.ui.authStage, 'signin');
+});
+
+check('A return to the consent page drops the held card before it leaves', async () => {
+  const p = await anonymous();
+  await send(p);
+  p.box.live.returnToNext = () => true;
+  const pending = p.box.verifyEmail('123456');
+  p.take('/v1/auth/email/verify').reply(200, signedIn('synthetic-account-a'));
+  await pending;
+  assert.deepEqual(p.tab, {});
+});
+
+check('Browser cache restoration brings back the code card', async () => {
+  const p = await anonymous();
+  await send(p, 'held@example.test');
+  p.fire('pagehide');
+  p.fire('pageshow', { persisted: true });
+  assert.equal(p.box.ui.authStage, 'checking');
+  p.take('/v1/views/session').reply(401);
+  await settle();
+  assert.equal(p.box.ui.authStage, 'code');
+  assert.equal(p.box.ui.email, 'held@example.test');
+  assertAnonymous(p);
+});
+
+check('A cross-tab signal keeps an anonymous code card', async () => {
+  const p = await anonymous();
+  await send(p, 'held@example.test');
+  p.fire('storage', { key: 'grove-auth-change', newValue: '{"nonce":"synthetic-other-tab"}' });
+  assert.equal(p.box.ui.authStage, 'checking');
+  p.take('/v1/views/session').reply(401);
+  await settle();
+  assert.equal(p.box.ui.authStage, 'code');
+  assert.equal(p.box.ui.email, 'held@example.test');
 });
 
 (async () => {
