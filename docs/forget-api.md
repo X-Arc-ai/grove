@@ -53,3 +53,13 @@ The page remains readable without JavaScript or an available API.
 It never returns environment values, secret paths or custom endpoint URLs.
 “Settings present” does not prove a successful connection or completed operation.
 Calendar and media integration remain pending until their owning lanes merge.
+
+
+## Restore limits
+
+Approved plans retain opaque normalized length/digest predicates so an older snapshot cannot
+restore a different sentence containing the selected value. They contain no selected plaintext.
+If restore discovers an affected source that the original plan did not know, it preserves the
+unrelated stored messages and blocks future import of that whole source. An affected historical
+Source image without a matching live Source locator refuses safely before erasure or replay.
+The latest external ledger is never rewritten to remove or change an earlier approved intent.

@@ -190,6 +190,10 @@ column without removing the other columns or rewriting ChangeEntry rows. It remo
 aliases and map positions, ends affected evidence, clears affected examples and locator copies,
 and queues affected beliefs for reevaluation. Whole-source and message-key hashes prevent repeat
 imports through the screened ingestion path. The raw `record_source` helper remains a test-only API.
+Opaque normalized length/digest predicates also find older text variants absent from the current
+inventory. A newly discovered old source keeps its unrelated messages but blocks future import
+of that whole source through a stored locator hash. A historical Source image with no matching
+live Source locator refuses before erasure or replay. The approved ledger payload stays immutable.
 Malformed primary identifiers that contain target text refuse before erasure because changing
 append-only identity would invalidate history; successful erasure never retains such a copy.
 
