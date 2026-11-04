@@ -365,6 +365,7 @@ def _validate(bundle: dict, world_id: str, now: datetime) -> list[dict]:
             raise _refused()
         item_entry, initial = _creation(item, "item", bundle["entries"], indexed["values"])
         provenance = []
+        rich_item = False
         for row in evidence:
             if (
                 row.get("world_id") != world_id
@@ -384,6 +385,7 @@ def _validate(bundle: dict, world_id: str, now: datetime) -> list[dict]:
             from grove.demo.corpus import ACTOR, VERSION, stories
 
             if source.get("demo_version") == VERSION:
+                rich_item = True
                 expected = next(
                     (
                         item
@@ -432,7 +434,23 @@ def _validate(bundle: dict, world_id: str, now: datetime) -> list[dict]:
                 }
             )
         derived = {k: v for k, v in claim_fields(evidence).items() if v is not None}
-        if {**initial, **derived} != _plain(item):
+        expected = {**initial, **derived}
+        actual = _plain(item)
+        if rich_item:
+            # The checked link writer touches its endpoints without changing
+            # their factual version or history. No content field is exempt.
+            touched, recorded = item.get("touched_at"), item.get("recorded")
+            if (
+                not isinstance(touched, datetime)
+                or touched.tzinfo is None
+                or touched.utcoffset() is None
+                or not isinstance(recorded, datetime)
+                or touched < recorded
+            ):
+                raise _refused()
+            expected.pop("touched_at", None)
+            actual.pop("touched_at", None)
+        if expected != actual:
             raise _refused()
         if any(isinstance(v, str) and len(v) > MAX_TEXT for v in item.values()):
             raise _refused()

@@ -2,6 +2,7 @@
 
 import json
 from copy import deepcopy
+from datetime import timedelta
 
 import pytest
 
@@ -116,3 +117,15 @@ def test_rich_saved_recall_preserves_cedar_and_has_real_graph(demo_context):
     )
     with pytest.raises(ApiError, match="provenance"):
         handler(context, {"about": "Lantern Amber Quay book lockers"})
+
+
+def test_later_checked_bridge_keeps_prior_story_recallable(demo_context):
+    context, _ = demo_context
+    first, second = stories()[:2]
+    seed_story(context.driver, configured_email_hash(), first.key)
+    later = clock.TestClock()
+    later.set(clock.now(context.world_id) + timedelta(minutes=1))
+    with clock.using(later):
+        seed_story(context.driver, configured_email_hash(), second.key)
+        result = DemoRecallHandler()(context, {"about": "Lantern Amber Quay access plan"})
+    assert first.items[6].title in {item["title"] for item in result["items"]}
