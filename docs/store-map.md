@@ -1152,6 +1152,13 @@ A request commits once, in one batch, and `saved` moves in the same transaction 
 | (none) | `said_at` | `instant` | ruling | S41: B.3 remember, for the later pass |
 | (none) | `about` | `ids` | ruling | S41: B.3 remember, for the later pass |
 | (none) | `relay` | `enum:relay` | ruling | S53: remember, answer or correction |
+| (none) | `protocol` | `code` | ruling | Optional protected protocol: question_answer_v1 |
+| (none) | `question_id` | `id` | ruling | Optional immutable question answer binding |
+| (none) | `question_binding_revision` | `int` | ruling | Optional positive binding revision |
+| (none) | `answer_command` | `json_ids` | ruling | Optional canonical AnswerCommandV1; <=16 KiB |
+| (none) | `answer_state` | `enum:question_answer_state` | ruling | Optional answer attempt state |
+| (none) | `application_id` | `id` | ruling | Optional committed QuestionApplication reference |
+| (none) | `principal_id` | `id` | ruling | Optional authenticated principal reference; <=128 chars |
 
 ### declines
 
@@ -1311,9 +1318,9 @@ Written by the model-call layer, with each model call, and by the operator's cei
 
 `:Verification`, node. Scope world. Restore group snapshot. Owner D4, D11.
 
-Keys: `verifications_id_unique` (id).
+Keys: `verifications_id_unique` (id); `verifications_world_id_attempt_id_unique` (world_id, attempt_id).
 
-Indexes: `verifications_world_id_claim_id_at_idx` (world_id, claim_id, at); `verifications_run_id_idx` (run_id).
+Indexes: `verifications_world_id_claim_id_at_idx` (world_id, claim_id, at); `verifications_run_id_idx` (run_id); `verifications_world_id_claim_id_commit_sequence_idx` (world_id, claim_id, commit_sequence).
 
 Columns are D4's (line 985); every check is one appended row.
 
@@ -1338,6 +1345,16 @@ Columns are D4's (line 985); every check is one appended row.
 | reason | `reason` | `value_id` | b1 |  |
 | request id | `request_id` | `id` | b1 |  |
 | commit id | `commit_id` | `id` | b1 |  |
+| (none) | `attempt_kind` | `code` | ruling | scored or no_source; absent legacy rows remain scored |
+| (none) | `attempt_id` | `id` | ruling | Optional deduplication identity; <=128 chars |
+| (none) | `claim_type` | `code` | ruling | Optional typed claim identity |
+| (none) | `claim_version` | `int` | ruling | Optional positive claim version |
+| (none) | `work_id` | `id` | ruling | Optional QuestionWork reference |
+| (none) | `run_ordinal` | `int` | ruling | Optional CuratorRunOrder ordinal; sole order authority |
+| (none) | `commit_sequence` | `int` | ruling | Optional durable commit order; legacy uses ChangeEntry |
+| (none) | `legwork_ids` | `ids` | ruling | Optional checked legwork references; at most 50 |
+| (none) | `command` | `json_ids` | ruling | Optional NoSourceDeferralV1; <=256 KiB; no source prose |
+| (none) | `change_set_id` | `id` | ruling | Optional committed change set reference |
 
 ### horizon_stats
 
@@ -1538,6 +1555,190 @@ Indexes: `questions_world_id_state_priority_idx` (world_id, state, priority).
 | receipt | `receipt` | `json_ids` | b1 | ids and codes; a title is read fresh when shown |
 | (none) | `unblocks` | `ids` | ruling | S25, line 3197 |
 | (none) | `withdraw_reason` | `value_id` | ruling | S25, line 2161 |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+
+### question_bindings
+
+`:QuestionBinding`, node. Scope world. Restore group snapshot. Owner D11.
+
+Keys: `question_bindings_id_unique` (id); `question_bindings_world_id_question_id_unique` (world_id, question_id); `question_bindings_world_id_open_topic_key_unique` (world_id, open_topic_key).
+
+Indexes: `question_bindings_world_id_identity_day_idx` (world_id, identity_day); `question_bindings_world_id_identity_week_idx` (world_id, identity_week).
+
+IDs <=128; version and touched_at are mandatory. Structural data only; generated prose and payloads use HistoryValue references.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `question_id` | `id` | ruling | <=128 structural characters |
+| (none) | `revision` | `int` | ruling | Exact int, 1..2^63-1 |
+| (none) | `topic_key` | `code` | ruling | <=128 structural characters |
+| (none) | `open_topic_key` | `code` | ruling | Optional. <=128 structural characters |
+| (none) | `binding` | `json_ids` | ruling | Structural JSON only; <=256 KiB |
+| (none) | `state` | `enum:question_state` | ruling | Closed lifecycle value |
+| (none) | `created_at` | `instant` | ruling | Aware operational instant |
+| (none) | `identity_day` | `date` | ruling | Optional. Closed lifecycle value |
+| (none) | `identity_week` | `date` | ruling | Optional. Closed lifecycle value |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+
+### question_work
+
+`:QuestionWork`, node. Scope world. Restore group snapshot. Owner D11.
+
+Keys: `question_work_id_unique` (id); `question_work_world_id_disposition_id_unique` (world_id, disposition_id).
+
+Indexes: `question_work_world_id_question_id_idx` (world_id, question_id); `question_work_world_id_intent_id_idx` (world_id, intent_id); `question_work_world_id_state_idx` (world_id, state).
+
+IDs <=128; version and touched_at are mandatory. Structural data only; generated prose and payloads use HistoryValue references.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `question_id` | `id` | ruling | Optional. <=128 structural characters |
+| (none) | `group_id` | `code` | ruling | <=128 structural characters |
+| (none) | `state` | `enum:question_work_state` | ruling | Closed lifecycle value |
+| (none) | `intent_binding` | `json_ids` | ruling | D11: exact prospective D10 execution, request, run and disposition; <=16 KiB |
+| (none) | `source_binding` | `json_ids` | ruling | Optional. Structural JSON only; <=256 KiB |
+| (none) | `disposition_id` | `id` | ruling | Optional. <=128 structural characters |
+| (none) | `intent_id` | `id` | ruling | Optional. <=128 structural characters |
+| (none) | `waiting_operation_id` | `id` | ruling | Optional. <=128 structural characters |
+| (none) | `payload_value_id` | `value_id` | ruling | Optional. <=128 structural characters |
+| (none) | `payload_version` | `int` | ruling | Optional. Exact int, 1..2^63-1 |
+| (none) | `target` | `json_ids` | ruling | Optional. Structural JSON only; <=256 KiB |
+| (none) | `retry_at` | `instant` | ruling | Optional. Aware operational instant |
+| (none) | `lease_owner` | `id` | ruling | Optional. <=128 structural characters |
+| (none) | `lease_until` | `instant` | ruling | Optional. Aware operational instant |
+| (none) | `application_id` | `id` | ruling | Optional. <=128 structural characters |
+| (none) | `transfer` | `json_ids` | ruling | Optional. Structural JSON only; <=256 KiB |
+| (none) | `reason` | `value_id` | ruling | Optional. <=128 structural characters |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+
+### question_applications
+
+`:QuestionApplication`, node. Scope world. Restore group snapshot. Owner D11.
+
+Keys: `question_applications_id_unique` (id); `question_applications_world_id_request_id_unique` (world_id, request_id).
+
+Indexes: `question_applications_world_id_question_id_idx` (world_id, question_id); `question_applications_world_id_commit_id_idx` (world_id, commit_id).
+
+Append-only; version=1. IDs <=128; version and touched_at are mandatory. Structural data only; generated prose and payloads use HistoryValue references.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `request_id` | `id` | ruling | <=128 structural characters |
+| (none) | `question_id` | `id` | ruling | <=128 structural characters |
+| (none) | `binding_revision` | `int` | ruling | Exact int, 1..2^63-1 |
+| (none) | `principal_id` | `id` | ruling | <=128 structural characters |
+| (none) | `source_binding` | `json_ids` | ruling | Structural JSON only; <=256 KiB |
+| (none) | `plan_id` | `id` | ruling | <=128 structural characters |
+| (none) | `commit_id` | `id` | ruling | <=128 structural characters |
+| (none) | `change_set_id` | `id` | ruling | <=128 structural characters |
+| (none) | `application` | `json_ids` | ruling | Structural JSON only; <=256 KiB |
+| (none) | `applied_at` | `instant` | ruling | Aware operational instant |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+
+### question_events
+
+`:QuestionEvent`, node. Scope world. Restore group snapshot. Owner D11.
+
+Keys: `question_events_id_unique` (id); `question_events_world_id_sequence_unique` (world_id, sequence).
+
+Indexes: `question_events_world_id_question_id_sequence_idx` (world_id, question_id, sequence); `question_events_world_id_commit_id_idx` (world_id, commit_id).
+
+Append-only; version=1. IDs <=128; version and touched_at are mandatory. Structural data only; generated prose and payloads use HistoryValue references.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `question_id` | `id` | ruling | Optional. <=128 structural characters |
+| (none) | `work_id` | `id` | ruling | Optional. <=128 structural characters |
+| (none) | `event` | `code` | ruling | <=128 structural characters |
+| (none) | `commit_id` | `id` | ruling | <=128 structural characters |
+| (none) | `change_set_id` | `id` | ruling | <=128 structural characters |
+| (none) | `sequence` | `int` | ruling | Exact int, 1..2^63-1 |
+| (none) | `at` | `instant` | ruling | Aware operational instant |
+| (none) | `snapshot` | `json_ids` | ruling | Structural JSON only; <=256 KiB |
+| (none) | `reason` | `value_id` | ruling | Optional. <=128 structural characters |
+| (none) | `application_id` | `id` | ruling | Optional. <=128 structural characters |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+
+### curator_legwork
+
+`:CuratorLegwork`, node. Scope world. Restore group snapshot. Owner D11.
+
+Keys: `curator_legwork_id_unique` (id).
+
+Indexes: `curator_legwork_world_id_work_id_idx` (world_id, work_id); `curator_legwork_world_id_run_id_idx` (world_id, run_id).
+
+Append-only; version=1. IDs <=128; version and touched_at are mandatory. Structural data only; generated prose and payloads use HistoryValue references.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `work_id` | `id` | ruling | <=128 structural characters |
+| (none) | `run_id` | `id` | ruling | <=128 structural characters |
+| (none) | `target` | `json_ids` | ruling | Structural JSON only; <=256 KiB |
+| (none) | `result` | `enum:legwork_result` | ruling | Closed lifecycle value |
+| (none) | `attempt` | `json_ids` | ruling | Structural JSON only; <=256 KiB |
+| (none) | `recorded_at` | `instant` | ruling | Aware operational instant |
+| (none) | `reason` | `value_id` | ruling | <=128 structural characters |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+
+### curator_escalations
+
+`:CuratorEscalation`, node. Scope world. Restore group snapshot. Owner D11.
+
+Keys: `curator_escalations_id_unique` (id); `curator_escalations_world_id_claim_type_claim_id_streak_start_unique` (world_id, claim_type, claim_id, streak_start).
+
+Indexes: `curator_escalations_world_id_state_idx` (world_id, state).
+
+IDs <=128; version and touched_at are mandatory. Structural data only; generated prose and payloads use HistoryValue references.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `claim_id` | `id` | ruling | <=128 structural characters |
+| (none) | `claim_type` | `code` | ruling | <=128 structural characters |
+| (none) | `streak_start` | `id` | ruling | <=128 structural characters |
+| (none) | `attempt_id` | `id` | ruling | <=128 structural characters |
+| (none) | `destination` | `code` | ruling | <=128 structural characters |
+| (none) | `state` | `code` | ruling | <=128 structural characters; pending or completed |
+| (none) | `destination_id` | `id` | ruling | Optional. <=128 structural characters |
+| (none) | `prerequisite` | `code` | ruling | <=128 structural characters |
+| (none) | `created_at` | `instant` | ruling | Aware operational instant |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
+
+### curator_run_order
+
+`:CuratorRunOrder`, node. Scope world. Restore group snapshot. Owner D11.
+
+Keys: `curator_run_order_id_unique` (id); `curator_run_order_world_id_run_id_unique` (world_id, run_id); `curator_run_order_world_id_ordinal_unique` (world_id, ordinal).
+
+Indexes: none.
+
+Append-only; version=1. IDs <=128; version and touched_at are mandatory. Structural data only; generated prose and payloads use HistoryValue references.
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `run_id` | `id` | ruling | <=128 structural characters |
+| (none) | `ordinal` | `int` | ruling | Exact int, 1..2^63-1 |
+| (none) | `accepted_at` | `instant` | ruling | Aware operational instant |
 | version | `version` | `int` | ruling | S12, line 3081 |
 | touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 

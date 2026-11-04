@@ -110,12 +110,12 @@ _CREATE = "CREATE (r:Request {id: $id}) SET r += $row RETURN r"
 _UPDATE = "MATCH (r:Request {id: $id}) SET r += $columns, r.version = coalesce(r.version, 0) + 1"
 _ATTACH = (
     "MATCH (r:Request {id: $id}) "
-    "WITH r WHERE r.status = 'saved' AND r.receipt IS NULL "
+    "WITH r WHERE r.protocol IS NULL AND r.status = 'saved' AND r.receipt IS NULL "
     "SET r.receipt = $receipt, r.touched_at = $at, r.version = coalesce(r.version, 0) + 1"
 )
 # The one due predicate: claim, pending_requests and worlds_with_due_requests all read it.
 _DUE = (
-    "r.source_id IS NOT NULL AND ("
+    "r.protocol IS NULL AND r.source_id IS NOT NULL AND ("
     "(r.status = 'queued' AND (r.retry_at IS NULL OR r.retry_at <= $now)) OR "
     "(r.status = 'failed' AND r.retry_at IS NOT NULL AND r.retry_at <= $now) OR "
     "(r.status = 'applying' AND (r.lease_until IS NULL OR r.lease_until <= $now)))"
@@ -180,6 +180,17 @@ def _unknown_request(request_id: str) -> BatchDeclined:
     return _refused("not_found", "request_not_found", "no such request", request_id)
 
 
+def refuse_protected_request(row: dict | None) -> None:
+    """A protected request can only use its typed writer, even for saved replay."""
+    if row is not None and row.get("protocol") is not None:
+        raise _refused(
+            "scope_denied",
+            "protected_request",
+            "the request requires its protected writer",
+            row.get("id"),
+        )
+
+
 def batch_fingerprint(batch: Any) -> str:
     """What a replay compares. A batch the shape check will refuse needs a fingerprint too."""
     try:
@@ -209,6 +220,7 @@ def merge_row(
     unless the caller says otherwise: its first status update makes it 1."""
     existing = tx.run(_READ, id=request_id)
     if existing:
+        refuse_protected_request(existing[0]["r"])
         return existing[0]["r"], False
     row = {
         "caller": caller.actor,
@@ -234,6 +246,7 @@ def replay_rule(row: dict[str, Any] | None, fingerprint: str) -> str:
     """What a batch with this fingerprint may do to this row. Runs twice: with no lock before the
     world lock, so N replays of a saved request never queue behind it, and under the lock, because
     the first read can be stale."""
+    refuse_protected_request(row)
     status = row.get("status") if row else None
     if status == "saved":
         return REPLAY_SAVED if row.get("fingerprint") == fingerprint else KEY_REUSED
@@ -274,6 +287,7 @@ def mark_saved(
 ) -> None:
     """In the same transaction as the batch. The receipt attaches after it: a receipt is a fresh
     read of what committed, and a saved row with none is legal after a crash."""
+    refuse_protected_request(row)
     columns = {
         "status": "saved",
         "commit_id": stamp.commit_id,
@@ -309,6 +323,7 @@ def attach_receipt(driver: Driver, world_id: str, receipt: Receipt) -> None:
 def receipt_of(driver: Driver, world_id: str, row: dict[str, Any]) -> Receipt | None:
     """A saved row's receipt: the stored one if it is a receipt, or else a fresh read of the
     change set. The receipt column of a request that was declined holds a decline."""
+    refuse_protected_request(row)
     stored = json.loads(row["receipt"]) if row.get("receipt") else None
     if stored is not None and stored.get("state") == "saved":
         return Receipt.from_json(stored)
@@ -404,6 +419,7 @@ def note_unavailable(driver: Driver, world_id: str, request_id: str, run_id: str
         if not rows:
             return
         row = rows[0]["r"]
+        refuse_protected_request(row)
         if not row.get("source_id") or row.get("status") not in _FAILABLE:
             return
         attempts = _attempts_after(row)
@@ -678,6 +694,7 @@ def _claim_one(
     if not rows:
         return None
     row = rows[0]["r"]
+    refuse_protected_request(row)
     attempts = row.get("attempts") or 0
     if attempts >= MAX_ATTEMPTS:
         tx.run(
@@ -778,6 +795,7 @@ def finish_request(
         if not rows:
             raise _unknown_request(request_id)
         row = rows[0]["r"]
+        refuse_protected_request(row)
         # A successful no-op must not discard source work withheld from the Learner.
         from grove.learner_input import select_input
 
@@ -841,6 +859,7 @@ def fail_request(
         if not rows:
             raise _unknown_request(request_id)
         row = rows[0]["r"]
+        refuse_protected_request(row)
         if row.get("status") != "applying":
             return row
         _holder(row, worker)
@@ -946,6 +965,7 @@ def apply_request(
         ) from error
     if before is None:
         raise _unknown_request(request_id)
+    refuse_protected_request(before)
     try:
         receipt = apply_batch(driver, world_id, caller, batch, request_id=request_id, run_id=run_id)
     except BatchDeclined as declined:

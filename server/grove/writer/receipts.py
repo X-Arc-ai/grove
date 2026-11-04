@@ -606,3 +606,10 @@ def _finished_source(query: WorldQuery, request_id: str | None) -> list[str]:
     if not rows or not rows[0]["id"]:
         return []
     return [f"  source {short_id(rows[0]['id'])}: nothing to write"]
+
+
+def read_question_application(driver, world_id, run_id, caller, command, *, access=None):
+    """Read a protected application through current owner authority, never a supplied receipt."""
+    from grove.writer.question_lifecycle import reconstruct_application
+
+    return reconstruct_application(driver, world_id, run_id, caller, command, access=access)

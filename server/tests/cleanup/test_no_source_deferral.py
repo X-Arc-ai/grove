@@ -14,11 +14,11 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
-from grove.cleanup.legwork import LegworkAttemptV1, NoSourceDeferralV1
-from grove.cleanup.question_lifecycle import TargetV1, canonical_json
 
 from grove import clock
 from grove.cleanup.access import CleanupRefused
+from grove.cleanup.legwork import LegworkAttemptV1, NoSourceDeferralV1
+from grove.cleanup.question_lifecycle import TargetV1, canonical_json
 from grove.cleanup.runtime import require_runtime
 from grove.store import lane, replay
 from grove.store.primitives import KIND_BELIEF
@@ -58,10 +58,10 @@ class SyntheticInMemoryTransactionAdapter:
         # Validate against the real scoper and the integrated schema catalogue.
         scope_cypher(query, "write")
         self.state["queries"].append(query)
-        if self.state.get("fail_on") and self.state["fail_on"] in query:
-            raise RuntimeError("synthetic transaction fault")
         create = re.fullmatch(r"CREATE \((\w+):(\w+)\) SET \1 \+= \$(row|entry)", query)
         if create:
+            if self.state.get("fail_on") == create[2]:
+                raise RuntimeError("synthetic transaction fault")
             self.rows(create[2]).append({**copy.deepcopy(p[create[3]]), "world_id": WORLD})
             return []
         if query == "MATCH (r:CuratorRunOrder) RETURN coalesce(max(r.ordinal), 0) AS ordinal":
@@ -308,9 +308,9 @@ def seed_verification(env, identity, disposition="deferred", run_id=None):
         )
         if run_id:
             verify.accepted_curator_run(tx, run_id, AT, stamp=stamp)
-        tx.run(
-            "CREATE (v:Verification) SET v += $row",
-            row={
+        tx.rows("Verification").append(
+            {
+                "world_id": WORLD,
                 "id": identity,
                 "claim_id": "claim",
                 "run_id": run_id,
@@ -377,9 +377,7 @@ def test_reused_attempt_with_changed_command_refuses(env):
     assert env.store.state == before
 
 
-@pytest.mark.parametrize(
-    "fault", ["CREATE (e:ChangeEntry)", "CREATE (w:QuestionWork)", "CREATE (e:CuratorEscalation)"]
-)
+@pytest.mark.parametrize("fault", ["ChangeEntry", "QuestionWork", "CuratorEscalation"])
 def test_synthetic_transaction_rollback_at_each_stage(env, fault):
     seed_verification(env, "old-1")
     seed_verification(env, "old-2")

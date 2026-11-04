@@ -1526,6 +1526,11 @@ QUESTION_WORK = Table(
         _ruling("question_id", "id", "Optional. <=128 structural characters"),
         _ruling("group_id", "code", "<=128 structural characters"),
         _ruling("state", "enum:question_work_state", "Closed lifecycle value"),
+        _ruling(
+            "intent_binding",
+            "json_ids",
+            "D11: exact prospective D10 execution, request, run and disposition; <=16 KiB",
+        ),
         _ruling("source_binding", "json_ids", "Optional. Structural JSON only; <=256 KiB"),
         _ruling("disposition_id", "id", "Optional. <=128 structural characters"),
         _ruling("intent_id", "id", "Optional. <=128 structural characters"),
