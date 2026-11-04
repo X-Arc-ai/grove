@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="light dark" />
+  <title>Forget: Grove</title>
+  <link rel="icon" type="image/svg+xml" sizes="any" href="./favicon.svg" />
+  <link rel="stylesheet" href="./site.css" />
+  <link rel="stylesheet" href="./forget.css" />
+</head>
+<body>
+  <header class="site-top"><div class="wrap">
+    <a class="wm" href="/" aria-label="Grove, home"><span>grove</span><span class="wm-dot" aria-hidden="true"></span></a>
+    <nav class="site-nav" aria-label="Main"><a href="/">Your Grove</a><a href="/privacy">Privacy</a></nav>
+  </div></header>
+  <main class="wrap forget-wrap">
+    <div class="page-head"><p class="kicker">Your data</p><h1>Forget</h1>
+      <p class="page-lead">Choose what Grove must remove. You will review the choice before you confirm.</p>
+    </div>
+    <p id="status" role="status" aria-live="polite">Checking your session.</p>
+    <p id="signin" hidden><a class="button" href="/signin?next=%2Fforget">Sign in to continue</a></p>
+    <form id="forget-form" class="forget-card" hidden>
+      <label for="target-type">What must Grove forget?</label>
+      <select id="target-type"><option value="named_value">A word or phrase everywhere</option><option value="item">An item</option><option value="field_value">One field of an item</option></select>
+      <div id="phrase-fields"><label for="named-value">Word or phrase</label><input id="named-value" type="text" maxlength="512" autocomplete="off" spellcheck="false" aria-describedby="phrase-help" /><p id="phrase-help" class="note">Enter the exact text. Grove will remove matching copies from its stored content and history.</p></div>
+      <div id="item-fields" hidden><label for="item-id">Item</label><select id="item-id"><option value="">Choose an item</option></select></div>
+      <div id="field-fields" hidden><label for="field-name">Field</label><select id="field-name"><option value="title">Title</option><option value="summary">Summary</option><option value="body">Body</option><option value="properties">Properties</option><option value="search_terms">Search terms</option><option value="status">Status</option></select></div>
+      <button class="button" id="review-button" type="submit">Review removal</button>
+    </form>
+    <section id="confirmation" class="forget-card" aria-labelledby="confirm-heading" hidden>
+      <h2 id="confirm-heading" tabindex="-1">Review this removal</h2>
+      <p id="choice"></p>
+      <p>This removes the selected content from Grove and its readable history. You cannot undo this removal.</p>
+      <p class="note">Older backups remain until their retention period ends. Restores must replay the forget ledger. Downloaded exports and copies held by an AI provider are outside this operation.</p>
+      <div class="forget-actions"><button class="button danger" id="confirm-button" type="button">Confirm and forget</button><button class="button secondary" id="cancel-button" type="button">Cancel</button></div>
+    </section>
+    <section id="receipt" class="forget-card" aria-labelledby="receipt-heading" hidden><h2 id="receipt-heading" tabindex="-1">Removal recorded</h2><p id="receipt-count"></p><p id="receipt-backup"></p><p class="note">The receipt contains counts and dates. It does not repeat the removed content.</p><a href="/">Return to your Grove</a></section>
+    <noscript><p>JavaScript is required for the forget control. Read <a href="/privacy#how-to-forget">the privacy instructions</a> for help.</p></noscript>
+  </main>
+  <footer class="site-foot"><div class="wrap"><span>Grove is run by <a href="https://x-arc.ai">X-ARC</a></span><a href="/privacy">Privacy</a></div></footer>
+  <script src="./forget.js"></script>
+</body>
+</html>

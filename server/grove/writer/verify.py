@@ -665,21 +665,9 @@ def verify_op(run: "_Run", index: int, op: dict[str, Any]) -> None:
             "a retired claim is ended in the same batch with the end class retired",
             {"claim": claim_id},
         )
-    if disposition == "retired" and claim_type == "item":
-        meanings = _consequence_meanings(run)
-        open_links = run.tx.run(
-            "MATCH (a:Item)-[l:LINK]->(b:Item) WHERE (a.id = $id OR b.id = $id) "
-            "AND l.meaning IN $meanings AND l.active_key IS NOT NULL RETURN l.id AS id",
-            id=claim_id,
-            meanings=meanings,
-        )
-        if open_links:
-            raise Refused(
-                "invalid_arguments",
-                "retired_links_open",
-                "a retired claim's consequence links end with it: end them in the same batch",
-                {"links": sorted(row["id"] for row in open_links)},
-            )
+    # D6 owns consequence endings after all operations validate. Checking them here would
+    # reject a retirement before its R1 effects can run in this same transaction. A failed
+    # ending becomes D6's stored cascade_failed proposal rather than discarding retirement.
     recheck = _recheck_value(op)
     if disposition == "deferred" and recheck is None:
         raise Refused(

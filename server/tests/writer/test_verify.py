@@ -435,7 +435,7 @@ def test_a_verify_for_a_claim_no_capability_covers_is_refused(driver, w, frozen,
         at=FRESH,
         locator=f"key:{GIT_TOKEN}",
         message_key=GIT_TOKEN,
-        statement_class="report_happened",
+        statement_class="artifact",
     )
     ops = [verify(claim, [piece("g1", judge(driver, w, f"item:{claim}", commit))])]
     one(refused(driver, w, ops, [commit]), "not_confirmable", "no_capability")

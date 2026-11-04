@@ -1,6 +1,11 @@
 # The API image: the server package with its locked dependencies. Built on the box by compose.
 FROM python:3.12-slim-bookworm@sha256:e697c81897302a4c4333bade000d98038fbb21eb064f8ee1fd42d02ebcd9d337
 
+# The read-only local-clone connector reads Git objects without hooks or network access.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=ghcr.io/astral-sh/uv:0.12.1@sha256:cf4eedcaa81655197f625739489effcbe71b61ceb1506f332c3facae5deceded /uv /usr/local/bin/uv
 
 ENV UV_COMPILE_BYTECODE=1 \
