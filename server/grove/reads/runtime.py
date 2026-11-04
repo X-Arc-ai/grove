@@ -18,6 +18,8 @@ from grove.api.errors import ApiError
 from grove.store.connection import DATABASE, AsyncDriver
 
 REQUEST_SECONDS = 2.0
+ERROR_RESERVE_SECONDS = 0.05
+ERROR_RESERVE_FRACTION = 0.1
 WORKERS = 2
 
 
@@ -102,6 +104,9 @@ class ResponseBudget:
         self.current = current
         self._timeout = timeout
         self._loop = asyncio.get_running_loop()
+        self._work_when: float | None = None
+        self._hard_when: float | None = None
+        self._invalidation: asyncio.TimerHandle | None = None
 
     @property
     def active(self) -> bool:
@@ -115,8 +120,49 @@ class ResponseBudget:
         self.current._tighten(clock.monotonic() + seconds)
         # asyncio owns its clock domain. Convert the remaining duration through its public
         # timeout factory so a test Clock need not have the event loop's monotonic origin.
-        self._timeout.reschedule(asyncio.timeout(self.current.remaining()).when())
+        remaining = self.current.remaining()
+        hard_when = asyncio.timeout(remaining).when()
+        assert hard_when is not None
+        self._hard_when = hard_when if self._hard_when is None else min(self._hard_when, hard_when)
+        reserve = min(ERROR_RESERVE_SECONDS, remaining * ERROR_RESERVE_FRACTION)
+        work_when = self._hard_when - reserve
+        self._work_when = work_when if self._work_when is None else min(self._work_when, work_when)
+        if self._invalidation is not None:
+            self._invalidation.cancel()
+        self._invalidation = self._loop.call_at(self._work_when, self.current.cancelled.set)
+        self._timeout.reschedule(self._work_when)
         return self.current
+
+    def close(self) -> None:
+        self.current.cancelled.set()
+        if self._invalidation is not None:
+            self._invalidation.cancel()
+
+    def error_remaining(self) -> float:
+        """Check only the original hard end; this never authorizes further private work.
+
+        The private handle is already cancelled and its leases closed before safe error delivery.
+        Keep the clock check as well as asyncio's fixed timeout for deterministic clock tests.
+        """
+        at = self.current.at
+        remaining = 0 if at is None else at - clock.monotonic()
+        if remaining <= 0:
+            raise snapshot_busy()
+        return remaining
+
+    @asynccontextmanager
+    async def error_delivery(self) -> AsyncIterator[None]:
+        """Deliver a safe error within the original hard end, never a new duration."""
+        self.error_remaining()
+        timeout = asyncio.timeout_at(self._hard_when)
+        try:
+            async with timeout:
+                yield
+                self.error_remaining()
+        except TimeoutError:
+            if timeout.expired():
+                raise snapshot_busy() from None
+            raise
 
 
 @asynccontextmanager
@@ -127,6 +173,7 @@ async def response_budget() -> AsyncIterator[ResponseBudget]:
         parent.remaining()
     current = Deadline(parent.at if parent is not None else None)
     token = _DEADLINE.set(current)
+    budget = None
     try:
         async with asyncio.timeout(None) as timeout:
             budget = ResponseBudget(current, timeout)
@@ -136,9 +183,13 @@ async def response_budget() -> AsyncIterator[ResponseBudget]:
             if budget.active:
                 current.remaining()
     except TimeoutError:
-        raise snapshot_busy() from None
+        if timeout.expired():
+            raise snapshot_busy() from None
+        raise
     finally:
         current.cancelled.set()
+        if budget is not None:
+            budget.close()
         _DEADLINE.reset(token)
 
 
