@@ -139,7 +139,9 @@ def _hosted_link(value: Any, provider: str) -> str:
 
 
 @router.get("/accounts")
-async def accounts(session: Session, client: Http) -> dict[str, Any]:
+async def accounts(request: Request, session: Session, client: Http) -> dict[str, Any]:
+    if await run_in_threadpool(is_demo_world, request.app.state.driver, session.world_id):
+        raise ApiError(403, "scope_denied", "This account cannot connect external apps.")
     settings = load_settings()
     rows = [
         {"provider": key, "name": name, "status": "unavailable"} for key, name in PROVIDERS.items()
