@@ -268,7 +268,7 @@
   function exportPicker(id){
     var p=PROVIDERS[id],state=live?liveUpload(id):{file:ui.uploadFile},ready=canUpload(id);
     var input=live&&ready?'<input type="file" accept="'+p.accept+'" data-pick-export="'+id+'" aria-label="'+p.label+' export file" hidden>':'';
-    return (live&&ready?'<p class="gp-section-copy">Upload export opens a simulation with invented data. Your file will not be uploaded or saved.</p>':'')+input+'<button class="gp-upload-zone" data-action="pick-export"'+(!ready||state.pending?' disabled':'')+'><span>'+icon('notes')+'</span><strong>'+(state.file?esc(state.file.name):id==='notes'?'Choose a file':demo?'Use sample export':'Choose your export')+'</strong><small>'+(state.pending?'Upload in progress':state.file?'Ready to upload':id==='notes'?'Notes and documents':'Your conversations, ready for Grove')+'</small></button>'+(live&&state.pending?'<p class="gp-section-copy" role="status" aria-live="polite">Upload in progress</p>':'')+(live&&state.error?'<p class="gp-section-copy" role="alert">'+esc(state.error)+'</p>':'')+(live?uploadResult(state.result):'');
+    return (live&&ready&&id==='claude'?'<p class="gp-section-copy">The Claude example uses invented conversations. Your file will not be uploaded or saved.</p>':'')+input+'<button class="gp-upload-zone" data-action="pick-export"'+(!ready||state.pending?' disabled':'')+'><span>'+icon('notes')+'</span><strong>'+(state.file?esc(state.file.name):id==='notes'?'Choose a file':demo?'Use sample export':'Choose your export')+'</strong><small>'+(state.pending?'Upload in progress':state.file?'Ready to upload':id==='notes'?'Notes and documents':'Your conversations, ready for Grove')+'</small></button>'+(live&&state.pending?'<p class="gp-section-copy" role="status" aria-live="polite">Upload in progress</p>':'')+(live&&state.error?'<p class="gp-section-copy" role="alert">'+esc(state.error)+'</p>':'')+(live?uploadResult(state.result):'');
   }
   function guide(){
     var id=ui.guide,p=PROVIDERS[id],walk=WALKS[id],upload=ui.guideStage===1||id==='notes';
@@ -480,10 +480,18 @@
   function setStep(n){ui.step=n;ui.guide=null;if(api.setStep)api.setStep(n);render(true);if(window.GroveView)window.GroveView.fit();}
   function finish(){ui.guide=null;ui.panel=null;var duration=reduceMotion.matches?0:1300;document.body.classList.add('gp-arriving');tourAfter=performance.now()+duration+900;api.completeOnboarding();render(true);if(window.GroveView)window.GroveView.fit(duration);clearTimeout(arrivalTimer);arrivalTimer=setTimeout(function(){document.body.classList.remove('gp-arriving');},duration);setTimeout(maybeTour,duration+950);}
   function importSource(id,file,provider){
-    // Recording release: the chosen file triggers only the isolated invented-data page.
-    // Do not read, serialize, upload, or retain that file. The real API remains unchanged.
-    if(live&&file&&(provider==='claude'||provider==='chatgpt')){
-      window.location.assign('/demo/onboarding?provider='+provider+'&start=1');
+    // The Claude example changes only the graph in page memory. Keep every setup step
+    // and the live session, provider consent, files, and AI connections on this page.
+    if(live&&file&&provider==='claude'){
+      var previewUpload=liveUpload(provider),previewContext=api.pendingExportContext();
+      if(previewUpload.pending)return;
+      previewUpload.pending=true;previewUpload.error='';render(true);
+      window.GroveConversationPreview.start().then(function(){
+        if(!api.isPendingExportContext(previewContext))return;
+        previewUpload.file=null;ui.guide=null;render(true);
+      }).catch(function(error){
+        if(api.isPendingExportContext(previewContext))previewUpload.error=error.message||'The Claude example could not load. Try again.';
+      }).finally(function(){previewUpload.pending=false;if(api.isPendingExportContext(previewContext))render(true);});
       return;
     }
     if(live){
@@ -554,13 +562,15 @@
   }
   function updateLive(){
     if(live){
-      progress.innerHTML='';document.getElementById('learning-slot').innerHTML='';
-      var state=api.getState();
+      document.getElementById('learning-slot').innerHTML='';
+      var state=api.getState(),preview=state.conversationPreview;
+      progress.innerHTML=preview&&preview.status==='importing'?'<span class="gp-account-progress" role="status" aria-label="Claude example, '+preview.progress+' percent" style="--progress:'+preview.progress/100+'"><svg class="gp-mini-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18"/></svg><span class="gp-mini-mark">'+icon('claude')+'</span></span>':'';
       root.querySelectorAll('[data-source-choice]').forEach(function(el){
         var id=el.dataset.sourceChoice,added=liveSourceAccounts().some(function(a){return a.id===id&&a.readCount>0;}),pending=!!state.pendingExports[id];
-        el.classList.toggle('is-added',added);el.classList.remove('is-learning');
-        var label=el.querySelector('strong small');if(label)label.textContent=added?'Added':pending?'Upload':'Connect';
-        el.setAttribute('aria-label',(added?'Added ':pending?'Upload ':'Connect ')+(PROVIDERS[id]||{label:id}).label);
+        var example=id==='claude'&&preview;
+        el.classList.toggle('is-added',added||!!example&&example.status==='ready');el.classList.toggle('is-learning',!!example&&example.status==='importing');
+        var label=el.querySelector('strong small');if(label)label.textContent=example?'Example':added?'Added':pending?'Upload':'Connect';
+        el.setAttribute('aria-label',example?'Claude example, '+preview.progress+' percent':(added?'Added ':pending?'Upload ':'Connect ')+(PROVIDERS[id]||{label:id}).label);
       });
       return;
     }
