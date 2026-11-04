@@ -26,7 +26,9 @@ import sys
 REFUSED_EXIT = 126
 MAX_COMMAND_BYTES = 3 * 1024 * 1024
 JSON_VERBS = frozenset({"propose", "judge", "retest"})
-VERBS = frozenset({"status", "pass", "recall", "get", "fetch", "finish", "--help", "-h"}) | JSON_VERBS
+VERBS = (
+    frozenset({"status", "pass", "recall", "get", "fetch", "finish", "--help", "-h"}) | JSON_VERBS
+)
 _SPECIAL = frozenset(";&|<>()$`\\*?[]{}~!#")
 _DOUBLE_QUOTE_SPECIAL = frozenset("$`\\")
 _HEREDOC = re.compile(
