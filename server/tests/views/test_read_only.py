@@ -114,10 +114,13 @@ def test_the_views_package_never_imports_the_writer():
 
 def assert_api_writer_boundary(files):
     allowed = {
+        # The app translates the writer's typed refusal; it does not invoke a writer.
+        "app.py": {"grove.writer.errors"},
         "views.py": {"grove.writer.positions"},
         "auth.py": {"grove.writer.accounts", "grove.writer.errors"},
         "oauth.py": {"grove.writer.oauth"},
-        # Authenticated connector consent/settings/sync use only their connection writer.
+        # D6's explicit explanation POST and authenticated source connector writes.
+        "cascade.py": {"grove.writer.cascade_explanations"},
         "connectors.py": {"grove.writer.connectors", "grove.writer.errors"},
         # brain propose and brain finish of a live pass (runner): the writer's public API, the
         # run record's account of a proposal, a receipt for the agent, the request id check.
@@ -136,6 +139,8 @@ def test_api_writer_imports_stay_within_the_explicit_route_boundary():
 @pytest.mark.parametrize(
     ("route", "source"),
     [
+        ("app.py", "from grove.writer.accounts import create_account"),
+        ("cascade.py", "from grove.writer.accounts import create_account"),
         ("unapproved.py", "from grove.writer.connectors import connection"),
         ("connectors.py", "from grove.writer.accounts import create_account"),
         ("views.py", "import grove.writer.connectors"),
