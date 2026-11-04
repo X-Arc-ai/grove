@@ -178,7 +178,7 @@ services:
     security_opt: ["no-new-privileges:true"]
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
       gateway:
         condition: service_started
     logging: *logging
