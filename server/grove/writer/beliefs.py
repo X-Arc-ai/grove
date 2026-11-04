@@ -95,12 +95,13 @@ def _newer(left, right):
     return left is not None and (right is None or left > right)
 
 
-def _person_override(belief, rows):
+def _person_override(run, belief, rows):
     held = belief.get("held_by_the_person")
     return held is None or any(
         row.get("source_type") == "confirmed"
         and row.get("derivation") == "observed"
         and _newer(row.get("source_time"), held)
+        and verify.can_confirm(run, row, "item", belief["item_id"])
         for row in rows
     )
 
@@ -161,7 +162,7 @@ def _transition(run, belief, state, rows, reason_id):
     fresh = episodes - previous
     if not fresh:
         refuse("belief_episode_reused", "a transition needs an episode no earlier transition used")
-    if not _person_override(belief, rows):
+    if not _person_override(run, belief, rows):
         refuse("person_word", "only newer confirmed evidence changes the person's decision")
     changes = {
         "state": state,
@@ -197,7 +198,7 @@ def evidence_changed(run, target, reason_id):
         and _newer(row["source_time"], measured["last_support_at"])
     ]
     if contrary and belief["state"] in ("tentative", "established"):
-        eligible = [row for row in contrary if _person_override(belief, [row])]
+        eligible = [row for row in contrary if _person_override(run, belief, [row])]
         if eligible:
             _transition(run, belief, "weakening", eligible, reason_id)
         return
@@ -213,7 +214,7 @@ def evidence_changed(run, target, reason_id):
             and row["episode_id"] not in used
             and row["source_id"] not in contradicting_sources
             and _newer(row["source_time"], measured["last_contradiction_at"])
-            and _person_override(belief, [row])
+            and _person_override(run, belief, [row])
         ]
         if supports:
             _transition(run, belief, "established", supports, reason_id)
@@ -564,7 +565,7 @@ def end(run, index, op):
                 "belief_end_evidence",
                 "an automatic ending needs newer evidence of equal or higher rank",
             )
-    if not person and not _person_override(belief, rows):
+    if not person and not _person_override(run, belief, rows):
         refuse("person_word", "only newer confirmed evidence changes the person's decision")
     reason_id = run.text(op["reason"])
     successor = None

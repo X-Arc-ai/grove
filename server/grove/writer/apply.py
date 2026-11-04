@@ -1565,7 +1565,7 @@ def _attach_evidence(run: _Run, index: int, op: dict[str, Any]) -> None:
             belief["state"] in ("tentative", "established")
             and plans[0].columns["episode_id"] in (belief.get("transition_episodes") or [])
             and _newer(plans[0].source_time, belief.get("last_support_at"))
-            and _person_override(belief, [plans[0].columns])
+            and _person_override(run, belief, [plans[0].columns])
         ):
             raise Refused(
                 "invalid_arguments",

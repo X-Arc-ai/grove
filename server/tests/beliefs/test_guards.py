@@ -19,6 +19,7 @@ from tests.beliefs.test_state_machine import (
     op,
     state,
 )
+from tests.writer.belief_helpers import set_belief_fields, set_confirmation, set_judgment_verdict
 from tests.writer.helpers import (
     HOST,
     LEARNER,
@@ -237,14 +238,7 @@ def test_disagreement_is_atomic_and_can_open_durable_conflict(driver, seeded):
     _, fresh = data(driver, w, 6)
     ids = judges(driver, w, belief, fresh)
     # Replace the second recorded decision without changing its evidence binding.
-    from grove.store.connection import DATABASE
-
-    with driver.session(database=DATABASE) as session:
-        session.run(
-            "CYPHER 25 MATCH (j:Judgment {world_id: $w, id: $id}) SET j.verdict='supports'",
-            w=w,
-            id=ids[1],
-        ).consume()
+    set_judgment_verdict(driver, w, [ids[1]], "supports")
     before = state(driver, w, belief)
     with pytest.raises(BatchDeclined) as error:
         attach(driver, w, belief, fresh, "contradicts", judgment_ids=ids)
@@ -279,28 +273,20 @@ def retest_case(driver, w, *, weakening=True):
             "contradicts",
             judgment_ids=judges(driver, w, belief, contrary),
         )
-    from grove.store.connection import DATABASE
-
-    with driver.session(database=DATABASE) as session:
-        session.run(
-            "CYPHER 25 MATCH (b:Belief {world_id: $w, item_id:$id}) SET b.externally_testable=true",
-            w=w,
-            id=belief,
-        ).consume()
+    set_belief_fields(driver, w, belief, externally_testable=True)
     at = clock.now(w)
     source = make_source(driver, w, "web_pages", ["River supplies quiet rooms"])
     stored_source = read(driver, w, "MATCH (s:Source {id:$id}) RETURN s", id=source["source_id"])[
         0
     ]["s"]
-    with driver.session(database=DATABASE) as session:
-        session.run(
-            "CYPHER 25 MATCH (b:Belief {world_id:$w,item_id:$id}) SET b.retest_how=$method",
-            w=w,
-            id=belief,
-            method=json.dumps(
-                {"connector": source["connector_id"], "locator": stored_source["external_locator"]}
-            ),
-        ).consume()
+    set_belief_fields(
+        driver,
+        w,
+        belief,
+        retest_how=json.dumps(
+            {"connector": source["connector_id"], "locator": stored_source["external_locator"]}
+        ),
+    )
     ev = observation(source, "retest", 1, locator="whole", at=at)
     ids = []
     for number, role in enumerate(("first_judge", "second_judge")):
@@ -341,14 +327,7 @@ def test_retest_restores_and_moves_confirmation_from_source_time(driver, seeded)
 def test_retest_with_second_disagreement_cannot_stamp_confirmation(driver, seeded):
     w = seeded["world_id"]
     belief, ev, operation, ids, _ = retest_case(driver, w)
-    from grove.store.connection import DATABASE
-
-    with driver.session(database=DATABASE) as session:
-        session.run(
-            "CYPHER 25 MATCH (j:Judgment {world_id:$w,id:$id}) SET j.verdict='contradicts'",
-            w=w,
-            id=ids[1],
-        ).consume()
+    set_judgment_verdict(driver, w, [ids[1]], "contradicts")
     before = state(driver, w, belief)
     apply(driver, w, [operation], [ev], caller=CONNECTOR)
     assert state(driver, w, belief)["state"] == before["state"]
@@ -396,15 +375,12 @@ def test_cascade_contract_stages_current_evidence_without_running_a_planner():
 def test_retest_refuses_another_declared_source(driver, seeded):
     w = seeded["world_id"]
     belief, ev, operation, _, _ = retest_case(driver, w)
-    from grove.store.connection import DATABASE
-
-    with driver.session(database=DATABASE) as session:
-        session.run(
-            "CYPHER 25 MATCH (b:Belief {world_id:$w,item_id:$id}) SET b.retest_how=$method",
-            w=w,
-            id=belief,
-            method=json.dumps({"connector": "other", "locator": "https://example.invalid/other"}),
-        ).consume()
+    set_belief_fields(
+        driver,
+        w,
+        belief,
+        retest_how=json.dumps({"connector": "other", "locator": "https://example.invalid/other"}),
+    )
     with pytest.raises(BatchDeclined) as error:
         apply(driver, w, [operation], [ev], caller=CONNECTOR)
     assert error.value.refusals[0].rule == "belief_retest_method"
@@ -469,22 +445,8 @@ def test_right_after_restatement_ends_the_old_successor_link(driver, seeded):
 def test_negative_retest_weakens_due_belief_and_preserves_confirmation(driver, seeded):
     w = seeded["world_id"]
     belief, ev, operation, ids, _ = retest_case(driver, w, weakening=False)
-    from grove.store.connection import DATABASE
-
-    with driver.session(database=DATABASE) as session:
-        session.run(
-            "CYPHER 25 MATCH (j:Judgment {world_id:$w}) WHERE j.id IN $ids "
-            "SET j.verdict='contradicts'",
-            w=w,
-            ids=ids,
-        ).consume()
-        session.run(
-            "CYPHER 25 MATCH (i:Item {world_id:$w,id:$id}) "
-            "SET i.last_confirmed=$at, i.recheck_by=$at",
-            w=w,
-            id=belief,
-            at=T0,
-        ).consume()
+    set_judgment_verdict(driver, w, ids, "contradicts")
+    set_confirmation(driver, w, belief, T0)
     apply(driver, w, [operation], [ev], caller=CONNECTOR)
     assert state(driver, w, belief)["state"] == "weakening"
     item = read(driver, w, "MATCH (i:Item {id:$id}) RETURN i", id=belief)[0]["i"]
@@ -525,15 +487,7 @@ def test_observed_evidence_cannot_retype_a_describes_anchor(driver, seeded):
 def test_neutral_retest_records_check_without_evidence_or_confirmation(driver, seeded, verdict):
     w = seeded["world_id"]
     belief, ev, operation, ids, _ = retest_case(driver, w)
-    from grove.store.connection import DATABASE
-
-    with driver.session(database=DATABASE) as session:
-        session.run(
-            "CYPHER 25 MATCH (j:Judgment {world_id:$w}) WHERE j.id IN $ids SET j.verdict=$verdict",
-            w=w,
-            ids=ids,
-            verdict=verdict,
-        ).consume()
+    set_judgment_verdict(driver, w, ids, verdict)
     receipt = apply(driver, w, [operation], [ev], caller=CONNECTOR)
     saved = state(driver, w, belief)
     assert saved["state"] == "weakening"
@@ -546,3 +500,51 @@ def test_neutral_retest_records_check_without_evidence_or_confirmation(driver, s
     assert item.get("last_confirmed") is None
     assert item["recheck_by"].isoformat() == operation["recheck_by"]
     assert any(line.field == "last_retest_outcome" for line in receipt.lines)
+
+
+def test_confirmed_source_without_capability_cannot_override_person(driver, seeded):
+    from grove.store.primitives import KIND_BELIEF
+
+    w = seeded["world_id"]
+    belief, _, _, _, _ = fixture(driver, w)
+    _, personal = data(driver, w, 5, connector="person_in_views")
+    apply(
+        driver,
+        w,
+        [op("correct_belief", target=belief, correction="right", evidence_refs=supports("e5"))],
+        [personal],
+    )
+    plant_node(
+        driver,
+        w,
+        "Capability",
+        connector_type="git",
+        registry_id=KIND_BELIEF,
+        capability="none",
+        origin="the_person",
+    )
+    source = make_source(driver, w, "git", ["commit abcdef123 records a different service"])
+    fresh = observation(
+        source,
+        "git",
+        1,
+        locator="key:abcdef123",
+        statement_class="report_happened",
+        at=T0 + timedelta(hours=6),
+    )
+    attach(driver, w, belief, fresh, "contradicts", judgment_ids=judges(driver, w, belief, fresh))
+    saved = state(driver, w, belief)
+    assert saved["state"] == "established"
+    assert saved["held_by_the_person"] == T0 + timedelta(hours=5)
+    assert saved.get("person_change_notice") is not True
+    [evidence] = read(
+        driver, w, "MATCH (e:Evidence {source_id:$id}) RETURN e", id=source["source_id"]
+    )
+    assert evidence["e"]["source_type"] == "confirmed"
+    # A newer independently capable source can still change the person's decision.
+    _, capable = data(driver, w, 7, connector="web_pages")
+    attach(
+        driver, w, belief, capable, "contradicts", judgment_ids=judges(driver, w, belief, capable)
+    )
+    assert state(driver, w, belief)["state"] == "weakening"
+    assert state(driver, w, belief)["person_change_notice"] is True
