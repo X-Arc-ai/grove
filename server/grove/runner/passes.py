@@ -21,6 +21,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from grove import clock
+from grove.demo_policy import is_demo_world
 from grove.ids import new_id
 from grove.models.config import load_catalog
 from grove.models.gateway_auth import mint as mint_gateway_token
@@ -151,6 +152,10 @@ def due_work(
         now = clock.now(world_id)
         if budget_reached(query, now):
             continue
+        demo_world = is_demo_world(driver, world_id)
+        if demo_world and not query.read(_DUE_REQUEST, now=now):
+            # Leave autonomous jobs and stale runs intact for an explicit continuation.
+            continue
         rows = query.read(_LIVE_RUNS)
         live = next((row for row in rows if stale_cutoff(row, settings) > now), None)
         if live is None and rows:
@@ -164,7 +169,7 @@ def due_work(
             continue
         if query.read(_DUE_REQUEST, now=now):
             due.append({"world_id": world_id, "agent": "learner"})
-        else:
+        elif not demo_world:
             _ensure_connector_job(driver, world_id)
             agents = {row["agent"] for row in query.read(_DUE_JOBS, now=now)}
             for agent in ("curator", "connector"):
@@ -282,13 +287,15 @@ def start_pass(
     if auth.gateway_secret is None:
         raise RuntimeError("GROVE_GATEWAY_SECRET is not set")
     settings = settings or PassSettings()
-    catalog = load_catalog()
     if agent is None:
         agent = _next_agent(driver, world_id)
         if agent is None:
             return None
     if agent not in AGENTS:
         raise ValueError("unknown agent")
+    if agent != "learner" and is_demo_world(driver, world_id):
+        return None
+    catalog = load_catalog()
     _, job = AGENTS[agent]
     job_spec = catalog.job(job)
     model = catalog.model_for(job_spec).id
@@ -472,6 +479,8 @@ def end_pass(
 def _schedule_after(driver: Driver, world_id: str, agent: str, run_id: str) -> None:
     """The cycle order of section 4: the Curator after a Learner pass that changed items, on the
     items it touched; the Connector on Appendix C's trigger."""
+    if is_demo_world(driver, world_id):
+        return
     query = WorldQuery(driver, world_id)
     changed = [row["id"] for row in query.read(_RUN_CHANGED, run_id=run_id)]
     if agent == "learner" and changed:
@@ -491,6 +500,8 @@ def connector_due(driver: Driver, world_id: str) -> bool:
     """D12's P0 triggers, including drift and due retests on an otherwise idle world."""
     from grove.consolidation.packet import job_trigger, work
 
+    if is_demo_world(driver, world_id):
+        return False
     query = WorldQuery(driver, world_id)
     if query.read(
         "MATCH (j:Job {agent_or_job_type: 'connector'}) "
@@ -510,6 +521,8 @@ def connector_due(driver: Driver, world_id: str) -> bool:
 def _ensure_connector_job(driver: Driver, world_id: str) -> None:
     from grove.consolidation.packet import job_trigger, work
 
+    if is_demo_world(driver, world_id):
+        return
     if connector_due(driver, world_id):
         pending = work(driver, world_id)
         run_rows.enqueue_job(
