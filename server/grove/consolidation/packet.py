@@ -190,7 +190,7 @@ def packet(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str, Any]
         beliefs.append(
             {
                 "belief_id": item_id,
-                "version": item.get("version"),
+                "version": belief.get("version"),
                 "state": belief["state"],
                 "subject_refs": pending["subjects"].get(item_id, []),
                 "retest_due": item_id in pending["retest_due"],
