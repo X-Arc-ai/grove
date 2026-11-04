@@ -30,6 +30,7 @@ from grove.store.errors import ScopeError
 from grove.store.query import PlatformQuery, WorldQuery
 from grove.writer import Caller, claim_next_request, fail_request, record_episode
 from grove.writer import runs as run_rows
+from grove.writer.clocks import parse_instant
 from grove.writer.requests import LEASE_SECONDS
 
 # Appendix C line 3269: ten changed items since the Connector's last pass, or a new contradiction.
@@ -222,8 +223,24 @@ def _ensure_episode(
         raise LookupError("the request's source is not in this world")
     messages = _messages(rows[0]["content"])
     times = [m["at"] for m in messages if m.get("at")]
-    start = min(times) if times else (rows[0]["received"] or at).isoformat()
-    end = max(times) if times else start
+    if not times:
+        # No message carries its own time: the window runs from the time the host said the words
+        # (the request's said_at) to the source's read, because the row is dated at one of them
+        # and a row may not be dated outside its episode (S51).
+        said = query.read(
+            "MATCH (r:Request {source_id: $id}) RETURN r.said_at AS said_at "
+            "ORDER BY r.created_at, r.id LIMIT 1",
+            id=source_id,
+        )
+        received = rows[0]["received"] or at
+        candidates = [received]
+        if said and said[0]["said_at"] is not None and said[0]["said_at"] <= received:
+            candidates.append(said[0]["said_at"])
+        times = [moment.isoformat() for moment in candidates]
+    # ISO text with different offsets does not sort in chronological order.
+    instants = [parse_instant(moment) for moment in times]
+    start = min(instants)
+    end = max(instants)
     first = messages[0]["key"] if messages and messages[0].get("key") else "whole"
     last = messages[-1]["key"] if messages and messages[-1].get("key") else first
     return record_episode(

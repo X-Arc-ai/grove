@@ -237,32 +237,56 @@ def standings(source: "WorldQuery | WorldTx", item_ids: Iterable[str]) -> dict[s
     if not ids:
         return {}
     items = {row["i"]["id"]: row["i"] for row in read_rows(source, _ITEMS, ids=ids)}
+    return standings_of(source, [items[item_id] for item_id in ids if item_id in items])
+
+
+def standings_of(
+    source: "WorldQuery | WorldTx",
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    at: datetime | None = None,
+    planned_origin: Iterable[str] | None = None,
+    successors: Mapping[str, Iterable[Successor]] | None = None,
+) -> dict[str, Standing]:
+    """The standing of item rows the caller has read already, keyed by id in the order given. A
+    row needs its id, world_id, kind and properties, and the columns `standing` reads, so a read
+    that must not take an item's text reads only those. `at` defaults to the world's clock.now.
+    `planned_origin` (item ids) and `successors` (by item id) default to the head's: an active
+    supporting row of source type planned, and an active successor link. An as-of read passes
+    the three as they stood at its own time."""
+    items = {row["id"]: row for row in rows}
     if not items:
         return {}
     found = list(items)
-    kinds = sorted({row["kind"] for row in items.values()})
+    kinds = sorted({row.get("kind") for row in items.values()} - {None})
     lifecycle = {row["id"]: row["lifecycle"] for row in read_rows(source, _KINDS, ids=kinds)}
     # The belief kind is a primitive row, which a world read cannot see.
     lifecycle[KIND_BELIEF] = PRIMITIVE_KIND_BELIEF["lifecycle_class"]
     names = read_rows(source, _SCHEDULED_NAMES, kinds=kinds)
-    planned = {row["id"] for row in read_rows(source, _PLANNED_ORIGIN, ids=found)}
+    if planned_origin is None:
+        planned = {row["id"] for row in read_rows(source, _PLANNED_ORIGIN, ids=found)}
+    else:
+        planned = set(planned_origin)
     after: dict[str, list[Successor]] = {}
-    for row in read_rows(source, _SUCCESSORS, ids=found, meanings=list(SUCCESSOR_MEANINGS)):
-        after.setdefault(row["item_id"], []).append(
-            Successor(row["successor_id"], row["link_id"], row["meaning"])
-        )
-    at = clock.now(next(iter(items.values()))["world_id"])
+    if successors is None:
+        for row in read_rows(source, _SUCCESSORS, ids=found, meanings=list(SUCCESSOR_MEANINGS)):
+            after.setdefault(row["item_id"], []).append(
+                Successor(row["successor_id"], row["link_id"], row["meaning"])
+            )
+    else:
+        after = {item_id: list(links) for item_id, links in successors.items()}
+    if at is None:
+        at = clock.now(next(iter(items.values()))["world_id"])
     return {
         item_id: standing(
-            items[item_id],
+            row,
             at=at,
-            lifecycle_class=lifecycle.get(items[item_id]["kind"]),
+            lifecycle_class=lifecycle.get(row.get("kind")),
             planned_origin=item_id in planned,
-            scheduled=_scheduled(items[item_id], names),
+            scheduled=_scheduled(row, names),
             successors=after.get(item_id, ()),
         )
-        for item_id in ids
-        if item_id in items
+        for item_id, row in items.items()
     }
 
 

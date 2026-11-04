@@ -63,8 +63,8 @@ def test_the_api_listens_on_loopback_only_and_runs_as_production():
 def test_the_runner_holds_no_store_credential_and_no_model_key():
     runner = SERVICES["runner"]
     assert _env_files(runner) == ["/etc/grove/runner.env"]
-    assert runner["networks"] == ["runner"]
-    assert COMPOSE["networks"]["runner"]["internal"] is True
+    assert runner["networks"] == ["runner_v2"]
+    assert COMPOSE["networks"]["runner_v2"]["internal"] is True
     assert "store" not in runner["networks"]
     assert runner["user"] == "10002:10002"
     assert runner["environment"]["GROVE_ENV"] == "production"
@@ -594,7 +594,7 @@ def test_the_gateway_runs_from_the_api_image_with_no_build_and_no_port():
     # No build key: `compose build api runner` builds the image it runs.
     assert "build" not in gateway and "ports" not in gateway
     assert gateway["command"] == ["python", "-m", "grove.models.gateway"]
-    assert gateway["networks"] == ["store", "runner", "egress"]
+    assert gateway["networks"] == ["store", "runner_v2", "egress"]
     assert gateway["read_only"] is True
     assert gateway["tmpfs"] == ["/tmp"]
     assert gateway["cap_drop"] == ["ALL"]
@@ -634,7 +634,7 @@ def test_the_gateway_listens_where_the_runner_can_reach_it():
 
 
 def test_the_runner_network_has_a_stable_bridge_name_and_no_route_out():
-    runner = COMPOSE["networks"]["runner"]
+    runner = COMPOSE["networks"]["runner_v2"]
     assert runner["internal"] is True
     name = runner["driver_opts"]["com.docker.network.bridge.name"]
     assert name == "grove-runner"
@@ -683,3 +683,11 @@ def test_nginx_answers_no_internal_route_from_outside_the_box():
     assert "return 404;" in block and "proxy_pass" not in block
     http = (DEPLOY / "nginx" / "grove-http.conf.template").read_text(encoding="utf-8")
     assert "proxy_pass" not in http
+
+
+def test_the_runner_transition_uses_a_new_logical_key_and_docker_name():
+    assert "runner" not in COMPOSE["networks"]
+    assert COMPOSE["networks"]["runner_v2"]["name"] == "grove_runner_v2"
+    assert SERVICES["api"]["networks"] == ["store", "runner_v2", "egress"]
+    assert SERVICES["gateway"]["networks"] == ["store", "runner_v2", "egress"]
+    assert SERVICES["runner"]["networks"] == ["runner_v2"]
