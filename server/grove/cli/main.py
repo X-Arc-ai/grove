@@ -123,6 +123,15 @@ def get(item_id: str) -> None:
     _emit(_call("GET", f"/items/{item_id}"))
 
 
+@brain.command()
+@click.argument("url")
+def fetch(url: str) -> None:
+    """Fetch a verification page through the Curator's guarded server path."""
+    if len(url) > 2048:
+        raise BrainError("invalid_arguments", "the source URL is too long")
+    _emit(_call("POST", "/fetch", json={"url": url}))
+
+
 def _read_batch(path: str | None) -> Any:
     if path is not None:
         try:
