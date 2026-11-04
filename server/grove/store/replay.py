@@ -59,6 +59,7 @@ ENTITY_TABLES: dict[str, tuple[str, ...]] = {
     "registry_row": ("kinds", "meanings", "property_names", "aliases", "capabilities"),
 }
 TABLES: dict[str, Table] = {t.name: t for t in PROJECTION_TABLES}
+_ENTITY_TYPES = {table: entity for entity, tables in ENTITY_TABLES.items() for table in tables}
 
 _CLOCKS = ("became_true", "stopped_being_true")
 _BOUNDS = ("earliest", "latest")
@@ -161,6 +162,8 @@ _COLUMNS = {name: _props(table) for name, table in TABLES.items()}
 _INSTANTS = {name: _props(table, "instant") for name, table in TABLES.items()}
 _DATES = {name: _props(table, "date") for name, table in TABLES.items()}
 _TEXTS = {name: _props(table, _TEXT) for name, table in TABLES.items()}
+_JSONS = {name: _props(table, "json_ids") for name, table in TABLES.items()}
+_IDS = {name: _props(table, "ids") for name, table in TABLES.items()}
 _KEYS = {name: key_column(table) for name, table in TABLES.items()}
 
 
@@ -204,17 +207,19 @@ class _Replay:
         self.validate = validate
         self.world_id: str | None = None
         self.rows: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in TABLES}
-        self.where: dict[str, str] = {}
-        self.groups: dict[str, set[tuple[Any, Any]]] = {}
-        self.touched: dict[str, datetime | None] = {}
-        self.heads: dict[tuple[str, str], datetime] = {}
-        self.born: dict[str, datetime | None] = {}
+        # S13: an Item and its Belief share an id, but each owns its version and history.
+        self.where: dict[tuple[str, str], str] = {}
+        self.identities: dict[str, set[str]] = {}
+        self.groups: dict[tuple[str, str], set[tuple[Any, Any]]] = {}
+        self.touched: dict[tuple[str, str], datetime | None] = {}
+        self.heads: dict[tuple[str, str, str], datetime] = {}
+        self.born: dict[tuple[str, str], datetime | None] = {}
         self.keys: dict[str, str] = {}
         self.active: dict[str, str] = {}
         self.forgotten: set[str] = set()
         self.ended_at: dict[str, datetime | None] = {}
-        # (entity id, field) whose head value a forget replaced: no old value can match it.
-        self.blanked: set[tuple[str, str]] = set()
+        # (entity type, id, field) whose head a forget replaced: no old value can match it.
+        self.blanked: set[tuple[str, str, str]] = set()
         self.sequence: int | None = None
         self.last: int | None = None
 
@@ -282,10 +287,11 @@ class _Replay:
                 return
         else:
             self.change(entry, entity_type, entity_id, name)
-        self.touched[entity_id] = _instant(entry.get("recorded_at"))
+        key = (entity_type, entity_id)
+        self.touched[key] = _instant(entry.get("recorded_at"))
         if not entry.get("history_only") and name not in _NO_VERSION:
             group = (entry.get("change_set_id"), entry.get("reason"))
-            self.groups.setdefault(entity_id, set()).add(group)
+            self.groups.setdefault(key, set()).add(group)
 
     # Row entries -------------------------------------------------------------------------------
 
@@ -323,8 +329,12 @@ class _Replay:
         row = self.typed(name, value["row"])
         if row.get(_KEYS[name]) != entity_id:
             self.fail("row_id", "the row's id is not the entry's entity id")
-        if entity_id in self.where:
+        key = (entity_type, entity_id)
+        if key in self.where:
             self.fail("id_not_new", f"{entity_id} exists already")
+        for other_type in self.identities.get(entity_id, ()):
+            if {other_type, entity_type} != {"item", "belief"}:
+                self.fail("id_not_new", f"{entity_id} belongs to another entity")
         self.world(row.get("world_id"))
         if name == "items":
             self.check_item(row)
@@ -332,6 +342,8 @@ class _Replay:
             self.check_link(row)
         elif name == "evidence":
             self.check_evidence(row)
+        elif name == "beliefs":
+            self.check_belief(row)
         if name in ("items", "links"):
             self.check_order(row)
         if name == "links":
@@ -342,8 +354,9 @@ class _Replay:
             if row.get("active_key"):
                 self.active[key] = entity_id
         self.rows[name][entity_id] = row
-        self.where[entity_id] = name
-        self.born[entity_id] = _instant(entry.get("world_time"))
+        self.where[(entity_type, entity_id)] = name
+        self.identities.setdefault(entity_id, set()).add(entity_type)
+        self.born[(entity_type, entity_id)] = _instant(entry.get("world_time"))
         return True
 
     def standard_key(self, row: Mapping[str, Any]) -> str:
@@ -380,6 +393,16 @@ class _Replay:
         if target_type not in ENUMS["evidence_target_type"] or target_id not in self.rows[table]:
             self.fail("missing_target", f"no {target_type} {target_id!r} for the evidence row")
 
+    def check_belief(self, row: dict[str, Any]) -> None:
+        item = self.rows["items"].get(row.get("item_id"))
+        if item is None or item.get("kind") != KIND_BELIEF:
+            self.fail("missing_belief_item", "a belief row requires its primitive belief item")
+        for name, enum in (("state", "belief_state"), ("origin", "belief_origin")):
+            if row.get(name) not in ENUMS[enum]:
+                self.fail("bad_belief_value", f"no belief {name} {row.get(name)!r}")
+        if row.get("end_class") is not None and row["end_class"] not in ENUMS["belief_end_class"]:
+            self.fail("bad_belief_value", "no such belief end class")
+
     def check_end_class(self, value: Any) -> None:
         if value is not None and value not in ENUMS["end_class"]:
             self.fail("unknown_end_class", f"{value!r} is not an end class")
@@ -408,6 +431,11 @@ class _Replay:
         if name in _CLOCKS:
             return _clock_key(old) == _row_clock(row, name)
         current = row.get(name)
+        if table == "beliefs" and name in _JSONS[table]:
+            current = json.loads(current) if isinstance(current, str) else current
+            old = json.loads(old) if isinstance(old, str) else old
+        if table == "beliefs" and name in _IDS[table]:
+            return (old or []) == (current or [])
         if name in _JSON_TEXT and isinstance(current, str):
             current = json.loads(current)
         if name in _INSTANTS[table]:
@@ -427,6 +455,14 @@ class _Replay:
         elif entity_type == "evidence" and name == "end_reason":
             if new not in ENUMS["evidence_end_reason"]:
                 self.fail("unknown_end_reason", f"{new!r} is not an evidence end reason")
+        elif entity_type == "belief" and name in ("state", "origin", "end_class"):
+            enum = {
+                "state": "belief_state",
+                "origin": "belief_origin",
+                "end_class": "belief_end_class",
+            }
+            if new not in ENUMS[enum[name]]:
+                self.fail("bad_belief_value", f"{new!r} is not a belief {name}")
         elif name in _CLOCKS and new != _UNKNOWN:
             shown = new
             if isinstance(new, dict):
@@ -439,7 +475,9 @@ class _Replay:
             self.fail("bad_value", "properties are an object")
 
     def change(self, entry: Mapping[str, Any], entity_type: str, entity_id: str, name: Any) -> None:
-        table = self.where.get(entity_id)
+        key = (entity_type, entity_id)
+        field_key = (entity_type, entity_id, name)
+        table = self.where.get(key)
         if table is None:
             self.fail("missing_entity", f"no {entity_type} {entity_id} so far")
         if table not in ENTITY_TABLES[entity_type]:
@@ -454,12 +492,12 @@ class _Replay:
         self.check_value(entity_type, row, name, new)
         if entry.get("old_value_id") is not None and not history_only:
             old = self.value(entry, "old_value_id")
-            known = old is not _FORGOTTEN and (entity_id, name) not in self.blanked
+            known = old is not _FORGOTTEN and field_key not in self.blanked
             if known and not self.same(table, row, name, old):
                 self.fail("old_value", f"the old {name} is not the rebuilt {name}")
         at = _instant(entry.get("world_time"))
         if entity_type == "item" and name in CLAIM_FIELDS and not history_only:
-            head = self.heads.get((entity_id, name)) or self.born.get(entity_id)
+            head = self.heads.get(field_key) or self.born.get(key)
             # An undo sets an older value back on purpose (D9).
             older = head is not None and at is not None and at < head
             if older and entry.get("inverse_of") is None:
@@ -471,20 +509,20 @@ class _Replay:
             if self.validate and self.active.get(key, entity_id) != entity_id:
                 self.fail("active_key_taken", "another active link holds this key")
         self.put(entity_type, table, row, name, new, entry)
-        if name == "end_class":
+        if name == "end_class" and entity_type in ("item", "link"):
             if new is None:
                 self.ended_at.pop(entity_id, None)
             else:
                 self.ended_at[entity_id] = at
         if new is _FORGOTTEN:
-            self.blanked.add((entity_id, name))
+            self.blanked.add(field_key)
         else:
-            self.blanked.discard((entity_id, name))
+            self.blanked.discard(field_key)
         if name in _CLOCKS:
             self.check_order(row)
         if at is not None:
-            held = self.heads.get((entity_id, name))
-            self.heads[(entity_id, name)] = at if held is None else max(held, at)
+            held = self.heads.get(field_key)
+            self.heads[field_key] = at if held is None else max(held, at)
 
     def put(
         self,
@@ -540,6 +578,9 @@ class _Replay:
                 row.pop(name, None)
             else:
                 row[name] = json.dumps(new, sort_keys=True, ensure_ascii=False)
+        elif entity_type == "belief" and name in _JSONS[table] and new is not None:
+            value = json.loads(new) if isinstance(new, str) else new
+            row[name] = json.dumps(value, sort_keys=True, ensure_ascii=False)
         elif new is None or new == []:
             row.pop(name, None)
         elif name in _INSTANTS[table] and isinstance(new, str):
@@ -569,10 +610,11 @@ class _Replay:
     # Derived columns ---------------------------------------------------------------------------
 
     def finish(self) -> dict[str, dict[str, dict[str, Any]]]:
-        for rows in self.rows.values():
+        for table, rows in self.rows.items():
             for entity_id, row in rows.items():
-                row["version"] = len(self.groups.get(entity_id, ())) or 1
-                touched = self.touched.get(entity_id)
+                key = (_ENTITY_TYPES[table], entity_id)
+                row["version"] = len(self.groups.get(key, ())) or 1
+                touched = self.touched.get(key)
                 if touched is not None:
                     row["touched_at"] = touched
                 else:
@@ -588,6 +630,9 @@ class _Replay:
         for table, names in (("items", _CLAIM_ITEM), ("links", _CLAIM_LINK)):
             for entity_id, row in self.rows[table].items():
                 fields = claim_fields(supporting.get(entity_id, []))
+                if table == "items" and row.get("kind") == KIND_BELIEF:
+                    fields["derivation"] = "inferred"
+                    fields["speaker"] = "automated"
                 for name in names:
                     if fields[name] is None:
                         row.pop(name, None)
