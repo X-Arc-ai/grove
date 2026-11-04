@@ -111,11 +111,13 @@ def test_the_views_package_never_imports_the_writer():
         assert not any(name.startswith("grove.writer") for name in imports_of(path)), path.name
 
 
-def test_the_api_reaches_the_writer_only_for_positions_sign_in_oauth_and_the_brain_cli():
+def test_the_api_reaches_only_explicitly_allowed_writers():
     allowed = {
         "views.py": {"grove.writer.positions"},
         "auth.py": {"grove.writer.accounts", "grove.writer.errors"},
         "oauth.py": {"grove.writer.oauth"},
+        # D6's separate authenticated POST queues an explanation. GET/read handlers never do.
+        "cascade.py": {"grove.writer.cascade_explanations"},
         # brain propose and brain finish of a live pass (runner): the writer's public API, the
         # run record's account of a proposal, a receipt for the agent, the request id check.
         "internal.py": {"grove.writer", "grove.writer.receipts", "grove.writer.requests"},

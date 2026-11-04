@@ -56,6 +56,15 @@ def test_explanation_route_requires_session(driver, graph):
     assert live_fingerprint(driver, graph["world"]) == before
 
 
+def test_get_cannot_enqueue_an_explanation(driver, graph):
+    before = live_fingerprint(driver, graph["world"])
+    with client_for(driver, graph["world"]) as client:
+        response = client.get(route(graph))
+    assert response.status_code == 405
+    assert jobs(driver, graph["world"]) == []
+    assert live_fingerprint(driver, graph["world"]) == before
+
+
 @pytest.mark.parametrize("origin", [None, SETTINGS.public_base_url])
 def test_explicit_request_queues_without_a_model_call(driver, graph, monkeypatch, origin):
     def forbidden(*args, **kwargs):
