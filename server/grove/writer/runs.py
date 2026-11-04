@@ -67,7 +67,6 @@ def _abandon_stale(tx: WorldTx, now: datetime, stale_margin_seconds: int) -> boo
         )
         for job in tx.run(
             "MATCH (j:Job {claimed_by: $id}) WHERE j.state = $claimed "
-            "SET j.touched_at = j.touched_at "
             "RETURN j.id AS id, j.attempts AS attempts, j.agent_or_job_type AS agent",
             id=row["id"],
             claimed=JOB_CLAIMED,
@@ -115,7 +114,7 @@ def _put_back(
     holds one queued job per agent."""
     other = tx.run(
         "MATCH (j:Job {agent_or_job_type: $agent, state: $queued}) WHERE j.id <> $id "
-        "SET j.touched_at = j.touched_at RETURN j.id AS id, j.input_references AS refs LIMIT 1",
+        "RETURN j.id AS id, j.input_references AS refs LIMIT 1",
         agent=agent,
         queued=JOB_QUEUED,
         id=job_id,
@@ -275,7 +274,7 @@ def finish_run(
     def work(tx: WorldTx) -> dict | None:
         now = _now(world_id)
         found = tx.run(
-            "MATCH (r:RunRecord {id: $id}) SET r.touched_at = r.touched_at "
+            "MATCH (r:RunRecord {id: $id}) "
             "RETURN r.outcome AS outcome, r.proposed_operations AS proposed",
             id=run_id,
         )
@@ -398,7 +397,7 @@ def end_job(
     def work(tx: WorldTx) -> str | None:
         now = _now(world_id)
         found = tx.run(
-            "MATCH (j:Job {id: $id}) SET j.touched_at = j.touched_at "
+            "MATCH (j:Job {id: $id}) "
             "RETURN j.state AS state, j.claimed_by AS worker, j.attempts AS attempts, "
             "j.agent_or_job_type AS agent",
             id=job_id,

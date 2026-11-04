@@ -190,6 +190,8 @@ Truth-clock rulings S51-S55 were S46-S50 before integration with D3 and upload c
 
 **S55. Scheduled times and horizons** (spec lines 920, 925, 932, 1078, Appendix C; closes the open point on `scheduled_role`). The starter set gains property names with a scheduled role (seed version 2): `plan.scheduled for` (start), `task.due` (due), `trip.starts` and `period.starts` (start), `trip.ends` and `period.ends` (end), `event.scheduled for` (start). A world seeded at version 1 gets these rows at its next `create_world`. A scheduled value is a clock object or an ISO time with its offset (rule `scheduled_value`). A claim about now that arrives with no re-check by and holds a scheduled value gets the earliest value's latest bound plus one day, written by the writer, so a backfilled plan whose date has passed arrives already due. A bounded period's became-true time needs a confirming row in its batch (rule `period_start_needs_confirmation`), so a trip gets its start only from a source that confirms it took place.
 
+**D7 capture consistency.** `World.read_generation` is an operational nonnegative integer, separate from the D3 `next_sequence`. Every world writer holds the World lock before callback reads. It consumes all native result summaries and advances this generation once in the same transaction when any tracked statement reports an update. Only the fixed World lock is exempt. Existing no-op paths issue no tracked mutation and preserve the complete World row. Rollback restores the counter; concurrent writers cannot lose an increment. World creation tracks its initial MERGE before seed work. Restore changes the D3 position but preserves and advances the live generation. The marker is not a D3 snapshot field. Migration 0014 initializes absent values only. D7 reads compare this marker before and after complete native-transaction capture and never repair it. Deployments must initialize the field before packet traffic and cannot mix instrumented and old packet writers.
+
 ## Open points for later lanes
 
 | Point | Spec lines | Owner lane |
@@ -1657,6 +1659,7 @@ The signin lane owns any further column.
 | (none) | `owner_user_id` | `id` | convention |  |
 | (none) | `created_at` | `instant` | convention |  |
 | (none) | `next_sequence` | `int` | convention | S10: starts at 0; advanced by one direct SET |
+| (none) | `read_generation` | `int` | convention | D7: nonnegative operational capture generation; monotonic per mutating world transaction |
 | (none) | `seed_version` | `code` | convention |  |
 | (none) | `self_item_id` | `id` | convention | S40: the person's own item, set in the transaction that creates it; absent before |
 
