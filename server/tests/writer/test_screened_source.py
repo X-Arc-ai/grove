@@ -596,7 +596,7 @@ def test_writes_exactly_the_catalogue_properties(driver, world, test_clock):
     receipt = one(driver, world, "ScreeningReceipt")
 
     # content_pointer is the other form of B.1's "content or a pointer to it": the content is
-    # inline, so the pointer is absent. speakers and document (S46) are absent when the connector
+    # inline, so the pointer is absent. speakers and document (S51) are absent when the connector
     # read no speakers and stored typed text.
     source_props = {prop for column in SOURCES.columns for prop in column.props}
     assert set(source) == source_props - {
@@ -775,7 +775,7 @@ def test_every_screened_source_is_stored_with_its_receipt(
 
 
 def test_a_connector_stores_the_speakers_it_read_from_the_metadata(driver, world, test_clock):
-    """S46: the speakers of a source come from its own metadata, written by the connector's code
+    """S51: the speakers of a source come from its own metadata, written by the connector's code
     in the same row; the writer lets them win over a caller's classification."""
     test_clock.set(WORLD_TIME, world)
     connector_id = record_connector(driver, world, "whatsapp")

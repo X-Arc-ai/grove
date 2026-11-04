@@ -50,6 +50,10 @@ from grove.screening.names import (
     load_denylist,
     load_rename_map,
 )
+from grove.store.enums import ENUMS
+
+_SPEAKER_KINDS = frozenset(ENUMS["speaker_kind"])
+_MODALITIES = frozenset(ENUMS["modality"])
 
 # The step number of each span decides who wins an overlap: the lower step.
 STEP_DENYLIST = 1
@@ -78,6 +82,10 @@ class Message:
     sender: str | None
     text: str
     at: datetime | None = None
+    # Who spoke and in what form, from the source's metadata (D5). Closed codes: screening passes
+    # them through as they are, and a connector that knows neither leaves them None.
+    speaker_kind: str | None = None
+    modality: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str):
@@ -90,6 +98,15 @@ class Message:
             not isinstance(self.at, datetime) or self.at.utcoffset() is None
         ):
             raise ValueError("Message.at must be an aware datetime or None")
+        # type() and not isinstance(): a str subclass could carry text past the closed list.
+        if self.speaker_kind is not None and (
+            type(self.speaker_kind) is not str or self.speaker_kind not in _SPEAKER_KINDS
+        ):
+            raise ValueError("Message.speaker_kind must be a speaker_kind code or None")
+        if self.modality is not None and (
+            type(self.modality) is not str or self.modality not in _MODALITIES
+        ):
+            raise ValueError("Message.modality must be a modality code or None")
 
     def __repr__(self) -> str:
         return (
@@ -104,14 +121,22 @@ class ScreenedMessage:
     sender: str | None
     text: str
     at: datetime | None = None
+    speaker_kind: str | None = None
+    modality: str | None = None
 
     def as_row(self) -> dict[str, str | None]:
-        return {
+        row = {
             "key": self.key,
             "sender": self.sender,
             "text": self.text,
             "at": None if self.at is None else self.at.isoformat(),
         }
+        # Only when a connector set them, so a source without them keeps its four fields.
+        if self.speaker_kind is not None:
+            row["speaker_kind"] = self.speaker_kind
+        if self.modality is not None:
+            row["modality"] = self.modality
+        return row
 
     def __repr__(self) -> str:
         return (
@@ -325,7 +350,12 @@ class Screener:
         screened_text = self._screen(run, text, TEXT_STEPS, _said_by(sender))
         screened_key = self._screen(run, _Text(message.key), KEY_STEPS)
         return ScreenedMessage(
-            key=screened_key, sender=screened_sender, text=screened_text, at=message.at
+            key=screened_key,
+            sender=screened_sender,
+            text=screened_text,
+            at=message.at,
+            speaker_kind=message.speaker_kind,
+            modality=message.modality,
         )
 
     @staticmethod

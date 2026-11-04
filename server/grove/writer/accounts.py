@@ -206,7 +206,7 @@ def _ensure_connector(driver: Driver, world_id: str) -> str:
 
 def _record_first_episode(driver: Driver, world_id: str, connector_id: str, source_id: str) -> str:
     # The episode's window is the moment the pointer source was stored: the own item's row is
-    # dated then, and a row may not be dated outside its episode (S46).
+    # dated then, and a row may not be dated outside its episode (S51).
     found = WorldQuery(driver, world_id).read(
         "MATCH (s:Source {id: $id}) RETURN s.received_at AS at", id=source_id
     )
@@ -279,7 +279,7 @@ def _create_own_item(
             change_set_id=new_id(world_id),
         )
         # The row speaks for the sign-in itself: the moment its pointer source was stored, never a
-        # later time (a source cannot speak for a time after it was read, S46).
+        # later time (a source cannot speak for a time after it was read, S51).
         spoken = tx.run("MATCH (s:Source {id: $id}) RETURN s.received_at AS at", id=source_id)[0][
             "at"
         ]

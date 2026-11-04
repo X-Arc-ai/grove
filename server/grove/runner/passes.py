@@ -226,7 +226,7 @@ def _ensure_episode(
     if not times:
         # No message carries its own time: the window runs from the time the host said the words
         # (the request's said_at) to the source's read, because the row is dated at one of them
-        # and a row may not be dated outside its episode (S46).
+        # and a row may not be dated outside its episode (S51).
         said = query.read(
             "MATCH (r:Request {source_id: $id}) RETURN r.said_at AS said_at "
             "ORDER BY r.created_at, r.id LIMIT 1",

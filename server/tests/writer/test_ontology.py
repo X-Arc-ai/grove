@@ -728,7 +728,7 @@ def property_proposal(name: str, judgment_ids: list[str], neighbours: list[dict]
         "e1",
         judgment_ids,
         word_type="property_name",
-        # A starter kind with no property name of its own (S50 names scheduled times for plan,
+        # A starter kind with no property name of its own (S55 names scheduled times for plan,
         # task, trip, period and event), so a first property name of it needs no neighbour.
         kind="problem",
         name=name,
@@ -1180,7 +1180,7 @@ def test_a_field_fit_verdict_of_one_kinds_property_never_counts_for_another_kind
     """Probe PD4."""
     world_id = seeded["world_id"]
     registry = Registry.load(WorldQuery(driver, world_id))
-    # Another starter kind with no property name of its own (task has the scheduled `due`, S50).
+    # Another starter kind with no property name of its own (task has the scheduled `due`, S55).
     task = next(kind["id"] for kind in registry.kinds.values() if kind["name"] == "assumption")
     ids = fits(
         driver,

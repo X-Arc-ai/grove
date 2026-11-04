@@ -24,7 +24,7 @@ ENUMS: dict[str, tuple[str, ...]] = {
         "report_happened",
         "report_state",
         "none",
-        # S46: the evidence is itself the record of an act (a receipt, a ticket, a booking
+        # S51: the evidence is itself the record of an act (a receipt, a ticket, a booking
         # confirmation, a boarding pass, a signed document), so code may type it confirmed for
         # what it shows (spec lines 1060, 1086, 1170).
         "artifact",
@@ -55,9 +55,9 @@ ENUMS: dict[str, tuple[str, ...]] = {
     ),
     # Line 945.
     "disposition": ("confirmed", "moved", "retired", "deferred"),
-    # S47, line 957: the bands of the agreement score, which line 957 states as conditions only.
+    # S52, line 957: the bands of the agreement score, which line 957 states as conditions only.
     "verification_band": ("confirm", "contradiction", "against", "zero_signal", "stale_support"),
-    # S48, B.3: what a relayed request carries from the AI host or the person's views.
+    # S53, B.3: what a relayed request carries from the AI host or the person's views.
     "relay": ("remember", "answer", "correction"),
     # Line 1575.
     "temporal_class": ("state", "permanent", "event"),
@@ -120,7 +120,7 @@ ENUMS: dict[str, tuple[str, ...]] = {
         "ai_host",
         "person_in_views",
         "scripted",
-        # S46: the D5 table's reminders and to-dos (line 1083) and identity sources (a contact
+        # S51: the D5 table's reminders and to-dos (line 1083) and identity sources (a contact
         # card, a profile, a sign-in, line 1099), which A.4 does not list.
         "reminders",
         "identity",

@@ -23,8 +23,10 @@ names a registry word: code reads declared fields and ids only.
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from grove.store import catalogue
 from grove.store.enums import ENUMS
 from grove.store.normalise import normalise_phrase, reads_blank
 from grove.store.primitives import (
@@ -735,6 +737,9 @@ class _Word:
     message_key: str
     change_id: str
     outcome: str
+    # The reason value id of the operation's row entry: the worked example's entry carries it,
+    # so the two are one operation for the rebuild's version rule (S47).
+    reason_id: str | None = None
 
 
 @dataclass
@@ -861,7 +866,7 @@ def _subject_field(
 
 
 def accepting_fit(run: Any, checked: CheckedProposal, judgment_ids: list[str], field: str) -> str:
-    """The id of a recorded field_fit judgment that says the declared field fits (S49): the row a
+    """The id of a recorded field_fit judgment that says the declared field fits (S54): the row a
     capability minted with a word names, so the capability applies only once accepted."""
     rows = _read_judgments(run, judgment_ids)
     refs = [part for row in rows for part in str(row.get("subject") or "").split("|")]
@@ -1016,6 +1021,8 @@ def _change(
                 "judgment_ids": list(judgment_ids),
                 "actor": actor or run.stamp.actor,
                 "at": run.at,
+                # S46: an undo of this batch finds the row by it (O10's undone by).
+                "change_set_id": run.stamp.change_set_id,
                 "version": 1,
                 "touched_at": run.at,
             }
@@ -1215,6 +1222,7 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
             message_key=message_key,
             change_id=change_id,
             outcome=verdicts.outcome,
+            reason_id=reason_id,
         )
     )
 
@@ -1399,6 +1407,7 @@ def _worked_examples(run: Any, ops: list[Any]) -> None:
             field="worked_example",
             new=match["id"],
             world_time=run.at,
+            reason_id=word.reason_id,
             evidence_id=match["id"],
         )
 
@@ -1567,3 +1576,199 @@ __all__ = [
     "same_word_value",
     "value_names_item",
 ]
+
+
+# The registry rows that D3's composite operations move (grove.writer.composite) -------------
+# D8 (line 1641) keeps every Cypher statement that names a registry label in this module, so the
+# writer lint can see each one: a merge's item aliases, and an undo's inverse of a registry entry.
+
+REGISTRY_LABELS = ("Alias", "Kind", "Meaning", "PropertyName", "Capability")
+
+
+def registry_label(run: Any, row_id: str) -> str:
+    for label in REGISTRY_LABELS:
+        if run.tx.run(f"MATCH (n:{label} {{id: $id}}) RETURN n.id AS id", id=row_id):
+            return label
+    raise Refused("not_found", "registry_row_not_found", f"no registry row {row_id}", {})
+
+
+def lock_registry(run: Any, label: str, row_id: str) -> dict[str, Any]:
+    rows = run.tx.run(
+        f"MATCH (n:{label} {{id: $id}}) SET n.touched_at = $at RETURN n", id=row_id, at=run.at
+    )
+    if not rows:
+        raise Refused("not_found", "registry_row_not_found", f"no registry row {row_id}", {})
+    return rows[0]["n"]
+
+
+def set_registry(run: Any, label: str, row_id: str, columns: dict[str, Any]) -> None:
+    run.tx.run(f"MATCH (n:{label} {{id: $id}}) SET n += $columns", id=row_id, columns=columns)
+
+
+def bump_registry(run: Any, label: str, row_id: str) -> None:
+    run.tx.run(
+        f"MATCH (n:{label} {{id: $id}}) SET n.version = coalesce(n.version, 0) + 1", id=row_id
+    )
+
+
+# The undo of a registry row's creation (D3's inverse, O10's retire) -------------------------
+_LABEL_TABLES = {
+    "Alias": "aliases",
+    "Kind": "kinds",
+    "Meaning": "meanings",
+    "PropertyName": "property_names",
+    "Capability": "capabilities",
+}
+_LINKS_USING = (
+    "MATCH (:Item)-[l:LINK {meaning: $id}]->(:Item) WHERE l.active_key IS NOT NULL "
+    "RETURN count(l) AS n"
+)
+_ITEMS_OF_KIND = "MATCH (i:Item {kind: $id}) WHERE i.end_class IS NULL RETURN count(i) AS n"
+_PROPERTIES_OF_KIND = (
+    "MATCH (i:Item {kind: $kind}) WHERE i.end_class IS NULL RETURN i.properties AS properties"
+)
+_ALIASES_OF = (
+    "MATCH (a:Alias {target_id: $id}) WHERE coalesce(a.status, '') <> 'retired' "
+    "RETURN count(a) AS n"
+)
+
+
+def _in_use(run: Any, label: str, row: dict[str, Any]) -> bool:
+    """Whether an active item, link, property or alias uses the word (D8 line 1615)."""
+    if run.tx.run(_ALIASES_OF, id=row["id"])[0]["n"]:
+        return True
+    if label == "Meaning":
+        return bool(run.tx.run(_LINKS_USING, id=row["id"])[0]["n"])
+    if label == "Kind":
+        return bool(run.tx.run(_ITEMS_OF_KIND, id=row["id"])[0]["n"])
+    if label == "PropertyName":
+        for item in run.tx.run(_PROPERTIES_OF_KIND, kind=row.get("kind")):
+            try:
+                properties = json.loads(item["properties"] or "{}")
+            except ValueError:
+                properties = {}
+            if isinstance(properties, dict) and properties.get(row.get("name")) is not None:
+                return True
+    return False
+
+
+def check_retirable(run: Any, label: str, row: dict[str, Any]) -> None:
+    """Refuses the retire that an undo writes for a registry row its change set created.
+
+    A table with no status column has no ending to write, so the creation is not undone (rule
+    `no_ending`; today the capabilities a mint wrote). A word that an active item, link, property
+    or alias still uses is not retired (D8 line 1615, rule `word_in_use`): the undo inverts its
+    own change set's entries newest first, so only rows of later batches are left to count."""
+    columns = catalogue.table(_LABEL_TABLES[label]).columns
+    if not any("status" in column.props for column in columns):
+        raise Refused(
+            "invalid_arguments",
+            "no_ending",
+            f"a {_LABEL_TABLES[label]} row has no ending, so its creation is not undone",
+            {"row": row["id"]},
+        )
+    if label in ("Kind", "Meaning", "PropertyName") and _in_use(run, label, row):
+        raise Refused(
+            "version_conflict",
+            "word_in_use",
+            "a later item, link or alias uses this word: end or re-point it first",
+            {"word": row["id"]},
+        )
+
+
+# O10: the change log of D8's ontology operations names the undo that reversed each row.
+_LOG_OF = "MATCH (c:OntologyChange) WHERE c.change_set_id = $change_set RETURN c.id AS id"
+_SET_LOG = (
+    "MATCH (c:OntologyChange {id: $id}) SET c.undone_by = $by, "
+    "c.change_set_id = $change_set, c.version = coalesce(c.version, 1) + 1, c.touched_at = $at"
+)
+_ENTRIES_OF = "MATCH (e:ChangeEntry {change_set_id: $change_set}) RETURN e ORDER BY e.sequence"
+_LEGACY_LOGS = (
+    "MATCH (c:OntologyChange) WHERE c.change_set_id IS NULL "
+    "AND c.at >= $low AND c.at <= $high RETURN c"
+)
+_LEGACY_ENTRIES = (
+    "MATCH (e:ChangeEntry) WHERE e.entity_type = 'registry_row' AND e.reason IS NULL "
+    "AND e.inverse_of IS NULL AND e.recorded_at >= $low AND e.recorded_at <= $high RETURN e"
+)
+
+
+def _logged_ids(row: dict[str, Any]) -> set[str]:
+    ids = set()
+    for column in ("rows_before", "rows_after"):
+        for part in json.loads(row.get(column) or "[]"):
+            held = part.get("row", part)
+            if held.get("id"):
+                ids.add(held["id"])
+    return ids
+
+
+def _legacy_log_ids(run: Any, entries: list[dict[str, Any]], change_set: str) -> list[str]:
+    """Bind old log rows by their operation's reason, registry ids and exact instant.
+
+    Automatic promotions have no reason. If their remaining fields cannot distinguish
+    two old batches, refuse instead of marking another operation as undone. The range
+    query handles Neo4j's two zone forms; Python compares the actual instants.
+    """
+    registry = [
+        entry
+        for entry in entries
+        if entry["entity_type"] == _ENTITY and not entry.get("inverse_of")
+    ]
+    if not registry:
+        return []
+    at = registry[0]["recorded_at"]
+    bounds = {"low": at - timedelta(seconds=1), "high": at + timedelta(seconds=1)}
+    found = []
+    unreasoned = None
+    for result in run.tx.run(_LEGACY_LOGS, **bounds):
+        row = result["c"]
+        if row["at"] != at:
+            continue
+        ids = _logged_ids(row)
+        if not any(
+            entry["entity_id"] in ids and entry.get("reason") == row.get("reason")
+            for entry in registry
+        ):
+            continue
+        if row.get("reason") is None:
+            if unreasoned is None:
+                unreasoned = [held["e"] for held in run.tx.run(_LEGACY_ENTRIES, **bounds)]
+            candidates = {
+                entry["change_set_id"]
+                for entry in unreasoned
+                if entry["recorded_at"] == at and entry["entity_id"] in ids
+            }
+            if candidates != {change_set}:
+                raise Refused(
+                    "version_conflict",
+                    "ontology_log_ambiguous",
+                    "the old ontology log cannot distinguish these change sets",
+                    {"row": row["id"]},
+                )
+        found.append(row["id"])
+    return found
+
+
+def mark_undone(run: Any, entries: list[dict[str, Any]], change_set: str) -> None:
+    """O10's `undone_by`, after an undo of `change_set` (whose entries are `entries`).
+
+    Follow every inverse_of branch: one batch can undo several change sets, or undo one
+    while it writes a new ontology operation. Odd depth leaves an operation reversed;
+    even depth restores it. Each log write moves the S12 pair without a change entry.
+    """
+    pending = [(change_set, entries, 1)]
+    seen = set()
+    while pending:
+        base, held, undos = pending.pop()
+        if base in seen:
+            continue
+        seen.add(base)
+        by = run.stamp.change_set_id if undos % 2 == 1 else None
+        ids = [row["id"] for row in run.tx.run(_LOG_OF, change_set=base)]
+        ids.extend(_legacy_log_ids(run, held, base))
+        for row_id in ids:
+            run.tx.run(_SET_LOG, id=row_id, by=by, at=run.at, change_set=base)
+        for below in sorted({entry["inverse_of"] for entry in held if entry.get("inverse_of")}):
+            earlier = [row["e"] for row in run.tx.run(_ENTRIES_OF, change_set=below)]
+            pending.append((below, earlier, undos + 1))

@@ -107,7 +107,7 @@ def connector_type_of(connector: dict[str, Any]) -> str:
 
 
 def _speaker_meta(source: dict[str, Any], message_key: str) -> dict[str, Any]:
-    """The speaker that the connector's code stored for this message (S46), or {}."""
+    """The speaker that the connector's code stored for this message (S51), or {}."""
     meta = json.loads(source.get("speakers") or "{}")
     found = meta.get(message_key)
     return found if isinstance(found, dict) else {}
@@ -163,7 +163,7 @@ def calendar_logged(
 
 
 def _relay(tx: WorldTx, source_id: str) -> tuple[str | None, bool]:
-    """The relay and the verbatim flag of the request that stored this source (S48)."""
+    """The relay and the verbatim flag of the request that stored this source (S53)."""
     rows = tx.run(_REQUEST_OF_SOURCE, id=source_id)
     if not rows:
         return None, False
@@ -288,7 +288,7 @@ def resolve_observation(
     meta = _speaker_meta(source, observation["message_key"])
     if meta and meta.get("locator") != observation["locator"]:
         # The metadata names where its message sits in the source; a row that borrows the key
-        # for another place would take another message's speaker (S46).
+        # for another place would take another message's speaker (S51).
         raise Refused(
             "invalid_arguments",
             "message_key_locator",

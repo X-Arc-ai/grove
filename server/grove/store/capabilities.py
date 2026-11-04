@@ -5,9 +5,9 @@ Resolution has two steps, and code names no meaning in either (spec lines 1094 t
 1. A specific row of the world for (connector type, registry id), where the registry id is the
    claim's kind (an item) or meaning (a link). A row minted with a word applies only once the
    second model accepted it: its `accepted_judgment_id` names a recorded `field_fit` judgment
-   with the verdict `fits` (S49).
+   with the verdict `fits` (S54).
 2. Else the default for what the source is, keyed on the claim's declared fields: its lifecycle
-   class (an item) or temporal class (a link), and on the evidence row's own fields (S49).
+   class (an item) or temporal class (a link), and on the evidence row's own fields (S54).
 
 A source "is" one of the classes below, read from code-set fields of the evidence row and its
 connector type, never from a name. Only a row typed `confirmed` can confirm: a default for a

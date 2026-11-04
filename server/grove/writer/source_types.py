@@ -2,7 +2,7 @@
 
 The order runs planned < said < reported_done < confirmed. A row's type comes from what code knows
 about it: its connector type, its statement class, its modality, and three facts that code sets
-and a caller cannot (S46): the speaker kind in the source's own metadata (an automated sender), the
+and a caller cannot (S51): the speaker kind in the source's own metadata (an automated sender), the
 calendar's log setting with the entry's date against the read, and the relay of the request that
 stored the words (an answer or a correction, in the person's verbatim words). An inferred or
 rolled-up row takes the weakest type among its premises. A claim's type is the strongest among

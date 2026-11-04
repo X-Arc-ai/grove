@@ -43,7 +43,7 @@ CONTRADICTION_RATIO = 0.5
 _EPSILON = 1e-9
 _EXTRACTION_JOBS = frozenset({"extraction", "backfill_extraction"})
 
-# S47: the bands of line 957, as codes.
+# S52: the bands of line 957, as codes.
 CONFIRM = "confirm"
 CONTRADICTION = "contradiction"
 AGAINST = "against"
@@ -989,7 +989,7 @@ def scheduled_latest(value: Any) -> datetime | None:
     if isinstance(value, str):
         if _DAY.fullmatch(value.strip()):
             # A bare date is a day: its latest instant is the day's end in UTC, and the plan's
-            # one-day margin covers any timezone (S50).
+            # one-day margin covers any timezone (S55).
             try:
                 day = date.fromisoformat(value.strip())
             except ValueError:

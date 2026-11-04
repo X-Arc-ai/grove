@@ -64,7 +64,7 @@ _ADD_ROW = {
 _STARTER_PROPERTY_NAMES = (
     "MATCH (p:PropertyName {origin: $origin}) RETURN p.id AS id, p.kind AS kind, p.name AS name"
 )
-# The default capabilities of D5 (S49): store-wide rows with fixed ids, like the primitive rows.
+# The default capabilities of D5 (S54): store-wide rows with fixed ids, like the primitive rows.
 _ENSURE_DEFAULT_CAPABILITY = CYPHER_PREFIX + "MERGE (c:Capability {id: $id}) SET c += $row"
 _ADD_VALUE = "CREATE (v:HistoryValue {id: $id, value: $value})"
 _ADD_ENTRY = "CREATE (e:ChangeEntry) SET e += $entry"
@@ -246,7 +246,7 @@ def _property_row(
 def _seed_property_names(
     tx: WorldTx, starter: dict[str, Any], kind_ids: dict[str, str], run: _SeedRun
 ) -> dict[str, str]:
-    """The starter property names (S50): scheduled times only, keyed `<kind> <name>`."""
+    """The starter property names (S55): scheduled times only, keyed `<kind> <name>`."""
     known = {(row["kind"], row["name"]) for row in tx.run(_STARTER_PROPERTY_NAMES, origin=_ORIGIN)}
     ids = {}
     for declared in starter.get("property_names", []):
@@ -329,7 +329,7 @@ def create_world(driver: Driver, world_id: str, *, owner_user_id: str) -> dict[s
         ).single()
         version = world["seed_version"]
         if version is not None and version != starter["seed_version"]:
-            # A world seeded before the property names (S50) gets the rows it lacks, and no other.
+            # A world seeded before the property names (S55) gets the rows it lacks, and no other.
             _seed_property_names(
                 tx,
                 starter,

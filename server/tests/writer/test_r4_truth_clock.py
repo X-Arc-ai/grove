@@ -44,7 +44,7 @@ from tests.writer.test_source_types_d5 import (  # noqa: F401
 
 def test_a_chat_line_the_caller_calls_an_image_artifact_stays_a_chat_line(driver, w, talk):
     """A chat text line with the caller's own `artifact` and `image` is no record of an act:
-    only a whole stored document or picture is (S46). So it cannot make a task done."""
+    only a whole stored document or picture is (S51). So it cannot make a task done."""
     task = open_task(driver, w, talk)
     forged = line(talk, "d1", 2, statement_class="artifact", modality="image")
     refusals = refused(driver, w, [change_status(task, "done", "d1")], [forged])
@@ -170,7 +170,7 @@ def test_an_item_with_no_kind_still_reads_its_clocks(driver, w):
 
 def test_a_callers_automated_speaker_never_raises_a_chat_line(driver, w, talk):
     """The verifier's neuter N8b stayed green: only the source's own metadata makes a sender
-    automated (S46). A chat report the caller calls automated stays reported done, so it cannot
+    automated (S51). A chat report the caller calls automated stays reported done, so it cannot
     make a task done, and its speaker is still the caller's word."""
     claimed = line(talk, "r1", 5, statement_class="report_happened", speaker_kind="automated")
     item = created_id(
@@ -195,7 +195,7 @@ def test_a_callers_automated_speaker_never_raises_a_chat_line(driver, w, talk):
 def test_a_note_the_person_typed_is_no_artifact_even_whole(driver, w):
     """The delta verifier's probe: a typed note stored whole, which the caller calls an
     artifact, was confirmed. Only a source the connector stored as an uploaded file or picture
-    can be an artifact (S46)."""
+    can be an artifact (S51)."""
     typed_note = source(driver, w, "notes_files_releases", ["I moved to Velmora last week"])
     uploaded = source(
         driver, w, "notes_files_releases", ["Lease for 4 Kestrel Row, Velmora"], document=True

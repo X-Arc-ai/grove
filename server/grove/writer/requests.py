@@ -47,7 +47,7 @@ from grove.writer.history import Stamp
 from grove.writer.receipts import Receipt, read_receipt
 from grove.writer.tx import WorldTx, WorldWriter
 
-# S48: what a relayed request carries. An answer or a correction from a host needs the person's
+# S53: what a relayed request carries. An answer or a correction from a host needs the person's
 # own words and the id of the host message that carried them (D5), or it is refused here.
 RELAYS: tuple[str, ...] = ENUMS["relay"]
 _ANSWER_RELAYS = frozenset({"answer", "correction"})
@@ -57,7 +57,7 @@ def _check_verbatim(
     caller: Caller, request_id: str, relay: str | None, verbatim: bool | None, message: Any
 ) -> None:
     if relay in _ANSWER_RELAYS and caller.kind not in ("person", "ai_host"):
-        # Only the person, or the AI host relaying the person, answers or corrects (D5, S48).
+        # Only the person, or the AI host relaying the person, answers or corrects (D5, S53).
         raise _refused(
             "scope_denied",
             "relay_caller",

@@ -63,7 +63,7 @@ MOVED = "2027-07-19"
 RECHECK = "2027-07-14T00:00:00+00:00"
 
 # Every source here is read after the last time a test cites: an export or a fetch comes after
-# the messages it holds, and a row may not speak for a time after its source's read (S46).
+# the messages it holds, and a row may not speak for a time after its source's read (S51).
 READ_LATE = datetime(2027, 9, 1, 9, 0, tzinfo=UTC)
 
 
@@ -731,7 +731,7 @@ def test_an_inferred_row_never_confirms(driver, seeded, chat, frozen):
     inferred = observation(
         chat, "i1", 4, at=JULY_13, derivation="inferred", premises=[premise["id"]]
     )
-    # D5 rule 2 (S50): an inferred row cannot give the trip its start, so that write is refused.
+    # D5 rule 2 (S55): an inferred row cannot give the trip its start, so that write is refused.
     started = create_item(
         "trip", "Ilse's trip to Velmora", "i1", became_true=day(JULY_12), recheck_by=RECHECK
     )

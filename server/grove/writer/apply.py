@@ -129,6 +129,11 @@ class _Run:
         # Rows that existed already and that an operation of this batch cited again.
         self.cited_evidence: list[dict[str, Any]] = []
         self.recompute: dict[str, str] = {}
+        # Items an operation of this batch created or changed, or linked or unlinked: the head
+        # updates a correction carries (D3).
+        self.head_changes: set[str] = set()
+        # correct operations: (index, successor id, whether a no-head-update reason was given).
+        self.corrections: list[tuple[int, str, bool]] = []
         self.ontology = ontology.OntologyState()
 
     @property
@@ -193,6 +198,7 @@ class _Run:
 
     def touch(self, item_id: str, index: int) -> None:
         self.touched_items[item_id] = index
+        self.head_changes.add(item_id)
 
 
 def _depends(temp: str) -> Refused:
@@ -554,6 +560,15 @@ def _words(run: _Run, prefix: str, clock: Clock | None) -> dict[str, Any]:
     return {f"{prefix}_words": run.text(words) if words else None}
 
 
+def clock_value(clock: Clock, words_id: str | None) -> Any:
+    """A clock as a change entry holds it. `words_id` is the value id that the words column holds,
+    so a rebuild from the history restores the column (D3)."""
+    value = clock.to_json()
+    if words_id is not None and isinstance(value, dict):
+        value = {**value, "words_id": words_id}
+    return value
+
+
 # create_item ----------------------------------------------------------------------------------
 
 
@@ -792,13 +807,14 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         elif name == "became_true":
             clock = parse_clock(value)
             previous = clock_from_row(item, "became_true")
-            old = previous.to_json() if previous else None
-            new = clock.to_json()
+            old = clock_value(previous, item.get("became_true_words")) if previous else None
             if ends_before_start(clock, clock_from_row(item, "stopped_being_true")):
                 raise Refused(
                     "end_before_start", "end_before_start", "it would end before it began", {}
                 )
-            columns = {**clock_columns("became_true", clock), **_words(run, "became_true", clock)}
+            words = _words(run, "became_true", clock)
+            new = clock_value(clock, words["became_true_words"])
+            columns = {**clock_columns("became_true", clock), **words}
         elif name == "recheck_by":
             new = _instant_or_none(value)
             columns = {name: new}
@@ -900,7 +916,7 @@ def _clear_stop(
         entity_type="item",
         entity_id=item["id"],
         field="stopped_being_true",
-        old=previous.to_json(),
+        old=clock_value(previous, item.get("stopped_being_true_words")),
         new=None,
         world_time=world_time,
         reason_id=reason_id,
@@ -916,19 +932,27 @@ def _set_stop(
     world_time: datetime | None,
     reason_id: str,
     evidence_id: str | None,
+    *,
+    history_only: bool = False,
 ) -> dict[str, Any]:
     previous = clock_from_row(item, "stopped_being_true")
+    words = _words(run, "stopped_being_true", stop)
     run.entry(
         entity_type="item",
         entity_id=item["id"],
         field="stopped_being_true",
-        old=previous.to_json() if previous else None,
-        new=stop.to_json(),
+        old=(
+            clock_value(previous, item.get("stopped_being_true_words"))
+            if previous and not history_only
+            else None
+        ),
+        new=clock_value(stop, words["stopped_being_true_words"]),
         world_time=world_time,
         reason_id=reason_id,
         evidence_id=evidence_id,
+        history_only=history_only,
     )
-    return {**clock_columns("stopped_being_true", stop), **_words(run, "stopped_being_true", stop)}
+    return {**clock_columns("stopped_being_true", stop), **words}
 
 
 def _recheck(
@@ -983,15 +1007,6 @@ def _change_status(run: _Run, index: int, op: dict[str, Any]) -> None:
         )
     since = item.get("status_since")
     history_only = since is not None and world_time is not None and world_time < since
-    if history_only and op.get("stopped_being_true") is not None:
-        # The as-of replay has no place for a late end time yet (an open point in the store map).
-        # A value the writer cannot store is refused, never dropped behind a saved receipt (D2).
-        raise Refused(
-            "invalid_arguments",
-            "stopped_on_history_only",
-            "a change that goes to history only cannot store stopped_being_true: send it without",
-            {"field": "stopped_being_true"},
-        )
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
 
@@ -1011,6 +1026,11 @@ def _change_status(run: _Run, index: int, op: dict[str, Any]) -> None:
         # read returns a history-only value as the truth at its time (D1, D5 rule 2).
         if role == "done":
             run.done_items[item_id] = index
+        if history_only and stop is not None:
+            # A late terminal status keeps its end time in the history at its own world time. An
+            # as-of read drops it once a later live status holds (the head drops it the same way,
+            # in _clear_stop), so it never moves the head (D1, D3).
+            _set_stop(run, item, stop, world_time, reason_id, evidence_id, history_only=True)
         if not history_only:
             columns.update(moved)
             if stop is not None:
@@ -1357,6 +1377,7 @@ def _create_link(run: _Run, index: int, op: dict[str, Any]) -> None:
     _write_evidence(run, plans, "link", link_id, reason_id)
     if op.get("confirmed_by_call") is not None:
         run.create_confirms.append(CreateConfirm(index, op, "link", link_id, plans))
+    run.head_changes.update((from_id, to_id))
 
 
 def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
@@ -1382,11 +1403,12 @@ def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
     _end_entry(run, "link", link_id, None, op["end_class"], world_time, reason_id, evidence_id)
+    words = _words(run, "stopped_being_true", stop)
     run.entry(
         entity_type="link",
         entity_id=link_id,
         field="stopped_being_true",
-        new=stop.to_json(),
+        new=clock_value(stop, words["stopped_being_true_words"]),
         world_time=world_time,
         reason_id=reason_id,
         evidence_id=evidence_id,
@@ -1395,7 +1417,7 @@ def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
         "active_key": None,
         "end_class": op["end_class"],
         **clock_columns("stopped_being_true", stop),
-        **_words(run, "stopped_being_true", stop),
+        **words,
     }
     run.tx.run(_SET_LINK, id=link_id, columns=columns)
     _bump(run, _BUMP_LINK, link_id)
@@ -1403,6 +1425,7 @@ def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
     if op["end_class"] == "retired":
         run.retired_claims.add(link_id)
     _write_evidence(run, plans, "link", link_id, reason_id)
+    run.head_changes.update((link["from_item"], link["to_item"]))
 
 
 # attach_evidence and end_evidence -------------------------------------------------------------
@@ -1715,6 +1738,20 @@ def _refuse_dependents(run: _Run, ops: list[Any]) -> None:
 
 
 def _finish(run: _Run, ops: list[Any]) -> None:
+    for index, successor_id, stated in run.corrections:
+        # D3: a correction applies the head updates it carries, or states why it has none.
+        if index not in run.refused and not stated and successor_id not in run.head_changes:
+            run.refuse(
+                index,
+                ops[index],
+                Refused(
+                    "invalid_arguments",
+                    "head_update_required",
+                    "a correction moves its head in the same batch (update, status, a link), or "
+                    "sends no_head_update_reason",
+                    {"successor": successor_id},
+                ),
+            )
     for item_id, index in run.touched_items.items():
         if index in run.refused:
             continue
@@ -1784,6 +1821,10 @@ def apply_ops(
     A caller that owns its transaction (sign-in's own item) gets the `_before_commit` seam last.
     apply_batch passes before_commit=False and calls the seam itself, after the request's
     `saved`, so a kill there leaves both written and nothing committed."""
+    # The composite operations import this module, so they join the table at the first batch.
+    from grove.writer.composite import HANDLERS as COMPOSITE
+
+    handlers = {**_HANDLERS, **COMPOSITE}
     run = _Run(tx, stamp, observations, caller_kind)
     for index, op in enumerate(ops):
         if index in pre_refused:
@@ -1795,7 +1836,7 @@ def apply_ops(
             for temp in temp_refs(op):
                 if temp in run.declined_temps:
                     raise _depends(temp)
-            _HANDLERS[op["op"]](run, index, op)
+            handlers[op["op"]](run, index, op)
         except Refused as refused:
             run.refuse(index, op, refused)
     _finish(run, ops)

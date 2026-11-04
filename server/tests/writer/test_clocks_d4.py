@@ -72,7 +72,7 @@ def w(frozen, seeded):
 @pytest.fixture
 def talk(driver, w, frozen):
     # The chat export is read after every message these tests cite: a row may not speak for a
-    # time after its source's read (S46). The tests' clock stays within 60 days of NOW.
+    # time after its source's read (S51). The tests' clock stays within 60 days of NOW.
     frozen.set(NOW + timedelta(days=60))
     try:
         return make_source(driver, w, "whatsapp", CHAT_LINES)

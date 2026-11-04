@@ -5,7 +5,7 @@ constrained output of one judge call, and read by the writer at every gate that 
 an S32 reference: `<target type>:<id>`, or a pair of two references in sorted order joined by `|`.
 A word with no row yet is `value:<history value id>`, and `store_subject_value` writes that value
 first. A judgment names the evidence row it read, or, for a fetch that has no evidence row yet,
-the stored source and the locator it read (S46). The writer reads verdicts only from these rows,
+the stored source and the locator it read (S51). The writer reads verdicts only from these rows,
 so an agent can cite a verdict and never make one up (D4). Nothing here reads a clock but the
 clock provider.
 """
