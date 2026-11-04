@@ -127,7 +127,7 @@ def test_nginx_passes_everything_to_the_api_and_reads_no_user_agent():
         assert "$http_user_agent" not in text
         assert "deny " not in text
     assert "location / {" in https
-    assert https.count("proxy_pass http://127.0.0.1:8000;") == 7
+    assert https.count("proxy_pass http://127.0.0.1:8000;") == 11
     assert "root /var/www/grove-acme;" in http
     assert "return 301 https://$host$request_uri;" in http
 
@@ -208,6 +208,7 @@ def test_the_api_drops_every_capability_and_mounts_the_oauth_file_and_the_screen
     assert api["cap_drop"] == ["ALL"]
     assert api["security_opt"] == ["no-new-privileges:true"]
     assert [mount["source"] for mount in api["volumes"]] == [
+        "${GROVE_FORGET_LEDGER_HOST_DIR:?set the existing private journal directory}",
         "/etc/grove/google-oauth.json",
         "/etc/grove/screening",
         "/etc/grove/connectors",
@@ -251,10 +252,18 @@ def test_no_box_script_runs_a_one_off_container_with_stdin_open():
                 assert path.name == "lib.sh" and line.rstrip().endswith("</dev/null"), path.name
 
 
-def test_only_the_upload_path_takes_a_large_body():
+def test_only_explicit_upload_routes_take_large_bodies():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
-    assert re.findall(r"client_max_body_size (\S+);", https) == ["10m", "256m"]
+    assert re.findall(r"client_max_body_size (\S+);", https) == [
+        "10m",
+        "16m",
+        "70k",
+        "70k",
+        "4k",
+        "256m",
+    ]
     assert "client_max_body_size 256m;" in _location(https, f"location = {UPLOAD_PATH} {{")
+    assert "client_max_body_size 16m;" in _location(https, "location = /v1/materials/files {")
 
 
 # ---- review round five ------------------------------------------------------------------------
@@ -347,7 +356,7 @@ def test_nginx_gives_registration_its_own_zone_that_one_address_cannot_fill_the_
     assert MAX_REGISTRATIONS_PER_WINDOW == 1000
 
 
-def test_nginx_has_eight_locations_and_no_rule_that_can_answer_for_the_api():
+def test_nginx_has_exact_locations_and_no_rule_that_can_answer_for_the_api():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     assert re.findall(r"^[ \t]*location\b.*$", https, re.MULTILINE) == [
         "    location / {",
@@ -357,6 +366,10 @@ def test_nginx_has_eight_locations_and_no_rule_that_can_answer_for_the_api():
         "    location = /authorize {",
         "    location = /authorize/decision {",
         "    location = /token {",
+        "    location = /v1/materials/files {",
+        "    location = /v1/materials/notes {",
+        "    location ^~ /v1/materials/notes/ {",
+        "    location /v1/materials/ {",
         "    location = /v1/sources/upload {",
     ]
     for word in (
@@ -539,9 +552,21 @@ def test_the_upload_location_is_the_route_the_api_serves():
 def test_every_other_path_keeps_the_10m_limit_and_request_buffering():
     https = _https()
     blocks = _location_blocks(https)
-    assert len(blocks) == 8
+    assert len(blocks) == 12
+    materials = {
+        "= /v1/materials/files": "16m",
+        "= /v1/materials/notes": "70k",
+        "^~ /v1/materials/notes/": "70k",
+        "/v1/materials/": "4k",
+    }
+    for match, limit in materials.items():
+        assert [line.strip() for line in blocks[match].splitlines() if line.strip()] == [
+            f"client_max_body_size {limit};",
+            "proxy_request_buffering off;",
+            "proxy_pass http://127.0.0.1:8000;",
+        ]
     for match, block in blocks.items():
-        if match == f"= {UPLOAD_PATH}":
+        if match == f"= {UPLOAD_PATH}" or match in materials:
             continue
         for directive in ("client_max_body_size", "proxy_request_buffering", "proxy_send_timeout"):
             assert directive not in block, (match, directive)
