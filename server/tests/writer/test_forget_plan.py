@@ -287,3 +287,21 @@ def test_named_value_reaches_metadata_in_live_and_historical_rows():
     after, _ = transform(before, build_plan(before, {"type": "named_value", "value": word}), AT)
     assert word not in json.dumps(after, default=str)
     assert json.loads(after["history_values"][0]["value"])["row"]["content"] == "retained"
+
+
+def test_full_fixture_transform_covers_every_value_home_without_replay(driver, make_world):
+    """Exercise the plan independently of the paired-identity replay regression."""
+    world = make_world()
+    fixture = seed_forget_drill(driver, world)
+    before = read_inventory(WorldQuery(driver, world))
+    after = before
+    for target in fixture["targets"]:
+        plan = build_plan(after, target)
+        after, _ = transform(after, plan, AT)
+        assert transform(after, plan, AT)[0] == after
+    serialized = json.dumps(after, default=str).casefold()
+    for value in fixture["canaries"]:
+        assert value.casefold() not in serialized
+    assert after["change_entries"] == before["change_entries"]
+    assert len(json.loads(after["sources"][0]["content"])) == 1
+    assert after["support_changed"][0]["belief_id"] == fixture["ids"]["belief"]
