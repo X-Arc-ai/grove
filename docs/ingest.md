@@ -87,10 +87,16 @@ idempotent.
 | `MAX_RECORDS` | 1,000,000 | every JSON line, including blank lines and the empty line after a final newline |
 | `MAX_CHATS` | 10,000 | distinct chats retained by the parser |
 | `MAX_MESSAGES` | 1,000,000 | distinct messages retained by the parser |
+| `MAX_ID_CHARS` | 1,024 | each source chat/session ID and message/record ID used for retention or key generation |
 | `MAX_TEXT_CHARS` | 50,000,000 | message text across the upload, charged as `min(len(text), MAX_MESSAGE_CHARS)` per retained message |
 | `archive.MAX_DOCUMENT_VALUES` | 8,000,000 | values of one JSON document, counted before it is parsed (each follows a comma or opens a container) |
 | `archive.MAX_LINE_VALUES` | 1,000,000 | values of one JSON line; a line past it is skipped unparsed, as a cut line is |
 | `MAX_PARALLEL_UPLOADS` | 1 | uploads at once; the next answers 429 with `retry_after_seconds` |
+
+Call `bounded_id` before retaining each source identifier. Identifiers above the limit are
+refused before chat retention or key generation. They are
+never truncated or re-keyed: accepted identifiers retain their original keys and locators.
+The bound prevents one long chat ID from multiplying hash work by the message count.
 
 `ParsedMessage` bounds retained text as soon as the parser creates it. Before screening,
 `kept_text` also keeps at most `MAX_MESSAGE_CHARS` (100,000) characters from a

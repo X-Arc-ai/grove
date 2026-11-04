@@ -6,6 +6,7 @@ Importing this package registers every parser of grove.ingest.parsers.
 from grove.ingest.connector import (
     MAX_CHATS,
     MAX_EXPANSION,
+    MAX_ID_CHARS,
     MAX_MESSAGE_CHARS,
     MAX_MESSAGES,
     MAX_READ_BYTES,
@@ -18,6 +19,7 @@ from grove.ingest.connector import (
     ParsedMessage,
     ReadBudget,
     Upload,
+    bounded_id,
     chat_locator,
     clean_text,
     clip,
@@ -36,6 +38,7 @@ from grove.ingest.connector import (
 __all__ = [
     "MAX_CHATS",
     "MAX_EXPANSION",
+    "MAX_ID_CHARS",
     "MAX_MESSAGE_CHARS",
     "MAX_MESSAGES",
     "MAX_READ_BYTES",
@@ -48,6 +51,7 @@ __all__ = [
     "ParsedMessage",
     "ReadBudget",
     "Upload",
+    "bounded_id",
     "chat_locator",
     "clean_text",
     "clip",

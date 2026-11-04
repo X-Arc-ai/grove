@@ -23,6 +23,7 @@ from grove.ingest.connector import (
     ParsedChat,
     ParsedMessage,
     Upload,
+    bounded_id,
     clean_text,
     clip,
     in_time_order,
@@ -321,6 +322,8 @@ def parse(upload: Upload) -> Iterator[ParsedChat]:
             uuid = record.get("uuid")
             if not isinstance(session, str) or not session or not isinstance(uuid, str) or not uuid:
                 continue
+            bounded_id(session)
+            bounded_id(uuid)
             chat = chats.get(session)
             if chat is None:
                 upload.budget.take_chat()

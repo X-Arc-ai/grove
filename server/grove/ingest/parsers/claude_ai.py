@@ -19,6 +19,7 @@ from grove.ingest.connector import (
     ParsedChat,
     ParsedMessage,
     Upload,
+    bounded_id,
     clean_text,
     clip,
     in_time_order,
@@ -42,7 +43,7 @@ _NAME = 120
 
 
 def _text_id(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
+    return bounded_id(value) if isinstance(value, str) and value else None
 
 
 def _base_name(path: str) -> str:
@@ -258,7 +259,7 @@ def parse(upload: Upload) -> Iterator[ParsedChat]:
     """One ParsedChat per conversation, in the order the export first lists them."""
     chats: dict[str, _Chat] = {}
     for conversation in _conversations(upload):
-        chat_id = conversation["uuid"]
+        chat_id = bounded_id(conversation["uuid"])
         if not chat_id:
             continue
         records = [
