@@ -231,6 +231,68 @@ class PublicationSession:
         self._state = "new"
         self._external_bytes = self._retained = self._transient = 0
 
+    def bind_writer(self, owner):
+        """Bind the concrete inactive owner, then preflight before staging files.
+
+        The existing EX lease stays here. Read-only preflight enters the one
+        owned lifetime; neither this method nor the writer acquires another lock.
+        """
+        from grove.writer.authority_adapter import InactiveAuthorityWriter
+
+        self._assert_worker()
+        if not self._guard.acquire(blocking=False):
+            refuse("binding", "open")
+        try:
+            self._boundary_check()
+            if (
+                type(owner) is not InactiveAuthorityWriter
+                or self._checks is not owner
+                or getattr(self, "_writer_owner", None) is not None
+                or self._world is not None
+                or self._state != "new"
+                or self._lease is None
+                or self._files is None
+                or self._lease._state != "held"
+            ):
+                refuse("binding", "open")
+            self._lease.check_identity()
+            owner._bind_session(self, self._session_id)
+            self._writer_owner = owner
+            self._activate(owner.world_id, owner.operation_kind)
+            owner._preflight_bind()
+            return self
+        except Exception:
+            self._failed = True
+            raise PublicationRefused("binding", "open") from None
+        finally:
+            self._guard.release()
+
+    def assert_writer_owner(self, owner, world_id, operation_id):
+        """Validate a borrowed owner without reentering the publication guard."""
+        self._boundary_check()
+        if (
+            self._closing
+            or getattr(self, "_writer_owner", None) is not owner
+            or self._checks is not owner
+            or self._world != world_id
+            or self._lifetime is None
+            or self._lifetime.operation_id != operation_id
+            or owner._session is not self
+            or owner._session_id != self._session_id
+            or owner._binding is None
+            or owner._binding.lifetime_id != self._lifetime.lifetime_id
+            or self._lease is None
+            or self._files is None
+            or self._lease._state != "held"
+        ):
+            refuse("binding", "outcome")
+        self._lease.check_identity()
+        if (
+            self._lease.root_identity != self.bindings.root_identity
+            or self._lease.lock_identity != self.bindings.lock_identity
+        ):
+            refuse("binding", "outcome")
+
     def _assert_worker(self):
         if self._pid != os.getpid() or self._thread != threading.get_ident() or self._closed:
             refuse("binding")

@@ -1,4 +1,4 @@
-"""Restricted Cedar recall from the actual saved graph, never from a canned answer.
+"""Restricted synthetic recall from the actual saved graph, never a canned answer.
 
 This adapter deliberately accepts only unchanged, newly created items. It is not the general
 D7 reader. One bounded read statement captures the facts and every provenance row needed to
@@ -118,6 +118,18 @@ RETURN items, evidence, entries, values, sources, requests, connectors, screenin
        episodes, kinds, properties, successors
 """
 
+# Keep the legacy capture for direct Cedar contract controls. Runtime selects
+# source-bound message keys before any content or provenance crosses the wire.
+_TOPIC_CAPTURE = _CAPTURE.replace(
+    "MATCH (i:Item) WHERE i.id <> $own\n  WITH i LIMIT $item_cap",
+    """MATCH (i:Item), (e:Evidence), (s:Source)
+  WHERE i.id <> $own AND e.target_type = 'item' AND e.target_id = i.id
+    AND e.source_id = s.id AND (
+      s.demo_version = $cedar_version OR
+      (s.demo_version = $rich_version AND e.message_key IN $message_keys))
+  WITH DISTINCT i ORDER BY i.id LIMIT $item_cap""",
+)
+
 
 def _refused() -> ApiError:
     return ApiError(403, "demo_provenance_refused", "the saved demo provenance is not complete")
@@ -178,9 +190,12 @@ def _creation(row: dict, entity_type: str, entries: list[dict], values: dict) ->
 
 
 def _source(evidence: dict, bundle: dict, indexed: dict) -> tuple[dict, dict, dict]:
+    from grove.demo.corpus import VERSION
     from grove.demo_policy import DEMO_TEXT, DEMO_VERSION
 
     source = indexed["sources"].get(evidence.get("source_id"), {})
+    if source.get("demo_version") == VERSION:
+        return _rich_source(evidence, bundle, indexed)
     request = indexed["requests"].get(source.get("demo_request_id"), {})
     connector = indexed["connectors"].get(source.get("connector_id"), {})
     episode = indexed["episodes"].get(evidence.get("episode_id"), {})
@@ -244,7 +259,95 @@ def _source(evidence: dict, bundle: dict, indexed: dict) -> tuple[dict, dict, di
     return source, request, receipt
 
 
+def _rich_source(evidence: dict, bundle: dict, indexed: dict) -> tuple[dict, dict, dict]:
+    from grove.demo.corpus import (
+        ACTOR,
+        PARSER,
+        SOURCE_TIME,
+        VERSION,
+        content_identity,
+        request_identity,
+        stories,
+    )
+    from grove.demo_policy import RICH_CORPUS_SHA256
+
+    source = indexed["sources"].get(evidence.get("source_id"), {})
+    request = indexed["requests"].get(source.get("demo_request_id"), {})
+    connector = indexed["connectors"].get(source.get("connector_id"), {})
+    episode = indexed["episodes"].get(evidence.get("episode_id"), {})
+    story = next(
+        (s for s in stories() if source.get("external_locator") == "synthetic:" + s.key), None
+    )
+    if story is None:
+        raise _refused()
+    expected_keys = [item.key for item in story.items]
+    if (
+        source.get("version") != 1
+        or source.get("forget_state") != "kept"
+        or source.get("parser_version") != PARSER
+        or source.get("untrusted") is not True
+        or source.get("content") != story.content()
+        or any(
+            source.get(k)
+            for k in ("content_pointer", "speakers", "document", "calendar_events", "source_facts")
+        )
+        or connector.get("type") != "ai_host"
+        or connector.get("provider") != ACTOR
+        or connector.get("auth_reference") != "synthetic"
+        or connector.get("batch_rule") != "fixed_corpus_v1"
+        or _json(connector.get("settings")) != {"version": VERSION, "sha256": RICH_CORPUS_SHA256}
+        or request.get("status") != "saved"
+        or request.get("source_id") != source.get("id")
+        or request.get("caller") != ACTOR
+        or request.get("id") != request_identity(source.get("world_id"), story.key)
+        or request.get("content_key") != content_identity(story.key)
+        or request.get("verbatim") is not False
+        or any(request.get(k) for k in ("relay", "about", "host_message_id", "run_id"))
+        or evidence.get("request_id") != request.get("id")
+        or evidence.get("message_key") not in expected_keys
+        or evidence.get("locator") != "whole"
+        or _plain(evidence.get("source_time")) != SOURCE_TIME
+        or evidence.get("source_type") != "said"
+        or episode.get("source_ids") != [source.get("id")]
+        or episode.get("connector_id") != connector.get("id")
+        or episode.get("first_message_key") != expected_keys[0]
+        or episode.get("last_message_key") != expected_keys[-1]
+        or episode.get("cut_rule") != "fixed_corpus_v1"
+        or episode.get("version") != 1
+        or episode.get("read_at") != source.get("received_at")
+        or _plain(episode.get("start_time")) != SOURCE_TIME
+        or _plain(episode.get("end_time")) != SOURCE_TIME
+    ):
+        raise _refused()
+    screenings = [row for row in bundle["screenings"] if row.get("source_id") == source["id"]]
+    if (
+        len(screenings) != 1
+        or screenings[0].get("screened_where") != "server"
+        or screenings[0].get("screened_at") != source.get("received_at")
+        or _json(screenings[0].get("counts_per_class")) != {}
+    ):
+        raise _refused()
+    receipt = _json(request.get("receipt"))
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("state") != "saved"
+        or receipt.get("request_id") != request.get("id")
+        or not receipt.get("commit_id")
+        or not receipt.get("change_set_id")
+        or receipt.get("commit_id") != request.get("commit_id")
+        or receipt.get("change_set_id") != request.get("change_set_id")
+        or not isinstance(receipt.get("lines"), list)
+    ):
+        raise _refused()
+    return source, request, receipt
+
+
 def _validate(bundle: dict, world_id: str, now: datetime) -> list[dict]:
+    from grove.demo.corpus import VERSION
+    from grove.demo_policy import require_corpus_identity
+
+    if any(source.get("demo_version") == VERSION for source in bundle.get("sources", [])):
+        require_corpus_identity()
     for key, rows in bundle.items():
         cap = MAX_ITEMS if key == "items" else MAX_ROWS
         if not isinstance(rows, list) or len(rows) > cap:
@@ -262,6 +365,7 @@ def _validate(bundle: dict, world_id: str, now: datetime) -> list[dict]:
             raise _refused()
         item_entry, initial = _creation(item, "item", bundle["entries"], indexed["values"])
         provenance = []
+        rich_item = False
         for row in evidence:
             if (
                 row.get("world_id") != world_id
@@ -278,6 +382,30 @@ def _validate(bundle: dict, world_id: str, now: datetime) -> list[dict]:
             if original != _plain(row):
                 raise _refused()
             source, request, receipt = _source(row, bundle, indexed)
+            from grove.demo.corpus import ACTOR, VERSION, stories
+
+            if source.get("demo_version") == VERSION:
+                rich_item = True
+                expected = next(
+                    (
+                        item
+                        for story in stories()
+                        for item in story.items
+                        if item.key == row.get("message_key")
+                    ),
+                    None,
+                )
+                if (
+                    expected is None
+                    or item.get("title") != expected.title
+                    or item.get("summary") != expected.summary
+                    or indexed["kinds"].get(item.get("kind"), {}).get("name") != expected.kind
+                    or item.get("status") != expected.status
+                    or any(item.get(field) for field in ("body", "properties", "search_terms"))
+                    or item_entry.get("actor") != ACTOR
+                    or entry.get("actor") != ACTOR
+                ):
+                    raise _refused()
             if any(
                 e.get("request_id") != request["id"]
                 or e.get("commit_id") != receipt["commit_id"]
@@ -302,10 +430,27 @@ def _validate(bundle: dict, world_id: str, now: datetime) -> list[dict]:
                     "source_type": row["source_type"],
                     "derivation": "observed",
                     "modality": "text",
+                    "synthetic": True,
                 }
             )
         derived = {k: v for k, v in claim_fields(evidence).items() if v is not None}
-        if {**initial, **derived} != _plain(item):
+        expected = {**initial, **derived}
+        actual = _plain(item)
+        if rich_item:
+            # The checked link writer touches its endpoints without changing
+            # their factual version or history. No content field is exempt.
+            touched, recorded = item.get("touched_at"), item.get("recorded")
+            if (
+                not isinstance(touched, datetime)
+                or touched.tzinfo is None
+                or touched.utcoffset() is None
+                or not isinstance(recorded, datetime)
+                or touched < recorded
+            ):
+                raise _refused()
+            expected.pop("touched_at", None)
+            actual.pop("touched_at", None)
+        if expected != actual:
             raise _refused()
         if any(isinstance(v, str) and len(v) > MAX_TEXT for v in item.values()):
             raise _refused()
@@ -371,7 +516,8 @@ def _arguments(arguments: dict) -> tuple[str | None, int]:
 
 class DemoRecallHandler:
     def __call__(self, context: ToolContext, arguments: dict) -> dict:
-        from grove.demo_policy import DemoDenied, require_designation
+        from grove.demo.corpus import VERSION, stories, topic_items
+        from grove.demo_policy import DEMO_VERSION, DemoDenied, require_designation
 
         if "grove.read" not in context.scopes:
             raise ApiError(403, "scope_denied", "the credential lacks the read scope")
@@ -386,10 +532,19 @@ class DemoRecallHandler:
         if not own:
             raise _refused()
         now = clock.now(context.world_id)
+        selected = topic_items(about, MAX_ITEMS + 1)
+        selection_truncated = len(selected) > MAX_ITEMS - 1
+        titles = set(selected[: MAX_ITEMS - 1])
+        message_keys = [
+            item.key for story in stories() for item in story.items if item.title in titles
+        ]
         try:
             captured = WorldQuery(context.driver, context.world_id, timeout=5).read(
-                _CAPTURE,
+                _TOPIC_CAPTURE,
                 own=own,
+                cedar_version=DEMO_VERSION,
+                rich_version=VERSION,
+                message_keys=message_keys,
                 item_cap=MAX_ITEMS + 1,
                 row_cap=MAX_ROWS + 1,
                 text_cap=MAX_TEXT,
@@ -405,24 +560,40 @@ class DemoRecallHandler:
             raise ApiError(500, "internal", "the demo evidence could not be read") from None
         except (KeyError, TypeError, ValueError, OverflowError):
             raise _refused() from None
-        # The complete restricted dataset is tiny. A loose topic match may return its facts,
-        # while a miss only names the approved topic and does not assert a real-world absence.
         terms = set(re.findall(r"[a-z0-9]+", (about or "cedar").casefold()))
         matching = not about or bool(terms & {"cedar", "demo", "room", "presentation", "14", "utc"})
-        total = len(items) if matching else 0
-        shown = items[:limit] if matching else []
+        all_titles = {item.title for story in stories() for item in story.items}
+        relevant = [
+            item
+            for item in items
+            if item["title"] in titles or (matching and item["title"] not in all_titles)
+        ]
+        total = len(relevant)
+        shown = relevant[:limit]
+        available = ["Cedar demo"] if any(i["title"] not in all_titles for i in items) else []
+        available += [
+            story.topic
+            for story in stories()
+            if any(item.title in {i["title"] for i in items} for item in story.items)
+        ]
         return {
             "mode": "restricted_demo",
             "as_of": now.isoformat(),
-            "answer": "truncated" if total > limit else "found" if shown else "no_record",
+            "answer": "truncated"
+            if shown and (total > limit or selection_truncated)
+            else "found"
+            if shown
+            else "no_record",
             "items": shown,
             "coverage": {
-                "scope": "approved saved Cedar requests only",
+                "scope": "approved saved synthetic demo requests only",
                 "returned": len(shown),
                 "total": total,
-                "truncated": total > limit,
+                "total_scope": "validated selected facts",
+                "truncated": bool(shown and (total > limit or selection_truncated)),
                 "live_state_checked": False,
             },
-            "available_topics": ["Cedar demo"] if items else [],
-            "note": "Grove returns saved evidence only. No record does not mean it did not happen.",
+            "available_topics": available,
+            "note": "Synthetic demo data. Grove returns bounded saved evidence only. "
+            "No record does not mean it did not happen.",
         }
