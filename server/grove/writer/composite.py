@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from grove.store.asof import replay
+from grove.store.catalogue import table
 from grove.store.normalise import normalise_phrase
 from grove.store.primitives import (
     KIND_BELIEF,
@@ -76,6 +77,9 @@ _ALIAS_ON = (
 )
 _SET_EVIDENCE = "MATCH (e:Evidence {id: $id}) SET e += $columns"
 _BUMP_EVIDENCE = "MATCH (e:Evidence {id: $id}) SET e.version = coalesce(e.version, 0) + 1"
+_LOCK_BELIEF = "MATCH (b:Belief {item_id: $id}) SET b.touched_at = $at RETURN b"
+_SET_BELIEF = "MATCH (b:Belief {item_id: $id}) SET b += $columns"
+_BUMP_BELIEF = "MATCH (b:Belief {item_id: $id}) SET b.version = coalesce(b.version, 0) + 1"
 _ENTRIES_OF_SET = "MATCH (e:ChangeEntry {change_set_id: $id}) RETURN e ORDER BY e.sequence"
 _UNDONE = "MATCH (e:ChangeEntry {inverse_of: $id}) RETURN e.sequence AS sequence LIMIT 1"
 # The markers that leave their row as it was (S47): no version moves with them, so no undo
@@ -761,6 +765,38 @@ def _columns(field: str, value: Any) -> dict[str, Any]:
     return {field: value}
 
 
+def _belief_type(field: str) -> str | None:
+    return next((column.type for column in table("beliefs").columns if field in column.props), None)
+
+
+def _belief_same(field: str, row: dict[str, Any], expected: Any) -> bool:
+    held = row.get(field)
+    type_ = _belief_type(field)
+    if type_ == "instant":
+        return (parse_instant(held) if held is not None else None) == (
+            parse_instant(expected) if expected is not None else None
+        )
+    if type_ == "json_ids":
+        return _decode(held) == _decode(expected)
+    if type_ == "ids":
+        # S16 stores an empty list as an absent property.
+        return (held or []) == (expected or [])
+    return held == expected
+
+
+def _belief_columns(field: str, value: Any) -> dict[str, Any]:
+    type_ = _belief_type(field)
+    if type_ is None or field in {"item_id", "world_id", "version", "touched_at"}:
+        raise Refused("invalid_arguments", "not_undoable", "no mutable belief field", {})
+    if type_ == "instant" and value is not None:
+        value = parse_instant(value)
+    elif type_ == "json_ids" and value is not None:
+        value = ap._json(_decode(value))
+    elif type_ == "ids" and value == []:
+        value = None
+    return {field: value}
+
+
 class _Undo:
     """The inverse of one change set, written as a new change set of this batch (D3, B.2)."""
 
@@ -791,6 +827,8 @@ class _Undo:
                 ap._bump(self.run, ap._BUMP_LINK, entity_id)
             elif entity_type == "evidence":
                 ap._bump(self.run, _BUMP_EVIDENCE, entity_id)
+            elif entity_type == "belief":
+                ap._bump(self.run, _BUMP_BELIEF, entity_id)
             else:
                 ontology.bump_registry(self.run, label, entity_id)
 
@@ -800,13 +838,6 @@ class _Undo:
         field = entry["field"]
         if field in MARKERS:
             return
-        if entry["entity_type"] == "belief":
-            raise Refused(
-                "invalid_arguments",
-                "not_undoable",
-                "a belief change is undone by the beliefs operations (D9)",
-                {},
-            )
         if entry.get("history_only"):
             self.history_only(entry, values)
         elif field == "row":
@@ -857,7 +888,12 @@ class _Undo:
             )
             run.tx.run(ap._SET_ITEM, id=entity_id, columns={"end_class": "refuted"})
             self.bump("item", entity_id)
-            run.touch(entity_id, self.index)
+            if item.get("kind") == KIND_BELIEF:
+                # The same inverse ends the minted describes links. A retained, refuted
+                # creation is no longer a live belief that must have an active anchor.
+                run.head_changes.add(entity_id)
+            else:
+                run.touch(entity_id, self.index)
         elif entity_type == "link":
             link = ap._one(run, ap._LOCK_LINK, "link", entity_id, lock=True)
             if link.get("end_class") == "refuted":
@@ -886,6 +922,28 @@ class _Undo:
             )
             self.bump("evidence", entity_id)
             run.recompute[row["target_id"]] = "link" if row["target_type"] == "link" else "item"
+        elif entity_type == "belief":
+            row = ap._one(run, _LOCK_BELIEF, "belief", entity_id, lock=True)
+            columns = {
+                "state": "superseded",
+                "state_since": run.at,
+                "end_class": "wrong",
+                "supporting_episodes": None,
+                "contradicting_episodes": None,
+                "last_support_at": None,
+                "last_contradiction_at": None,
+            }
+            for name, value in columns.items():
+                if row.get(name) != value:
+                    self.entry(
+                        entry,
+                        field=name,
+                        old=row.get(name),
+                        new=value,
+                        world_time=entry.get("world_time"),
+                    )
+            run.tx.run(_SET_BELIEF, id=entity_id, columns=columns)
+            self.bump("belief", entity_id)
         else:
             label = ontology.registry_label(run, entity_id)
             row = ontology.lock_registry(run, label, entity_id)
@@ -908,10 +966,17 @@ class _Undo:
             row = ap._one(run, ap._LOCK_LINK, "link", entity_id, lock=True)
         elif entity_type == "evidence":
             row = ap._one(run, ap._LOCK_EVIDENCE, "evidence", entity_id, lock=True)
+        elif entity_type == "belief":
+            row = ap._one(run, _LOCK_BELIEF, "belief", entity_id, lock=True)
         else:
             label = ontology.registry_label(run, entity_id)
             row = ontology.lock_registry(run, label, entity_id)
-        if not _same(field, row, expected):
+        same = (
+            _belief_same(field, row, expected)
+            if entity_type == "belief"
+            else _same(field, row, expected)
+        )
+        if not same:
             raise _conflict(
                 "the row no longer holds the value this change set wrote",
                 entity=entity_id,
@@ -919,7 +984,9 @@ class _Undo:
             )
         if entity_type == "registry_row" and field == "status" and old == "retired":
             ontology.check_retirable(run, label, row)
-        if entity_type == "evidence" and field == "end_reason":
+        if entity_type == "belief":
+            columns = _belief_columns(field, old)
+        elif entity_type == "evidence" and field == "end_reason":
             columns = (
                 {"active": True, "ended_at": None, "end_reason": None}
                 if old is None
@@ -948,6 +1015,8 @@ class _Undo:
             run.head_changes.update((row["from_item"], row["to_item"]))
         elif entity_type == "evidence":
             run.tx.run(_SET_EVIDENCE, id=entity_id, columns=columns)
+        elif entity_type == "belief":
+            run.tx.run(_SET_BELIEF, id=entity_id, columns=columns)
         else:
             ontology.set_registry(run, label, entity_id, columns)
         self.bump(entity_type, entity_id, label)
