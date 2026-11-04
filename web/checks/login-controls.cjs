@@ -41,19 +41,22 @@ function openingTag(html, tag, attribute) {
   assert(found, 'Missing ' + tag + ' with ' + attribute);
   return found;
 }
-function minimalLogin(html) {
-  assert.doesNotMatch(html, /<h[1-6]\b|gp-auth-brand|gp-auth-intro|gp-wordmark/,
-    'Initial login must not render a visible title, brand, or introduction');
+function logoLogin(html) {
+  assert.doesNotMatch(html, /<h[1-6]\b|gp-auth-intro/,
+    'Initial login must not render a login title or introduction');
+  assert.match(html, /<header class="gp-auth-brand"><span class="wm gp-wordmark"><span>grove<\/span><span class="wm-dot" aria-hidden="true"><\/span><\/span><\/header>/,
+    'Initial login retains the existing Grove wordmark and gold dot');
+  assert.equal((html.match(/class="wm-dot"/g) || []).length, 1);
   assert.doesNotMatch(html, /Give your AI a world to understand|Return to your Grove/);
-  assert.match(html, /<div class="gp-auth"><div class="gp-auth-form"><div class="gp-signin-options">/,
-    'The card starts directly with sign-in controls');
+  assert.match(html, /<\/header><div class="gp-auth-form"><div class="gp-signin-options">/,
+    'Sign-in controls follow the logo without an intervening title or slogan');
 }
 
 const checks = [];
 const check = (name, run) => checks.push([name, run]);
 
-check('Initial live login contains controls without a heading or slogan', () => {
-  minimalLogin(render());
+check('Initial live login retains the Grove logo without a heading or slogan', () => {
+  logoLogin(render());
 });
 
 check('Initial login retains the dialog name and existing keyboard focus target', () => {
@@ -92,12 +95,12 @@ check('The email label, field, divider, and submit control remain in order', () 
   assert.equal((html.match(/<input\b/g) || []).length, 1);
 });
 
-check('Create-account and privacy links retain their destinations', () => {
+check('Initial login keeps Privacy without the removed create-account prompt', () => {
   const html = render();
   assert.match(html, /<nav class="gp-auth-navigation" aria-label="Account access">/);
-  assert.match(html, /href="\/signup\?next=%2Freturn">New to Grove\? Create account<\/a>/);
+  assert.doesNotMatch(html, /New to Grove|Create account|href="\/signup/);
   assert.match(html, /href="\/privacy">Privacy<\/a>/);
-  assert.equal((html.match(/<a\s/g) || []).length, 2);
+  assert.equal((html.match(/<a\s/g) || []).length, 1);
 });
 
 check('Signup retains its brand, title, instructions, controls, and login link', () => {
@@ -149,9 +152,9 @@ check('Email text remains escaped in initial login and code instructions', () =>
   }
 });
 
-check('Fixture login uses the same minimal card without live account links', () => {
+check('Fixture login retains the same logo without live account links', () => {
   const html = render({ fixture: true });
-  minimalLogin(html);
+  logoLogin(html);
   assert.match(html, /data-email-form/);
   assert.doesNotMatch(html, /gp-auth-navigation/);
 });
