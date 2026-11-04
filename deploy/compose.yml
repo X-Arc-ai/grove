@@ -63,6 +63,8 @@ services:
       GROVE_NEO4J_URI: bolt://neo4j:7687
       GROVE_BUILD_SHA: ${GROVE_BUILD_SHA}
       GROVE_GOOGLE_OAUTH_FILE: /run/grove/google-oauth.json
+      GROVE_CONNECTOR_KEY_FILE: /run/grove/connectors/key
+      GROVE_CONNECTOR_POLL: "1"
       # Screening reads both files at each upload. While one is absent, uploads answer 503 and
       # every other path serves (docs/deploy.md, uploads and the screening files).
       GROVE_RENAME_MAP: /run/grove/screening/rename.json
@@ -81,6 +83,14 @@ services:
       - type: bind
         source: /etc/grove/screening
         target: /run/grove/screening
+        read_only: true
+        bind:
+          create_host_path: false
+      # Provision this private directory before deployment. An absent key refuses consent;
+      # Docker must not silently create a directory in place of the operator's configuration.
+      - type: bind
+        source: /etc/grove/connectors
+        target: /run/grove/connectors
         read_only: true
         bind:
           create_host_path: false
