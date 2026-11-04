@@ -549,6 +549,7 @@ def write_request_row(
     other content under the key raises BatchDeclined. Returns (row, fresh)."""
     _need_write(caller, request_id)
     check_request_id(request_id)
+    tx.lock_world()
     columns = _enqueue_columns(
         source_id, write_source, content_key, run_id, verbatim, host_message_id, said_at, about
     )
