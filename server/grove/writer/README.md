@@ -200,6 +200,7 @@ what an earlier one did.
 | `end_link` | U C K P W | **op_id**, **link** (not of a primitive meaning), **end_class**, **stopped_being_true**, **reason**, evidence_refs | `x link 2f07ab11: ... (<end class>)` |
 | `attach_evidence` | U C K P W | **op_id**, **target** (item, link or belief id), **ev_id** or **evidence_id**, **polarity**, judgment_ids | `= item 77d2aa01 evidence e88f0a1b (supports, said)` |
 | `end_evidence` | C K P | **op_id**, **evidence**, **end_reason** (`correction`, `forget`, `merge`) | `- evidence e88f0a1b (correction)` |
+| `verify` | U C K P H | **op_id**, **claim** (item or link id), **pieces** (list of `{ev_id or evidence_id, judgment_id or answer}`), **disposition** (`confirmed`, `moved`, `retired`, `deferred`), **reason**, second_judge (judgment ids), recheck_by, recheck_how, override_reason | `v item 44b0aa12: confirmed 10-27 09:15 against a fetched page; re-check by 10-29` |
 | `correct` | U C K P | **op_id**, **target** (the record), **successor** (an item id or a temp id of this batch), **evidence_refs**, **reason**, no_head_update_reason | `> link 5c21aa90: 9a1e0c33 -[corrected by]-> 31cdee01`, with the head's own lines |
 | `refute` | U C K P | **op_id**, **target** (item or link), **evidence_refs**, **reason**, version | `x item 44b0aa12 (refuted)` |
 | `supersede` | U K P | **op_id**, **target**, **successor**, **evidence_refs**, **reason**, stopped_being_true, version | `x item 44b0aa12 (superseded)` and the `superseded by` link |
@@ -208,6 +209,31 @@ what an earlier one did.
 | `retire_record` | K | **op_id**, **record**, **lesson** (the belief or head that holds its lesson), **reason**, version | `x record 9a1e0c33 (spent; lesson in b7e8f9a0)` |
 | `propose_word` | U C K | **op_id**, **word_type** (`kind`, `meaning`, `property_name`), **name**, **description**, **reason**, **worked_example** (`{ev_id}` or `{evidence_id}`), **neighbours** (`[{word, distinction}]`), **declared**, **judgment_ids**, kind (a property name's kind, required for one), proposed_capability (`{connector_type, capability}`), reversed (a meaning that reads its first neighbour from the other end) | `o mint meaning "is godparent of" (provisional)` or `o alias "is pals with" for meaning "related to"` |
 | `promote_word` | K P | **op_id**, **word_type**, **word** (id or name), **reason**, kind (for a property name) | `o promote meaning "is godparent of" (canonical)` |
+
+`create_item` and `create_link` also take `confirmed_by_call`: the id of the extraction call of
+this pass that read a confirming creating row (see "Verify" below).
+
+## Verify
+
+D4's one way to move last confirmed. A piece cites the recorded judgment that judged it
+(`server/grove/writer/judgments.py` writes them; `server/grove/models/verify_judge.py` runs the
+fixed judge prompt), or, for the person in Grove's views, the answer they chose. The writer reads each
+verdict from its row and computes the rest from stored rows: the capability that lets the piece's
+source confirm this claim (`server/grove/store/capabilities.py`, S54), each piece's weight
+(1.0 when newer than the claim's last confirmation, else falling from 1.0 to 0.3 at its
+connector's staleness limit and 0 beyond; always fresh for git and the calendar), `agree`,
+`disagree`, the ratio and the band (S52), and whether the claim is load-bearing (a consequence
+link into or out of it, a link that carries consequences, a state link on the person's own item).
+A confirmation needs the band `confirm`, and a load-bearing one an agreeing second judge from
+another model or recorded as a correlated stand-in. Each verify appends one `:Verification` row,
+and `confirmed_against` names it. Last confirmed moves to the time the newest admitted piece speaks
+for, never the commit time, and every row, at typing, is refused when it is dated after now or after its source was read (`sources.received_at`; a calendar entry or a reminder may be dated ahead), with `future_evidence`, and refused when it is dated outside the window of the episode it cites (`outside_episode`). An operation's world time is never later than its batch. Load-bearing is
+read again at the end of the batch, so a consequence link that a later operation adds needs the
+second judge too. The AI host verifies only with the person's own words in an answer or
+a correction (S53). `moved` needs the claim changed earlier in the batch, and `retired` needs it
+ended with the end class `retired` and its consequence links ended. A confirmation at create
+(`confirmed_by_call`) needs a confirming creating row read in this pass, an extraction call of
+this run, and a claim that is not load-bearing at the end of the batch.
 
 ### The ontology operations (D8's floor)
 
@@ -302,7 +328,7 @@ A "corrected by" or "superseded by" link starts at the operation's evidence time
 `end_link` and `refute` refuse a primitive meaning; only an undo ends one. A belief is refused by
 these operations (rule `belief_transition`): the beliefs lane moves beliefs by D9's state machine.
 
-The other B.2 operations belong to later lanes: verify and the confirmation at create (`truth-clock`);
+The remaining operations belong to later lanes: capability rows from the item page (`views-c`);
 beliefs and contradictions (`beliefs`); proposals and marks (`walk`); questions, holds and
 mentions (`cleanup`, `ingest-b`); forget (`forget`). D8's merge, split, rename, retire and undo are
 P1 (Appendix D, P1 item 3): the change log stores the inverse each of them will need.
@@ -477,6 +503,11 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | Only verify moves last confirmed | `invalid_arguments` (rule `verify_only`) | `test_contract_d2.py` |
 | A record's claim never changes: an update may touch only its search terms, and a record refuses a status, an end and a reopen | `record_immutable` | `test_contract_d2.py` |
 | A cited verdict must be a recorded judgment; a caller's score, weight, band or load-bearing flag is refused | `unrecorded_verdict`, `caller_score` | `test_contract_d2.py` |
+| Verify reads each verdict from a recorded judgment of this claim and this piece; it computes weight, agreement, ratio, band, capability and load-bearing itself; a confirmation needs the band confirm, a source type of confirmed from an observed row, a capability, and for a load-bearing claim an agreeing second judge | `unrecorded_verdict`, `caller_score`, `not_confirmable`, `judge_not_supports`, `inferred_evidence`, `second_judge_required`, `judges_disagree` | `test_verify.py` |
+| Nothing but verify moves last confirmed: an update, a status change, an end, a reopen, a restatement, attached or ended evidence, a migration, a deferral and the passing of time leave it byte-identical | (none) | `test_clocks_d4.py` |
+| A confirmation at create needs a confirming creating row read in this pass, the extraction call of this run, and a claim that is not load-bearing | `unrecorded_verdict`, `not_confirmable`, `second_judge_required` | `test_clocks_d4.py` |
+| A period's became-true time needs confirming evidence in its batch; a plan with a scheduled time and no re-check by gets the time plus one day | `terminal_needs_confirmation` (rule `period_start_needs_confirmation`) | `test_clocks_d4.py` |
+| A row's source type follows the connector, the statement class, the modality, the source's speaker metadata, the calendar's log setting and the request's relay; a decision needs a person as its speaker; a forwarded row keeps its author; an AI host speaks for the person only in the person's own words | `invalid_arguments` (rules `decider_not_speaker`, `original_author_required`), `verbatim_required` | `test_source_types_d5.py` |
 | A contradicting row on a belief cites two recorded judgments of this belief (subject `belief:<id>`, a judge role, and the cited evidence row when the judgment names one), from two models, that both say it contradicts | `unrecorded_verdict` (rules `judgment_subject`, `judgment_role`, `judgment_evidence`), `second_judge_required`, `judges_disagree`, `judge_not_supports` (rule `judge_not_contradicts`) | `test_contract_d2.py` |
 | A terminal done, also one that goes to history only, needs in its batch an observed confirming row (written or cited again), or a rolled-up row whose premises are active confirming rows of the item's parts (linked by a meaning that rolls up completion), with every part at a terminal role and every done part covered | `terminal_needs_confirmation` | `test_contract_d2.py` |
 | A near-duplicate title (of an item's title or of an alias of the item) needs `distinct_from` with a reason | `near_duplicate`, `invalid_arguments` (rule `distinct_reason`) | `test_contract_d2.py` |
@@ -536,3 +567,40 @@ OAuth client id. Build the 5 second wait of remember from `request_state`. Rende
 | The person promotes a word at once; the consolidation agent only at the bar | `invalid_arguments` (rules `earning_bar`, `already_canonical`) | `test_ontology.py` |
 | The Oct 2 drill: no operation of an agent writes the registry or a primitive, an agent cannot declare a writer-set field, an edited seed never reaches a living world, the runner holds no store credential and the store refuses a process with none | `invalid_arguments` (rules `unknown_op`, `writer_field`, `primitive_word`), `not_found` | `test_ontology_drill.py` |
 | Labelled pairs: reworded titles at 0.8, 0.86 and 1.0 are refused, pairs at 0.72 and 0.3 come back as candidates, and revision N after N-1 passes only with `distinct_from` and is logged with `override_used`; `distinct_from` clears only the item it names; a title that differs only by an invisible format character meets the gate | `near_duplicate` | `test_neardup_labelled.py` |
+
+### Calendar event bindings
+
+`write_screened_source` and `add_screened_source` accept `calendar_events` only for a
+Calendar connector. Connector code passes a map from each retained message key to:
+
+```json
+{
+  "scheduled_at": "2027-02-25T09:00:00+00:00",
+  "timezone": "UTC",
+  "status": "confirmed",
+  "updated_at": "2027-02-26T10:00:00+00:00"
+}
+```
+
+The map holds at most 1,000 entries and 512,000 UTF-8 bytes. Keys are codes of at most
+128 characters. The timezone is a valid IANA timezone of at most 128 characters.
+`scheduled_at` and optional `updated_at` are aware ISO instants of at most 64 characters.
+The stored instants are normalized to UTC. Status is `confirmed`, `tentative`, or
+`cancelled`; only a cancelled event may have a null scheduled time. Its retained
+message must also have a null `at`. Other scheduled times must equal the retained
+message's `at`. Missing, duplicate, or screened-out message keys are refused.
+
+The binding identifies exactly `key:<message key>`. The timezone defines the trusted
+Calendar log day. The observation may omit `person_timezone`; if supplied, it must
+match the binding to confirm. Its `source_time` must equal the scheduled instant.
+Only an event with status `confirmed`, scheduled before the source read and covered
+by `log_from` or `logged_days`, can confirm an occurrence. A missing binding or any
+other case stays planned. `updated_at` is never an occurrence time. Free-form event
+text and model-proposed fields cannot supply this binding.
+
+Existing confirming Calendar evidence must pass the same check when cited again.
+This includes existing-row reuse and rolled-up completion premises. Unsupported
+confirmation is refused with `calendar_binding`; this change does not migrate old
+rows. The ingest-a3 connector must transport these facts from its provider parser,
+retain only facts for messages that survive screening, and preserve its atomic
+source transaction. Its provider and cancellation acceptance remains separate.

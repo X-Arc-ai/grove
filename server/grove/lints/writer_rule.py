@@ -47,7 +47,8 @@ WRITER_PREFIX = "server/grove/writer/"
 GUARDED_LABELS = {
     "Kind": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
     "Meaning": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
-    "PropertyName": ("server/grove/writer/ontology.py",),
+    # The world seed writes the starter property names (S55), as it writes the starter kinds.
+    "PropertyName": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
     "OntologyChange": ("server/grove/writer/ontology.py",),
     "Judgment": ("server/grove/writer/judgments.py",),
 }

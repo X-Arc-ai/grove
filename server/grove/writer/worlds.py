@@ -14,6 +14,7 @@ from neo4j import Driver, ManagedTransaction
 
 from grove import clock
 from grove.ids import new_id
+from grove.store import capabilities
 from grove.store.connection import DATABASE
 from grove.store.normalise import normalise_phrase
 from grove.store.primitives import (
@@ -58,7 +59,13 @@ _ADD_ROW = {
     "Kind": "CREATE (n:Kind) SET n += $row",
     "Meaning": "CREATE (n:Meaning) SET n += $row",
     "Alias": "CREATE (n:Alias) SET n += $row",
+    "PropertyName": "CREATE (n:PropertyName) SET n += $row",
 }
+_STARTER_PROPERTY_NAMES = (
+    "MATCH (p:PropertyName {origin: $origin}) RETURN p.id AS id, p.kind AS kind, p.name AS name"
+)
+# The default capabilities of D5 (S54): store-wide rows with fixed ids, like the primitive rows.
+_ENSURE_DEFAULT_CAPABILITY = CYPHER_PREFIX + "MERGE (c:Capability {id: $id}) SET c += $row"
 _ADD_VALUE = "CREATE (v:HistoryValue {id: $id, value: $value})"
 _ADD_ENTRY = "CREATE (e:ChangeEntry) SET e += $entry"
 _STARTER_KINDS = "MATCH (k:Kind {origin: $origin}) RETURN k.id AS id, k.name AS key"
@@ -77,7 +84,12 @@ class _SeedRun:
     change_set_id: str
 
 
-_TABLES = {"Kind": "kinds", "Meaning": "meanings", "Alias": "aliases"}
+_TABLES = {
+    "Kind": "kinds",
+    "Meaning": "meanings",
+    "Alias": "aliases",
+    "PropertyName": "property_names",
+}
 
 
 def load_starter_set() -> dict[str, Any]:
@@ -90,6 +102,15 @@ def _ensure_primitives(tx: ManagedTransaction) -> None:
     for row_id, fields in PRIMITIVE_MEANINGS.items():
         tx.run(_ENSURE_PRIMITIVE_MEANING, id=row_id, row={**fields, **fixed}).consume()
     tx.run(_ENSURE_PRIMITIVE_KIND, id=KIND_BELIEF, row={**PRIMITIVE_KIND_BELIEF, **fixed}).consume()
+    for default in capabilities.DEFAULTS:
+        row = {
+            WORLD_PARAM: PRIMITIVE_WORLD,
+            "selector": default.selector(),
+            "capability": default.capability,
+            "origin": "default",
+            "version": _FIRST_VERSION,
+        }
+        tx.run(_ENSURE_DEFAULT_CAPABILITY, id=default.id, row=row).consume()
 
 
 def seed_primitives(driver: Driver) -> None:
@@ -204,6 +225,40 @@ def _meaning_row(
     return {key: value for key, value in row.items() if value is not None}
 
 
+def _property_row(
+    tx: WorldTx, declared: dict[str, Any], kind_ids: dict[str, str], run: _SeedRun
+) -> dict[str, Any]:
+    row = {
+        **_governed(run),
+        "kind": kind_ids[declared["kind"]],
+        "name": declared["name"],
+        "value_type": declared["value_type"],
+        "temporal_class": declared["temporal_class"],
+        "scheduled_role": declared.get("scheduled_role"),
+        "default_horizon": declared.get("default_horizon"),
+        "description": _add_value(tx, run.world_id, declared["description"]),
+        "distinct_episodes": 0,
+        "uses": 0,
+    }
+    return {key: value for key, value in row.items() if value is not None}
+
+
+def _seed_property_names(
+    tx: WorldTx, starter: dict[str, Any], kind_ids: dict[str, str], run: _SeedRun
+) -> dict[str, str]:
+    """The starter property names (S55): scheduled times only, keyed `<kind> <name>`."""
+    known = {(row["kind"], row["name"]) for row in tx.run(_STARTER_PROPERTY_NAMES, origin=_ORIGIN)}
+    ids = {}
+    for declared in starter.get("property_names", []):
+        kind_id = kind_ids.get(declared["kind"])
+        if kind_id is None or (kind_id, declared["name"]) in known:
+            continue
+        row = _property_row(tx, declared, kind_ids, run)
+        _add_row(tx, "PropertyName", row, run)
+        ids[f"{declared['kind']} {declared['name']}"] = row["id"]
+    return ids
+
+
 def _alias_row(declared: dict[str, Any], meaning_id: str, run: _SeedRun) -> dict[str, Any]:
     return {
         **_governed(run),
@@ -238,6 +293,7 @@ def _seed(tx: WorldTx, world_id: str, starter: dict[str, Any], at: datetime) -> 
             row = _alias_row(alias, ids["meanings"][declared["name"]], run)
             _add_row(tx, "Alias", row, run)
             ids["aliases"][row["normalised_phrase"]] = row["id"]
+    ids["property_names"] = _seed_property_names(tx, starter, ids["kinds"], run)
     return ids
 
 
@@ -245,10 +301,15 @@ def _seeded_ids(tx: WorldTx) -> dict[str, dict[str, str]]:
     def read(query: str) -> dict[str, str]:
         return {row["key"]: row["id"] for row in tx.run(query, origin=_ORIGIN)}
 
+    kind_names = {kind_id: name for name, kind_id in read(_STARTER_KINDS).items()}
     return {
         "kinds": read(_STARTER_KINDS),
         "meanings": read(_STARTER_MEANINGS),
         "aliases": read(_STARTER_ALIASES),
+        "property_names": {
+            f"{kind_names.get(row['kind'], row['kind'])} {row['name']}": row["id"]
+            for row in tx.run(_STARTER_PROPERTY_NAMES, origin=_ORIGIN)
+        },
     }
 
 
@@ -267,7 +328,24 @@ def create_world(driver: Driver, world_id: str, *, owner_user_id: str) -> dict[s
             _ENSURE_WORLD, world_id=world_id, owner_user_id=owner_user_id, at=at
         ).single()
         version = world["seed_version"]
-        if version is not None:
+        if version is not None and version != starter["seed_version"]:
+            # A world seeded before the property names (S55) gets the rows it lacks, and no other.
+            _seed_property_names(
+                tx,
+                starter,
+                _seeded_ids(tx)["kinds"],
+                _SeedRun(
+                    world_id=world_id,
+                    at=at,
+                    reason=_add_value(tx, world_id, _REASON),
+                    commit_id=new_id(world_id),
+                    change_set_id=new_id(world_id),
+                ),
+            )
+            version = starter["seed_version"]
+            managed.run(_MARK_SEEDED, world_id=world_id, seed_version=version).consume()
+            ids = _seeded_ids(tx)
+        elif version is not None:
             ids = _seeded_ids(tx)
         else:
             ids = _seed(tx, world_id, starter, at)

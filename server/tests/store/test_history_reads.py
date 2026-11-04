@@ -31,6 +31,7 @@ from tests.writer.helpers import (
     create_link,
     created_id,
     iso,
+    make_source,
     new_op_id,
     observation,
     read,
@@ -170,6 +171,8 @@ def test_ended_and_refuted_told_apart(driver, seeded, chat, frozen):
     ended, refuted = (created_id(receipt, ">", "link", nth=n) for n in range(2))
     # On 3 November: Ilse left the guild on 28 October, and she was never part of the shop.
     frozen.set(NOV_3)
+    # This export contains the November message.
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     apply(
         driver,
         w,
@@ -222,6 +225,7 @@ def test_changes_between_names_each_kind_and_only_refuted_is_unbelieved(
     receipt = apply(driver, w, ops, [told])
     shop, hall, river = (created_id(receipt, nth=n) for n in range(3))
     frozen.set(OCT_25 + HOUR)
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     renamed = {
         "op": "update_item",
         "op_id": new_op_id(),
@@ -233,6 +237,7 @@ def test_changes_between_names_each_kind_and_only_refuted_is_unbelieved(
     }
     apply(driver, w, [renamed], [observation(chat, "c2", 2, at=OCT_25)])
     frozen.set(OCT_27 + HOUR)
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     closed = {
         "op": "end_item",
         "op_id": new_op_id(),
@@ -358,6 +363,7 @@ def test_item_history_reads_the_item_its_links_and_its_evidence_in_sequence(
     shop, guild, bakery = (created_id(receipt, nth=n) for n in range(3))
     joined, bakery_link = (created_id(receipt, ">", "link", nth=n) for n in range(2))
     frozen.set(OCT_25 + HOUR)
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     renamed = {
         "op": "update_item",
         "op_id": new_op_id(),
@@ -369,6 +375,7 @@ def test_item_history_reads_the_item_its_links_and_its_evidence_in_sequence(
     }
     apply(driver, w, [renamed], [observation(chat, "h2", 2, at=OCT_25)])
     frozen.set(OCT_27 + HOUR)
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     first_row = evidence_of(driver, w, shop)[0]
     dropped = {
         "op": "end_evidence",

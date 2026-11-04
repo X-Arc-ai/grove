@@ -350,6 +350,8 @@ def test_past_world_end_keeps_true_then_and_believed_then_apart(driver, timed):
     link = created_id(made, ">", "link")
     # Recorded Nov 3: the link stopped being true on Oct 28.
     test_clock.set(datetime(2026, 11, 3, 9, tzinfo=UTC))
+    # The November message belongs to a new export read in November.
+    src = make_source(driver, w, "whatsapp", CHAT_LINES)
     seen = observation(src, "e9", 9, at=datetime(2026, 11, 2, 18, tzinfo=UTC))
     apply(
         driver,
