@@ -73,8 +73,8 @@ check and its legwork through history; receipts show its outcome. The item remai
 
 A Contradiction retains the standing target and change sequence. Its fresh side uses an Evidence
 ID when available; otherwise it retains source ID, locator, episode, source time, source type,
-derivation, and recorded judgment IDs. `why` and `resolution` are HistoryValue IDs. A complement
-judgment cannot open the queue. `fresh_wins` must cite prior operations on the conflicted target
+derivation, and recorded judgment IDs. `why` and `resolution` are HistoryValue IDs. A wholly neutral
+pair cannot open the queue. `fresh_wins` must cite prior operations on the conflicted target
 in the same batch. Standing-holds and complement resolutions use the Connector's semantic
 judgment and retained reason; they do not alter the standing claim. The explicit two-judge
 gates cover contradiction evidence and belief merges. `to_question` needs two different readings and stored legwork sources; the

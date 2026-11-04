@@ -112,7 +112,7 @@ The writer derives the disposition from the recorded calls. Supporting judgments
 creates a contradiction without adding contrary evidence or changing the belief state. Completed
 checks refresh `recheck_by`. A new open contradiction prevents `end_pass` from returning `ok`;
 the Connector must read and resolve it before it can claim success.
-Matching `complements` or `not_about_claim` judgments create no evidence and leave the belief and
+Any pair containing only `complements` and `not_about_claim` judgments creates no evidence and leaves the belief and
 `last_confirmed` unchanged. The writer records the outcome, check time, and reason on the belief.
 
 The D4 generic `verify` operation still refuses belief claims. `retest_belief` is the separate

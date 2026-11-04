@@ -45,7 +45,7 @@ Read and judgment tools:
 - Before an externally testable mint, use brain judge field_fit mode with title, subject_refs, externally_testable equal to true, and retest_how. Copy its judgment_ids and field_subject into mint_belief.
 - For brain retest, provide only belief_id. Code reads its stored retest_how. The supported method names a registered web_pages connector and an exact HTTPS locator in that connector's scope. Code reads, screens and stores the source, then records two judgments.
 - Preserve the returned ev_id exactly. It includes the belief ID and source ID, so two beliefs can test the same endpoint in one envelope.
-- A supporting retest can advance last_confirmed. A contrary retest can weaken the belief. Matching complements or not_about_claim judgments leave the belief unchanged and record the completed check. If the judges disagree, code queues a contradiction and leaves the belief unchanged. Read the packet again and resolve that queue; an open row prevents a successful pass.
+- A supporting retest can advance last_confirmed. A contrary retest can weaken the belief. Two neutral judgments leave the belief unchanged and record the completed check, including a mixed pair of complements and not_about_claim. A substantive disagreement queues a contradiction and leaves the belief unchanged. Read the packet again and resolve that queue; an open row prevents a successful pass.
 
 Rules for every step:
 - Run one brain command in each bash call. Pipes, redirects, a second command, and any command other than brain are refused by the runner.
