@@ -8,7 +8,9 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=deploy/lib.sh
 . "$here/lib.sh"
 
-take_lock "${GROVE_SERVICES_WAIT_SECONDS:-600}"
+maintenance_guard
+take_lock 30
+maintenance_guard
 if [ ! -s "$GROVE_STATE/deployed.sha" ]; then
     log "nothing is deployed yet"
     exit 0
@@ -17,6 +19,9 @@ fi
 # store's lock. The box lock is held, so no live deploy or backup owns one now.
 for id in $(docker ps --all --quiet --filter "label=com.docker.compose.project=$GROVE_PROJECT" \
     --filter "label=com.docker.compose.oneoff=True"); do
+    # Cutover evidence is retained even after success. It is never a stale backup.
+    name=$(docker inspect --format '{{.Name}}' "$id")
+    case "$name" in /grove-migrate-*) continue ;; esac
     if docker rm --force --volumes "$id" >/dev/null; then
         log "removed a one-off container left by a killed run"
     else
@@ -33,6 +38,7 @@ wait_healthy neo4j "$tries" || log "neo4j is not healthy yet"
 # a healthy API means the database answers.
 output=""
 for _ in $(seq "$tries"); do
+    maintenance_guard
     output=$(compose start api gateway runner 2>&1) || true
     # The runner has no health check, so it counts when it runs.
     if is_healthy api && is_healthy gateway &&

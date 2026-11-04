@@ -41,7 +41,9 @@ if [ "$ref" != develop ] && [ "${GROVE_ALLOW_BRANCH_DEPLOY:-}" != 1 ]; then
 fi
 
 # Longer than services-up.sh can hold the lock, so a fix or a roll back gets through.
-take_lock "${GROVE_DEPLOY_WAIT_SECONDS:-1800}"
+maintenance_guard
+take_lock 30
+maintenance_guard
 
 git -C "$GROVE_SRC" fetch --quiet --prune origin "+refs/heads/$ref:refs/remotes/origin/$ref"
 git -C "$GROVE_SRC" merge-base --is-ancestor "$sha" "origin/$ref" ||
@@ -56,6 +58,9 @@ git -C "$GROVE_SRC" checkout --quiet --detach "$sha"
 status=0
 "$GROVE_SRC/deploy/apply.sh" "$sha" "$ref" || status=$?
 if [ "$status" != 0 ]; then
+    # The old parent's fallback may still run on the first upgrade. Installed
+    # drop-ins outlive it; this parent also avoids replacing the target source.
+    maintenance_guard
     served=$(served_sha)
     if [ -n "$served" ] && [ "$served" != "$sha" ]; then
         git -C "$GROVE_SRC" checkout --quiet --detach "$served"
