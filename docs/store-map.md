@@ -253,7 +253,6 @@ Truth-clock rulings S51-S55 were S46-S50 before integration with D3 and upload c
 | A capability row has no status column, so no operation ends one: an undo of a mint that wrote a capability is refused (rule `no_ending`, S46). A capability's ending, and what its readers do with a retired word's capability, belong to the lane that reads capabilities (D5). | 1577, 3089 | `truth-clock` |
 | B.2 lets cleanup merge "within an area". The writer checks no area, because no area membership is stored yet; the runner's curator (cleanup) can send merge through `/brain/propose`. | 3170 | `cleanup` |
 | Every read path the hosts serve (recall, neighbours, hops, what changed, export, the MCP tools) attaches the successors of an overtaken item, through `standings`, `world_as_of` or `known_as_of`, each tested by name, as `test_d3_integration.py` does for the paths that exist now. | 832 | `hosts-b` |
-| Belief items are refused by correct, refute, supersede, merge and undo (rule `belief_transition`; an undo of a belief entry, rule `not_undoable`). The beliefs lane's transitions and their one-step undo replace that refusal. | 1809, 1811 | `beliefs` |
 | Ending an item does not end its consequence links yet (D3's build rule for archived items, D6). | 2789 | `walk` |
 | The update agent owns these coverage fields of a connector row: `held_nothing_count`, `extracted_count` and `items_taken_in_over_7_days`; it sets an episode's `run_id` when a pass takes it and moves `oldest_unprocessed_item` to the oldest episode still without one (S50, `docs/ingest.md`). | 2001, 3101 | `ingest-b` |
 | An upload is parsed, screened and stored inside its request, which nginx holds for 600 s. An export too large for that needs a job of its own, with its state readable by the views. | 2041 | `ingest-b`, `views-b` |
@@ -264,6 +263,7 @@ A point that a later lane resolves leaves the table above and is listed here wit
 | Point | Spec lines | Resolved by |
 |---|---|---|
 | Contradiction reasons lacked a value-id column. | 2087, 2199, 3133 | `beliefs`: `why` is a HistoryValue ID; `docs/belief-writer.md` |
+| Typed belief transitions and one-step undo replace the former blanket refusal. Generic item mutations still refuse belief targets. | 1809, 1811 | `beliefs`: `grove.writer.beliefs`, typed replay, and actual-operation inverse and restore tests in `tests/belief_history` |
 | Correlated second-opinion acceptance for D9. | 1839 to 1842, 3165 | `beliefs`: two distinct ModelCall IDs; distinct models or explicit correlated fallback; `docs/belief-writer.md` |
 | The names of the verification bands. | 957 | `truth-clock`: S52 |
 | The verdicts of a judge call have no writer. | 996, 3121 | `truth-clock` and `ontology`: `server/grove/writer/judgments.py`, called only by the model-call layer (`server/grove/models/verify_judge.py`, the claims of D4; `server/grove/models/judge.py`, the words of D8) |

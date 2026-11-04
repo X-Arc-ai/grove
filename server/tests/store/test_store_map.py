@@ -144,7 +144,6 @@ def test_the_open_points_of_review_round_one():
     points = hand_written().split("## Open points for later lanes", 1)[1].split("\n## ", 1)[0]
     for phrase in (
         "The value index must gain the status words",
-        "`why` of a contradiction from `grove.cleanup.v1`",
         "never from the installed package",
         "`GROVE_ENV=production` must be set on the box",
         "D3's restore has not run on this store",
@@ -152,6 +151,20 @@ def test_the_open_points_of_review_round_one():
         "`history_values.forgotten_at`, `budgets.spent`",
     ):
         assert phrase in points, phrase
+
+
+def test_belief_reason_storage_and_undo_move_to_resolved_points():
+    points = hand_written().split("## Open points for later lanes", 1)[1].split("\n## ", 1)[0]
+    open_points, resolved = points.split("A point that a later lane resolves", 1)
+    assert "`why` of a contradiction from `grove.cleanup.v1`" not in open_points
+    assert (
+        "Belief items are refused by correct, refute, supersede, merge and undo" not in open_points
+    )
+    assert "`why` is a HistoryValue ID" in resolved
+    assert "Typed belief transitions and one-step undo" in resolved
+    contradiction = next(table for table in TABLES if table.name == "contradictions")
+    why = next(column for column in contradiction.columns if "why" in column.props)
+    assert why.type == "value_id"
 
 
 def test_the_open_points_hand_a_forgotten_items_map_position_to_forget():
