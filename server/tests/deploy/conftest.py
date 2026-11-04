@@ -4,6 +4,7 @@ docker, git, flock, nginx, systemctl, certbot, curl, chown and install that log 
 The scripts run unchanged: every path they touch moves through its GROVE_* variable.
 """
 
+import hashlib
 import json
 import os
 import shutil
@@ -25,7 +26,22 @@ OTHER_SHA = "fedcba9876543210fedcba9876543210fedcba98"
 NEO4J_IMAGE = "neo4j:test-community@sha256:" + "4" * 64
 FP = "a" * 64
 
-_FAKE_DOCKER = r"""
+_GATEWAY_HEALTH = r"""
+def gateway_ready():
+    # Model the real constructor's required secret independently of the preflight script.
+    from pathlib import Path
+    import os
+    path = Path(os.environ["GROVE_ETC"]) / "gateway.env"
+    if not path.is_file():
+        return False
+    values = [line.split("=", 1)[1] for line in path.read_text().splitlines()
+              if line.startswith("GROVE_GATEWAY_SECRET=")]
+    return len(values) == 1 and len(values[0].encode("utf-8")) >= 32
+"""
+
+_FAKE_DOCKER = (
+    _GATEWAY_HEALTH
+    + r"""
 import json, os, sys
 from pathlib import Path
 
@@ -68,6 +84,9 @@ if args[0] == "compose":
     while rest and rest[0].startswith("--"):
         rest = rest[2:]
     command = rest[0]
+    if command == "up" and "gateway" in rest and not gateway_ready():
+        print("synthetic gateway configuration unavailable", file=sys.stderr)
+        sys.exit(1)
     if command == "start" and "api" in rest and "FAKE_START_REFUSALS" in os.environ:
         # Real compose refuses while the store reports unhealthy, and starts nothing.
         counter = Path(os.environ["FAKE_STATE"]) / "start_refusals"
@@ -106,7 +125,8 @@ elif args[0] == "inspect":
     refused = "FAKE_START_REFUSALS" in os.environ and not Path(
         os.environ["FAKE_STATE"], "api_started"
     ).exists()
-    if args[-1] == unhealthy or (refused and args[-1] == "container-api"):
+    if (args[-1] == unhealthy or (refused and args[-1] == "container-api")
+            or (args[-1] == "container-gateway" and not gateway_ready())):
         print("unhealthy")
     else:
         print(os.environ.get("FAKE_HEALTH", "healthy"))
@@ -116,6 +136,7 @@ elif args[0] == "run" and "grove.store.dump_fingerprint" in args:
 elif args[0] == "run" and "load" in args:
     sys.stdin.buffer.read()
 """
+)
 
 _FAKE_GIT = r"""
 import os, shutil, sys
@@ -229,7 +250,9 @@ os.execv(os.environ["REAL_INSTALL"], ["install", *args])
 # only the networks reached by up/run, ordinary service replacement, and container orphans.
 # Compose v5.6.1 selects networks by their logical label before considering a renamed resource
 # (pkg/compose/observed_state.go:selectNetwork). A name-only change must not hide that match.
-_NETWORK_DRIVER = r"""
+_NETWORK_DRIVER = (
+    _GATEWAY_HEALTH
+    + r"""
 import json, os, sys
 from pathlib import Path
 import yaml
@@ -312,7 +335,8 @@ def network_start(state, config, service, build):
     if service == "neo4j" and service in state["containers"]:
         return
     network_remove_container(state, service)
-    state["containers"][service] = {"build": build, "running": True, "healthy": True,
+    healthy = service != "gateway" or gateway_ready()
+    state["containers"][service] = {"build": build, "running": healthy, "healthy": healthy,
                                     "networks": names}
     for name in names:
         state["networks"][name]["endpoints"].append(service)
@@ -361,6 +385,8 @@ def network_docker(args):
         services = [word for word in rest[1:] if word in config["services"]]
         for service in services:
             network_start(state, config, service, build)
+        if "gateway" in services and not network_alive(state, "gateway"):
+            network_error(state, "synthetic gateway configuration unavailable")
         if "api" in services and os.environ.get("FAKE_NETWORK_FAILURE") == "start":
             state["containers"]["api"]["healthy"] = False
             network_error(state, "synthetic target API unhealthy")
@@ -368,6 +394,7 @@ def network_docker(args):
         return True
     raise AssertionError("unexpected compose operation in network regression: " + command)
 """
+)
 
 
 def _write_fake(bin_dir: Path, name: str, source: str) -> None:
@@ -459,7 +486,11 @@ class Box:
             service.get("depends_on", {}).pop("gateway", None)
         (old / "compose.yml").write_text(yaml.safe_dump(config, sort_keys=False))
         apply = old / "apply.sh"
-        apply.write_text(apply.read_text().replace("api gateway runner", "api runner"))
+        apply.write_text(
+            apply.read_text()
+            .replace("api gateway runner", "api runner")
+            .replace('GROVE_ETC_DIR="$GROVE_ETC" "$here/runner-secrets.sh" --check\n', "")
+        )
         template = old / "nginx" / "grove-https.conf.template"
         template.write_text(template.read_text() + "\n# synthetic legacy revision\n")
         shutil.copytree(old, self.src / "deploy", dirs_exist_ok=True)
@@ -523,10 +554,15 @@ def box(tmp_path: Path) -> Box:
     live.mkdir(parents=True)
     (live / "fullchain.pem").write_text("certificate\n")
 
+    token = "synthetic-runner-" + "r" * 32
     files = {
         "api.env": f"GROVE_PUBLIC_BASE_URL={BASE}\n",
         "neo4j.env": "NEO4J_AUTH=neo4j/not-a-real-password\n",
-        "runner.env": "# no token\n",
+        "runner.env": f"GROVE_RUNNER_TOKEN={token}\n",
+        "runner-auth.env": "GROVE_RUNNER_TOKEN_SHA256="
+        + hashlib.sha256(token.encode()).hexdigest()
+        + "\n",
+        "gateway.env": "GROVE_GATEWAY_SECRET=" + "g" * 64 + "\n",
         "google-oauth.json": json.dumps({"web": {}}),
     }
     for name, text in files.items():
