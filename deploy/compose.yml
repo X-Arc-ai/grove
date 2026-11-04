@@ -87,7 +87,7 @@ services:
     # nginx on the host is the only way in.
     ports:
       - "127.0.0.1:8000:8000"
-    networks: [store, runner, egress]
+    networks: [store, runner_v2, egress]
     read_only: true
     # An upload past 8 MiB spools to /tmp, one at a time, up to 256 MiB. The size holds it, and
     # keeps a runaway write from taking half the box's memory, the tmpfs default.
@@ -132,7 +132,7 @@ services:
       # and every call needs a run token signed with GROVE_GATEWAY_SECRET.
       GROVE_GATEWAY_HOST: 0.0.0.0
       GROVE_GATEWAY_PORT: "18300"
-    networks: [store, runner, egress]
+    networks: [store, runner_v2, egress]
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]
@@ -173,7 +173,7 @@ services:
     volumes:
       - /var/lib/grove-runner:/var/lib/grove-runner
     # The runner network is internal: the runner reaches the API and the gateway and nothing else.
-    networks: [runner]
+    networks: [runner_v2]
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     depends_on:
@@ -186,7 +186,10 @@ services:
 networks:
   store:
     internal: true
-  runner:
+  # A distinct logical key and Docker name keep the legacy grove_runner network available
+  # during migration and rollback. Changing only its name can still match the old Compose label.
+  runner_v2:
+    name: grove_runner_v2
     internal: true
     driver_opts:
       # A stable interface name for a host firewall rule (at most 15 characters).

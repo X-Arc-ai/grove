@@ -12,9 +12,9 @@ runs the compose project `grove` from `deploy/compose.yml`.
 | Service | What it is | Network | Runs as |
 |---|---|---|---|
 | `neo4j` | Neo4j Community, the pin of `docker-compose.dev.yml`. Heap 1 GB, page cache 512 MB, Cypher 25 by default. Data in the volume `grove-neo4j-data`. | `store` (internal) | the image's user |
-| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body; only `/v1/sources/upload` takes up to 256 MiB, with no request buffering (uploads, below). Read-only root file system; `/tmp` is a tmpfs of 320 MiB. A memory limit of 4 GB, with no swap past it. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
-| `gateway` | The model gateway, `python -m grove.models.gateway` from the API's image (`docs/models.md`, the gateway). It holds the model keys and `GROVE_GATEWAY_SECRET`, and writes each call to `model_calls`. It listens on port 18300 of its networks (`GROVE_GATEWAY_HOST=0.0.0.0`, since the runner's container cannot reach a loopback address) and publishes no port; every call needs a run token signed with `GROVE_GATEWAY_SECRET`. Read-only root file system. | `store`, `runner`, `egress` | uid 10001 `grove-api` |
-| `runner` | The runner loop, `python -m grove.runner`: it asks the API for due work and runs each pass in OpenCode 1.18.32 against the gateway (`GROVE_GATEWAY_URL=http://gateway:18300/v1`), with the config and the agents of the repo's `runner/` folder (`/opt/grove/runner` in the image). OpenCode is checked against its release checksum, runs with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`, and has no plugin. | `runner` (internal) | uid 10002 `grove-runner` |
+| `api` | FastAPI and uvicorn, `grove.api.app:create_app`. `GROVE_ENV=production`. Listens on `127.0.0.1:8000` only; nginx is the only way in, with a 10 MB limit on a request body; only `/v1/sources/upload` takes up to 256 MiB, with no request buffering (uploads, below). Read-only root file system; `/tmp` is a tmpfs of 320 MiB. A memory limit of 4 GB, with no swap past it. | `store`, `runner_v2`, `egress` | uid 10001 `grove-api` |
+| `gateway` | The model gateway, `python -m grove.models.gateway` from the API's image (`docs/models.md`, the gateway). It holds the model keys and `GROVE_GATEWAY_SECRET`, and writes each call to `model_calls`. It listens on port 18300 of its networks (`GROVE_GATEWAY_HOST=0.0.0.0`, since the runner's container cannot reach a loopback address) and publishes no port; every call needs a run token signed with `GROVE_GATEWAY_SECRET`. Read-only root file system. | `store`, `runner_v2`, `egress` | uid 10001 `grove-api` |
+| `runner` | The runner loop, `python -m grove.runner`: it asks the API for due work and runs each pass in OpenCode 1.18.32 against the gateway (`GROVE_GATEWAY_URL=http://gateway:18300/v1`), with the config and the agents of the repo's `runner/` folder (`/opt/grove/runner` in the image). OpenCode is checked against its release checksum, runs with `OPENCODE_DISABLE_CLAUDE_CODE=1` and HOME `/var/lib/grove-runner`, and has no plugin. | `runner_v2` (internal) | uid 10002 `grove-runner` |
 
 An internal network has no route out. So the store reaches nothing but the API and the gateway,
 and the runner reaches the API, the gateway and no address outside the box: it holds no store
@@ -166,6 +166,34 @@ deploy/smoke.sh https://app.grove.x-arc.ai <sha>
 They check that `/healthz` answers ok for that build, that `/`, `/signin` and `/privacy` each answer with a page, that both metadata paths name
 `<base>/mcp` (also for `meta-webindexer/1.1`), and that an unauthenticated `/mcp` call gets 401 with
 the metadata URL.
+
+### Runner network transition
+
+The fixed bridge `grove-runner` uses logical network key `runner_v2` and Docker network name
+`grove_runner_v2`. Both identities differ from the earlier `runner` / `grove_runner` network.
+A change to the old network's bridge options caused Compose to refuse its active API and runner
+endpoints when it tried to create the migration container. A new Docker name alone is insufficient:
+Compose can still select the old resource through its logical network label.
+
+The separate network lets the migration container use the new topology while the old API and runner
+remain attached to the legacy network. Ordinary service replacement then moves the API, gateway,
+and runner to the new network. The store network, Neo4j container, data volumes, credential files,
+and both deploy locks retain their existing roles. The runner network stays internal, its bridge
+stays fixed, and the gateway publishes no port. Service DNS names remain `api` and `gateway`.
+
+Keep the legacy network for rollback. Deploys do not prune it. If network creation or migration
+fails before the target replaces services, the old endpoints remain connected and the existing
+checkout/host-file recovery still applies, including when the old deploy entrypoint starts the
+upgrade. A failure after target service replacement keeps the target marker and reports unhealthy
+services; it does not claim that the old build recovered. An explicit deploy of the old revision
+reuses the legacy network and removes the gateway container as an orphan when that revision has
+no gateway service. A same-SHA redeploy reuses the new network and preserves `previous.sha`.
+
+The deployment tests model network labels, names, options, active endpoints, and live container
+health with synthetic state. They cover the original refusal, a name-only negative control,
+pre-replacement recovery, unhealthy target services, repeated deployment, and rollback. Their
+health response comes from live simulated containers, independently of the SHA marker. These tests
+do not prove native Compose behavior or live host recovery; those remain deployment acceptance.
 
 ## Uploads and the screening files
 
