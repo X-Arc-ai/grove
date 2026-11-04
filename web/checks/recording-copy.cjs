@@ -146,7 +146,7 @@ check('Apple remains disabled without an unavailable label', () => {
 });
 check('Files and notes remain visible without simulated success', () => {
   const h = harness(), html = h.p.filesComposer();
-  clean(html); disabled(html, 'data-action="choose-files"'); disabled(html, 'data-action="write-note"');
+  clean(html); assert(html.includes('data-materials="sources"'), 'Live files and notes mount their durable service');
   h.p.handle('choose-files'); h.p.handle('write-note');
   assert.equal(h.p.ui.filePicker, false); assert.equal(h.p.ui.noteEditor, false);
   assert.deepEqual(h.calls, []); assert.deepEqual(h.state.files, {});
@@ -261,6 +261,27 @@ check('Denied provider action remains an error without connection success', asyn
   assert.deepEqual(h.calls, ['provider-request']);
   assert(root.innerHTML.includes('Connections are disabled for this prepared demo account'));
   assert(root.innerHTML.includes('Not connected')); assert(!root.innerHTML.includes('is-connected'));
+});
+check('A failed Gmail status read does not block a real authorization attempt', async () => {
+  const h = harness(), root = mountConnections(h); await settle();
+  h.live.getJSON = async () => ({ok:false,status:503,body:{error:{message:'Status read failed'}}});
+  root.querySelector('[data-pipedream-select]').click(); await settle();
+  assert.equal(root.querySelector('[data-pipedream-connect]').disabled, false);
+  let opened;
+  h.box.open = () => (opened = {closed:false,location:{},close(){this.closed=true;}});
+  h.live.postJSON = async url => {
+    h.calls.push(url);
+    return {ok:true,body:{account:h.state.account,provider:'synthetic',
+      connect_url:'https://pipedream.com/_static/connect.html?token=synthetic'}};
+  };
+  root.querySelector('[data-pipedream-connect]').click(); await settle();
+  assert.deepEqual(h.calls, ['/v1/views/pipedream/synthetic/connect']);
+  assert.equal(opened.location.href,'https://pipedream.com/_static/connect.html?token=synthetic');
+  assert(!root.innerHTML.includes('is-connected'));
+  h.live.getJSON = async () => ({ok:true,body:{account:h.state.account,configured:true,
+    providers:[{provider:'synthetic',status:'connected'}]}});
+  h.box.dispatchEvent({type:'focus'}); await settle();
+  assert(root.innerHTML.includes('is-connected'));
 });
 check('Late connection response cannot cross an account change', async () => {
   const h = harness(), root = mountConnections(h); await settle(); let resolve;

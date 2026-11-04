@@ -243,6 +243,7 @@
     return ns.length+es.length>0;
   }
   function getChanges(provider) {
+    if(LIVE&&window.GroveConversationPreview&&window.GroveConversationPreview.active())return provider&&provider!=='claude'?{new_nodes:[],new_edges:[]}:window.GroveConversationPreview.changes();
     if(LIVE)return provider?{new_nodes:[],new_edges:[]}:{new_nodes:clone(live.nodes.filter(function(n){return liveDelta.nodes.has(n.data.id);}).map(function(n){return n.data;})),new_edges:clone(live.edges.filter(function(e){return liveDelta.edges.has(liveEdgeId(e.data));}).map(function(e){return e.data;})),removed_nodes:liveDelta.removedNodes,removed_edges:liveDelta.removedEdges};
     if(!fixture)return {new_nodes:[],new_edges:[]};
     var graph=visibleElements(fixture),ids,edges;
@@ -307,7 +308,7 @@
     var sources = getSources(), counts = currentCounts();
     var all = LIVE ? live : fixture && fixture.elements ? fixture.elements : { nodes: [], edges: [] };
     var imported = sources.filter(function (s) { return s.status === 'ready'; }).length;
-    return {
+    var result = {
       version: VERSION, auth: clone(state.auth), account: state.account, name: state.name, onboardingComplete: state.onboardingComplete,
       onboardingStep: state.onboardingStep, tourComplete: state.tourComplete,
       mcpClients: clone(state.mcpClients), hostConnected: state.hostConnected, connectedHosts: state.connectedHosts.slice(),
@@ -319,6 +320,7 @@
       totalNodeCount: all.nodes.length, totalEdgeCount: all.edges.length,
       updatedAt: state.updatedAt, sources: sources,
     };
+    return LIVE&&window.GroveConversationPreview?window.GroveConversationPreview.project(result):result;
   }
 
   function announce() { window.dispatchEvent(new CustomEvent('grove:change', { detail: getState() })); }
@@ -431,6 +433,7 @@
   function answerRequest(id,answer){var r=state.requests.find(function(r){return r.id===id;});var text=String(answer||'').trim().slice(0,2000);if(!r||!text)return getState();r.answer=text;r.status='answered';r.answeredAt=new Date().toISOString();save();return getState();}
   // Live mode: the last graph payload goes too, so no item of the session stays in memory.
   function signOut(){
+    if(window.GroveConversationPreview)window.GroveConversationPreview.clear();
     if(LIVE){
       saveOnboardingPreference();verifiedAccount=null;
       reminderEpoch++;reminderRevision=-1;importEpoch++;
@@ -478,6 +481,7 @@
   function completeOnboarding() { state.onboardingComplete = true; save(); return getState(); }
   function completeTour() { state.tourComplete = true; save(); return getState(); }
   function resetOnboarding() {
+    if(window.GroveConversationPreview)window.GroveConversationPreview.clear();
     var before = currentCounts();
     verifiedAccount = null;
     if(LIVE){liveSession++;clearLiveSnapshot();live={selfId:null,nodes:[],edges:[]};}
@@ -614,6 +618,7 @@
   }
 
   window.groveApi = function (url) {
+    if(LIVE&&window.GroveConversationPreview&&window.GroveConversationPreview.active())return window.GroveConversationPreview.answer(url);
     if (LIVE) return liveApi(url);
     return fixturePromise.then(function (data) {
       fixture = data;
@@ -631,7 +636,7 @@
     // Live mode: true when no fixture is injected; realId maps a view id back to the item id
     // (the identity node to the self item, null when the identity node is the sim's own).
     isLive: function () { return LIVE; },
-    realId: function (id) { if (!LIVE || id == null) return null; return id === 'grove-self' ? live.selfId : String(id); },
+    realId: function (id) { if (!LIVE || id == null || (window.GroveConversationPreview&&window.GroveConversationPreview.active())) return null; return id === 'grove-self' ? live.selfId : String(id); },
   };
 
   fixturePromise.then(function(data){

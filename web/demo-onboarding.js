@@ -8,7 +8,7 @@
   var values = Object.create(null);
   values['grove-minimal-codex-v3'] = JSON.stringify({
     version: 3, schema: 4, auth: {provider: 'demo', email: ''}, name: 'Maya',
-    onboardingStep: start ? 1 : 0, onboardingComplete: start, tourComplete: start
+    onboardingStep: start ? 1 : 0, onboardingComplete: false, tourComplete: false
   });
   window.GroveDemo = Object.freeze({
     storage: Object.freeze({

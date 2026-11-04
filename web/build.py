@@ -75,9 +75,14 @@ def css(match):
 
 def script(match, demo=False):
     name = Path(match[1]).name
-    if demo and name in {"live.js", "pipedream.js"}:
+    if demo and name in {"live.js", "pipedream.js", "conversation-preview.js"}:
         return ""
     text = (ROOT / match[1].removeprefix("./")).read_text(encoding="utf-8")
+    if name == "conversation-preview.js":
+        data = json.loads((ROOT / "demo.synthetic.json").read_text(encoding="utf-8"))
+        payload = "window.GroveClaudePreviewData=" + json.dumps(data).replace("<", "\\u003c") + ";"
+        url = emit_asset(payload.encode("utf-8"), ".js", "text/javascript")
+        text = "GroveDeferred.register('claude-preview'," + json.dumps(url) + ");\n" + text
     if name in DEFERRED:
         url = emit_asset(text.encode("utf-8"), ".js", "text/javascript")
         return "<script>GroveDeferred.register(" + json.dumps(DEFERRED[name]) + "," + json.dumps(url) + ");</script>"

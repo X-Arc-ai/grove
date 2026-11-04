@@ -3,7 +3,7 @@
 (function () {
   'use strict';
   var labels={connected:'Connected',not_connected:'Not connected',attention:'Reconnect required',unavailable:'Status needs a check',checking:'Check in progress'};
-  var instances=new Set();
+  var instances=new Set(), returns=new Set();
   function account(){var s=window.GroveSimulation.getState();return s.auth?s.account:null;}
   function esc(v){return String(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
   function slug(v){return typeof v==='string'&&/^[a-z0-9][a-z0-9_-]{0,119}$/.test(v);}
@@ -19,7 +19,9 @@
     function details(){
       if(!selected)return '';
       var status=states[selected.provider]||'checking';
-      var action=status==='connected'?'<button type="button" class="gp-small" data-pipedream-disconnect="'+selected.provider+'" '+(busy?'disabled':'')+'>Disconnect</button>':'<button type="button" class="gp-small" data-pipedream-connect="'+selected.provider+'" '+(!configured||busy||status==='checking'||status==='unavailable'?'disabled':'')+'>'+esc(status==='attention'?'Reconnect ':'Connect ')+esc(selected.name)+'</button>';
+      // A failed status read must not prevent a new consent attempt. The Connect
+      // endpoint validates configuration and account ownership independently.
+      var action=status==='connected'?'<button type="button" class="gp-small" data-pipedream-disconnect="'+selected.provider+'" '+(busy?'disabled':'')+'>Disconnect</button>':'<button type="button" class="gp-small" data-pipedream-connect="'+selected.provider+'" '+(!configured||busy||status==='checking'?'disabled':'')+'>'+esc(status==='attention'?'Reconnect ':'Connect ')+esc(selected.name)+'</button>';
       var dialog=confirm?'<section class="gp-pipedream-confirm" role="alertdialog" aria-modal="false" aria-label="Disconnect '+esc(selected.name)+'?"><h3>Disconnect '+esc(selected.name)+'?</h3><p>This removes this account connection. It does not remove existing Grove memories.</p><button type="button" class="gp-small" data-pipedream-cancel '+(busy?'disabled':'')+'>Cancel</button><button type="button" class="gp-small gp-danger" data-pipedream-confirm '+(busy?'disabled':'')+'>Disconnect '+esc(selected.name)+'</button></section>':'';
       return '<section class="gp-pipedream-detail"><button type="button" class="gp-text" data-pipedream-back '+(busy?'disabled':'')+'>All apps</button><div class="gp-setting-row"><span><strong>'+esc(selected.name)+'</strong><small data-pipedream-status="'+selected.provider+'">'+esc(labels[status])+'</small></span>'+action+'</div>'+dialog+'</section>';
     }
@@ -105,12 +107,15 @@
       generation++;catalogRequest++;statusRequest++;clearTimeout(timer);
       if(popup&&!popup.closed)popup.close();
       apps=[];states={};selected=null;configured=false;busy=false;confirm=false;next=null;total=null;query='';
+      returns.delete(onReturn);
       if(!root.isConnected){instances.delete(reset);return;}
       owner=null;note='Your account changed. Reload Grove.';paint();
     }
     root.addEventListener('keydown',function(event){if(event.key==='Escape'&&confirm){event.stopPropagation();if(!busy){confirm=false;paint();}}});
-    instances.add(reset);paint();loadCatalog(false);refresh();
+    function onReturn(){if(popup&&!busy&&current(generation))refresh();}
+    instances.add(reset);returns.add(onReturn);paint();loadCatalog(false);refresh();
   });}
   ['grove:change','grove:unauthenticated','grove:session-changed'].forEach(function(event){window.addEventListener(event,function(){instances.forEach(function(reset){reset(event!=='grove:change');});});});
+  window.addEventListener('focus',function(){returns.forEach(function(refresh){refresh();});});
   window.GrovePipedream={mount:mount};
 }());
