@@ -12,9 +12,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, Depends, Request
+from starlette.concurrency import run_in_threadpool
 
 from grove.api.errors import ApiError, invalid_arguments, unavailable
 from grove.api.session import current_session
+from grove.demo_policy import is_demo_world
 from grove.views.session import ViewSession
 
 PREFIX = "/v1/views/pipedream"
@@ -182,6 +184,10 @@ async def connect(
     provider: str, request: Request, session: Session, client: Http
 ) -> dict[str, Any]:
     provider = _provider(provider)
+    # Designation is persisted and can only be created with a fresh account. Its absence
+    # cannot turn into designation during this request through an ordinary account update.
+    if await run_in_threadpool(is_demo_world, request.app.state.driver, session.world_id):
+        raise ApiError(403, "scope_denied", "This account cannot connect external apps.")
     base = request.app.state.settings.public_base_url
     if request.headers.get("origin", base) != base:
         raise ApiError(403, "forbidden", "Open connections from Grove.")

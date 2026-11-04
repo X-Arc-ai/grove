@@ -1,20 +1,27 @@
 """Controlled Pipedream transport; no real account, credential or provider call."""
 
 import json
+from datetime import timedelta
+from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from grove import clock
 from grove.api import pipedream
 from grove.api.app import create_app
 from grove.api.config import ApiSettings
 from grove.api.session import current_session
-from grove.views.session import ViewSession
+from grove.views.session import SESSION_COOKIE, ViewSession, token_hash
+from grove.writer.accounts import create_session, email_hash, ensure_demo_account
+from grove.writer.testing import purge_test_account, purge_test_world
+from tests.auth.conftest import Accounts
 
 
 @pytest.fixture
 def setup(monkeypatch):
+    monkeypatch.setattr(pipedream, "is_demo_world", lambda driver, world_id: False)
     for key, value in {
         "PROJECT_ID": "proj_test",
         "CLIENT_ID": "test-client",
@@ -52,7 +59,6 @@ def setup(monkeypatch):
             yield client
 
     app = create_app(ApiSettings("https://grove.example"), driver=object())
-    app.include_router(pipedream.router)
     app.dependency_overrides[current_session] = lambda: session
     app.dependency_overrides[pipedream.http_client] = http
     client = TestClient(app)
@@ -197,3 +203,58 @@ def test_foreign_app_response_is_not_accepted(setup):
     client, _, _, _, responses = setup
     responses["gmail"] = [{"app": {"name_slug": "notion"}, "healthy": True}]
     assert client.get(pipedream.PREFIX + "/accounts").status_code == 503
+
+
+def test_persisted_designation_refuses_all_connect_tokens_without_runtime_config(
+    driver, migrated, monkeypatch
+):
+    made = Accounts()
+    hashed = email_hash(made.address())
+    monkeypatch.setenv("GROVE_DEMO_EMAIL_HASH", hashed)
+    calls = []
+
+    def transport(request):
+        calls.append(request)
+        raise AssertionError("A designated world must not call Pipedream")
+
+    async def http():
+        async with httpx.AsyncClient(
+            base_url=pipedream.API_BASE, transport=httpx.MockTransport(transport)
+        ) as upstream:
+            yield upstream
+
+    try:
+        account = ensure_demo_account(driver, hashed, world_id_for=made.world_id_for)
+        token = "pipedream-test-" + uuid4().hex
+        create_session(
+            driver,
+            account.user_id,
+            token_hash(token),
+            method="email",
+            expires_at=clock.now() + timedelta(minutes=5),
+        )
+        # Persisted designation must still refuse after runtime demo settings are removed.
+        monkeypatch.delenv("GROVE_DEMO_EMAIL_HASH")
+        monkeypatch.delenv("GROVE_DEMO_GUARD_FILE", raising=False)
+        for key, value in {
+            "PROJECT_ID": "proj_test",
+            "CLIENT_ID": "test-client",
+            "CLIENT_SECRET": "test-secret",
+            "ENVIRONMENT": "production",
+        }.items():
+            monkeypatch.setenv("PIPEDREAM_" + key, value)
+        app = create_app(ApiSettings("https://grove.example"), driver=driver)
+        app.dependency_overrides[pipedream.http_client] = http
+        client = TestClient(app)
+        client.cookies.set(SESSION_COOKIE, token)
+        assert client.get("/v1/views/session").json()["account"] == account.user_id
+        for provider in pipedream.PROVIDERS:
+            response = client.post(pipedream.PREFIX + f"/{provider}/connect", json={})
+            assert response.status_code == 403
+            assert response.json()["error"]["code"] == "scope_denied"
+        assert calls == []
+    finally:
+        for world in made.worlds:
+            purge_test_world(driver, world)
+        for value in made.hashes:
+            purge_test_account(driver, value)
