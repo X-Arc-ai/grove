@@ -29,6 +29,7 @@ from grove.writer.clocks import (
 from grove.writer.declines import write_override_row
 from grove.writer.errors import BatchDeclined, Refusal, Refused
 from grove.writer.history import Stamp, add_entry, add_text, compact, row_json
+from grove.writer.message_binding import check_reused_evidence
 from grove.writer.neardup import MAX_CANDIDATES_SHOWN, threshold_for
 from grove.writer.ops import is_temp, op_label, temp_refs
 from grove.writer.provenance import OBSERVATION_COLUMNS, resolve_observation
@@ -289,6 +290,7 @@ def _existing_evidence(run: _Run, evidence_id: str) -> dict[str, Any]:
             {"evidence_id": evidence_id},
         )
     row = rows[0]["e"]
+    check_reused_evidence(run, [row])
     check_calendar_confirmation(run, row)
     columns = {key: row.get(key) for key in OBSERVATION_COLUMNS}
     columns["premises"] = list(columns.get("premises") or [])
@@ -338,6 +340,7 @@ def _settle(run: _Run, plans: list[_Plan], target_id: str) -> None:
         same = run.tx.run(_SAME_EVIDENCE, key=key[0], target=target_id, polarity=plan.polarity)
         if same:
             row = same[0]["e"]
+            check_reused_evidence(run, [row])
             check_calendar_confirmation(run, row)
             plan.id, plan.known = row["id"], True
             run.cited_evidence.append(row)
@@ -1729,6 +1732,7 @@ def _rolled_up_from_parts(run: _Run, item_id: str, premises: list[str]) -> bool:
     )
     if len(rows) != len(set(premises)):
         return False
+    check_reused_evidence(run, [row["evidence"] for row in rows])
     for row in rows:
         check_calendar_confirmation(run, row["evidence"])
         if not (
@@ -1768,6 +1772,7 @@ def _confirmed_in_batch(run: _Run, item_id: str) -> bool:
 
 def _recompute(run: _Run, target_id: str, target_type: str) -> None:
     rows = [row["e"] for row in run.tx.run(_SUPPORTING, id=target_id)]
+    check_reused_evidence(run, rows)
     fields = claim_fields(rows)
     if target_type == "link":
         fields = {key: fields[key] for key in ("derived_source_type", "derivation")}
