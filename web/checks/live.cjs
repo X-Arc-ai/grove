@@ -125,6 +125,9 @@ function page(server,store,files,hook,size,prepare){
 const GRAPH_FILES=['live.js','layout-keep.js','simulation.js','native-app.js'];
 const positionsCalls=server=>server.calls.filter(c=>c.path==='/v1/views/positions');
 const fgPositions=pg=>Object.fromEntries(pg.sandbox.GroveView.nodes().map(n=>[n.id,{x:n.x,y:n.y}]));
+// The visual projection is independent of the insert-only stored map.
+const placedPositions=pg=>JSON.parse(JSON.stringify(pg.sandbox.__mapState().livePlaced));
+const assertFiniteMap=(map,ids,label)=>{assert.deepStrictEqual(Object.keys(map).sort(),[...ids].sort(),label+': complete');for(const at of Object.values(map))assert(Number.isFinite(at.x)&&Number.isFinite(at.y),label+': finite');};
 // What drawNode really draws for a node: the first disc's radius, its ring colour and ring weight.
 function drawnLook(pg,node){
   const look={};
@@ -164,7 +167,7 @@ function legendRows(elements){
     assert.equal(G.errorText({error:{code:'not_found',message:'No such item'}}),'No such item');
   }
 
-  // 2. A first visit: the map is the sim's layout of the graph, saved once, the self item under its real id.
+  // 2. A first visit: the original stored layout saves once under real ids, independently of the complete finite display projection.
   const world=liveWorld(),server=makeServer(world),store={};
   const first=page(server,store,GRAPH_FILES);await settle();
   assert.deepStrictEqual(first.errors,[],'The live page renders without errors');
@@ -181,7 +184,10 @@ function legendRows(elements){
   assert.deepStrictEqual([...sentIds].sort(),world.nodes.map(n=>n.id).sort(),'Every item is saved under its real id');
   assert(!sentIds.includes('grove-self'));
   const firstMap=fgPositions(first);
-  for(const p of posts[0].body.positions){const view=p.id==='p001'?'grove-self':p.id;assert(firstMap[view].x===p.x&&firstMap[view].y===p.y,'The saved position is the drawn one: '+p.id);}
+  const firstPlaced=placedPositions(first);
+  assertFiniteMap(firstMap,firstNodes.map(n=>n.id),'Initial display');
+  assertFiniteMap(firstPlaced,firstNodes.map(n=>n.id),'Initial stored map');
+  for(const p of posts[0].body.positions){const view=p.id==='p001'?'grove-self':p.id;assert(firstPlaced[view].x===p.x&&firstPlaced[view].y===p.y,'The saved position is the placeNew result: '+p.id);}
   // Kinds: organisation and plan are hubs (pinned, mass-sized); the legend lists every kind by its own name.
   const org=firstNodes.find(n=>n.type==='organisation'),plan=firstNodes.find(n=>n.type==='plan'),place=firstNodes.find(n=>n.type==='place');
   assert(org.fx!=null&&org._hubR&&plan.fx!=null&&plan._hubR,'organisation and plan are hubs');assert(place.fx==null,'place is not a hub');
@@ -209,14 +215,15 @@ function legendRows(elements){
   assert.deepStrictEqual(reload.errors,[]);assert.equal(positionsCalls(server).length,1,'A reload saves nothing');
   assert.deepStrictEqual(fgPositions(reload),firstMap,'A reload keeps every position');
 
-  // 4. New items arrive: the old ones keep their positions; only the new ones are saved.
+  // 4. New items arrive: old stored positions stay exact; only new ones save; the display can re-project the changed adjacency.
   const fresh=[{id:'n-org',label:'Wrenfield Cooperative',type:'organisation'},{id:'n-t1',label:'Plan the cooperative fair',type:'task'},{id:'n-t2',label:'Order the fair banners',type:'task'},{id:'n-t3',label:'Book the fair hall',type:'task'},{id:'n-t4',label:'Proof the spring catalogue',type:'task'},{id:'n-e1',label:'Open studio day',type:'event'},{id:'n-o1',label:'Noticed a longer queue at the fair',type:'observation'}];
   fresh.forEach(n=>world.nodes.push(Object.assign({},world.nodes[1],n,{summary:''})));
   world.edges.push({id:'rn1',source:'n-t1',target:'n-org',verb:'part of',label:'part of'},{id:'rn2',source:'n-t2',target:'n-org',verb:'part of',label:'part of'},{id:'rn3',source:'n-t3',target:'n-org',verb:'part of',label:'part of'},{id:'rn4',source:'n-t4',target:'pr001',verb:'part of',label:'part of'},{id:'rn5',source:'n-o1',target:'p012',verb:'about',label:'about'});
   const grown=page(server,store,GRAPH_FILES);await settle();
   assert.deepStrictEqual(grown.errors,[]);
-  const grownMap=fgPositions(grown);
-  for(const id of Object.keys(firstMap))assert(grownMap[id].x===firstMap[id].x&&grownMap[id].y===firstMap[id].y,'An arrival never moves a placed item: '+id);
+  assertFiniteMap(fgPositions(grown),grown.sandbox.GroveView.nodes().map(n=>n.id),'Display after arrival');
+  const grownMap=placedPositions(grown);
+  for(const id of Object.keys(firstPlaced))assert(grownMap[id].x===firstPlaced[id].x&&grownMap[id].y===firstPlaced[id].y,'An arrival never moves a stored item: '+id);
   posts=positionsCalls(server);assert.equal(posts.length,2);
   assert.deepStrictEqual(posts[1].body.positions.map(p=>p.id).sort(),fresh.map(n=>n.id).sort(),'Only the new items are saved');
   const tFair=grownMap['n-t1'],hub=grownMap['n-org'];assert(Math.hypot(tFair.x-hub.x,tFair.y-hub.y)<600,'A new task sits near its new hub');
@@ -231,11 +238,11 @@ function legendRows(elements){
   assert.deepStrictEqual(failing.errors,[],'A failed save does not break rendering');
   assert.equal(failing.sandbox.GroveView.nodes().length,world2.nodes.length);assert(failing.elements.loading.classList.contains('hidden'),'The map finished loading');
   assert.equal(positionsCalls(server2).length,1);assert(failing.warnings.length>=1,'The failed save is reported');
-  const failedMap=fgPositions(failing);world2.failPositions=false;
+  const failedMap=placedPositions(failing);world2.failPositions=false;
   await failing.sandbox.reloadGrove();await settle();
   const retry=positionsCalls(server2);assert.equal(retry.length,2,'The next load retries the save');
   assert.deepStrictEqual(retry[1].body.positions.map(p=>p.id).sort(),world2.nodes.map(n=>n.id).sort());
-  for(const p of retry[1].body.positions)assert(p.x===failedMap[p.id].x&&p.y===failedMap[p.id].y,'The retry saves the positions on screen');
+  for(const p of retry[1].body.positions)assert(p.x===failedMap[p.id].x&&p.y===failedMap[p.id].y,'The retry saves the original stored placements');
   // No self item: the sim's identity node joins once onboarding starts, and is never saved.
   // With no name known, the identity node says You (the sim's example name is fixture mode only).
   const S2=failing.sandbox.GroveSimulation;S2.setStep(1);await failing.sandbox.reloadGrove();await settle();
@@ -565,19 +572,19 @@ function legendRows(elements){
     const alone=await sessionPage(secondWorld()),expected=fgPositions(alone.pg),expectedSave=positionsCalls(alone.sv)[0].body.positions;
     const w=liveWorld();w.holdPositions=[];
     const t=await sessionPage(w),sv=t.sv;assertSignedIn(t,label+', first person');
-    const ended=fgPositions(t.pg),firstWorld={nodes:w.nodes};
+    const ended=placedPositions(t.pg),firstWorld={nodes:w.nodes};
     const oldSave=w.holdPositions;w.holdPositions=null;assert.equal(oldSave.length,1,label+': the first save is out');
     w.holdGraph=[];t.pg.sandbox.reloadGrove();await settle();
     const oldRead=w.holdGraph;w.holdGraph=null;assert.equal(oldRead.length,1,label+': a graph read is out');
     await endWithNodeDetail(t);assertCleared(t,label+', the session ended');assert.equal(t.heard(),1);
     Object.assign(w,secondWorld(),{session:false,nodeStatus:0});
     const secondStored=Object.assign({},w.positions),stays=w.nodes.map(n=>n.id).filter(id=>!secondStored[id]);
-    assert(stays.length&&stays.every(id=>Math.hypot(ended[viewId(id)].x-expected[viewId(id)].x,ended[viewId(id)].y-expected[viewId(id)].y)>1),'The two worlds place the same ids apart');
+    assert(stays.length&&stays.every(id=>Math.hypot(ended[viewId(id)].x-placedPositions(alone.pg)[viewId(id)].x,ended[viewId(id)].y-placedPositions(alone.pg)[viewId(id)].y)>1),'The two worlds place the same ids apart');
     const saves=positionsCalls(sv).length;
     await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');await settle();
     assertSignedIn(t,label+', second person');assert.equal(t.heard(),1);
     assert.deepStrictEqual(fgPositions(t.pg),expected,label+': the new map is that of a page of its own');
-    for(const id of Object.keys(secondStored))assert.deepStrictEqual(fgPositions(t.pg)[viewId(id)],secondStored[id],label+': a stored place is kept');
+    for(const id of Object.keys(secondStored))assert.deepStrictEqual(placedPositions(t.pg)[viewId(id)],secondStored[id],label+': a stored place is kept');
     assert.equal(positionsCalls(sv).length,saves+1,label+': the new session saves its new items');
     assert.deepStrictEqual(positionsCalls(sv)[saves].body.positions,expectedSave,label+': the save holds the new map');
     for(const p of expectedSave)assert.deepStrictEqual(w.positions[p.id],{x:p.x,y:p.y},label+': the save lands in the new world');
@@ -680,18 +687,18 @@ function legendRows(elements){
     const out=liveWorld();Object.assign(out,{session:false,graphStatus:401});const older={[HIDDEN_KEY]:'{"recipe":1}'};
     await sessionPage(out,older);assert(!(HIDDEN_KEY in older),'A signed-out page drops an older list of hidden kinds');
   }
-  // 6m. A failed save, then new items, then the retry: the retry saves where the items are drawn,
+  // 6m. A failed save, then new items, then the retry: the retry preserves the original stored placements,
   //     not a fresh layout of the bigger graph, and a later page load moves nothing.
   {
     const w=liveWorld();w.failPositions=true;
     const sv=makeServer(w),st=signedInStore(),pg=page(sv,st,GRAPH_FILES);await settle();
-    const drawn=fgPositions(pg);assert.equal(positionsCalls(sv).length,1,'The first save goes out');
+    const drawn=placedPositions(pg);assert.equal(positionsCalls(sv).length,1,'The first save goes out');
     const newcomers=[];for(let i=0;i<40;i++){const id='late-'+i;newcomers.push(id);w.nodes.push(Object.assign({},w.nodes[1],{id,label:'Late arrival '+i,type:'task',summary:''}));w.edges.push({id:'late-e'+i,source:id,target:'c001',verb:'part of',label:'part of'});}
     w.failPositions=false;await pg.sandbox.reloadGrove();await settle();
     const retry=positionsCalls(sv);assert.equal(retry.length,2,'The next load saves again');
     const saved=Object.fromEntries(retry[1].body.positions.map(q=>[q.id,q]));
     assert.equal(Object.keys(saved).length,w.nodes.length,'The retry saves every item');
-    for(const [id,at] of Object.entries(drawn)){const q=saved[id==='grove-self'?'p001':id];assert(q&&q.x===at.x&&q.y===at.y,'The retry saves the drawn place of '+id);}
+    for(const [id,at] of Object.entries(drawn)){const q=saved[id==='grove-self'?'p001':id];assert(q&&q.x===at.x&&q.y===at.y,'The retry saves the original stored place of '+id);}
     const seen=fgPositions(pg),later=page(sv,st,GRAPH_FILES);await settle();
     assert.deepStrictEqual(fgPositions(later),seen,'A later page load moves nothing');
     assert.equal(positionsCalls(sv).length,2,'A later page load saves nothing');
@@ -800,35 +807,31 @@ function legendRows(elements){
     }
     assert(exact>=4,'Some new leaves find their spot free: '+exact);
   }
-  // 6u. No new home lies inside a drawn disc: not on arrival, and not later, when a hub has grown
-  //     (or an ended hub, drawn small, comes back) while the placed item stays where it is. No home
-  //     lies inside the identity disc either, at the zooms that frame a large world.
+  // 6u. The insert-only map reserves the original hub and identity discs even
+  //     when the display uses a separate compact projection.
   {
-    const w=liveWorld(),sv=makeServer(w),st=signedInStore(),first=page(sv,st,GRAPH_FILES);await settle();
-    const base=fgPositions(first),hubs=()=>first.sandbox.GroveView.nodes();
-    const ended=hubs().find(n=>n._demoted);assert(ended,'The world has an ended hub');assert.equal(drawnLook(first,Object.assign({},ended,{__born:0})).radius,18,'An ended hub draws small');
-    // Two placed leaves on either side of it: a new item linked to both aims at its centre.
-    const leafIds=hubs().filter(n=>!/organisation|plan/.test(n.type)&&n.id!=='grove-self').map(n=>n.id);
+    const w=liveWorld(),sv=makeServer(w),st=signedInStore();
+    const capture=async()=>{const pg=page(sv,st,GRAPH_FILES),calls=[],place=pg.sandbox.GroveLayoutKeep.placeNew;pg.sandbox.GroveLayoutKeep.placeNew=(...a)=>{const out=place(...a);calls.push({items:a[1],room:a[4],out});return out;};await settle();assert.equal(calls.length,1);return {pg,...calls[0]};};
+    const first=await capture(),base=first.out.positions;
+    const ended=first.items.find(n=>n._demoted);assert(ended,'The stored seed has an ended hub');
+    const leafIds=first.items.filter(n=>!/organisation|plan/.test(n.type)&&n.id!=='grove-self').map(n=>n.id);
     let pair=null,best=Infinity;
-    for(const a of leafIds)for(const b of leafIds){if(a>=b)continue;const d=Math.hypot((base[a].x+base[b].x)/2-ended.x,(base[a].y+base[b].y)/2-ended.y);if(d<best){best=d;pair=[a,b];}}
+    for(const a of leafIds)for(const b of leafIds){if(a>=b)continue;const d=Math.hypot((base[a].x+base[b].x)/2-base[ended.id].x,(base[a].y+base[b].y)/2-base[ended.id].y);if(d<best){best=d;pair=[a,b];}}
     const addLeaf=(id,type,targets)=>{w.nodes.push(Object.assign({},w.nodes[1],{id,label:'New '+id,type,status:'',summary:''}));targets.forEach((target,i)=>w.edges.push({id:id+'-e'+i,source:id,target,verb:'related to',label:'related to'}));};
-    addLeaf('aimed-at-hub','observation',pair);
-    addLeaf('aimed-at-self','observation',['p001']);
-    const arrived=page(sv,st,GRAPH_FILES);await settle();
-    const home=(pg,id)=>{const n=pg.sandbox.GroveView.nodes().find(x=>x.id===id);return {x:n.__home?n.__home[0]:n.x,y:n.__home?n.__home[1]:n.y};};
-    const insideAny=(pg,ids)=>{const out=[];for(const id of ids){const q=home(pg,id);for(const h of pg.sandbox.GroveView.nodes()){if(!/organisation|plan/.test(h.type))continue;const r=drawnLook(pg,Object.assign({},h,{__born:0})).radius,d=Math.hypot(q.x-(h.fx!=null?h.fx:h.x),q.y-(h.fy!=null?h.fy:h.y));if(d<r)out.push(id+' in '+h.id+' ('+d.toFixed(1)+' < '+r+')');}}return out;};
-    assert.deepStrictEqual(insideAny(arrived,['aimed-at-hub','aimed-at-self']),[],'No new home lies in a drawn hub disc on arrival');
-    const self=home(arrived,'grove-self'),q=home(arrived,'aimed-at-self');
-    assert(Math.hypot(q.x-self.x,q.y-self.y)>=90,'A new home stays out of the identity disc at the zooms of a large world');
-    // The ended hub comes back and becomes the largest of all.
+    addLeaf('aimed-at-hub','observation',pair);addLeaf('aimed-at-self','observation',['p001']);
+    const arrived=await capture();
+    const insideAny=(snapshot,ids)=>{const out=[];for(const id of ids){const q=snapshot.out.positions[id];for(const h of snapshot.items){if(!/organisation|plan/.test(h.type))continue;const at=snapshot.out.positions[h.id],r=snapshot.room(h),d=Math.hypot(q.x-at.x,q.y-at.y);if(d<r)out.push(id+' in '+h.id+' ('+d.toFixed(1)+' < '+r+')');}}return out;};
+    assert.deepStrictEqual(insideAny(arrived,['aimed-at-hub','aimed-at-self']),[],'No new stored home enters a reserved hub disc');
+    const self=arrived.out.positions['grove-self'],q=arrived.out.positions['aimed-at-self'];
+    assert(Math.hypot(q.x-self.x,q.y-self.y)>=90,'A stored home stays out of the reserved identity disc');
     const row=w.nodes.find(n=>n.id===ended.id);row.status='';row.invalid_at=null;
     for(let i=0;i<300;i++)addLeaf('mass-'+i,'observation',[ended.id]);
-    const grownBig=page(sv,st,GRAPH_FILES);await settle();
-    const back=grownBig.sandbox.GroveView.nodes().find(n=>n.id===ended.id);
-    assert.equal(drawnLook(grownBig,Object.assign({},back,{__born:0})).radius,62,'The hub that came back draws at the largest size');
-    assert.deepStrictEqual({x:back.fx,y:back.fy},{x:base[ended.id].x,y:base[ended.id].y},'It keeps its stored place');
-    assert.deepStrictEqual(insideAny(grownBig,['aimed-at-hub','aimed-at-self']),[],'A placed item stays out of the disc after the hub grew');
-    assert.deepStrictEqual(insideAny(grownBig,w.nodes.filter(n=>n.id.startsWith('mass-')).map(n=>n.id)),[],'No new home of that arrival lies in a drawn hub disc');
+    const grownBig=await capture(),back=grownBig.items.find(n=>n.id===ended.id);
+    assert.equal(back._hubR,62,'The original stored seed grows to its largest hub size');
+    assert.deepStrictEqual(grownBig.out.positions[ended.id],base[ended.id],'The hub keeps its stored place');
+    assert.deepStrictEqual(insideAny(grownBig,['aimed-at-hub','aimed-at-self']),[],'A stored item stays out of the reserved disc after growth');
+    assert.deepStrictEqual(insideAny(grownBig,w.nodes.filter(n=>n.id.startsWith('mass-')).map(n=>n.id)),[],'New stored homes stay out of reserved hub discs');
+    assertFiniteMap(fgPositions(grownBig.pg),grownBig.items.map(n=>n.id),'The grown display remains finite and complete');
   }
 
   // 6v. The workers panel on the real page: it counts from the graph, the end of a session empties
@@ -1048,7 +1051,7 @@ function legendRows(elements){
     assert.equal(once.S.signOut().auth,null,'signOut answers with the state it leaves');
   }
 
-  // 6y. A legend click only hides and shows, in live mode: every home and pin stays the stored place
+  // 6y. A legend click only hides and shows, in live mode: every home and pin stays at its display place
   //     to the last bit, the links come back, and no relayout, reheat, hold-off or re-fit runs.
   const legendPage=(w,st,search)=>{const sv=makeServer(w);return {sv,pg:page(sv,st,GRAPH_FILES,null,null,(el,env)=>{legendRows(el);env.search=search||'';})};};
   const clickKind=(pg,kind)=>pg.elements['legend-list'].rows().find(r=>r.getAttribute('data-type')===kind).click();
@@ -1058,11 +1061,14 @@ function legendRows(elements){
     const pinned=new Set(V.nodes().filter(n=>n.fx!=null).map(n=>n.id));
     assert(pinned.has('grove-self')&&V.nodes().some(n=>n.type==='organisation'&&pinned.has(n.id)),'Hubs and the identity are pinned');
     const stored=id=>w.positions[id==='grove-self'?'p001':id];
+    let display=fgPositions(pg),storedBefore=JSON.stringify(w.positions);
     const atStored=label=>V.nodes().forEach(n=>{
-      const at=stored(n.id);assert(at,label+': '+n.id+' is stored');
-      assert(n.__home[0]===at.x&&n.__home[1]===at.y,label+': the home of '+n.id+' is its stored place');
-      assert(n.x===at.x&&n.y===at.y,label+': '+n.id+' is drawn at its stored place');
-      if(pinned.has(n.id))assert(n.fx===at.x&&n.fy===at.y,label+': the pin of '+n.id+' is its stored place');else assert(n.fx==null&&n.fy==null,label+': '+n.id+' takes no pin');
+      const at=display[n.id],saved=stored(n.id);assert(saved&&at,label+': '+n.id+' has both maps');
+      assert(Number.isFinite(saved.x)&&Number.isFinite(saved.y)&&Number.isFinite(at.x)&&Number.isFinite(at.y),label+': finite maps');
+      assert(n.__home[0]===at.x&&n.__home[1]===at.y,label+': the display home stays exact for '+n.id);
+      assert(n.x===at.x&&n.y===at.y,label+': the display coordinate stays exact for '+n.id);
+      if(pinned.has(n.id))assert(n.fx===at.x&&n.fy===at.y,label+': the display pin stays exact for '+n.id);else assert(n.fx==null&&n.fy==null,label+': '+n.id+' takes no pin');
+      assert.deepStrictEqual(placedPositions(pg)[n.id],saved,label+': the stored map stays independent');
     });
     atStored('first visit');
     const allNodes=drawn(),allLinks=linked(),wholeLinks=G.graphData().links.map(l=>({source:l.source,target:l.target,key:l.source+'>'+l.target+'>'+l.verb})),sizes=V.nodes().map(n=>n._hubR),saves=positionsCalls(sv).length;
@@ -1085,12 +1091,15 @@ function legendRows(elements){
     assert.deepStrictEqual(pg.timeouts.filter(x=>x.ms===3500),[],'No re-fit is waiting');assert.equal(pg.sandbox.__brainHoldOff,false,'The hold stays on');
     assert.deepStrictEqual(V.nodes().map(n=>n._hubR),sizes,'No hub changes size');
     assert.equal(positionsCalls(sv).length,saves,'A legend click saves nothing');
+    assert.equal(JSON.stringify(w.positions),storedBefore,'A legend click changes no stored coordinate');
     // A kind hidden while new items arrive, then shown: every old home stays exact, in that page.
     clickKind(pg,'observation');
     const olds=V.nodes().map(n=>n.id);
     w.nodes.push(Object.assign({},w.nodes[1],{id:'kind-hub',label:'Wrenfield Cooperative',type:'organisation',summary:''}),Object.assign({},w.nodes[1],{id:'kind-task',label:'Plan the cooperative fair',type:'task',summary:''}),Object.assign({},w.nodes[1],{id:'kind-seen',label:'Noticed a longer queue',type:'observation',summary:''}));
     w.edges.push({id:'kind-e1',source:'kind-task',target:'kind-hub',verb:'part of',label:'part of'},{id:'kind-e2',source:'kind-seen',target:'kind-task',verb:'about',label:'about'});
     await pg.sandbox.reloadGrove();await settle();
+    for(const [id,at] of Object.entries(JSON.parse(storedBefore)))assert.deepStrictEqual(w.positions[id],at,'An arrival never overwrites an old stored position');
+    display=fgPositions(pg);storedBefore=JSON.stringify(w.positions);
     pinned.add('kind-hub');atStored('after new items, in that page');
     assert(olds.every(id=>V.nodes().some(n=>n.id===id)),'Every old item stays');
     assert(!drawn().includes('kind-seen'),'A new item of a hidden kind stays hidden');assert(drawn().includes('kind-task'),'A new item of a shown kind shows');
@@ -1099,7 +1108,8 @@ function legendRows(elements){
     atStored('the hidden kind shown again');
     // A later page load draws the same map.
     const later=page(sv,st,GRAPH_FILES);await settle();
-    for(const n of later.sandbox.GroveView.nodes()){const at=stored(n.id);assert(n.__home[0]===at.x&&n.__home[1]===at.y,'A later load keeps '+n.id);}
+    for(const n of later.sandbox.GroveView.nodes()){const at=display[n.id];assert(n.__home[0]===at.x&&n.__home[1]===at.y,'A later load keeps the display place of '+n.id);}
+    assert.equal(JSON.stringify(w.positions),storedBefore,'A later load changes no stored coordinate');
     assert.deepStrictEqual(pg.errors,[],'legend: no error');
   }
   // 6z. Fixture mode (the sim engine of the checks) keeps the sim: its legend click lays the map out

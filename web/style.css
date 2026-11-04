@@ -33,6 +33,7 @@
   --ring-pattern:       #7986cb;     /* indigo — distinct from every existing hue */
 
   --edge: rgba(240, 238, 222, 0.18);
+  --edge-live: rgba(218, 223, 225, 0.22);
   --edge-bright: rgba(240, 238, 222, 0.6);
   --edge-faded: rgba(240, 238, 222, 0.06);
   --edge-label: rgba(240, 238, 222, 0.5);
@@ -74,6 +75,7 @@
   --ring-pattern:       #5c6bc0;     /* indigo — distinct from every existing hue */
 
   --edge: rgba(60, 55, 40, 0.22);
+  --edge-live: rgba(80, 76, 64, 0.14);
   --edge-bright: rgba(60, 55, 40, 0.55);
   --edge-faded: rgba(60, 55, 40, 0.06);
   --edge-label: rgba(60, 55, 40, 0.65);
