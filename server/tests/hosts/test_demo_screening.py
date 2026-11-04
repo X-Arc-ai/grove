@@ -1,4 +1,4 @@
-"""Exact invented bytes keep real screening active with absent global policy files."""
+"""Ordinary uploads and restricted demo operations keep separate screening policies."""
 
 from datetime import timedelta
 from uuid import uuid4
@@ -58,8 +58,8 @@ def test_exact_lumen_file_uses_real_screening_and_parser(
     assert WorldQuery(driver, person.world_id).read("MATCH (r:Request) RETURN r.id") == []
 
 
-@pytest.mark.parametrize("variant", ["changed", "oversized", "encoded", "provider", "token"])
-def test_other_upload_inputs_keep_the_configuration_refusal(
+@pytest.mark.parametrize("variant", ["changed", "trailing-space", "encoded", "provider", "token"])
+def test_ordinary_uploads_do_not_require_exact_lumen_bytes(
     driver, person, missing_globals, variant
 ):
     body = lumen_fixture()
@@ -67,7 +67,7 @@ def test_other_upload_inputs_keep_the_configuration_refusal(
     provider = "claude_ai"
     if variant == "changed":
         body = body.replace(b"teal", b"blue")
-    elif variant == "oversized":
+    elif variant == "trailing-space":
         body += b" "
     elif variant == "encoded":
         headers["content-encoding"] = "identity"
@@ -82,8 +82,15 @@ def test_other_upload_inputs_keep_the_configuration_refusal(
         response = web.post(
             f"/v1/sources/upload?provider={provider}", content=body, headers=headers
         )
-    assert response.status_code == 503
-    assert WorldQuery(driver, person.world_id).read("MATCH (s:Source) RETURN s.id") == []
+    sources = WorldQuery(driver, person.world_id).read("MATCH (s:Source) RETURN s.id")
+    if variant == "provider":
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "invalid_arguments"
+        assert sources == []
+    else:
+        assert response.status_code == 200
+        assert response.json()["state"] == "taken_in"
+        assert len(sources) == 1
 
 
 def test_cedar_world_refuses_lumen_upload(driver, demo, missing_globals):
