@@ -234,6 +234,18 @@ def test_clock():
         yield installed
 
 
+@pytest.fixture
+def make_world(make_world, driver):
+    """Source writes now share the world's lock with the D14 cascade."""
+
+    def make():
+        world = make_world()
+        plant_node(driver, world, "World", next_sequence=0)
+        return world
+
+    return make
+
+
 def export_messages() -> list[Message]:
     start = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
     return [
