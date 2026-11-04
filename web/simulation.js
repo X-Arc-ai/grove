@@ -99,6 +99,36 @@
 
   var state = readState();
   var reminderEpoch = 0, reminderRevision = -1;
+  // Only bindAccount, called with a successful server session, sets this identity.
+  // Browser state never establishes who owns a preference.
+  var verifiedAccount = null;
+  var ONBOARDING_KEY = 'grove-onboarding-v1', MAX_ONBOARDING_ACCOUNTS = 8;
+  function onboardingPreferences() {
+    try {
+      var raw = localStorage.getItem(ONBOARDING_KEY) || '[]';
+      if (raw.length > 4096) return [];
+      var rows = JSON.parse(raw);
+      if (!Array.isArray(rows) || rows.length > MAX_ONBOARDING_ACCOUNTS) return [];
+      return rows.filter(function (row) {
+        return row && typeof row.account === 'string' && row.account.length > 0 && row.account.length <= 128 &&
+          Number.isInteger(row.step) && row.step >= 0 && row.step <= 4 &&
+          typeof row.complete === 'boolean' && typeof row.tour === 'boolean' &&
+          Object.keys(row).sort().join(',') === 'account,complete,step,tour';
+      });
+    } catch (_) { return []; }
+  }
+  function saveOnboardingPreference() {
+    if (!LIVE || !verifiedAccount || state.account !== verifiedAccount) return;
+    var rows = onboardingPreferences().filter(function (row) { return row.account !== verifiedAccount; });
+    rows.push({account: verifiedAccount, step: Math.max(0, Math.min(4, Math.round(state.onboardingStep || 0))),
+      complete: !!state.onboardingComplete, tour: !!state.tourComplete});
+    try { localStorage.setItem(ONBOARDING_KEY, JSON.stringify(rows.slice(-MAX_ONBOARDING_ACCOUNTS))); } catch (_) {}
+  }
+  function restoreOnboardingPreference(account) {
+    var row = onboardingPreferences().find(function (value) { return value.account === account; });
+    if (!row) return;
+    state.onboardingStep = row.step; state.onboardingComplete = row.complete; state.tourComplete = row.tour;
+  }
 
   function pendingExportContext() { return { account: state.account, epoch: reminderEpoch }; }
   function isPendingExportContext(context) {
@@ -282,6 +312,7 @@
     } catch (_) { /* the graph may not have mounted yet */ }
   }
   function save(options) {
+    saveOnboardingPreference();
     seedRequests();
     var count=currentCounts(),last=state.growthHistory[state.growthHistory.length-1];
     if(!last||last.nodes!==count.nodes||last.edges!==count.edges){
@@ -381,7 +412,15 @@
   function removeMcpClient(id){state.mcpClients=state.mcpClients.filter(function(c){return c.id!==id;});save();return getState();}
   function answerRequest(id,answer){var r=state.requests.find(function(r){return r.id===id;});var text=String(answer||'').trim().slice(0,2000);if(!r||!text)return getState();r.answer=text;r.status='answered';r.answeredAt=new Date().toISOString();save();return getState();}
   // Live mode: the last graph payload goes too, so no item of the session stays in memory.
-  function signOut(){state.auth=null;if(LIVE){reminderEpoch++;reminderRevision=-1;state.pendingExports={};liveSession++;live={selfId:null,nodes:[],edges:[]};}save();return getState();}
+  function signOut(){
+    if(LIVE){
+      saveOnboardingPreference();verifiedAccount=null;
+      reminderEpoch++;reminderRevision=-1;importEpoch++;
+      Object.keys(jobs).forEach(stopJob);state=freshState();
+      liveSession++;live={selfId:null,nodes:[],edges:[]};
+    }else state.auth=null;
+    save();return getState();
+  }
   function saveGrowth(value){['focus','reading','avoid'].forEach(function(k){state.growth[k]=String(value[k]||'').trim().slice(0,1500);});state.growth.confirm=!!value.confirm;save();return getState();}
   function clearGrove(){var auth=state.auth,account=state.account,name=state.name,growth=state.growth;resetOnboarding();state.auth=auth;state.account=account;state.name=name;state.growth=growth;state.onboardingStep=1;save({reload:true});return getState();}
 
@@ -422,6 +461,7 @@
   function completeTour() { state.tourComplete = true; save(); return getState(); }
   function resetOnboarding() {
     var before = currentCounts();
+    verifiedAccount = null;
     reminderEpoch++; reminderRevision = -1;
     importEpoch += 1; Object.keys(jobs).forEach(stopJob); state = freshState();
     state.nodeDelta = 0; state.edgeDelta = 0;
@@ -430,11 +470,15 @@
   // Live mode: this browser's local state belongs to one account. A sign-in that brings another
   // account resets it first, so nothing of one person shows to the next. Says whether it reset.
   function bindAccount(account) {
-    if (!LIVE || !account) return false;
-    var other = !!state.account && state.account !== account;
+    if (!LIVE || typeof account !== 'string' || !account || account.length > 128) return false;
+    var other = state.account !== account;
     if (other) resetOnboarding();
     if (state.account !== account) { reminderEpoch++; reminderRevision = -1; state.pendingExports = {}; }
-    state.account = String(account); save();
+    var firstBinding = verifiedAccount !== account;
+    verifiedAccount = account;
+    state.account = account;
+    if (firstBinding) restoreOnboardingPreference(account);
+    save();
     return other;
   }
   // Live mode: a person whose world already holds items skips the first-run steps on a new browser.

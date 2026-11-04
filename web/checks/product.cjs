@@ -26,10 +26,10 @@ elements['profile-button'].onclick();assert.equal(p.ui.settingsTab,'sources');as
 
 api.signOut();p.ui.authStage='signin';p.finishSignIn('google');assert(!p.html().includes('Get Started'));
 // Real sign-in: no code hint or auto-fill, a wrong code shows the error slot, Apple is not available yet.
-api.signOut();p.ui.authStage='signin';p.render(true);assert(p.html().includes('Continue with Google'));assert(p.html().includes('Continue with Apple'));
+api.signOut();p.ui.authStage='signin';p.render(true);assert(p.html().includes('Continue with Google'));assert(p.html().includes('Apple · Not available yet'));
 p.chooseSignIn('apple');assert(p.html().includes('Not available yet'));assert(p.html().includes('aria-disabled="true"'));assert.equal(api.getState().auth,null);
 p.startEmail('anas@example.com');assert.equal(p.ui.authStage,'code');assert(p.html().includes('Check your inbox'));assert(p.html().includes('anas@example.com'));assert(!/482|use-code|gp-email-preview|Use code|Your sign-in code/.test(p.html()));
-p.handle('use-code');assert.equal(api.getState().auth,null);p.verifyEmail('12345');assert.equal(api.getState().auth,null);assert(p.ui.error.includes('code doesn’t match'));assert(!/\d{3}/.test(p.ui.error));
+p.handle('use-code');assert.equal(api.getState().auth,null);p.verifyEmail('12345');assert.equal(api.getState().auth,null);assert(p.ui.error.includes('invalid or expired'));assert(!/\d{3}/.test(p.ui.error));
 p.verifyEmail('654321');assert.equal(api.getState().auth.provider,'email');assert.equal(api.getState().auth.email,'anas@example.com');assert.equal(p.ui.error,'');assert(!p.html().includes('Get Started'));
 p.ui.panel='profile';p.ui.settingsTab='account';p.render(true);assert(p.html().includes('data-action="edit-name"'));assert(!p.html().includes('data-name-form'));assert(!p.html().includes('Delete my Grove'));assert(!p.html().includes('Delete account'));assert(!p.html().includes('data-delete'));assert(p.html().includes('data-action="logout"'));assert(!p.html().includes('Experience'));
 // The simulation resets are gone: neither a forged reset confirmation nor the replay action clears anything.

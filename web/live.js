@@ -26,7 +26,10 @@
   };
 
   // The server's pages the views name: the address after a sign-in, and the sign-in card's link.
-  var PAGES = { home: '/', signin: '/signin', privacy: '/privacy' };
+  var PAGES = { home: '/', signin: '/signin', login: '/login', signup: '/signup', logout: '/logout', privacy: '/privacy' };
+  function isAuthPage() {
+    return [PAGES.signin, PAGES.login, PAGES.signup].indexOf((window.location || {}).pathname) !== -1;
+  }
 
   // The way back after a sign-in that the consent page asked for: /signin?next=<path>. Only the
   // consent page's own path passes, in printable ASCII with no backslash, and at most as long as
@@ -34,7 +37,7 @@
   var NEXT_PREFIX = '/authorize?', MAX_NEXT = 2048;
   function returnPath() {
     var loc = window.location || {}, next = null;
-    if (loc.pathname !== PAGES.signin) return null;
+    if (!isAuthPage()) return null;
     try { next = new URLSearchParams(loc.search || '').get('next'); } catch (_) { return null; }
     if (typeof next !== 'string' || next.length > MAX_NEXT || next.indexOf(NEXT_PREFIX) !== 0) return null;
     if (!/^[\x21-\x7e]+$/.test(next) || next.indexOf('\\') !== -1) return null;
@@ -50,6 +53,10 @@
   function googleStartPath() {
     var next = returnPath();
     return next ? ENDPOINTS.googleStart.split('?')[0] + '?next=' + encodeURIComponent(next) : ENDPOINTS.googleStart;
+  }
+  function authPagePath(page) {
+    var next = returnPath();
+    return page + (next ? '?next=' + encodeURIComponent(next) : '');
   }
 
   // Grove's starter kinds draw with the sim's visual types. The data keeps the real kind
@@ -93,10 +100,22 @@
   // for the session that ended, so its 401 ends nothing. The auth calls never send it: their answers
   // belong to the sign-in card.
   var signedOutSent = false, sessionsBegun = 0, sessionAccount = null;
+  var AUTH_CHANGE_KEY = 'grove-auth-change';
+  function notifySessionChange() {
+    // No identity, token, or account data crosses this browser signal.
+    try { localStorage.setItem(AUTH_CHANGE_KEY, JSON.stringify({nonce: window.crypto.randomUUID()})); } catch (_) {}
+  }
+  function invalidateSession() { sessionsBegun++; sessionAccount = null; }
+  if (window.addEventListener) window.addEventListener('storage', function (event) {
+    if (event.key !== AUTH_CHANGE_KEY || !event.newValue) return;
+    invalidateSession();
+    window.dispatchEvent(new CustomEvent('grove:session-changed'));
+  });
   function watchSession(sentIn, res) {
     var code = res.body && res.body.error && res.body.error.code;
     if ((res.status === 401 || code === 'unauthenticated') && !signedOutSent && sentIn === sessionsBegun) {
       signedOutSent = true;
+      if (sessionAccount) notifySessionChange();
       window.dispatchEvent(new CustomEvent('grove:unauthenticated'));
     }
     return res;
@@ -109,7 +128,7 @@
     }
     return res;
   }
-  function newSession(res) { if (res.ok) sessionsBegun++; return signedIn(res); }
+  function newSession(res) { if (res.ok) { sessionsBegun++; notifySessionChange(); } return signedIn(res); }
   function getJSON(path) { return request('GET', path).then(watchSession.bind(null, sessionsBegun)); }
   function postJSON(path, body) { return request('POST', path, body === undefined ? {} : body).then(watchSession.bind(null, sessionsBegun)); }
   function postAuth(path, body) { return request('POST', path, body === undefined ? {} : body); }
@@ -162,6 +181,10 @@
     ENDPOINTS: ENDPOINTS,
     mcpUrl: function () { return new URL(ENDPOINTS.mcp, window.location.href).href; },
     PAGES: PAGES,
+    isAuthPage: isAuthPage,
+    authPagePath: authPagePath,
+    invalidateSession: invalidateSession,
+    notifySessionChange: notifySessionChange,
     KIND_STYLE: KIND_STYLE,
     getJSON: getJSON,
     postJSON: postJSON,
@@ -175,7 +198,13 @@
     errorText: errorText,
     savePositions: savePositions,
     // GET the session: 200 {signed_in, self_item_id, has_items, account, method} when signed in, 401 otherwise.
-    session: function () { return request('GET', ENDPOINTS.session).then(signedIn); },
+    session: function () {
+      var sentIn = sessionsBegun;
+      return request('GET', ENDPOINTS.session).then(function (res) {
+        if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
+        return signedIn(res);
+      });
+    },
     // Google signs in on its own pages and comes back to the start of the app, or to the consent
     // page that sent the person to sign in.
     googleSignIn: function () { window.location.assign(googleStartPath()); },
@@ -183,8 +212,18 @@
     returnToNext: returnToNext,
     emailStart: function (email) { return postAuth(ENDPOINTS.emailStart, { email: String(email || '').trim() }); },
     emailVerify: function (email, code) {
-      return postAuth(ENDPOINTS.emailVerify, { email: String(email || '').trim(), code: String(code || '').trim() }).then(newSession);
+      var sentIn = sessionsBegun;
+      return postAuth(ENDPOINTS.emailVerify, { email: String(email || '').trim(), code: String(code || '').trim() }).then(function (res) {
+        if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
+        return newSession(res);
+      });
     },
-    logout: function () { return postAuth(ENDPOINTS.logout).then(function (res) { if (res.ok) { sessionsBegun++; sessionAccount = null; } return res; }); },
+    logout: function () {
+      invalidateSession();
+      return postAuth(ENDPOINTS.logout).then(function (res) {
+        if (res.ok) { invalidateSession(); notifySessionChange(); }
+        return res;
+      });
+    },
   };
 })();
