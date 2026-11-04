@@ -17,6 +17,7 @@ from grove.writer.forget_plan import WORLD_TABLES
 from grove.writer.forget_sources import ForgottenSource
 from grove.writer.history import Stamp, add_entry, add_text, row_json
 from grove.writer.ingest import write_chat_delta
+from grove.writer.restore import rebuild_in_place
 from grove.writer.sources import record_connector, record_episode, record_source
 from grove.writer.testing import refuse_real_world
 from grove.writer.tx import WorldWriter
@@ -430,6 +431,9 @@ def seed_forget_drill(driver, world_id):
         add_text(tx, stamp, retained_word + " unchanged history")
 
     WorldWriter(driver, world_id, timeout=600).transaction(work)
+    # A physical restore reconstructs these rows through the same replay. Establish
+    # that canonical form before the baseline records exact control-world bytes.
+    rebuild_in_place(driver, world_id)
     return {
         "world_id": world_id,
         "targets": [
