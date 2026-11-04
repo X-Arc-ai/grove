@@ -561,13 +561,14 @@
     if(live){
       document.getElementById('learning-slot').innerHTML='';
       var state=api.getState(),preview=state.conversationPreview;
-      progress.innerHTML=preview&&preview.status==='importing'?'<span class="gp-account-progress" role="status" aria-label="Claude example, '+preview.progress+' percent" style="--progress:'+preview.progress/100+'"><svg class="gp-mini-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18"/></svg><span class="gp-mini-mark">'+icon('claude')+'</span></span>':'';
+      var complete=!!preview&&preview.status==='ready';
+      progress.innerHTML=preview?'<span class="gp-account-progress '+(complete?'is-ready':'')+'" role="status" aria-label="'+(complete?'Claude conversation preview complete':'Claude example, '+preview.progress+' percent')+'" style="--progress:'+preview.progress/100+'"><svg class="gp-mini-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18"/></svg><span class="gp-mini-mark">'+icon('claude')+'</span>'+(complete?'<i class="gp-complete-check" aria-hidden="true">✓</i>':'')+'</span>':'';
       root.querySelectorAll('[data-source-choice]').forEach(function(el){
         var id=el.dataset.sourceChoice,added=liveSourceAccounts().some(function(a){return a.id===id&&a.readCount>0;}),pending=!!state.pendingExports[id];
         var example=id==='claude'&&preview;
         el.classList.toggle('is-added',added||!!example&&example.status==='ready');el.classList.toggle('is-learning',!!example&&example.status==='importing');
-        var label=el.querySelector('strong small');if(label)label.textContent=example?'Example':added?'Added':pending?'Upload':'Connect';
-        el.setAttribute('aria-label',example?'Claude example, '+preview.progress+' percent':(added?'Added ':pending?'Upload ':'Connect ')+(PROVIDERS[id]||{label:id}).label);
+        var label=el.querySelector('strong small');if(label)label.textContent=example?(complete?'Done':'Example'):added?'Added':pending?'Upload':'Connect';
+        el.setAttribute('aria-label',example?(complete?'Claude conversation preview complete':'Claude example, '+preview.progress+' percent'):(added?'Added ':pending?'Upload ':'Connect ')+(PROVIDERS[id]||{label:id}).label);
       });
       return;
     }

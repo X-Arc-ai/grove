@@ -130,7 +130,7 @@ async def _headers(
 
 
 def _provider(provider: str) -> str:
-    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,119}", provider):
+    if not re.fullmatch(r"[a-z0-9_][a-z0-9_-]{0,119}", provider):
         raise invalid_arguments("Choose an app from the connection catalog.", "provider")
     return provider
 
@@ -238,7 +238,7 @@ def _app_row(value: Any) -> dict[str, Any]:
     slug, name, auth = value.get("name_slug"), value.get("name"), value.get("auth_type")
     if (
         not isinstance(slug, str)
-        or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,119}", slug)
+        or not re.fullmatch(r"[a-z0-9_][a-z0-9_-]{0,119}", slug)
         or not isinstance(name, str)
         or not 1 <= len(name) <= 200
         or not name.isprintable()

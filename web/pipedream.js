@@ -6,7 +6,7 @@
   var instances=new Set(), returns=new Set();
   function account(){var s=window.GroveSimulation.getState();return s.auth?s.account:null;}
   function esc(v){return String(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
-  function slug(v){return typeof v==='string'&&/^[a-z0-9][a-z0-9_-]{0,119}$/.test(v);}
+  function slug(v){return typeof v==='string'&&/^[a-z0-9_][a-z0-9_-]{0,119}$/.test(v);}
   function error(res,fallback){var e=res.body&&res.body.error;if(res.status===403&&e&&e.code==='scope_denied')return 'Connections are disabled for this prepared demo account. Use your own account to connect apps.';return e&&typeof e.message==='string'?e.message:fallback;}
   function mount(scope){scope.querySelectorAll('[data-pipedream-apps]').forEach(function(root){
     if(root.dataset.pipedreamMounted)return;
