@@ -184,6 +184,41 @@ def utc_from_iso(value: object) -> datetime | None:
 
 
 @dataclass(frozen=True, slots=True)
+class CalendarEvent:
+    """Code-held provider facts, distinct from upload options and screened event prose."""
+
+    scheduled_at: datetime | None
+    timezone: str
+    status: str
+    updated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        if self.status not in ("confirmed", "tentative", "cancelled"):
+            raise ValueError("invalid Calendar schedule status")
+        if self.scheduled_at is None and self.status != "cancelled":
+            raise ValueError("only a cancellation can have no schedule time")
+        for at in (self.scheduled_at, self.updated_at):
+            if at is not None and (not isinstance(at, datetime) or at.utcoffset() is None):
+                raise ValueError("Calendar facts require aware instants")
+        if not isinstance(self.timezone, str) or not 1 <= len(self.timezone) <= 128:
+            raise ValueError("invalid Calendar timezone")
+        try:
+            ZoneInfo(self.timezone)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise ValueError("invalid Calendar timezone") from None
+
+    def to_writer(self) -> dict[str, str | None]:
+        return {
+            "scheduled_at": self.scheduled_at.isoformat() if self.scheduled_at else None,
+            "timezone": self.timezone,
+            "status": self.status,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ParsedMessage:
     """One message as a parser read it. Screening runs on it next; nothing here is stored yet."""
 
@@ -193,6 +228,7 @@ class ParsedMessage:
     speaker_kind: str
     modality: str = "text"
     sender: str | None = None
+    calendar_event: CalendarEvent | None = None
 
     def __post_init__(self) -> None:
         if not _is_code(self.key, limit=80):
@@ -209,6 +245,11 @@ class ParsedMessage:
             raise ValueError("ParsedMessage.modality must be a modality code")
         if self.sender is not None and not isinstance(self.sender, str):
             raise TypeError("ParsedMessage.sender must be a str or None")
+        if self.calendar_event is not None and (
+            type(self.calendar_event) is not CalendarEvent
+            or self.calendar_event.scheduled_at != self.at
+        ):
+            raise ValueError("Calendar facts must match the message's schedule time")
         # The parser retains these objects until every member is read. Bound retained text
         # here as well as at screening, so earlier members cannot retain huge Unicode strings.
         object.__setattr__(self, "text", kept_text(self.text))
