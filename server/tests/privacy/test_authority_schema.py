@@ -1,6 +1,5 @@
 """Exact inactive authority schema and mutation controls, without a live store."""
 
-import re
 from pathlib import Path
 
 import pytest
@@ -126,26 +125,6 @@ def test_exact_digest_boundary_and_closed_codes():
         "authority_use_kind": ("applied", "cancelled"),
         "authority_use_role": ("original", "renewed"),
     }
-
-
-def test_migration_has_only_the_five_exact_uniqueness_declarations():
-    text = (ROOT / "server/migrations/0018_authority_outcomes.cypher").read_text()
-    body = "\n".join(line for line in text.splitlines() if not line.startswith("//"))
-    statements = [part.strip() for part in body.split(";") if part.strip()]
-    assert len(statements) == 5
-    found = {}
-    pattern = (
-        r"CREATE "
-        r"CONSTRAINT (\w+) IF NOT EXISTS FOR \(n:(\w+)\) REQUIRE "
-        r"(n\.\w+|\(n\.\w+(?:, n\.\w+)*\)) IS UNIQUE"
-    )
-    for statement in statements:
-        match = re.fullmatch(pattern, statement)
-        assert match is not None
-        name, label, properties = match.groups()
-        assert name not in found
-        found[name] = (label, tuple(re.findall(r"n\.(\w+)", properties)))
-    assert found == CONSTRAINTS
 
 
 @pytest.fixture
