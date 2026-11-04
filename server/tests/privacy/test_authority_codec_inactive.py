@@ -10,11 +10,15 @@ from grove.authority import codec, legacy, records, transitions
 PURE = {"records.py", "codec.py", "transitions.py", "legacy.py"}
 FOUNDATION = {"__init__.py", "scalars.py", "capacity.py", "lease.py"}
 READERS = {"legacy_reader.py"}
+PUBLICATION = {"publication.py", "publication_files.py", "publisher.py"}
 ROOT = Path(__file__).resolve().parents[2] / "grove"
 
 
 def test_exact_pure_and_foundation_sets_cover_every_authority_module():
-    assert {path.name for path in (ROOT / "authority").glob("*.py")} == PURE | FOUNDATION | READERS
+    assert {
+        path.name for path in (ROOT / "authority").glob("*.py")
+    } == PURE | FOUNDATION | READERS | PUBLICATION
+    assert PUBLICATION.isdisjoint(PURE | FOUNDATION | READERS)
     assert PURE.isdisjoint(FOUNDATION)
     assert READERS.isdisjoint(PURE | FOUNDATION)
 
