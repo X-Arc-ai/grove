@@ -329,10 +329,12 @@ def test_a_proposal_the_judges_cannot_take_is_held_and_the_plan_goes_on(driver, 
 
 
 def property_proposal(name: str, **over) -> dict:
+    # A starter kind with no property name of its own yet (the starter set names scheduled times
+    # for plan, task, trip, period and event, S55), so its first property needs no neighbour.
     op = {
         "op_id": new_op_id(),
         "word_type": "property_name",
-        "kind": "plan",
+        "kind": "problem",
         "name": name,
         "description": f"The plan's {name}.",
         "reason": f"No property says the plan's {name}.",
@@ -351,10 +353,10 @@ def fields_only(verdict: str) -> tuple:
 
 def orchard_plan(**properties) -> dict:
     return create_item(
-        "plan",
+        "problem",
         "Replant the orchard",
         "e1",
-        status="proposed",
+        status="open",
         recheck_by=RECHECK,
         properties=properties,
     )
@@ -380,7 +382,8 @@ def test_two_new_property_names_of_one_kind_plan_and_commit_in_one_batch(
     rows = read(
         driver,
         world_id,
-        "MATCH (p:PropertyName) RETURN p.name AS name, p.status AS status ORDER BY name",
+        "MATCH (p:PropertyName) WHERE p.origin <> 'starter' "
+        "RETURN p.name AS name, p.status AS status ORDER BY name",
     )
     assert rows == [
         {"name": "budget note", "status": "provisional"},
@@ -515,7 +518,7 @@ def test_one_property_name_with_its_kind_spelled_twice_is_planned_once(
         make_layer(router),
         driver,
         world_id,
-        [property_proposal("owner"), property_proposal("owner", kind="Plan")],
+        [property_proposal("owner"), property_proposal("owner", kind="Problem")],
     )
     assert [op["name"] for op in plan.ops] == ["owner"] and plan.reused == ("owner",)
     apply_batch(

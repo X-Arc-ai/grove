@@ -8,11 +8,13 @@ Locator schemes are developer config per connector type (S27):
 
 import json
 import re
+import zoneinfo
+from datetime import UTC, date, datetime
 from typing import Any
 
 from grove.writer.clocks import parse_instant
 from grove.writer.errors import Refused
-from grove.writer.source_types import derive_row_source_type, weakest
+from grove.writer.source_types import RowFacts, derive_row_source_type, weakest
 from grove.writer.tx import WorldTx
 
 LOCATOR_SCHEMES: dict[str, frozenset[str]] = {
@@ -26,7 +28,22 @@ LOCATOR_SCHEMES: dict[str, frozenset[str]] = {
     "web_pages": frozenset({"char", "whole"}),
     "ai_host": frozenset({"whole", "char"}),
     "person_in_views": frozenset({"whole", "char"}),
+    "reminders": frozenset({"key", "line", "whole"}),
+    "identity": frozenset({"key", "whole"}),
 }
+# Speaker kinds that cannot decide: a decision is attributed only to a person who spoke the
+# deciding sentence (D5 rule 4). An AI host's proposal that the person accepts is the person's
+# "yes", a row of its own.
+_NOT_DECIDERS = frozenset({"ai_host", "automated"})
+_ANSWER_RELAYS = frozenset({"answer", "correction"})
+_RELAYED = frozenset({"ai_host", "person_in_views"})
+# One request stores one source; the order makes the read the same on every run even if a later
+# path ever lets two requests name one source (the first one wins).
+_REQUEST_OF_SOURCE = (
+    "MATCH (r:Request {source_id: $id}) RETURN r.verbatim AS verbatim, "
+    "r.host_message_id AS host_message_id, r.relay AS relay "
+    "ORDER BY r.created_at, r.id LIMIT 1"
+)
 MIN_KEY_LENGTH = 4
 _LINES = re.compile(r"(\d+)(?:-(\d+))?")
 _CHARS = re.compile(r"(\d+)-(\d+)")
@@ -89,13 +106,112 @@ def connector_type_of(connector: dict[str, Any]) -> str:
     return kind
 
 
+def _speaker_meta(source: dict[str, Any], message_key: str) -> dict[str, Any]:
+    """The speaker that the connector's code stored for this message (S51), or {}."""
+    meta = json.loads(source.get("speakers") or "{}")
+    found = meta.get(message_key)
+    return found if isinstance(found, dict) else {}
+
+
+def _local_day(at: datetime, zone: str | None) -> date:
+    try:
+        tz = zoneinfo.ZoneInfo(zone) if zone else UTC
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError):
+        tz = UTC
+    return at.astimezone(tz).date()
+
+
+def calendar_logged(
+    connector: dict[str, Any],
+    source: dict[str, Any],
+    source_time: datetime,
+    zone: str | None,
+    *,
+    message_key: str,
+    locator: str,
+) -> bool:
+    """Only a bound, non-cancelled past event can use the person's Calendar log setting.
+
+    The screened-source writer validates these facts against retained messages. Caller dates,
+    caller timezones, free-form event text and missing bindings cannot establish eligibility.
+    """
+    facts = json.loads(source.get("calendar_events") or "{}").get(message_key)
+    if not facts or locator != f"key:{message_key}" or facts.get("status") != "confirmed":
+        return False
+    scheduled = facts.get("scheduled_at")
+    trusted_zone = facts.get("timezone")
+    if scheduled is None or trusted_zone is None:
+        return False
+    scheduled = parse_instant(scheduled)
+    if source_time != scheduled or (zone is not None and zone != trusted_zone):
+        return False
+    settings = json.loads(connector.get("settings") or "{}")
+    read_at = source.get("received_at")
+    if read_at is None or not scheduled < read_at:
+        return False
+    day = _local_day(scheduled, trusted_zone)
+    logged_days = {str(value) for value in settings.get("logged_days") or []}
+    if day.isoformat() in logged_days:
+        return True
+    start = settings.get("log_from")
+    if not isinstance(start, str):
+        return False
+    try:
+        return day >= date.fromisoformat(start)
+    except ValueError:
+        return False
+
+
+def _relay(tx: WorldTx, source_id: str) -> tuple[str | None, bool]:
+    """The relay and the verbatim flag of the request that stored this source (S53)."""
+    rows = tx.run(_REQUEST_OF_SOURCE, id=source_id)
+    if not rows:
+        return None, False
+    row = rows[0]
+    return row.get("relay") or "remember", bool(row.get("verbatim") and row.get("host_message_id"))
+
+
 def _one(tx: WorldTx, cypher: str, **params: Any) -> dict[str, Any] | None:
     rows = tx.run(cypher, **params)
     return rows[0]["n"] if rows else None
 
 
-def resolve_observation(tx: WorldTx, observation: dict[str, Any]) -> dict[str, Any]:
-    """The observation as the columns of an evidence row (no id, target or polarity yet)."""
+# Entries that are dated ahead by nature: a calendar entry or a reminder for a later day. They are
+# planned, so a date after the read or after now proves nothing and is allowed (D5).
+DATED_AHEAD = frozenset({"calendar", "reminders"})
+
+
+def dated_after_read(
+    connector_type: str, source: dict[str, Any], source_time: datetime, now: datetime | None
+) -> bool:
+    """True for a row that speaks for a time after its source was read (`received_at`, the fetch
+    or export time) or after now, outside the calendar and reminders. No source speaks for a time
+    after Grove read it: such a date would escape a staleness limit, give a done or a period's
+    start a time no source spoke for, and read as "confirmed against ... of <that day>"."""
+    if connector_type in DATED_AHEAD:
+        return False
+    if now is not None and source_time > now:
+        return True
+    received = source.get("received_at")
+    return received is not None and source_time > received
+
+
+def outside_episode(connector_type: str, episode: dict[str, Any], source_time: datetime) -> bool:
+    """True for a row dated outside its episode's window (start_time to end_time), outside the
+    calendar and reminders, whose entries are dated ahead of any read."""
+    if connector_type in DATED_AHEAD:
+        return False
+    start, end = episode.get("start_time"), episode.get("end_time")
+    if start is None or end is None:
+        return False
+    return source_time < start or source_time > end
+
+
+def resolve_observation(
+    tx: WorldTx, observation: dict[str, Any], *, now: datetime | None = None
+) -> dict[str, Any]:
+    """The observation as the columns of an evidence row (no id, target or polarity yet). `now`
+    is the batch's time: a row may not speak for a time after it, nor after its source's read."""
     source = _one(tx, "MATCH (n:Source {id: $id}) RETURN n", id=observation["source_id"])
     if source is None:
         raise Refused(
@@ -148,10 +264,101 @@ def resolve_observation(tx: WorldTx, observation: dict[str, Any]) -> dict[str, A
                     {"item": observation[key]},
                 )
 
+    source_time = parse_instant(observation["source_time"])
+    if dated_after_read(connector_type, source, source_time, now):
+        raise Refused(
+            "invalid_arguments",
+            "future_evidence",
+            "a row is dated after its source was read, or after now",
+            {"ev_id": observation["ev_id"]},
+        )
+    if outside_episode(connector_type, episode, source_time):
+        # The episode's window is code-held (the connector cut it from the messages' own times):
+        # a row dated outside it names a time its messages never had (D4: evidence is dated by
+        # its own timestamp, never by the read).
+        raise Refused(
+            "invalid_arguments",
+            "outside_episode",
+            "a row is dated outside the window of the episode it cites",
+            {"ev_id": observation["ev_id"]},
+        )
+    statement_class = observation["statement_class"]
+    # Speaker and modality come from metadata first (D5): the connector's code stored them on the
+    # source, and they win over the caller's classification.
+    meta = _speaker_meta(source, observation["message_key"])
+    if meta and meta.get("locator") != observation["locator"]:
+        # The metadata names where its message sits in the source; a row that borrows the key
+        # for another place would take another message's speaker (S51).
+        raise Refused(
+            "invalid_arguments",
+            "message_key_locator",
+            "the message key names another place in the source than this locator",
+            {"ev_id": observation["ev_id"]},
+        )
+    speaker_kind = meta.get("kind") or observation["speaker_kind"]
+    original_author = meta.get("original_author") or observation.get("original_author")
+    sender = meta.get("sender")
+    relay, verbatim = (None, False)
+    if connector_type in _RELAYED:
+        relay, verbatim = _relay(tx, observation["source_id"])
+    if connector_type == "ai_host":
+        if relay in _ANSWER_RELAYS and not verbatim:
+            raise Refused(
+                "verbatim_required",
+                "verbatim_required",
+                "an answer or a correction from a host carries the person's own words and the "
+                "id of the host message",
+                {"ev_id": observation["ev_id"]},
+            )
+        # The person speaks through the host only in their own words (D5); else the host does.
+        speaker_kind = "person" if verbatim else "ai_host"
+    if speaker_kind == "forwarded" and not original_author:
+        raise Refused(
+            "invalid_arguments",
+            "original_author_required",
+            "a forwarded message keeps its original author",
+            {"ev_id": observation["ev_id"]},
+        )
+    if statement_class == "decision" and speaker_kind in _NOT_DECIDERS:
+        raise Refused(
+            "invalid_arguments",
+            "decider_not_speaker",
+            "a decision names its decider as the speaker of the deciding sentence; a proposal "
+            "nobody accepted stays the proposer's statement",
+            {"ev_id": observation["ev_id"], "speaker_kind": speaker_kind},
+        )
+    if original_author is not None and original_author != observation.get("original_author"):
+        if _one(tx, "MATCH (n:Item {id: $id}) RETURN n", id=original_author) is None:
+            raise Refused(
+                "not_found",
+                "original_author",
+                "original_author names no item of this world",
+                {"item": original_author},
+            )
+
     derivation = observation["derivation"]
     premises = list(observation.get("premises") or [])
     if derivation == "observed":
-        source_type = derive_row_source_type(connector_type, observation["statement_class"])
+        facts = RowFacts(
+            modality=observation["modality"],
+            whole=observation["locator"] == "whole",
+            document=source.get("document") is True or connector_type == "screenshots",
+            automated=meta.get("kind") == "automated",
+            logged=(
+                connector_type == "calendar"
+                and calendar_logged(
+                    connector,
+                    source,
+                    source_time,
+                    observation.get("person_timezone"),
+                    message_key=observation["message_key"],
+                    locator=observation["locator"],
+                )
+            ),
+            relay=relay,
+            verbatim=verbatim,
+        )
+        source_type = derive_row_source_type(connector_type, statement_class, facts)
         premises = []
     else:
         rows = tx.run(
@@ -174,16 +381,17 @@ def resolve_observation(tx: WorldTx, observation: dict[str, Any]) -> dict[str, A
         "source_id": observation["source_id"],
         "locator": observation["locator"],
         "message_key": observation["message_key"],
-        "source_time": parse_instant(observation["source_time"]),
+        "source_time": source_time,
         "source_offset_minutes": observation.get("source_offset_minutes"),
         "person_timezone": observation.get("person_timezone"),
-        "statement_class": observation["statement_class"],
+        "statement_class": statement_class,
         "source_type": source_type,
         "derivation": derivation,
         "premises": premises,
-        "speaker_kind": observation["speaker_kind"],
+        "speaker_kind": speaker_kind,
         "speaker_item": observation.get("speaker_item"),
-        "original_author": observation.get("original_author"),
+        "original_author": original_author,
+        "sender": sender,
         "modality": observation["modality"],
     }
 
@@ -204,5 +412,6 @@ OBSERVATION_COLUMNS = (
     "speaker_kind",
     "speaker_item",
     "original_author",
+    "sender",
     "modality",
 )

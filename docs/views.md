@@ -155,7 +155,7 @@ The page asks this once at load, and only a 401 ends its local sign-in. After an
 
 ```json
 {
-  "node": N + {"title": "<label>", "content": "<summary, else body, else ''>", "status_field_value": "<status>"},
+  "node": N + {"title": "<label>", "content": "<summary, else body, else ''>", "status_field_value": "<status>", "clocks": C},
   "required_props": [],
   "optional_props": ["<property names of the item's kind>"],
   "required_prop_names": [],
@@ -164,6 +164,21 @@ The page asks this once at load, and only a 401 ends its local sign-in. After an
 ```
 
 A 404 for an unknown id, an id of another world, or an item outside the time window.
+
+`C` is the item's clocks in words (D4), from `clock_words` in `server/grove/store/words.py`, read at the clock provider's now. It is in the node detail only, never in the graph list. Dates read in the person's timezone when the item's creating evidence row holds `person_timezone`, else in UTC. A source is named by its connector type in words, never by a title or a locator.
+
+```json
+{
+  "last confirmed": "today 09:15, against a fetched page" | "3 Mar, against a file; re-check was due 3 Jun" | "never confirmed, from a chat message of 26 Oct",
+  "re-check by": "Thu 29 Oct, by checking a fetched page again" | "was due 3 Jun" | "not set",
+  "became true": "unknown" | "July 2026" | "before 26 Oct" | "12 Jul",
+  "recorded": "26 Oct, 22:40, from a chat message",
+  "source type": "confirmed (said in a chat message; confirmed by a fetched page)" | "inferred from 3 confirmed records",
+  "state": "current" | "planned" | "reported" | "not_started" | "ended" | "overtaken"
+}
+```
+
+A year shows only when it is not the current year. `today` and `yesterday` are against the world's now.
 
 ### `GET /v1/views/schema`
 

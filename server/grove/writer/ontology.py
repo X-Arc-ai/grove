@@ -865,6 +865,25 @@ def _subject_field(
     return "other", None
 
 
+def accepting_fit(run: Any, checked: CheckedProposal, judgment_ids: list[str], field: str) -> str:
+    """The id of a recorded field_fit judgment that says the declared field fits (S54): the row a
+    capability minted with a word names, so the capability applies only once accepted."""
+    rows = _read_judgments(run, judgment_ids)
+    refs = [part for row in rows for part in str(row.get("subject") or "").split("|")]
+    values = _values(run, [value_id for ref in refs if (value_id := _value_id(ref))])
+    for row in rows:
+        judged, field_name = _subject_field(checked, str(row.get("subject") or ""), values)
+        if judged == "field" and field_name == field and row.get("verdict") == FITS:
+            if row.get("role") == FIELD_FIT:
+                return row["id"]
+    raise Refused(
+        "unrecorded_verdict",
+        "capability_unaccepted",
+        "a capability minted with a word needs a field_fit judgment that accepts it",
+        {"field": field},
+    )
+
+
 def judge_verdicts(run: Any, checked: CheckedProposal, judgment_ids: list[str]) -> Verdicts:
     """O3, O4, O5: the outcome and the disputed fields, from recorded judgments only. A word with no
     neighbour (the first property name of a kind) has no same-word question: with no judgment, its
@@ -1158,6 +1177,9 @@ def propose_word(run: Any, index: int, op: dict[str, Any]) -> None:
                 "capability": capability["capability"],
                 "origin": "minted_with_a_word",
                 "reason": reason_id,
+                "accepted_judgment_id": accepting_fit(
+                    run, checked, list(verdicts.judgment_ids), "proposed_capability"
+                ),
                 "version": 1,
                 "touched_at": run.at,
             }
