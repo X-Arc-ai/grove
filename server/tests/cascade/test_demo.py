@@ -60,7 +60,7 @@ def verdict(driver, world, item, obs, decision):
     )["id"]
 
 
-def beat(driver, seeded, chat):
+def beat(driver, seeded, chat, *, confirmed_claim=False):
     w = seeded["world_id"]
     registry = Registry.load(WorldQuery(driver, w))
     meaning, _ = registry.resolve_meaning("depends on")
@@ -78,6 +78,26 @@ def beat(driver, seeded, chat):
         status="holds",
         recheck_by=RECHECK,
     )
+    if confirmed_claim:
+        from tests.writer.helpers import new_op_id
+
+        page = make_source(driver, w, "web_pages", ["Prism works in our region."])
+        proof = observation(page, "standing", 1, at=at_minute(15), locator="char:0-20")
+        apply(
+            driver,
+            w,
+            [
+                {
+                    "op": "attach_evidence",
+                    "op_id": new_op_id(),
+                    "target": claim,
+                    "ev_id": "standing",
+                    "polarity": "supports",
+                }
+            ],
+            [proof],
+            caller=LEARNER,
+        )
     demo = make_task(driver, w, chat, 2, title="Record the Prism demo route")
     film = make_task(driver, w, chat, 3, title="Record the film plan")
     build = make_task(driver, w, chat, 4, title="Build the demo capture")
@@ -96,6 +116,16 @@ def beat(driver, seeded, chat):
     report = observation(chat, "report", 20, statement_class="report_state")
     receipt = apply(driver, w, [refute(claim, contradicts("report"))], [report], caller=LEARNER)
     return w, claim, {demo, film, build}, unrelated, receipt
+
+
+def test_weaker_report_marks_confirmed_assumption_without_refuting_it(driver, frozen, seeded, chat):
+    w, claim, dependents, _, _ = beat(driver, seeded, chat, confirmed_claim=True)
+    held = item_row(driver, w, claim)
+    assert held["derived_source_type"] == "confirmed" and not held.get("end_class")
+    assert {m["affected_item"] for m in impacts(driver, w)} == dependents
+    assert {m["trigger_source_type"] for m in impacts(driver, w)} == {"reported_done"}
+    assert all(link.get("active_key") for link in links(driver, w).values())
+    assert len(read(driver, w, "MATCH (c:Contradiction {status: 'open'}) RETURN c")) == 1
 
 
 @pytest.mark.parametrize("states_restriction", [False, True])

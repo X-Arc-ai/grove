@@ -329,11 +329,11 @@ def _refute_item(run: ap._Run, index: int, op: dict[str, Any], item_id: str) -> 
         raise Refused("invalid_arguments", "already_ended", "the item has already ended", {})
     plans = ap._plans(run, op["evidence_refs"])
     ap._settle(run, plans, item_id)
-    _check_rank(run, item, plans)
     from grove.writer.cascade_refutations import defer_refutation, settle_refutation
 
     if defer_refutation(run, index, op, item, plans):
         return
+    _check_rank(run, item, plans)
     world_time = ap._world_time(plans)
     reason_id = run.text(op["reason"])
     # Refuted: never true, so no world end time is stored (D3, "end classes").
