@@ -96,6 +96,23 @@ exit status 1.
 | `brain propose [--request ID]` | `POST /v1/internal/brain/propose` | the batch from stdin (a heredoc) or `--file`; saved with a receipt, or declined with the writer's reasons. A Learner proposes under one of its requests; one repair of a decline is allowed |
 | `brain finish ID` | `POST /v1/internal/brain/finish` | a request of the pass with nothing to save: saved with no commit |
 
+### Learner source eligibility
+
+The Learner packet uses each retained message's key, locator, time, speaker and modality.
+It orders eligible messages by their own instants. The source read time never fills an absent
+message time. An untimed host or views request may use its explicit `Request.said_at`.
+The host has the person's voice only when both its verbatim flag and host message ID exist.
+
+`input_complete`, `held_messages` and `input_reasons` describe unavailable source work.
+Held messages have no data block. With no eligible message, the packet has no example batch.
+The Learner must leave an incomplete request pending. The writer also checks current input
+eligibility before completion, including the no-op `finish_request` path.
+
+Typed export sources remain unadmitted. They do not fall through to legacy time or speaker
+inference. These checks do not activate the new source adapters, model extraction dispatcher,
+durable source holds, or backfill queue. The bounded extraction component and its remaining
+integration requirements are in [extraction.md](extraction.md).
+
 `brain history` and `brain changed` (section 4) are not built yet; `brain fetch` is the
 `cleanup` lane's.
 
@@ -133,5 +150,5 @@ local model; `test_shell.py` runs each form through the shell.
 |---|---|
 | The runner network still reaches the host through its bridge (`grove-runner`). A host firewall rule on that interface goes with the egress allowlist. | `deploy-b` |
 | OpenCode tries to install `@opencode-ai/plugin` from npm into its config folder at first run. On the box the runner network has no internet, so the install fails; no plugin is configured. | `deploy-b` |
-| The Learner's speaker for a block: `person` for a host's verbatim words and for the views, `ai_host` for a host's account, `third_party` for every connector source. A chat's own sender needs the connector's mapping. | `ingest-b` |
+| Resolve held source identities and unknown source times through approved source facts. The packet already preserves retained speakers and refuses unsupported typed input. Durable hold resolution and requeue remain open. | `ingest-b` |
 | `brain recall` is a full-text lookup, not D7's recall. | `hosts-b` |

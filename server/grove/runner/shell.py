@@ -25,11 +25,12 @@ import sys
 
 REFUSED_EXIT = 126
 MAX_COMMAND_BYTES = 3 * 1024 * 1024
-VERBS = frozenset({"status", "pass", "recall", "get", "fetch", "propose", "finish", "--help", "-h"})
+JSON_VERBS = frozenset({"propose", "judge", "retest"})
+VERBS = frozenset({"status", "pass", "recall", "get", "fetch", "finish", "--help", "-h"}) | JSON_VERBS
 _SPECIAL = frozenset(";&|<>()$`\\*?[]{}~!#")
 _DOUBLE_QUOTE_SPECIAL = frozenset("$`\\")
 _HEREDOC = re.compile(
-    r"\s*(?P<head>brain\s+propose(?:\s+[^\s<]+)*)\s*<<(?P<dash>-?)\s*"
+    r"\s*(?P<head>brain\s+(?:propose|judge|retest)(?:\s+[^\s<]+)*)\s*<<(?P<dash>-?)\s*"
     r"(?P<quote>['\"]?)(?P<tag>[A-Za-z_][A-Za-z0-9_]*)(?P=quote)\s*"
 )
 
@@ -74,7 +75,7 @@ def _words(text: str) -> list[str]:
         raise Refused(f"brain has no verb {words[1]!r}")
     if (
         len(words) > 1
-        and words[1] == "propose"
+        and words[1] in JSON_VERBS
         and any(word == "--file" or word.startswith("--file=") for word in words[2:])
     ):
         raise Refused("brain propose takes its batch from a heredoc, not from a file")
@@ -94,8 +95,8 @@ def parse(command: str) -> tuple[list[str], bytes | None]:
             raise Refused("a second line outside a heredoc")
         return _words(first.strip()), None
     words = _words(match["head"])
-    if len(words) < 2 or words[1] != "propose":
-        raise Refused("only brain propose takes a heredoc")
+    if len(words) < 2 or words[1] not in JSON_VERBS:
+        raise Refused("only a JSON brain verb takes a heredoc")
     tag, strip_tabs = match["tag"], match["dash"] == "-"
     lines = rest.split("\n")
     body: list[str] = []

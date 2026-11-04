@@ -179,6 +179,18 @@ def finish(request_id: str) -> None:
     _emit(_call("POST", "/finish", json={"request_id": request_id}))
 
 
+@brain.command()
+def judge() -> None:
+    """Read a stored belief/source pair and record two code-controlled judgments. JSON on stdin."""
+    _emit(_call("POST", "/judge", json=_read_batch(None)))
+
+
+@brain.command()
+def retest() -> None:
+    """Read a belief's authorized external source and judge it. JSON belief_id on stdin."""
+    _emit(_call("POST", "/retest", json=_read_batch(None)))
+
+
 def main() -> None:
     brain(prog_name="brain")
 
