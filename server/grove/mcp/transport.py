@@ -18,7 +18,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from grove.api.errors import ApiError, store_unavailable
+from grove.api.errors import INVALID_ARGUMENTS, ApiError, store_unavailable
 from grove.mcp import tools as registry
 from grove.mcp.tools import Tool, ToolContext
 from grove.store.errors import STORE_UNAVAILABLE
@@ -34,11 +34,13 @@ __all__ = [
     "SUPPORTED_VERSIONS",
     "Answer",
     "ParseFailed",
+    "Preflight",
     "ScopeDenied",
     "answer",
     "error_message",
     "index_tools",
     "parse_body",
+    "preflight",
 ]
 
 # Newest first: initialize answers the newest when the client's version is not here.
@@ -79,6 +81,17 @@ class Answer:
     status: int
     body: Any = None
     session_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Preflight:
+    """Whether the checked body needs a general recall packet response.
+
+    Callers must use the same payload, selected Tool objects and context for dispatch.
+    This result neither activates a packet response nor executes any handler.
+    """
+
+    has_executable_recall: bool
 
 
 @dataclass(frozen=True)
@@ -170,6 +183,50 @@ def _check_scopes(
             raise ScopeDenied(tool)
 
 
+def _preflight_requests(
+    requests: Sequence[_Request],
+    index: Mapping[str, Tool],
+    context: ToolContext,
+    *,
+    batch: bool,
+) -> Preflight:
+    # Keep scope refusal ahead of mixed-batch refusal, including known targets whose
+    # arguments cannot execute. The whole body must pass before any handler starts.
+    _check_scopes(requests, index, context)
+    has_recall = False
+    has_write = False
+    for request in requests:
+        tool = _call_target(request, index)
+        if tool is None or not isinstance((request.params or {}).get("arguments", {}), dict):
+            continue
+        has_recall |= tool.name == "recall"
+        has_write |= tool.scope in {"grove.write", "grove.sensitive_write"}
+    if batch and has_recall and has_write:
+        raise ApiError(
+            400,
+            INVALID_ARGUMENTS,
+            "recall and write tools cannot share a batch",
+            details={"rule": "mixed_read_write_batch"},
+        )
+    return Preflight(has_executable_recall=has_recall)
+
+
+def preflight(payload: Any, tools: Sequence[Tool], context: ToolContext) -> Preflight:
+    """Pure whole-body scope and mixed-batch checks before packet activation or dispatch.
+
+    Raises ScopeDenied first for any resolved target without scope, then ApiError for a
+    batch with executable recall and a write-scoped call. Only registered requests with
+    object arguments execute; omitted arguments mean {}. Tool-specific fields are left
+    to handlers. Malformed messages, notifications and client responses retain their
+    normal treatment in answer. No input or store state is changed here.
+    """
+    index = index_tools(tools)
+    batch = isinstance(payload, list)
+    classified = [_classify(message) for message in (payload if batch else [payload])]
+    requests = [item for item in classified if isinstance(item, _Request)]
+    return _preflight_requests(requests, index, context, batch=batch)
+
+
 def _initialize(params: dict[str, Any]) -> dict[str, Any]:
     asked = params.get("protocolVersion")
     version = asked if isinstance(asked, str) and asked in SUPPORTED_VERSIONS else LATEST_VERSION
@@ -248,7 +305,8 @@ def _respond(request: _Request, index: Mapping[str, Tool], context: ToolContext)
 def answer(payload: Any, tools: Sequence[Tool], context: ToolContext) -> Answer:
     """The answer to one parsed POST body. Raises ScopeDenied before any tool runs when a call
     names a tool whose scope the token does not hold. A tool handler gets `context` (the token's
-    world only) and the call's arguments."""
+    world only) and the call's arguments. Mixed recall/write batches return a whole-body
+    typed HTTP 400 before any handler, including protocol handlers, executes."""
     index = index_tools(tools)
     batch = isinstance(payload, list)
     if batch and not payload:
@@ -258,7 +316,10 @@ def answer(payload: Any, tools: Sequence[Tool], context: ToolContext) -> Answer:
         refused = classified[0]
         return Answer(400, error_message(refused.id, INVALID_REQUEST, refused.message))
     requests = [item for item in classified if isinstance(item, _Request)]
-    _check_scopes(requests, index, context)
+    try:
+        _preflight_requests(requests, index, context, batch=batch)
+    except ApiError as refused:
+        return Answer(refused.status, refused.body())
     out: list[dict[str, Any]] = []
     session_id = None
     for item in classified:
