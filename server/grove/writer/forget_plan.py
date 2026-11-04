@@ -18,6 +18,7 @@ from grove.store.normalise import normalise_phrase
 from grove.store.replay import FORGOTTEN_MARKER, ReplayRefused
 from grove.writer.errors import InvalidRecord
 from grove.writer.forget_sources import locator_key, message_locator_key
+from grove.writer.source_types import RANK, claim_fields
 
 WORLD_TABLES = {t.name: t for t in TABLES if t.scope == "world"}
 TEXT = {
@@ -801,6 +802,31 @@ def transform(inventory: dict, plan: dict, at: datetime) -> tuple[dict, dict]:
                 counts[name] += 1
             kept.append(row)
         result[name] = kept
+    # Erasure ends evidence immediately. Recompute the same derived claim fields as
+    # D3 replay so a later rebuild cannot change the sanitized world's projection.
+    supporting = defaultdict(list)
+    for evidence in result["evidence"]:
+        if (
+            evidence.get("active")
+            and evidence.get("polarity") == "supports"
+            and evidence.get("source_type") in RANK
+        ):
+            supporting[evidence.get("target_id")].append(evidence)
+    for name, fields in (
+        ("items", ("derived_source_type", "derivation", "speaker", "modality")),
+        ("links", ("derived_source_type", "derivation")),
+    ):
+        original_rows = {row["id"]: row for row in inventory[name]}
+        for row in result[name]:
+            derived = claim_fields(supporting.get(row["id"], []))
+            changed = any(row.get(field) != derived[field] for field in fields)
+            if changed and row == original_rows.get(row["id"]):
+                counts[name] += 1
+            for field in fields:
+                if derived[field] is None:
+                    row.pop(field, None)
+                else:
+                    row[field] = derived[field]
     queue = result.setdefault("support_changed", [])
     world = next(
         (r["world_id"] for current in result.values() for r in current if r.get("world_id")), None
