@@ -30,6 +30,7 @@ from grove.api.errors import (
 )
 from grove.api.session import current_session
 from grove.config import ConfigError
+from grove.demo.screening import lumen_fixture, new_demo_screener
 from grove.demo_policy import is_demo_world
 from grove.ingest.connector import NotAnExport, Upload, providers
 from grove.ingest.take_in import take_in
@@ -163,7 +164,7 @@ def _check_declared_length(request: Request, cap: int) -> None:
 async def _spool_body(request: Request, cap: int) -> tuple[IO[bytes], int]:
     """The body in a spool that moves to disk past SPOOL_MEMORY_BYTES. The cap counts the bytes
     that arrive, because a chunked body declares no length."""
-    spool = tempfile.SpooledTemporaryFile(max_size=SPOOL_MEMORY_BYTES)
+    spool = tempfile.SpooledTemporaryFile(max_size=min(SPOOL_MEMORY_BYTES, cap))
     size = 0
     try:
         async for chunk in request.stream():
@@ -187,7 +188,10 @@ async def post_upload(request: Request) -> dict[str, Any]:
         raise ApiError(403, "scope_denied", "source imports are unavailable for this demo")
     _check_upload_type(request)
     provider = _provider(request)
-    screener = await run_in_threadpool(_screener)
+    try:
+        screener = await run_in_threadpool(_screener)
+    except ApiError as missing_policy:
+        return await _invented_upload(request, world_id, provider, missing_policy)
     cap = _cap()
     _check_declared_length(request, cap)
     if not UPLOAD_SLOTS.acquire(blocking=False):
@@ -214,6 +218,45 @@ async def post_upload(request: Request) -> dict[str, Any]:
             spool.close()
         UPLOAD_SLOTS.release()
     return result.to_api()
+
+
+async def _invented_upload(
+    request: Request, world_id: str, provider: str, missing_policy: ApiError
+) -> dict[str, Any]:
+    """The sole fixed-byte exception when ordinary screening is unavailable.
+
+    The route already resolved a real owner session and refused designated Cedar worlds.
+    An upload token, another provider, or any different bytes retain the ordinary refusal.
+    """
+    if (
+        "authorization" in request.headers
+        or provider != "claude_ai"
+        or request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json"
+        or "content-encoding" in request.headers
+    ):
+        raise missing_policy
+    fixture = lumen_fixture()
+    if not UPLOAD_SLOTS.acquire(blocking=False):
+        raise _busy()
+    spool = None
+    try:
+        try:
+            _check_declared_length(request, len(fixture))
+            spool, size = await _spool_body(request, len(fixture))
+        except ApiError:
+            raise missing_policy from None
+        if size != len(fixture) or spool.read() != fixture:
+            raise missing_policy
+        spool.seek(0)
+        result = await run_in_threadpool(
+            take_in, request.app.state.driver, world_id, provider, Upload(spool, size),
+            screener=new_demo_screener(),
+        )
+        return result.to_api()
+    finally:
+        if spool is not None:
+            spool.close()
+        UPLOAD_SLOTS.release()
 
 
 def _iso(value: object) -> object:

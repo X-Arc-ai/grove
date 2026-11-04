@@ -14,13 +14,13 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from grove.api import connectors, health, mcp, oauth, uploads, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
-from grove.api.errors import install_error_handlers, not_found
+from grove.api.errors import ApiError, install_error_handlers, not_found
 from grove.api.internal import PREFIX as INTERNAL_PREFIX
 from grove.api.internal import router as internal_router
 from grove.api.mail import Mailer
@@ -32,6 +32,7 @@ from grove.mcp.tools import DEFAULT_TOOLS, Tool
 from grove.runner.passes import PassSettings, RunnerAuth
 from grove.store.connection import Driver, open_driver
 from grove.views.session import SESSION_COOKIE
+from grove.writer.errors import InvalidRecord
 
 __all__ = ["WEB_DIST_ENV", "create_app"]
 
@@ -149,6 +150,18 @@ def create_app(
     if driver is not None:
         app.state.driver = driver
     install_error_handlers(app)
+
+    @app.exception_handler(InvalidRecord)
+    async def source_refusal(request: Request, error: InvalidRecord) -> JSONResponse:
+        if error.code == "scope_denied" and error.rule == "restricted_demo":
+            refused = ApiError(
+                403, "scope_denied", "source connections are disabled for this world"
+            )
+        else:
+            refused = ApiError(500, "internal", "the server failed")
+        return JSONResponse(
+            refused.body(), status_code=refused.status, headers={"Cache-Control": "no-store"}
+        )
 
     @app.middleware("http")
     async def no_store(

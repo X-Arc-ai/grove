@@ -297,10 +297,12 @@ class StoreHandler:
 class DemoStoreHandler:
     """Allow only code-owned invented input in the designated demo world."""
 
-    def __init__(self, store: StoreHandler | None = None) -> None:
-        self.store = store or StoreHandler()
+    def __init__(self, store: StoreHandler | None = None, *, wait_seconds: float = 5.0) -> None:
+        self.store = store
+        self.wait_seconds = wait_seconds
 
     def __call__(self, context: ToolContext, arguments: dict) -> dict:
+        from grove.demo.screening import new_demo_screener
         from grove.demo_policy import DEMO_TEXT, DemoDenied, require_designation
 
         _scope(context, "grove.write")
@@ -311,4 +313,7 @@ class DemoStoreHandler:
             require_designation(context.driver, context.world_id, context.user_id)
         except DemoDenied:
             raise ApiError(403, "scope_denied", "the restricted demo is not available") from None
-        return self.store(context, arguments)
+        store = self.store or StoreHandler(
+            screener=new_demo_screener(), wait_seconds=self.wait_seconds
+        )
+        return store(context, arguments)

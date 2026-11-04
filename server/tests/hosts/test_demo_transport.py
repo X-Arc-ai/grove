@@ -23,7 +23,19 @@ from grove.mcp.demo import DemoReleaseMiddleware
 from grove.mcp.tools import ToolContext
 from grove.store.query import WorldQuery
 from grove.writer.accounts import email_hash, ensure_demo_account
+from grove.writer.connectors import (
+    check_sync,
+    connection,
+    consume_state,
+    disconnect,
+    ensure_connection,
+    finish_sync,
+    start_sync,
+    update_connection,
+)
+from grove.writer.errors import InvalidRecord
 from grove.writer.oauth import revoke_grant
+from grove.writer.testing import plant_node
 from tests.hosts.conftest import Person
 from tests.hosts.test_mcp_transport import BASE, bearer, issue
 from tests.hosts.test_store_component import complete
@@ -290,3 +302,41 @@ def test_incomplete_body_has_a_deadline_without_authority_lock(
         assert sent[0]["status"] == 408
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("provider", ["google_calendar", "git"])
+def test_designated_world_refuses_connection_attachment(driver, demo, provider):
+    with pytest.raises(InvalidRecord) as refused:
+        ensure_connection(driver, demo.world_id, provider, "invented-connection")
+    assert refused.value.code == "scope_denied"
+
+
+def test_designated_world_refuses_connection_sync(driver, demo):
+    connector = plant_node(
+        driver, demo.world_id, "Connector", provider="git", connection_status="connected"
+    )
+    with pytest.raises(InvalidRecord) as refused:
+        start_sync(driver, demo.world_id, connector["id"])
+    assert refused.value.code == "scope_denied"
+
+
+def test_connection_authorization_refuses_but_safe_cleanup_remains(driver, demo, hosts_plant):
+    held = plant_node(
+        driver, demo.world_id, "Connector", provider="git", connection_status="connected",
+        sync_owner="old-reader", credential_ciphertext="sealed-fixture",
+    )["id"]
+    with pytest.raises(InvalidRecord):
+        consume_state(driver, demo.world_id, held, "fixture-state")
+    with pytest.raises(InvalidRecord):
+        update_connection(driver, demo.world_id, held, connection_status="connected")
+    with pytest.raises(InvalidRecord):
+        check_sync(driver, demo.world_id, held, "old-reader")
+    with pytest.raises(InvalidRecord):
+        finish_sync(driver, demo.world_id, held, "old-reader", outcome="failed", credential="new")
+    finish_sync(driver, demo.world_id, held, "old-reader", outcome="failed")
+    disconnect(driver, demo.world_id, held)
+    row = connection(driver, demo.world_id, held)
+    assert row["connection_status"] == "disconnected"
+    assert row.get("credential_ciphertext") is None
+    ordinary = hosts_plant.person()
+    assert ensure_connection(driver, ordinary.world_id, "git", "ordinary-invented-repo")
