@@ -22,6 +22,7 @@ from neo4j import Driver
 from neo4j.exceptions import DriverError, Neo4jError, TransientError
 
 from grove import clock
+from grove.store.enums import ENUMS
 from grove.store.errors import ScopeError
 from grove.store.query import PlatformQuery, WorldQuery
 from grove.store.scope import check_world_id
@@ -45,6 +46,35 @@ from grove.writer.errors import (
 from grove.writer.history import Stamp
 from grove.writer.receipts import Receipt, read_receipt
 from grove.writer.tx import WorldTx, WorldWriter
+
+# S53: what a relayed request carries. An answer or a correction from a host needs the person's
+# own words and the id of the host message that carried them (D5), or it is refused here.
+RELAYS: tuple[str, ...] = ENUMS["relay"]
+_ANSWER_RELAYS = frozenset({"answer", "correction"})
+
+
+def _check_verbatim(
+    caller: Caller, request_id: str, relay: str | None, verbatim: bool | None, message: Any
+) -> None:
+    if relay in _ANSWER_RELAYS and caller.kind not in ("person", "ai_host"):
+        # Only the person, or the AI host relaying the person, answers or corrects (D5, S53).
+        raise _refused(
+            "scope_denied",
+            "relay_caller",
+            "an answer or a correction comes from the person or the AI host only",
+            request_id,
+        )
+    if caller.kind != "ai_host" or relay not in _ANSWER_RELAYS:
+        return
+    if verbatim is not True or not isinstance(message, str) or not message.strip():
+        raise _refused(
+            "verbatim_required",
+            "verbatim_required",
+            "an answer or a correction from a host carries the person's own words "
+            "(verbatim true) and the id of the host message",
+            request_id,
+        )
+
 
 MAX_ATTEMPTS = 5
 BACKOFF_SECONDS = (30, 60, 120, 240)
@@ -451,6 +481,7 @@ class ClaimedRequest:
     host_message_id: str | None = None
     said_at: datetime | None = None
     about: list[str] | None = None
+    relay: str | None = None
 
 
 def _state_of(row: dict[str, Any], **parts: Any) -> RequestState:
@@ -495,6 +526,7 @@ def _enqueue_columns(
     host_message_id: str | None,
     said_at: datetime | str | None,
     about: list[str] | None,
+    relay: str | None = None,
 ) -> dict[str, Any]:
     if (source_id is None) == (write_source is None):
         raise ValueError("an enqueue takes source_id or write_source, exactly one")
@@ -520,7 +552,10 @@ def _enqueue_columns(
         not isinstance(about, list) or not all(isinstance(entry, str) for entry in about)
     ):
         raise ValueError("about is a list of ids")
+    if relay is not None and relay not in RELAYS:
+        raise ValueError(f"relay is one of {list(RELAYS)}")
     return {
+        "relay": relay,
         "content_key": key,
         "run_id": run_id,
         "verbatim": verbatim,
@@ -543,6 +578,7 @@ def write_request_row(
     host_message_id: str | None = None,
     said_at: datetime | str | None = None,
     about: list[str] | None = None,
+    relay: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """The enqueue, for a caller that holds a transaction. `write_source` runs only when the row is
     new, so one key stores its words once. A second call with the same content writes nothing, and
@@ -550,8 +586,17 @@ def write_request_row(
     _need_write(caller, request_id)
     check_request_id(request_id)
     columns = _enqueue_columns(
-        source_id, write_source, content_key, run_id, verbatim, host_message_id, said_at, about
+        source_id,
+        write_source,
+        content_key,
+        run_id,
+        verbatim,
+        host_message_id,
+        said_at,
+        about,
+        relay,
     )
+    _check_verbatim(caller, request_id, relay, verbatim, host_message_id)
     row, fresh = merge_row(tx, caller, request_id, clock.now(tx.world_id), version=1, **columns)
     if not fresh:
         if row.get("content_key") != columns["content_key"]:
@@ -581,6 +626,7 @@ def enqueue_request(
     host_message_id: str | None = None,
     said_at: datetime | str | None = None,
     about: list[str] | None = None,
+    relay: str | None = None,
 ) -> RequestState:
     """The request is durable once this returns. A retry with the same key is always safe, so a
     store failure raises WriteFailed, also when the connection dropped during the commit."""
@@ -588,8 +634,17 @@ def enqueue_request(
     check_world_id(world_id)
     check_request_id(request_id)
     _enqueue_columns(
-        source_id, write_source, content_key, run_id, verbatim, host_message_id, said_at, about
+        source_id,
+        write_source,
+        content_key,
+        run_id,
+        verbatim,
+        host_message_id,
+        said_at,
+        about,
+        relay,
     )
+    _check_verbatim(caller, request_id, relay, verbatim, host_message_id)
 
     def work(tx: WorldTx) -> dict[str, Any]:
         row, _ = write_request_row(
@@ -604,6 +659,7 @@ def enqueue_request(
             host_message_id=host_message_id,
             said_at=said_at,
             about=about,
+            relay=relay,
         )
         return row
 
@@ -662,6 +718,7 @@ def _claim_one(
         host_message_id=row.get("host_message_id"),
         said_at=row.get("said_at"),
         about=row.get("about"),
+        relay=row.get("relay"),
     )
 
 

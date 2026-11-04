@@ -361,7 +361,7 @@ REGISTRY_WRITES = {
 OWNERS = {
     "Kind": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
     "Meaning": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
-    "PropertyName": ("server/grove/writer/ontology.py",),
+    "PropertyName": ("server/grove/writer/ontology.py", "server/grove/writer/worlds.py"),
     "OntologyChange": ("server/grove/writer/ontology.py",),
     "Judgment": ("server/grove/writer/judgments.py",),
 }

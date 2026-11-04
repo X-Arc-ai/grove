@@ -10,6 +10,7 @@ import subprocess
 import time
 
 import pytest
+import yaml
 
 from grove import clock
 from tests.deploy.conftest import BASE, FP, HOST, OTHER_SHA, SHA
@@ -1108,6 +1109,161 @@ def test_a_screening_folder_that_is_a_link_stops_the_deploy(box):
     assert "the screening folder is not a plain folder" in done.stderr
     assert not _chowns(box)
     assert _mode(elsewhere) == 0o700
+
+
+# ---- a network transition with existing service endpoints -----------------------------------
+
+
+@pytest.fixture
+def network_box(box):
+    revisions = box.network_revisions()
+    assert box.run("install-host.sh").returncode == 0
+    initial = box.network_state()
+    credentials = {
+        path: (path.read_bytes(), _mode(path)) for path in box.etc.iterdir() if path.is_file()
+    }
+    yield box, revisions, initial
+    final = box.network_state()
+    assert final["containers"]["neo4j"] == initial["containers"]["neo4j"]
+    assert final["volumes"] == initial["volumes"]
+    for field in ("id", "key", "internal", "options"):
+        assert final["networks"]["grove_store"][field] == initial["networks"]["grove_store"][field]
+    for path, expected in credentials.items():
+        assert (path.read_bytes(), _mode(path)) == expected
+    assert not any(
+        forbidden in call
+        for call in box.calls()
+        for forbidden in (
+            " down",
+            "volume rm",
+            "volume prune",
+            "network disconnect",
+            "stop neo4j",
+            "rm neo4j",
+        )
+    )
+    assert not any(event[:2] == ["remove-container", "neo4j"] for event in final["events"])
+    # These commands are fake. No agent, model gateway, or source upload is part of a deploy.
+    assert not any("opencode" in call or "/v1/internal/runner/due" in call for call in box.calls())
+
+
+def test_runner_network_upgrade_with_active_legacy_endpoints(network_box):
+    box, _, initial = network_box
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stdout + done.stderr
+    state = box.network_state()
+    assert state["networks"]["grove_runner"]["id"] == initial["networks"]["grove_runner"]["id"]
+    assert state["networks"]["grove_runner"]["endpoints"] == []
+    assert state["networks"]["grove_runner_v2"]["key"] == "runner_v2"
+    assert ["migration", SHA, OTHER_SHA] in state["events"]
+    migration = state["events"].index(["migration", SHA, OTHER_SHA])
+    replacements = [i for i, event in enumerate(state["events"]) if event[0] == "remove-container"]
+    assert replacements and min(replacements) > migration
+    assert not any(event[0] == "disconnect-for-rename" for event in state["events"])
+    assert "ok healthz build=" + SHA in done.stdout
+
+
+@pytest.mark.parametrize("failure", ["create", "migrate"])
+def test_old_entrypoint_preserves_legacy_services_before_target_promotion(network_box, failure):
+    box, _, initial = network_box
+    done = box.run("deploy.sh", SHA, FAKE_NETWORK_FAILURE=failure)
+    assert done.returncode != 0
+    assert (
+        f"synthetic {'network creation' if failure == 'create' else 'migration'} failure"
+        in done.stderr
+    )
+    state = box.network_state()
+    assert state["containers"] == initial["containers"]
+    assert state["networks"]["grove_runner"] == initial["networks"]["grove_runner"]
+    assert (box.root / "fake" / "HEAD").read_text() == OTHER_SHA
+    assert (box.state / "deployed.sha").read_text().strip() == OTHER_SHA
+    assert "synthetic legacy revision" in (box.nginx / "sites-enabled/grove-https.conf").read_text()
+    assert "host files are back at " + OTHER_SHA in done.stdout
+    assert box.run("smoke.sh", BASE, OTHER_SHA).returncode == 0
+
+
+def test_runner_network_name_only_change_does_not_preserve_legacy_network(network_box):
+    box, revisions, _ = network_box
+    path = revisions / SHA / "deploy/compose.yml"
+    config = yaml.safe_load(path.read_text())
+    definition = config["networks"].pop("runner_v2")
+    config["networks"]["runner"] = definition
+    for service in config["services"].values():
+        service["networks"] = [
+            "runner" if key == "runner_v2" else key for key in service["networks"]
+        ]
+    path.write_text(yaml.safe_dump(config, sort_keys=False))
+    done = box.run("deploy.sh", SHA, FAKE_NETWORK_FAILURE="migrate")
+    assert done.returncode != 0
+    state = box.network_state()
+    assert any(event[0] == "disconnect-for-rename" for event in state["events"])
+    assert "grove_runner" not in state["networks"]
+    # A restored marker and checkout cannot make a disconnected legacy API healthy.
+    assert (box.state / "deployed.sha").read_text().strip() == OTHER_SHA
+    assert box.run("smoke.sh", BASE, OTHER_SHA).returncode != 0
+
+
+def test_target_service_start_failure_preserves_truthful_build_state(network_box):
+    box, _, _ = network_box
+    done = box.run("deploy.sh", SHA, FAKE_NETWORK_FAILURE="start")
+    assert done.returncode != 0
+    assert "runs, services NOT healthy" in box.log_text("deploy.log")
+    assert "host files are back" not in done.stdout
+    assert (box.root / "fake" / "HEAD").read_text() == SHA
+    assert (box.state / "deployed.sha").read_text().strip() == SHA
+    assert (box.state / "previous.sha").read_text().strip() == OTHER_SHA
+    assert box.run("smoke.sh", BASE, SHA).returncode != 0
+
+
+def test_same_sha_redeploy_reuses_the_new_runner_network(network_box):
+    box, _, _ = network_box
+    assert box.run("deploy.sh", SHA).returncode == 0
+    identity = box.network_state()["networks"]["grove_runner_v2"]["id"]
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stdout + done.stderr
+    state = box.network_state()
+    assert state["networks"]["grove_runner_v2"]["id"] == identity
+    assert state["events"].count(["create-network", "grove_runner_v2"]) == 1
+    assert (box.state / "previous.sha").read_text().strip() == OTHER_SHA
+
+
+@pytest.mark.parametrize("failed_start", [False, True])
+def test_rollback_reuses_legacy_network_and_removes_gateway_orphan(network_box, failed_start):
+    box, _, initial = network_box
+    first = box.run("deploy.sh", SHA, FAKE_NETWORK_FAILURE="start" if failed_start else "")
+    assert (first.returncode != 0) == failed_start
+    assert "gateway" in box.network_state()["containers"]
+    done = box.run("deploy.sh", OTHER_SHA)
+    assert done.returncode == 0, done.stdout + done.stderr
+    state = box.network_state()
+    assert state["networks"]["grove_runner"]["id"] == initial["networks"]["grove_runner"]["id"]
+    assert state["networks"]["grove_runner_v2"]["endpoints"] == []
+    assert "gateway" not in state["containers"]
+    assert ["remove-container", "gateway"] in state["events"]
+    assert (box.state / "deployed.sha").read_text().strip() == OTHER_SHA
+    assert (box.state / "previous.sha").read_text().strip() == SHA
+    assert "ok healthz build=" + OTHER_SHA in done.stdout
+
+
+def test_network_health_does_not_trust_the_deployed_marker(network_box):
+    box, _, _ = network_box
+    box.deployed(SHA)
+    assert box.run("smoke.sh", BASE, OTHER_SHA).returncode == 0
+    state = box.network_state()
+    del state["containers"]["api"]
+    with open(box.env["FAKE_NETWORK_STATE"], "w") as handle:
+        json.dump(state, handle)
+    box.deployed(OTHER_SHA)
+    assert box.run("smoke.sh", BASE, OTHER_SHA).returncode != 0
+
+
+def test_network_transition_respects_the_existing_host_lock(network_box):
+    box, _, initial = network_box
+    done = box.run("deploy.sh", SHA, FAKE_FLOCK_STATUS="1")
+    assert done.returncode != 0
+    assert "holds" in done.stderr
+    assert box.network_state() == initial
+    assert not [call for call in box.calls() if call.startswith("docker ")]
 
 
 # ---- the runner lane: the gateway -------------------------------------------------------------
