@@ -218,7 +218,9 @@ def _write[T](driver: Driver, work: Callable[[ManagedTransaction], T]) -> T:
     def unit(tx: ManagedTransaction) -> T:
         return work(tx)
 
-    with driver.session(database=DATABASE) as session:
+    from grove.demo_guard import exclusive_authority
+
+    with exclusive_authority(), driver.session(database=DATABASE) as session:
         return session.execute_write(unit)
 
 

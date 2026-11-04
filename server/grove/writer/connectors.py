@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Any
 
 from grove import clock
+from grove.demo_policy import designation_in_tx, has_designation
 from grove.ids import new_id
 from grove.ingest.connector import message_key
 from grove.store.query import WorldQuery
@@ -46,6 +47,7 @@ def ensure_connection(driver, world: str, provider: str, external_id: str) -> st
 
     def work(tx: WorldTx):
         tx.lock_world()
+        _refuse_demo(tx)
         rows = tx.run(
             "MATCH (c:Connector {provider: $provider, instance_key: $key}) RETURN c.id AS id",
             provider=provider,
@@ -80,6 +82,25 @@ def ensure_connection(driver, world: str, provider: str, external_id: str) -> st
     return WorldWriter(driver, world).transaction(work)
 
 
+def _refuse_demo(tx: WorldTx) -> None:
+    if has_designation(designation_in_tx(tx) or {}):
+        raise InvalidRecord(
+            "scope_denied", "restricted_demo", "source connections are disabled for this world"
+        )
+
+
+def _clears_authority(columns: dict) -> bool:
+    clearing = {
+        "credential_ciphertext", "oauth_state_hash", "oauth_expires_at",
+        "sync_cursor", "event_versions",
+    }
+    return all(
+        (key in clearing and value is None)
+        or (key == "connection_status" and value == "disconnected")
+        for key, value in columns.items()
+    )
+
+
 def _locked(tx: WorldTx, connection_id: str) -> dict:
     tx.lock_world()
     rows = tx.run("MATCH (c:Connector {id: $id}) RETURN c", id=connection_id)
@@ -102,6 +123,8 @@ def update_connection(driver, world: str, connection_id: str, **columns: Any) ->
 
     def work(tx: WorldTx):
         row = _locked(tx, connection_id)
+        if not _clears_authority(columns):
+            _refuse_demo(tx)
         until = row.get("sync_until")
         if until and until > clock.now(world):
             raise ConnectionBusy()
@@ -115,6 +138,7 @@ def update_connection(driver, world: str, connection_id: str, **columns: Any) ->
 def consume_state(driver, world: str, connection_id: str, state_hash: str) -> dict | None:
     def work(tx: WorldTx):
         row = _locked(tx, connection_id)
+        _refuse_demo(tx)
         until = row.get("oauth_expires_at")
         if row.get("oauth_state_hash") != state_hash or not until or until <= clock.now(world):
             return None
@@ -131,6 +155,7 @@ def consume_state(driver, world: str, connection_id: str, state_hash: str) -> di
 def start_sync(driver, world: str, connection_id: str) -> tuple[dict, str]:
     def work(tx: WorldTx):
         row = _locked(tx, connection_id)
+        _refuse_demo(tx)
         now = clock.now(world)
         if row.get("sync_until") and row["sync_until"] > now:
             raise ConnectionBusy()
@@ -158,6 +183,7 @@ def require_sync(tx: WorldTx, connection_id: str, owner: str) -> None:
     share this transaction; a prior check cannot authorize a later commit.
     """
     row = _locked(tx, connection_id)
+    _refuse_demo(tx)
     until = row.get("sync_until")
     if (
         not owner
@@ -195,6 +221,8 @@ def finish_sync(
 
     def work(tx: WorldTx):
         row = _locked(tx, connection_id)
+        if outcome not in ("failed", "denied") or credential is not None:
+            _refuse_demo(tx)
         if row.get("sync_owner") != owner or row.get("connection_status") != "connected":
             raise ConnectionBusy()
         if outcome not in ("failed", "denied"):
