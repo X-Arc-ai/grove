@@ -256,6 +256,18 @@ For an approved mixed baseline, supply both `GROVE_CUTOVER_BASELINE_MANIFEST` an
 file; the second binds its exact bytes. Alternatively, pass `--baseline-manifest` and
 `--baseline-manifest-sha256` to `launch` or `run`. `launch` passes this binding through the
 environment to the target `apply.sh`. A manifest by itself grants no host or deployment action.
+The internal `install` child discards its inherited manifest variables: installation is not a
+cutover request. The parent retains both values for the later `run` call. Explicit manifest
+options on `install` still refuse. Do not persist these attempt-specific variables in recovery
+or backup environments.
+
+Before it starts the parent, `launch` checks the journal, then the manifest hash, request,
+target, served baseline, smoke hash, lock metadata, exact container inventory, and each writer's
+image/revision. A mismatch refuses before checkout, installer, fallback, or service changes.
+This check is read-only and shares the launch deadline. `run` repeats its existing checks
+under the host/admission/seed locks and after image build. The separately authorized release
+wrapper must still hold its operator lock and establish complete journal/database equality.
+Installation can reload nginx after the launch check and before `run` starts.
 
 The file must have mode 0600, the operator UID, one hard link, no symlink ancestors, and at most
 65,536 bytes. Its exact schema is:
@@ -264,14 +276,20 @@ The file must have mode 0600, the operator UID, one hard link, no symlink ancest
 | --- | --- |
 | `version` | Integer `1` |
 | `request`, `target`, `baseline`, `smoke_sha256` | Exact values of this cutover request |
-| `locks` | Exactly `host`, `admission`, `seed`; each has `path`, `device`, `inode` |
+| `locks` | Exactly `host`, `admission`, `seed`; each has `path`, `device`, `inode`, `uid`, `gid`, `mode` |
 | `services` | Exactly `api`, `runner`, `gateway`, `neo4j`; each has `revision`, `container` |
 | `retained` | At most 32 exact container snapshots; no service-name allowlist |
 
-The three lock files must already exist, have distinct identities, mode 0600, one hard link,
-and the operator UID. Their paths must match the host-lock configuration, the state directory's
-`cutover-admission.lock`, and the request's seed path. The existing host-lock descriptor check
-remains mandatory. No absent admission lock is created in manifest mode.
+The three lock files must already exist, have distinct identities and one hard link, and match
+every bound metadata field. UID, GID, device, inode, and mode are nonnegative JSON integers;
+`mode` encodes permission bits numerically (384 for 0600, 420 for 0644). The host lock belongs
+to the operator UID/GID and allows 0600 or 0644. The admission lock belongs to the operator
+UID/GID and requires 0600. The seed lock belongs to API UID/GID 10001 and requires 0600.
+No lock is chmodded, chowned, recreated, or replaced to fit these rules. Paths must match the
+host-lock configuration, the state directory's `cutover-admission.lock`, and the request's
+seed path, without symlinks. The existing host-lock descriptor check remains mandatory.
+No absent admission lock is created in manifest mode. The manifest file itself remains private
+to the operator at 0600; the host lock's broader read permission does not apply to it.
 
 Each writer's `revision` is its own full 40-character source SHA. The API, runner, and gateway
 image tags are resolved separately and must match both the observed immutable image and the
