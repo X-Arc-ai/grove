@@ -114,8 +114,8 @@ its bounded pass does not establish real user or Muse acceptance.
 
 A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC:
 one source, one episode, and two kept messages; the exact repeat added zero new records.
-The upload did not change the graph. Real prepared-account Muse use remains **NOT RUN**,
-and the manual account/Muse flow remains stopped.
+The upload did not change the graph. At that time, real prepared-account Muse use was **NOT RUN**.
+The [later Muse update](docs/submission-status.md#prepared-account-muse-update) records the run.
 
 Historical release evidence at 2026-11-04 19:04:34 UTC: Request19 closure and separate
 verification PASSED. At that time, the PR60 API and retained runner/gateway revisions were distinct.
