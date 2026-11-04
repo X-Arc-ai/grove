@@ -120,13 +120,24 @@ RETURN items, evidence, entries, values, sources, requests, connectors, screenin
 
 # Keep the legacy capture for direct Cedar contract controls. Runtime selects
 # source-bound message keys before any content or provenance crosses the wire.
+# Reserve from the actual Cedar set in this same statement, including an overflow sentinel.
+# Cedar overflow and duplicate rich identities still reach the unchanged validation refusal.
 _TOPIC_CAPTURE = _CAPTURE.replace(
     "MATCH (i:Item) WHERE i.id <> $own\n  WITH i LIMIT $item_cap",
-    """MATCH (i:Item), (e:Evidence), (s:Source)
+    """CALL () {
+    MATCH (i:Item), (e:Evidence), (s:Source)
+    WHERE i.id <> $own AND e.target_type = 'item' AND e.target_id = i.id
+      AND e.source_id = s.id AND s.demo_version = $cedar_version
+    WITH DISTINCT i ORDER BY i.id LIMIT $item_cap
+    RETURN collect(i.id) AS cedar_ids
+  }
+  WITH cedar_ids, CASE WHEN size(cedar_ids) < $item_cap
+    THEN $item_cap - 1 - size(cedar_ids) ELSE 0 END AS rich_capacity
+  MATCH (i:Item), (e:Evidence), (s:Source)
   WHERE i.id <> $own AND e.target_type = 'item' AND e.target_id = i.id
     AND e.source_id = s.id AND (
-      s.demo_version = $cedar_version OR
-      (s.demo_version = $rich_version AND e.message_key IN $message_keys))
+      (s.demo_version = $cedar_version AND i.id IN cedar_ids) OR
+      (s.demo_version = $rich_version AND e.message_key IN $message_keys[..rich_capacity]))
   WITH DISTINCT i ORDER BY i.id LIMIT $item_cap""",
 )
 
@@ -533,11 +544,9 @@ class DemoRecallHandler:
             raise _refused()
         now = clock.now(context.world_id)
         selected = topic_items(about, MAX_ITEMS + 1)
-        selection_truncated = len(selected) > MAX_ITEMS - 1
-        titles = set(selected[: MAX_ITEMS - 1])
-        message_keys = [
-            item.key for story in stories() for item in story.items if item.title in titles
-        ]
+        titles = set(selected[:MAX_ITEMS])
+        keys_by_title = {item.title: item.key for story in stories() for item in story.items}
+        message_keys = [keys_by_title[title] for title in selected[:MAX_ITEMS]]
         try:
             captured = WorldQuery(context.driver, context.world_id, timeout=5).read(
                 _TOPIC_CAPTURE,
@@ -554,6 +563,17 @@ class DemoRecallHandler:
             if len(captured) != 1:
                 raise _refused()
             items = _validate(captured[0], context.world_id, now)
+            cedar_sources = {
+                source["id"]
+                for source in captured[0]["sources"]
+                if source.get("demo_version") == DEMO_VERSION
+            }
+            cedar_ids = {
+                evidence["target_id"]
+                for evidence in captured[0]["evidence"]
+                if evidence.get("source_id") in cedar_sources
+            }
+            selection_truncated = len(selected) > MAX_ITEMS - len(cedar_ids)
         except Neo4jError as error:
             if error.is_retryable():
                 raise unavailable("the demo evidence could not be read") from None
@@ -580,7 +600,7 @@ class DemoRecallHandler:
             "mode": "restricted_demo",
             "as_of": now.isoformat(),
             "answer": "truncated"
-            if shown and (total > limit or selection_truncated)
+            if total > limit or selection_truncated
             else "found"
             if shown
             else "no_record",
@@ -590,7 +610,7 @@ class DemoRecallHandler:
                 "returned": len(shown),
                 "total": total,
                 "total_scope": "validated selected facts",
-                "truncated": bool(shown and (total > limit or selection_truncated)),
+                "truncated": total > limit or selection_truncated,
                 "live_state_checked": False,
             },
             "available_topics": available,
