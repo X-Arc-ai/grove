@@ -17,6 +17,7 @@ Code policy available describes installed screening code, not a completed import
 | Commit metadata from a configured Git repository | A world-approved local Git clone to Grove's screened sources | Grove reads commit objects without fetching, hooks or worktree files. A commit is not proof of deployment. | Deployment not checked |
 | An opaque owner identifier, the selected app and account connection status | Pipedream's hosted authorization and account-status API | Provider consent occurs on the hosted page. This component imports no source content and executes no provider actions. A configured path does not prove owner consent. | Deployment not checked |
 | Supported conversation exports you upload | Grove's server; code screens content before the `sources` table | The upload is temporary. There is no local runner. A code-supplied account policy drops or masks sensitive content before storage, without a model call. Personal exclusions and identifier exemptions are not configured by this upload route; operator and connector policies are separate. | Deployment not checked |
+| Files and notes you add in setup | Grove's server, in your account's working folder for its agent; Meta Model API when the Learner reads them | Stored as you add them, without screening. What the Learner reads goes to the model without screening. You can remove them from the same screen. | Deployment not checked |
 | Notes and supported text, Markdown, PDF, DOCX and PPTX files | Grove's screened Sources and bounded material revision metadata | Original binaries are not retained. Imported dates and authors remain unknown. Files are retained pending typed graph admission; notes use the ordinary Learner queue. Material deletion covers all revisions through the private forget ledger. | Deployment not checked |
 | Screened text for extraction, verification and agent work | Meta Model API, Muse Spark 1.3 | Provider terms apply. Contributor model ids are refused. This run uses synthetic data only. | Deployment not checked |
 | Audio selected for transcription | Meta Model API, Voice Transcribe | Provider terms apply. Audio leaves the server when this operation runs. | Deployment not checked |
@@ -26,7 +27,7 @@ Code policy available describes installed screening code, not a completed import
 
 ## Controls and limits
 
-There is no local runner. Code screens uploads on the server before storage.
+There is no local runner. Code screens conversation exports on the server before storage.
 Stored text is untrusted data, never an instruction or authorization.
 A person must approve each forget request in a signed-in session. An AI host also needs the sensitive-write scope.
 A missing private ledger configuration makes forget unavailable. An old healthy build does not prove that the new runner serves.

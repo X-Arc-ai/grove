@@ -17,6 +17,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 
 from grove.api import (
+    agent_files,
     belief_tools,
     cascade,
     connectors,
@@ -98,20 +99,9 @@ def _add_web_pages(app: FastAPI, folder: str) -> None:
         return page("index.html", {"Cache-Control": "no-store"})
 
     @app.get("/demo/onboarding", include_in_schema=False)
-    def demo_onboarding() -> FileResponse:
-        """Public invented-data illustration; no authentication or store access."""
-        return page(
-            "demo-onboarding.html",
-            {
-                "Cache-Control": "no-store",
-                "Referrer-Policy": "no-referrer",
-                "Content-Security-Policy": (
-                    "default-src 'self' data:; script-src 'self' 'unsafe-inline'; "
-                    "style-src 'self' 'unsafe-inline'; connect-src 'none'; "
-                    "form-action 'none'; object-src 'none'; base-uri 'none'"
-                ),
-            },
-        )
+    def demo_onboarding() -> RedirectResponse:
+        """Old recording links return to the complete authenticated onboarding."""
+        return RedirectResponse("/", status_code=303, headers={"Cache-Control": "no-store"})
 
     @app.get("/privacy", include_in_schema=False)
     def privacy() -> FileResponse:
@@ -255,6 +245,7 @@ def create_app(
     app.include_router(forget.public_router)
     app.include_router(connectors.router)
     app.include_router(pipedream.router)
+    app.include_router(agent_files.router)
     app.include_router(auth_router)
     app.include_router(internal_router)
     app.include_router(belief_tools.router)

@@ -2,8 +2,9 @@
 public homepage (home.html), privacy, consent and forget pages.
 
 Standard library only; runs under the Mac's /usr/bin/python3 (3.9) and under 3.12.
-The ordinary views load no fixture. Their bundle compiles the fixture hook out.
-Only demo-onboarding.html carries the tracked invented fixture and page-memory state.
+The ordinary views compile the legacy fixture hook out. The authenticated Claude
+preview loads invented data on demand and keeps its graph in page memory.
+The archived demo-onboarding.html embeds the invented data for offline checks.
 The privacy generator writes docs/data-flow.md; the page includes every generated table row.
 The consent page is a template: the API fills its two marks at each /authorize (grove.oauth.consent).
 """
@@ -14,6 +15,8 @@ import importlib.util
 import json
 import re
 from pathlib import Path
+
+import preview_corpus
 
 ROOT = Path(__file__).resolve().parent
 FIXTURE_HOOK = "window.GROVE_FIXTURE"
@@ -75,13 +78,18 @@ def css(match):
 
 def script(match, demo=False):
     name = Path(match[1]).name
-    if demo and name in {"live.js", "pipedream.js"}:
+    if demo and name in {"live.js", "pipedream.js", "conversation-preview.js"}:
         return ""
     text = (ROOT / match[1].removeprefix("./")).read_text(encoding="utf-8")
+    if name == "conversation-preview.js":
+        data = preview_corpus.cut(json.loads((ROOT / "demo.synthetic.json").read_text(encoding="utf-8")))
+        payload = "window.GroveClaudePreviewData=" + json.dumps(data).replace("<", "\\u003c") + ";"
+        url = emit_asset(payload.encode("utf-8"), ".js", "text/javascript")
+        text = "GroveDeferred.register('claude-preview'," + json.dumps(url) + ");\n" + text
     if name in DEFERRED:
         url = emit_asset(text.encode("utf-8"), ".js", "text/javascript")
         return "<script>GroveDeferred.register(" + json.dumps(DEFERRED[name]) + "," + json.dumps(url) + ");</script>"
-    # The ordinary bundle never reads a fixture; the explicit demo is separate.
+    # The legacy bootstrap remains exclusive to the archived standalone demo.
     if not demo:
         text = text.replace(FIXTURE_HOOK, "undefined")
     elif name in {"simulation.js", "native-app.js", "agents.js"}:
@@ -148,7 +156,7 @@ def bundle(name):
 
 
 def demo_bundle():
-    """The explicit demo is the only artifact that carries invented graph data."""
+    """Keep the legacy standalone artifact available for offline regression checks."""
     html = (ROOT / "index.html").read_text(encoding="utf-8")
     fixture = json.loads((ROOT / "demo.synthetic.json").read_text(encoding="utf-8"))
     bootstrap = "<script>window.GROVE_FIXTURE=" + json.dumps(fixture).replace("<", "\\u003c") + ";</script>"

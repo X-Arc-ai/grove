@@ -123,8 +123,8 @@ Two guards, and either one alone stops the R10 forms it covers:
 - OpenCode's own: `runner/opencode.json` and each agent file deny every tool (`"*": "deny"`) and
   allow bash only for `brain *`; `grove` may also hand a pass to `learner`, `curator` or
   `connector` with the task tool. On 1.18.32 this refuses chained, `&&`, piped, substituted,
-  backtick and two-line commands, and a call to write, edit, webfetch or read (those tools are not
-  offered). It lets `brain get x > file` and `brain propose < file` through.
+  backtick and two-line commands, and a call to write, edit or webfetch (those tools are not
+  offered). Only the Learner is offered read, and OpenCode refuses a path outside the working folder. It lets `brain get x > file` and `brain propose < file` through.
 - `grove-brain-shell`, which the runner sets as SHELL (OpenCode runs each call as
   `$SHELL -c "<command>"`). No shell runs: it splits the words and starts `brain` by its full
   path, refusing every shell character outside single quotes, every second line, and
@@ -152,3 +152,7 @@ local model; `test_shell.py` runs each form through the shell.
 | OpenCode tries to install `@opencode-ai/plugin` from npm into its config folder at first run. On the box the runner network has no internet, so the install fails; no plugin is configured. | `deploy-b` |
 | Resolve held source identities and unknown source times through approved source facts. The packet already preserves retained speakers and refuses unsupported typed input. Durable hold resolution and requeue remain open. | `ingest-b` |
 | `brain recall` is a full-text lookup, not D7's recall. | `hosts-b` |
+
+## Added files
+
+The files and notes a person adds in setup go to `/var/lib/grove-runner/worlds/<world id>/` through `grove.api.agent_files`. Notes are in its `notes/` folder. Once that folder exists, the runner starts each pass of the world in it, so it is the working folder of OpenCode. The API owns the folder and the runner's group reads it. OpenCode's session store and logs stay in the pass folder, which goes when the pass ends. Only the Learner has OpenCode's `read` tool, and OpenCode refuses any path outside the working folder. A file is not screened, so what the Learner reads goes to the model through the gateway as it is.
