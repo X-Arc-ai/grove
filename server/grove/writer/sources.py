@@ -27,6 +27,7 @@ from grove import clock
 from grove.ids import new_id
 from grove.screening import ScreenedSource
 from grove.store.enums import ENUMS
+from grove.writer.calendar_facts import calendar_facts_json
 from grove.writer.clocks import ClockError, parse_instant
 from grove.writer.errors import InvalidRecord
 from grove.writer.history import compact
@@ -330,6 +331,7 @@ def write_screened_source(
     parser_version: str,
     speakers: Mapping[str, Mapping[str, str]] | None = None,
     document: bool = False,
+    calendar_events: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Write one :Source and its :ScreeningReceipt in the caller's transaction.
 
@@ -349,7 +351,12 @@ def write_screened_source(
         raise ValueError("parser_version is not a code")
     counts = _checked_counts(screened.counts)
     speakers_text = speakers_json(speakers)
-    _connector(tx, connector_id)
+    connector = _connector(tx, connector_id)
+    if calendar_events is not None and connector.get("type") != "calendar":
+        raise InvalidRecord(
+            "invalid_arguments", "calendar_facts", "Calendar facts need a Calendar connector"
+        )
+    calendar_text = calendar_facts_json(calendar_events, screened.messages)
 
     at = clock.now(_world_of(tx))
     tx.run(
@@ -364,6 +371,7 @@ def write_screened_source(
             "untrusted": True,
             **({"speakers": speakers_text} if speakers_text else {}),
             **({"document": True} if document is True else {}),
+            **({"calendar_events": calendar_text} if calendar_text else {}),
             "forget_state": _KEPT,
             "version": _FIRST_VERSION,
             "touched_at": at,
@@ -390,6 +398,7 @@ def add_screened_source(
     source_id: str | None = None,
     speakers: Mapping[str, Mapping[str, str]] | None = None,
     document: bool = False,
+    calendar_events: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """write_screened_source in a transaction of its own. With no source_id it mints one."""
 
@@ -405,6 +414,7 @@ def add_screened_source(
             parser_version=parser_version,
             speakers=speakers,
             document=document,
+            calendar_events=calendar_events,
         )
 
     return writer.transaction(work)
