@@ -217,6 +217,34 @@ ENUMS: dict[str, tuple[str, ...]] = {
     # Line 2172.
     "question_class": ("decision", "fact_only_the_person_holds", "go_on_outward_action"),
     "question_state": ("open", "answered", "withdrawn"),
+    # Inactive D11 lifecycle; a question transfer does not resolve its source work.
+    "question_work_state": (
+        "pending",
+        "running",
+        "deferred",
+        "waiting_person",
+        "waiting_permission",
+        "resolved",
+        "cancelled",
+    ),
+    "question_answer_state": (
+        "accepted",
+        "applying",
+        "applied",
+        "declined",
+        "stale",
+        "cancelled",
+        "unavailable",
+    ),
+    "legwork_result": (
+        "evidence_found",
+        "no_match",
+        "no_eligible_source",
+        "person_only",
+        "permission_required",
+        "unavailable",
+        "incomplete",
+    ),
     # Line 2198.
     "growth_test": ("coverage", "fidelity", "parsimony"),
     # Line 2424. The gap of short_of_target is checks.state_gap.
