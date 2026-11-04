@@ -33,14 +33,27 @@ def snapshot_busy() -> ApiError:
 
 @dataclass(frozen=True)
 class Deadline:
-    at: float
+    at: float | None
     cancelled: threading.Event = field(default_factory=threading.Event, compare=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
 
     def remaining(self) -> float:
-        seconds = self.at - clock.monotonic()
-        if self.cancelled.is_set() or seconds <= 0:
-            raise snapshot_busy()
-        return seconds
+        with self._lock:
+            if self.at is None or self.cancelled.is_set():
+                raise snapshot_busy()
+            seconds = self.at - clock.monotonic()
+            if seconds <= 0:
+                raise snapshot_busy()
+            return seconds
+
+    def _tighten(self, at: float) -> None:
+        # The shared handle stays the same in copied worker contexts. Its bound may only
+        # move earlier; callers cannot replace or revive an expired/cancelled deadline.
+        with self._lock:
+            now = clock.monotonic()
+            if self.cancelled.is_set() or at <= now or (self.at is not None and self.at <= now):
+                raise snapshot_busy()
+            object.__setattr__(self, "at", at if self.at is None else min(self.at, at))
 
 
 _DEADLINE: ContextVar[Deadline | None] = ContextVar("packet_deadline", default=None)
@@ -70,6 +83,58 @@ async def request_budget(*, seconds: float = REQUEST_SECONDS) -> AsyncIterator[D
         async with asyncio.timeout(current.remaining()):
             yield current
             current.remaining()
+    except TimeoutError:
+        raise snapshot_busy() from None
+    finally:
+        current.cancelled.set()
+        _DEADLINE.reset(token)
+
+
+class ResponseBudget:
+    """One deferred deadline owned by the outer ASGI task, never by a tool worker.
+
+    Activation belongs on this event loop before a read handler runs. Reading the active handle
+    is safe in copied contexts. A trusted owner can shorten it to a credential/capture lifetime.
+    The owner still must validate that lifetime and the final transport handoff.
+    """
+
+    def __init__(self, current: Deadline, timeout: asyncio.Timeout) -> None:
+        self.current = current
+        self._timeout = timeout
+        self._loop = asyncio.get_running_loop()
+
+    @property
+    def active(self) -> bool:
+        return self.current.at is not None
+
+    def activate(self, *, seconds: float = REQUEST_SECONDS) -> Deadline:
+        if asyncio.get_running_loop() is not self._loop:
+            raise snapshot_busy()
+        if isinstance(seconds, bool) or not 0 < seconds <= REQUEST_SECONDS:
+            raise ValueError("the response budget must be positive and at most two seconds")
+        self.current._tighten(clock.monotonic() + seconds)
+        # asyncio owns its clock domain. Convert the remaining duration through its public
+        # timeout factory so a test Clock need not have the event loop's monotonic origin.
+        self._timeout.reschedule(asyncio.timeout(self.current.remaining()).when())
+        return self.current
+
+
+@asynccontextmanager
+async def response_budget() -> AsyncIterator[ResponseBudget]:
+    """Install an inactive handle without imposing a read timeout on an unrelated request."""
+    parent = _DEADLINE.get()
+    if parent is not None:
+        parent.remaining()
+    current = Deadline(parent.at if parent is not None else None)
+    token = _DEADLINE.set(current)
+    try:
+        async with asyncio.timeout(None) as timeout:
+            budget = ResponseBudget(current, timeout)
+            if parent is not None:
+                budget.activate(seconds=min(parent.remaining(), REQUEST_SECONDS))
+            yield budget
+            if budget.active:
+                current.remaining()
     except TimeoutError:
         raise snapshot_busy() from None
     finally:
