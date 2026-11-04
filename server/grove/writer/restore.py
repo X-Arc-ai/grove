@@ -222,7 +222,14 @@ def _snapshot_rows(world_id: str, snapshot: Mapping[str, Any]) -> dict[tuple[str
             properties = {key: _untag(value) for key, value in row["properties"].items()}
             if properties.get("world_id", world_id) != world_id:
                 raise ValueError(f"a row of {name} is of another world")
-            groups.setdefault(labels, []).append(_stored(properties))
+            # Canonical intents compare exact fields with the external ledger.
+            # In particular, material intents retain internal_ids=[] after load.
+            stored = (
+                {key: value for key, value in properties.items() if key != "world_id"}
+                if name == "forget_ledger"
+                else _stored(properties)
+            )
+            groups.setdefault(labels, []).append(stored)
     validate_question_snapshots(
         {
             name: [{key: _untag(value) for key, value in row["properties"].items()} for row in rows]
@@ -501,7 +508,10 @@ def replay_ledger(
 def _keep_ledger(driver: Driver, world_id: str, ledger_rows: list[Mapping[str, Any]]) -> None:
     """Puts back each ledger row the restored world lacks: the ledger is kept apart from the
     snapshot, so the restore is what brings it home."""
-    rows = [_stored(_ledger_row(world_id, row)) for row in ledger_rows]
+    rows = [
+        {key: value for key, value in _ledger_row(world_id, row).items() if key != "world_id"}
+        for row in ledger_rows
+    ]
     if not rows:
         return
 
@@ -664,7 +674,9 @@ def restore_loaded(
         expected = inventory_fingerprint(expected_inventory)
         forgotten = legacy_gone | replay_ledger(driver, world_id, planned)
         _keep_ledger(driver, world_id, ledger)
-        validate_learner_snapshot(read_once(driver, world_id, read_inventory, timeout=_TIMEOUT))
+        restored_inventory = read_once(driver, world_id, read_inventory, timeout=_TIMEOUT)
+        validate_learner_snapshot(restored_inventory)
+        validate_material_snapshot(restored_inventory)
         parts = read_once(driver, world_id, live_parts, timeout=_TIMEOUT)
         found = fingerprint(parts["projection"], parts["history"], parts["tables"])
         problems = _compare(
@@ -675,7 +687,9 @@ def restore_loaded(
         return {**found, "forgotten": sorted(forgotten)}
     forgotten = replay_ledger(driver, world_id, ledger)
     _keep_ledger(driver, world_id, ledger)
-    validate_learner_snapshot(read_once(driver, world_id, read_inventory, timeout=_TIMEOUT))
+    restored_inventory = read_once(driver, world_id, read_inventory, timeout=_TIMEOUT)
+    validate_learner_snapshot(restored_inventory)
+    validate_material_snapshot(restored_inventory)
 
     expected = fingerprint(snapshot["projection"], history, recorded["tables"], forgotten=forgotten)
     parts = read_once(driver, world_id, live_parts, timeout=_TIMEOUT)

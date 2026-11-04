@@ -145,6 +145,27 @@ def extract(data, kind):
     elif kind == "pptx":
         if any(n.startswith("word/") for n in entries):
             raise ValueError
+        # Placeholder text is an editing prompt, not a visible static template shape.
+        # Until inherited shapes have exact slide locators, refuse their text rather
+        # than silently retain an incomplete presentation. Package bounds still apply.
+        for name, root in entries.items():
+            if re.fullmatch(
+                r"ppt/(?:slideLayouts/slideLayout|slideMasters/slideMaster)\d+\.xml", name
+            ):
+                placeholder_text = {
+                    node
+                    for shape in root.iter()
+                    if local(shape) == "sp" and any(local(n) == "ph" for n in shape.iter())
+                    for node in shape.iter()
+                    if local(node) == "t"
+                }
+                if any(
+                    local(node) == "t"
+                    and (node.text or "").strip()
+                    and node not in placeholder_text
+                    for node in root.iter()
+                ):
+                    raise ValueError
         links = relationships("ppt/_rels/presentation.xml.rels", "ppt/presentation.xml")
         slides = [n for n in entries["ppt/presentation.xml"].iter() if local(n) == "sldId"]
         for ordinal, node in enumerate(slides, 1):

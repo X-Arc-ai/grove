@@ -1,5 +1,6 @@
 """Validate material metadata and content references before snapshot acceptance."""
 
+import json
 import re
 from collections import defaultdict
 from datetime import datetime
@@ -17,6 +18,33 @@ def _id(value):
         return type(value) is str and str(UUID(value)) == value and UUID(value).version == 7
     except (ValueError, AttributeError):
         return False
+
+
+def material_counts(row, sources):
+    """Counts describe retained body messages, not the original upload or title."""
+    parts = characters = 0
+    for sid in row["source_ids"]:
+        source = sources[sid]
+        try:
+            messages = json.loads(source["content"])
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("invalid material source content") from None
+        if not isinstance(messages, list) or any(
+            not isinstance(message, dict) or not isinstance(message.get("text"), str)
+            for message in messages
+        ):
+            raise ValueError("invalid material source content")
+        if source.get("forget_state") == "forgotten":
+            if messages:
+                raise ValueError("forgotten material source retains content")
+            continue
+        parts += len(messages)
+        characters += sum(len(message["text"]) for message in messages)
+    return {
+        "part_count": parts,
+        "retained_characters": characters,
+        "held_count": parts if row["kind"] == "file" else 0,
+    }
 
 
 def validate_material_snapshot(tables):
@@ -92,7 +120,10 @@ def validate_material_snapshot(tables):
                 if (
                     sid not in sources
                     or sources[sid].get("world_id") != row["world_id"]
-                    or sources[sid].get("forget_state") == "forgotten"
+                    or (
+                        sources[sid].get("forget_state") == "forgotten"
+                        and sources[sid].get("content") != "[]"
+                    )
                 ):
                     refuse()
             if sources[row["title_source_id"]].get("parser_version") != "material.title.v1":
@@ -112,7 +143,11 @@ def validate_material_snapshot(tables):
                 for sid in ids
             ):
                 refuse()
-            if row["kind"] == "note" and row["part_count"]:
+            if any(row[key] != value for key, value in material_counts(row, sources).items()):
+                refuse()
+            if row["kind"] == "note" and (
+                row["part_count"] or row.get("request_id") or row.get("episode_id")
+            ):
                 request, episode = (
                     requests.get(row.get("request_id")),
                     episodes.get(row.get("episode_id")),
@@ -127,6 +162,8 @@ def validate_material_snapshot(tables):
                     refuse()
             elif row.get("request_id") or row.get("episode_id"):
                 refuse()
+        elif any(row[key] for key in ("part_count", "retained_characters", "held_count")):
+            refuse()
         families[(row["world_id"], row["material_id"])].append(row)
     for family in families.values():
         ordered = sorted(family, key=lambda r: r["revision"])

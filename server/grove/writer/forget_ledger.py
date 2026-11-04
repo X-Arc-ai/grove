@@ -159,3 +159,30 @@ def checked_under_lock(root: Path, world_id: str, database_rows: list[dict]) -> 
         return external
     except (ValueError, KeyError, TypeError):
         raise LedgerUnavailable("the material ledger requires recovery") from None
+
+
+@contextmanager
+def material_request_guard(driver, world_id: str, request_ids: list[str] | None = None):
+    """Serialize material Request work with canonical erasure, before any World lock.
+
+    Request source identities are immutable. A claim supplies its exact candidate ids;
+    a pass supplies its frozen input ids. Ordinary nonmaterial Requests need no ledger.
+    The caller keeps this context through its read or writer transaction.
+    """
+    from grove.store.query import WorldQuery
+
+    query = WorldQuery(driver, world_id)
+    material = query.read(
+        "MATCH (r:Request), (s:Source) WHERE r.source_id = s.id "
+        "AND s.parser_version = 'material.note.v1' "
+        "AND ($ids IS NULL OR r.id IN $ids) RETURN r.id AS id LIMIT 1",
+        ids=request_ids,
+    )
+    if not material:
+        yield
+        return
+    with locked_ledger(None) as root:
+        checked_under_lock(
+            root, world_id, [r["f"] for r in query.read("MATCH (f:ForgetLedger) RETURN f")]
+        )
+        yield
