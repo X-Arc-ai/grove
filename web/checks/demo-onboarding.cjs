@@ -8,23 +8,6 @@ const read = name => fs.readFileSync(path.join(web, name), 'utf8');
 const product = read('product.js');
 const upload = product.slice(product.indexOf('  function importSource('), product.indexOf('  function requestPendingExport('));
 
-// The public action must navigate before it reads or sends any selected file bytes.
-for (const provider of ['claude', 'chatgpt']) {
-  const destinations = [];
-  const context = {
-    window: {location: {assign: url => destinations.push(url)}},
-    live: {uploadExport() { throw new Error('The upload action sent a private file'); }},
-    canUpload: () => true, liveUpload: () => ({pending: false}), render() {},
-    api: {pendingExportContext: () => ({})}
-  };
-  vm.createContext(context);
-  vm.runInContext(upload, context);
-  context.importSource('conversations', new Proxy({}, {
-    get() { throw new Error('The simulation trigger read the selected file'); }
-  }), provider);
-  assert.deepEqual(destinations, ['/demo/onboarding?provider=' + provider + '&start=1']);
-}
-
 async function demo(search, expectedProvider) {
   let now = Date.parse('2026-10-28T09:00:00Z');
   class Clock extends Date {
@@ -65,7 +48,9 @@ async function demo(search, expectedProvider) {
   assert.equal(context.document.title, 'Grove');
   assert.equal(markers.length, 0);
   if (expectedProvider) {
-    assert.equal(api.getState().onboardingComplete, true);
+    assert.equal(api.getState().onboardingComplete, false);
+    assert.equal(api.getState().onboardingStep, 1);
+    assert.equal(api.getState().tourComplete, false);
     assert.equal(api.getState().accountImports[expectedProvider].status, 'importing');
     const before = api.getState().currentNodeCount;
     const started = now;
@@ -111,7 +96,8 @@ async function demo(search, expectedProvider) {
   assert.equal(JSON.parse(read('checks/fixture.synthetic.json')).elements.nodes.length, 222);
   const ordinary = read('dist/index.html'), artifact = read('dist/demo-onboarding.html');
   assert(!ordinary.includes('GROVE_FIXTURE'));
-  assert(!ordinary.includes('Maya Chen'));
+  assert(!ordinary.includes('window.GroveClaudePreviewData='));
+  assert(!ordinary.includes('"source_node_ids": {'));
   assert(artifact.includes('window.GROVE_FIXTURE='));
   assert(artifact.includes('})(window.GroveDemo.storage);'));
   assert(!artifact.includes('window.GroveLive ='));
@@ -123,5 +109,5 @@ async function demo(search, expectedProvider) {
   const demoTick = artifact.indexOf('window.__GROVE_SIM_TICK_MS__ = 3000;');
   assert(demoTick >= 0 && demoTick < artifact.indexOf('var TICK_MS ='));
   assert(product.includes("if((live||demo)&&el.dataset.guide==='muse')"));
-  console.log('PASS demo upload trigger, memory isolation, 54-second growth, banner absence, restart and artifact boundaries');
+  console.log('PASS standalone preview retains onboarding, memory isolation, 54-second growth, restart and artifact boundaries');
 })().catch(error => { console.error(error); process.exitCode = 1; });

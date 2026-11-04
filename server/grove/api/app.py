@@ -97,20 +97,9 @@ def _add_web_pages(app: FastAPI, folder: str) -> None:
         return page("index.html", {"Cache-Control": "no-store"})
 
     @app.get("/demo/onboarding", include_in_schema=False)
-    def demo_onboarding() -> FileResponse:
-        """Public invented-data illustration; no authentication or store access."""
-        return page(
-            "demo-onboarding.html",
-            {
-                "Cache-Control": "no-store",
-                "Referrer-Policy": "no-referrer",
-                "Content-Security-Policy": (
-                    "default-src 'self' data:; script-src 'self' 'unsafe-inline'; "
-                    "style-src 'self' 'unsafe-inline'; connect-src 'none'; "
-                    "form-action 'none'; object-src 'none'; base-uri 'none'"
-                ),
-            },
-        )
+    def demo_onboarding() -> RedirectResponse:
+        """Old recording links return to the complete authenticated onboarding."""
+        return RedirectResponse("/", status_code=303, headers={"Cache-Control": "no-store"})
 
     @app.get("/privacy", include_in_schema=False)
     def privacy() -> FileResponse:
