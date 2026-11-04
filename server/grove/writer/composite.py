@@ -40,6 +40,7 @@ from grove.writer.errors import Refused
 from grove.writer.history import compact, row_json
 from grove.writer.provenance import OBSERVATION_COLUMNS
 from grove.writer.receipts import short_id
+from grove.writer.registry import Registry
 from grove.writer.source_types import ORDER, RANK
 
 SUCCESSOR_MEANINGS = (MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY)
@@ -916,6 +917,8 @@ class _Undo:
                 entity=entity_id,
                 field=field,
             )
+        if entity_type == "registry_row" and field == "status" and old == "retired":
+            ontology.check_retirable(run, label, row)
         if entity_type == "evidence" and field == "end_reason":
             columns = (
                 {"active": True, "ended_at": None, "end_reason": None}
@@ -1000,6 +1003,8 @@ def _undo(run: ap._Run, index: int, op: dict[str, Any]) -> None:
         undo.invert(entry, values)
     undo.finish()
     ontology.mark_undone(run, entries, change_set)
+    # Later operations and end-of-batch usage must see the registry that this undo wrote.
+    run.registry = Registry.load(run.tx)
 
 
 HANDLERS = {

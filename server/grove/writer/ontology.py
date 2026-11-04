@@ -23,6 +23,7 @@ names a registry word: code reads declared fields and ids only.
 import json
 import re
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from grove.store import catalogue
@@ -1657,28 +1658,95 @@ def check_retirable(run: Any, label: str, row: dict[str, Any]) -> None:
 _LOG_OF = "MATCH (c:OntologyChange) WHERE c.change_set_id = $change_set RETURN c.id AS id"
 _SET_LOG = (
     "MATCH (c:OntologyChange {id: $id}) SET c.undone_by = $by, "
-    "c.version = coalesce(c.version, 1) + 1, c.touched_at = $at"
+    "c.change_set_id = $change_set, c.version = coalesce(c.version, 1) + 1, c.touched_at = $at"
 )
 _ENTRIES_OF = "MATCH (e:ChangeEntry {change_set_id: $change_set}) RETURN e ORDER BY e.sequence"
+_LEGACY_LOGS = (
+    "MATCH (c:OntologyChange) WHERE c.change_set_id IS NULL "
+    "AND c.at >= $low AND c.at <= $high RETURN c"
+)
+_LEGACY_ENTRIES = (
+    "MATCH (e:ChangeEntry) WHERE e.entity_type = 'registry_row' AND e.reason IS NULL "
+    "AND e.inverse_of IS NULL AND e.recorded_at >= $low AND e.recorded_at <= $high RETURN e"
+)
 
 
-def _undid(entries: list[dict[str, Any]]) -> str | None:
-    """The change set that an undo's entries invert (their `inverse_of`), or None when they are
-    no undo's."""
-    return next((entry["inverse_of"] for entry in entries if entry.get("inverse_of")), None)
+def _logged_ids(row: dict[str, Any]) -> set[str]:
+    ids = set()
+    for column in ("rows_before", "rows_after"):
+        for part in json.loads(row.get(column) or "[]"):
+            held = part.get("row", part)
+            if held.get("id"):
+                ids.add(held["id"])
+    return ids
+
+
+def _legacy_log_ids(run: Any, entries: list[dict[str, Any]], change_set: str) -> list[str]:
+    """Bind old log rows by their operation's reason, registry ids and exact instant.
+
+    Automatic promotions have no reason. If their remaining fields cannot distinguish
+    two old batches, refuse instead of marking another operation as undone. The range
+    query handles Neo4j's two zone forms; Python compares the actual instants.
+    """
+    registry = [
+        entry
+        for entry in entries
+        if entry["entity_type"] == _ENTITY and not entry.get("inverse_of")
+    ]
+    if not registry:
+        return []
+    at = registry[0]["recorded_at"]
+    bounds = {"low": at - timedelta(seconds=1), "high": at + timedelta(seconds=1)}
+    found = []
+    unreasoned = None
+    for result in run.tx.run(_LEGACY_LOGS, **bounds):
+        row = result["c"]
+        if row["at"] != at:
+            continue
+        ids = _logged_ids(row)
+        if not any(
+            entry["entity_id"] in ids and entry.get("reason") == row.get("reason")
+            for entry in registry
+        ):
+            continue
+        if row.get("reason") is None:
+            if unreasoned is None:
+                unreasoned = [held["e"] for held in run.tx.run(_LEGACY_ENTRIES, **bounds)]
+            candidates = {
+                entry["change_set_id"]
+                for entry in unreasoned
+                if entry["recorded_at"] == at and entry["entity_id"] in ids
+            }
+            if candidates != {change_set}:
+                raise Refused(
+                    "version_conflict",
+                    "ontology_log_ambiguous",
+                    "the old ontology log cannot distinguish these change sets",
+                    {"row": row["id"]},
+                )
+        found.append(row["id"])
+    return found
 
 
 def mark_undone(run: Any, entries: list[dict[str, Any]], change_set: str) -> None:
     """O10's `undone_by`, after an undo of `change_set` (whose entries are `entries`).
 
-    Below an undo of an undo lies, at the end of the chain, the change set that wrote the
-    change-log rows. An odd count of undos over it, this one included, leaves it reversed, and
-    its rows take this undo's change set; an even count puts it back, and the mark clears. Each
-    write moves the S12 pair; the table is a snapshot table, so no change entry is written."""
-    base, held, undos = change_set, entries, 1
-    while (below := _undid(held)) is not None:
-        base, undos = below, undos + 1
-        held = [row["e"] for row in run.tx.run(_ENTRIES_OF, change_set=below)]
-    by = run.stamp.change_set_id if undos % 2 == 1 else None
-    for row in run.tx.run(_LOG_OF, change_set=base):
-        run.tx.run(_SET_LOG, id=row["id"], by=by, at=run.at)
+    Follow every inverse_of branch: one batch can undo several change sets, or undo one
+    while it writes a new ontology operation. Odd depth leaves an operation reversed;
+    even depth restores it. Each log write moves the S12 pair without a change entry.
+    """
+    pending = [(change_set, entries, 1)]
+    seen = set()
+    while pending:
+        base, held, undos = pending.pop()
+        if base in seen:
+            continue
+        seen.add(base)
+        by = run.stamp.change_set_id if undos % 2 == 1 else None
+        ids = [row["id"] for row in run.tx.run(_LOG_OF, change_set=base)]
+        ids.extend(_legacy_log_ids(run, held, base))
+        for row_id in ids:
+            run.tx.run(_SET_LOG, id=row_id, by=by, at=run.at, change_set=base)
+        for below in sorted({entry["inverse_of"] for entry in held if entry.get("inverse_of")}):
+            earlier = [row["e"] for row in run.tx.run(_ENTRIES_OF, change_set=below)]
+            pending.append((below, earlier, undos + 1))
