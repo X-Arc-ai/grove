@@ -336,3 +336,164 @@ def test_installed_preflight_stops_before_retained_old_parent(box, keep_checkout
     assert done.returncode == 78
     assert "journal_not_configured" in done.stderr
     assert box.calls() == before
+
+
+@pytest.mark.parametrize("binding_source", ["environment", "cli"])
+@pytest.mark.parametrize("old_parent", [False, True])
+@pytest.mark.parametrize("bad_hash", [False, True])
+def test_manifest_survives_real_launcher_parent_apply_installer(
+    box, binding_source, old_parent, bad_hash
+):
+    from tests.deploy.conftest import OTHER_SHA, SHA, _write_fake
+    from tests.deploy.test_cutover import container, manifest_snapshot
+    from tests.deploy.test_cutover_scripts import BASELINE_PARENT
+
+    source = box.src / "deploy/cutover.py"
+    # Keep the real parser, launcher, parent, apply, installer and manifest
+    # validator. Only the final Docker protocol is replaced at its boundary;
+    # test_cutover exercises that protocol with its stateful command model.
+    capture = """if __name__ == "__main__":
+    SEED_OWNER = (os.getuid(), os.getgid())  # scratch-only ownership substitution
+    def capture_run(self):
+        atomic(paths()["state"] / "captured-run.json", json.dumps({
+            "manifest": self.manifest.data,
+            "digest": self.manifest.digest,
+            "path": os.environ.get("GROVE_CUTOVER_BASELINE_MANIFEST"),
+            "env_digest": os.environ.get("GROVE_CUTOVER_BASELINE_SHA256"),
+            "target": self.data["target"],
+            "baseline": self.data["baseline"],
+        }).encode())
+    Cutover.execute = capture_run
+    raise SystemExit(main())
+"""
+    original = 'if __name__ == "__main__":\n    raise SystemExit(main())\n'
+    assert source.read_text().count(original) == 1
+    source.write_text(source.read_text().replace(original, capture))
+    installed = Path(box.env["GROVE_CUTOVER_INSTALLED"])
+    bootstrap = box.run("install-host.sh")
+    assert bootstrap.returncode == 0, bootstrap.stderr
+
+    revisions = box.root / "binding-revisions"
+    shutil.copytree(box.src / "deploy", revisions / SHA / "deploy")
+    if old_parent:
+        (box.src / "deploy/deploy.sh").write_text(BASELINE_PARENT)
+    shutil.copytree(box.src / "deploy", revisions / OTHER_SHA / "deploy")
+    box.env["FAKE_REVISIONS"] = str(revisions)
+    box.deployed(OTHER_SHA)
+    (box.root / "fake/HEAD").write_text(OTHER_SHA)
+    lock_paths = {
+        "host": Path(box.env["GROVE_LOCK_FILE"]),
+        "admission": box.state / "cutover-admission.lock",
+        "seed": box.root / "seed.lock",
+    }
+    locks = {}
+    for name, path in lock_paths.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(mode=0o644 if name == "host" else 0o600)
+        info = path.stat()
+        locks[name] = {
+            "path": str(path),
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "uid": info.st_uid,
+            "gid": info.st_gid,
+            "mode": info.st_mode & 0o7777,
+        }
+    smoke = box.root / "request-smoke.sh"
+    smoke.write_text("exit 0\n")
+    smoke_hash = hashlib.sha256(smoke.read_bytes()).hexdigest()
+    services = {}
+    for name in ("api", "runner", "gateway", "neo4j"):
+        row = container(name)
+        row.update(
+            id=hashlib.sha256(name.encode()).hexdigest(), name="/grove-" + name, restart_count=0
+        )
+        services[name] = {
+            "revision": None if name == "neo4j" else OTHER_SHA,
+            "container": manifest_snapshot(row),
+        }
+    manifest = {
+        "version": 1,
+        "request": "binding-test",
+        "target": SHA,
+        "baseline": OTHER_SHA,
+        "smoke_sha256": smoke_hash,
+        "locks": locks,
+        "services": services,
+        "retained": [],
+    }
+    observed = box.root / "observed-containers.json"
+    observed.write_text(json.dumps(services))
+    _write_fake(
+        box.root / "bin",
+        "docker",
+        """
+import json, os, sys
+from pathlib import Path
+args = sys.argv[1:]
+with open(os.environ["FAKE_LOG"], "a") as log:
+    log.write("docker " + " ".join(args) + "\\n")
+services = json.loads(Path(os.environ["FAKE_BASELINE_OBSERVATION"]).read_text())
+if args[0] == "ps":
+    print("\\n".join(binding["container"]["id"] for binding in services.values()))
+elif args[0] == "inspect":
+    row = next(b["container"] for b in services.values() if b["container"]["id"] == args[-1])
+    print(json.dumps(row))
+elif args[:2] == ["image", "inspect"]:
+    name, revision = args[-1].split(":")
+    binding = services["runner" if name == "grove-runner" else "api"]
+    assert revision == binding["revision"]
+    print(binding["container"]["image"])
+else:
+    raise AssertionError(args)
+""",
+    )
+    path = box.root / "baseline.json"
+    path.write_text(json.dumps(manifest))
+    path.chmod(0o600)
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    if bad_hash:
+        digest = "0" * 64
+    env = {
+        **box.env,
+        "GROVE_CUTOVER_REQUEST": "binding-test",
+        "GROVE_CUTOVER_SEED_LOCK": str(lock_paths["seed"]),
+        "GROVE_CUTOVER_SMOKE_SCRIPT": str(smoke),
+        "GROVE_CUTOVER_SMOKE_SHA256": smoke_hash,
+        "FAKE_BASELINE_OBSERVATION": str(observed),
+    }
+    args = [sys.executable, str(installed), "launch", SHA]
+    if binding_source == "environment":
+        env.update(GROVE_CUTOVER_BASELINE_MANIFEST=str(path), GROVE_CUTOVER_BASELINE_SHA256=digest)
+    else:
+        args += ["--baseline-manifest", str(path), "--baseline-manifest-sha256", digest]
+    calls_before = len(box.calls())
+    done = subprocess.run(args, env=env, capture_output=True, text=True, timeout=15)
+    if bad_hash:
+        assert done.returncode == 1
+        assert box.calls()[calls_before:] == []
+        assert not (box.state / "captured-run.json").exists()
+        assert (box.root / "fake/HEAD").read_text() == OTHER_SHA
+        return
+    assert done.returncode == 0, done.stderr
+    captured = json.loads((box.state / "captured-run.json").read_text())
+    assert captured == {
+        "manifest": manifest,
+        "digest": digest,
+        "path": str(path),
+        "env_digest": digest,
+        "target": SHA,
+        "baseline": OTHER_SHA,
+    }
+    calls = box.calls()[calls_before:]
+    assert "systemctl reload-or-restart nginx" in calls
+    assert all(
+        call.startswith(("docker ps ", "docker inspect ", "docker image inspect "))
+        for call in calls
+        if call.startswith("docker ")
+    )
+    assert max(i for i, call in enumerate(calls) if call.startswith("docker ")) < calls.index(
+        "systemctl reload-or-restart nginx"
+    )
+    assert not any("checkout --quiet --detach " + OTHER_SHA in call for call in calls)
+    assert (box.root / "fake/HEAD").read_text() == SHA

@@ -36,6 +36,7 @@ if not PREFLIGHT_SOURCE.is_file():
 WRITERS = ("runner", "gateway", "api")
 UNITS = ("grove-services.service", "grove-backup.service")
 SHA = re.compile(r"[0-9a-f]{40}")
+SEED_OWNER = (10001, 10001)
 
 
 class Refused(RuntimeError):
@@ -209,7 +210,7 @@ def unique_manifest_object(pairs):
 
 
 @contextlib.contextmanager
-def private_baseline_file(path):
+def baseline_file(path):
     raw = str(path)
     path = Path(raw)
     if not path.is_absolute() or raw != str(path) or ".." in path.parts or path == Path("/"):
@@ -227,13 +228,8 @@ def private_baseline_file(path):
         fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
         stack.callback(os.close, fd)
         before = os.fstat(fd)
-        if (
-            not stat.S_ISREG(before.st_mode)
-            or before.st_uid != os.geteuid()
-            or stat.S_IMODE(before.st_mode) != 0o600
-            or before.st_nlink != 1
-        ):
-            raise Refused("baseline_file_not_private")
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise Refused("baseline_file_not_regular")
         yield fd, before
         named = os.stat(path.name, dir_fd=parent, follow_symlinks=False)
         fields = (
@@ -257,6 +253,14 @@ def private_baseline_file(path):
             named, opened = os.stat(part, dir_fd=parent, follow_symlinks=False), os.fstat(child)
             if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
                 raise Refused("baseline_path_changed")
+
+
+@contextlib.contextmanager
+def private_baseline_file(path):
+    with baseline_file(path) as (fd, info):
+        if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+            raise Refused("baseline_file_not_private")
+        yield fd, info
 
 
 def container_snapshot(row):
@@ -415,19 +419,32 @@ class BaselineManifest:
 
     def verify_locks(self):
         identities = set()
+        operator = (os.geteuid(), os.getegid())
+        roles = {
+            "host": (operator, (0o600, 0o644)),
+            "admission": (operator, (0o600,)),
+            "seed": (SEED_OWNER, (0o600,)),
+        }
         for name, path in self.lock_paths.items():
             binding = self.data["locks"][name]
             if (
                 not isinstance(binding, dict)
-                or set(binding) != {"path", "device", "inode"}
+                or set(binding) != {"path", "device", "inode", "uid", "gid", "mode"}
                 or binding["path"] != path
-                or type(binding["device"]) is not int
-                or type(binding["inode"]) is not int
+                or any(
+                    type(binding[key]) is not int or binding[key] < 0
+                    for key in ("device", "inode", "uid", "gid", "mode")
+                )
             ):
                 raise Refused("baseline_manifest_lock_mismatch")
-            with private_baseline_file(path) as (_, info):
+            owner, modes = roles[name]
+            if (binding["uid"], binding["gid"]) != owner or binding["mode"] not in modes:
+                raise Refused("baseline_manifest_lock_unsafe")
+            with baseline_file(path) as (_, info):
                 identity = (info.st_dev, info.st_ino)
-                if identity != (binding["device"], binding["inode"]) or identity in identities:
+                observed = (*identity, info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
+                expected = tuple(binding[key] for key in ("device", "inode", "uid", "gid", "mode"))
+                if observed != expected or identity in identities:
                     raise Refused("baseline_manifest_lock_mismatch")
                 identities.add(identity)
 
@@ -910,14 +927,23 @@ def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("action", choices=("install", "check", "recover", "run", "launch"))
     parser.add_argument("arguments", nargs="*")
-    parser.add_argument(
-        "--baseline-manifest", default=os.environ.get("GROVE_CUTOVER_BASELINE_MANIFEST")
-    )
-    parser.add_argument(
-        "--baseline-manifest-sha256", default=os.environ.get("GROVE_CUTOVER_BASELINE_SHA256")
-    )
+    parser.add_argument("--baseline-manifest")
+    parser.add_argument("--baseline-manifest-sha256")
     args = parser.parse_args(argv)
     try:
+        if args.action == "install":
+            if args.baseline_manifest is not None or args.baseline_manifest_sha256 is not None:
+                raise Refused("baseline_manifest_binding_required")
+            # apply.sh invokes this child with the request's environment. An
+            # installer has no baseline request to validate. Drop only its own
+            # inherited copies; the parent retains both for the later run.
+            os.environ.pop("GROVE_CUTOVER_BASELINE_MANIFEST", None)
+            os.environ.pop("GROVE_CUTOVER_BASELINE_SHA256", None)
+        else:
+            if args.baseline_manifest is None:
+                args.baseline_manifest = os.environ.get("GROVE_CUTOVER_BASELINE_MANIFEST")
+            if args.baseline_manifest_sha256 is None:
+                args.baseline_manifest_sha256 = os.environ.get("GROVE_CUTOVER_BASELINE_SHA256")
         manifest_supplied = (
             args.baseline_manifest is not None or args.baseline_manifest_sha256 is not None
         )
@@ -952,10 +978,27 @@ def main(argv=None):
             if preflight.main() != 0:
                 return 78
             os.environ["GROVE_DEPLOY_WAIT_SECONDS"] = "30"
-            launcher = Commands()
+            launcher = Commands(2900)
             # The inner deadline leaves 100 seconds for cleanup before this
             # outer watchdog. Neither timeout permits a container retry.
             os.environ["GROVE_CUTOVER_DEADLINE"] = str(clock.monotonic() + 2800)
+            if manifest_supplied:
+                # Validate the binding and the observed baseline before even
+                # an old parent can reach its installer or fallback. This is
+                # read-only; run revalidates under its existing locks later.
+                bound = Cutover(
+                    args.arguments[0],
+                    (paths()["state"] / "deployed.sha").read_text().strip(),
+                    os.environ.get("GROVE_CUTOVER_REQUEST", ""),
+                    os.environ.get("GROVE_CUTOVER_SEED_LOCK", ""),
+                    os.environ.get("GROVE_CUTOVER_SMOKE_SCRIPT", ""),
+                    os.environ.get("GROVE_CUTOVER_SMOKE_SHA256", ""),
+                    launcher,
+                    baseline_manifest=args.baseline_manifest,
+                    baseline_manifest_sha256=args.baseline_manifest_sha256,
+                )
+                bound.verify_smoke()
+                bound.verify_baseline(bound.inventory())
             launcher.run(
                 [paths()["src"] / "deploy/deploy.sh", args.arguments[0]],
                 2900,

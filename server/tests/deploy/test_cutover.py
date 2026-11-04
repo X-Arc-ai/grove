@@ -6,9 +6,11 @@ import importlib.util
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -519,13 +521,35 @@ def mixed_protocol(protocol, tmp_path, monkeypatch):
     commands.run = run
     host = tmp_path / "host.lock"
     admission = original.p["state"] / "cutover-admission.lock"
-    host.touch(mode=0o600)
+    host.touch(mode=0o644)
+    host.chmod(0o644)
     admission.touch(mode=0o600)
     monkeypatch.setenv("GROVE_LOCK_FILE", str(host))
+    # Simulate only ownership at the syscall boundary. Real descriptors, modes,
+    # paths and inode checks still execute, including the API-owned seed lock.
+    seed_identity = (original.seed.stat().st_dev, original.seed.stat().st_ino)
+
+    def recorded_owner(info):
+        uid = 10001 if (info.st_dev, info.st_ino) == seed_identity else 0
+        fields = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+        return SimpleNamespace(**{**fields, "st_uid": uid, "st_gid": uid})
+
+    fake_os = SimpleNamespace(**vars(os))
+    fake_os.stat = lambda *args, **kwargs: recorded_owner(os.stat(*args, **kwargs))
+    fake_os.fstat = lambda fd: recorded_owner(os.fstat(fd))
+    fake_os.geteuid = fake_os.getegid = lambda: 0
+    monkeypatch.setattr(cutover, "os", fake_os)
     locks = {}
     for name, path in (("host", host), ("admission", admission), ("seed", original.seed)):
-        info = path.stat()
-        locks[name] = {"path": str(path), "device": info.st_dev, "inode": info.st_ino}
+        info = recorded_owner(path.stat())
+        locks[name] = {
+            "path": str(path),
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "uid": info.st_uid,
+            "gid": info.st_gid,
+            "mode": stat.S_IMODE(info.st_mode),
+        }
     data = {
         "version": 1,
         "request": original.data["request"],
@@ -574,6 +598,139 @@ def test_exact_manifest_accepts_mixed_baseline_and_preserves_history(mixed_proto
     assert not any(
         args[:2] in (["docker", "rm"], ["docker", "prune"]) for args, _ in commands.calls
     )
+
+
+def test_manifest_accepts_recorded_lock_roles_without_permission_repair(mixed_protocol):
+    build, data, _, _ = mixed_protocol
+    assert data["locks"]["host"]["mode"] == 0o644
+    assert data["locks"]["host"]["uid"] == data["locks"]["host"]["gid"] == 0
+    assert data["locks"]["admission"]["uid"] == data["locks"]["admission"]["gid"] == 0
+    assert data["locks"]["seed"]["uid"] == data["locks"]["seed"]["gid"] == 10001
+    paths = [Path(binding["path"]) for binding in data["locks"].values()]
+
+    def snapshot():
+        return [
+            (
+                tuple(
+                    getattr(path.stat(), key)
+                    for key in (
+                        "st_dev",
+                        "st_ino",
+                        "st_uid",
+                        "st_gid",
+                        "st_mode",
+                        "st_nlink",
+                        "st_size",
+                        "st_mtime_ns",
+                        "st_ctime_ns",
+                    )
+                ),
+                path.read_bytes(),
+            )
+            for path in paths
+        ]
+
+    before = snapshot()
+    instance = build()
+    instance.manifest.verify()
+    assert snapshot() == before
+
+
+@pytest.mark.parametrize(
+    "role,field,value",
+    [
+        ("host", "mode", 0o666),
+        ("host", "uid", 12345),
+        ("admission", "mode", 0o644),
+        ("seed", "uid", 0),
+        ("seed", "gid", 0),
+        ("seed", "mode", 0o640),
+        ("seed", "inode", -1),
+        ("seed", "device", True),
+        ("host", "path", "/different.lock"),
+    ],
+)
+def test_manifest_refuses_unsafe_or_substituted_lock_binding(mixed_protocol, role, field, value):
+    build, data, commands, _ = mixed_protocol
+    data["locks"][role][field] = value
+    with pytest.raises(cutover.Refused):
+        build()
+    assert commands.calls == []
+
+
+@pytest.mark.parametrize("role", ["host", "admission", "seed"])
+def test_manifest_rechecks_lock_modes_after_binding(mixed_protocol, role):
+    build, data, commands, _ = mixed_protocol
+    instance = build()
+    Path(data["locks"][role]["path"]).chmod(0o666)
+    with pytest.raises(cutover.Refused):
+        instance.execute()
+    assert commands.calls == []
+
+
+@pytest.mark.parametrize("role,mode", [("host", 0o666), ("admission", 0o644), ("seed", 0o640)])
+def test_manifest_cannot_authorize_unsafe_lock_modes(mixed_protocol, role, mode):
+    build, data, commands, _ = mixed_protocol
+    data["locks"][role]["mode"] = mode
+    Path(data["locks"][role]["path"]).chmod(mode)
+    with pytest.raises(cutover.Refused):
+        build()
+    assert commands.calls == []
+
+
+def test_install_ignores_inherited_attempt_binding_but_rejects_explicit_options(monkeypatch):
+    calls = []
+    monkeypatch.setenv("GROVE_CUTOVER_BASELINE_MANIFEST", "/synthetic/baseline.json")
+    monkeypatch.setenv("GROVE_CUTOVER_BASELINE_SHA256", "a" * 64)
+    monkeypatch.setattr(cutover, "install", lambda: calls.append("install"))
+    assert cutover.main(["install"]) == 0
+    assert calls == ["install"]
+    assert cutover.main(["install", "--baseline-manifest", "/explicit.json"]) == 1
+    assert calls == ["install"]
+
+
+@pytest.mark.parametrize("fault", ["request", "service_identity", "lock_mode"])
+def test_launch_rejects_manifest_mismatch_before_parent(
+    mixed_protocol, monkeypatch, tmp_path, fault
+):
+    build, data, commands, path = mixed_protocol
+    instance = build()
+    (instance.p["state"] / "deployed.sha").write_text(BASE)
+    preflight = tmp_path / "preflight.py"
+    preflight.write_text("def main(): return 0\n")
+    monkeypatch.setattr(cutover, "PREFLIGHT_SOURCE", preflight)
+    if fault == "request":
+        data["request"] = "other-request"
+        path.write_text(json.dumps(data))
+    elif fault == "service_identity":
+        commands.rows["api"]["id"] = "8" * 64
+    else:
+        Path(data["locks"]["host"]["path"]).chmod(0o666)
+    for key, value in {
+        "GROVE_CUTOVER_REQUEST": instance.data["request"],
+        "GROVE_CUTOVER_SEED_LOCK": str(instance.seed),
+        "GROVE_CUTOVER_SMOKE_SCRIPT": str(instance.smoke),
+        "GROVE_CUTOVER_SMOKE_SHA256": instance.smoke_hash,
+        "GROVE_CUTOVER_BASELINE_MANIFEST": str(path),
+        "GROVE_CUTOVER_BASELINE_SHA256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "GROVE_CUTOVER_DEADLINE": "",
+        "GROVE_DEPLOY_WAIT_SECONDS": "30",
+    }.items():
+        monkeypatch.setenv(key, value)
+    parents = []
+    run = commands.run
+
+    def capture_parent(args, *rest, **kwargs):
+        if str(args[0]).endswith("/deploy/deploy.sh"):
+            parents.append(args)
+            return ""
+        return run(args, *rest, **kwargs)
+
+    commands.run = capture_parent
+    monkeypatch.setattr(cutover, "Commands", lambda *args, **kwargs: commands)
+    assert cutover.main(["launch", TARGET]) == 1
+    assert parents == []
+    assert not cutover.state_path().exists()
 
 
 @pytest.mark.parametrize(
