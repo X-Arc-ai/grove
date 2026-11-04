@@ -44,13 +44,14 @@ def _at(value: object) -> datetime:
         raise IdentityError("invalid_identity_time") from exc
 
 
-def _bounds(start: object, end: object) -> None:
-    if start is not None:
-        _at(start)
-    if end is not None:
-        _at(end)
-    if start is not None and end is not None and start >= end:
+def _bounds(start: object, end: object) -> tuple[datetime | None, datetime | None]:
+    # Same-ZoneInfo datetime comparison uses wall clocks and can ignore DST folds.
+    # Store UTC instants so both validity checks and later lookups use chronology.
+    first = _at(start) if start is not None else None
+    last = _at(end) if end is not None else None
+    if first is not None and last is not None and first >= last:
         raise IdentityError("invalid_identity_time")
+    return first, last
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,9 @@ class IdentityField:
         if self.kind not in ("name", "nickname", "handle", "role"):
             raise IdentityError("invalid_identity_field")
         _text(self.value)
-        _bounds(self.valid_from, self.valid_to)
+        start, end = _bounds(self.valid_from, self.valid_to)
+        object.__setattr__(self, "valid_from", start)
+        object.__setattr__(self, "valid_to", end)
 
 
 @dataclass(frozen=True)
@@ -101,7 +104,9 @@ class IdentityAlias:
             raise IdentityError("invalid_identity_alias")
         if self.target_type not in ENUMS["alias_target_type"]:
             raise IdentityError("invalid_identity_alias")
-        _bounds(self.valid_from, self.valid_to)
+        start, end = _bounds(self.valid_from, self.valid_to)
+        object.__setattr__(self, "valid_from", start)
+        object.__setattr__(self, "valid_to", end)
 
 
 @dataclass(frozen=True)

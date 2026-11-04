@@ -2,6 +2,7 @@
 
 from dataclasses import FrozenInstanceError, asdict, replace
 from datetime import UTC, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -374,3 +375,82 @@ def test_wrong_world_duplicate_rows_and_inconsistent_inventory_fail_safely():
         evaluate_coverage(
             "private-world", [], now=NOW, inventory_complete=True, disclosure_complete=True
         )
+
+
+@pytest.mark.parametrize("selection", ["source", "aggregate", "item"])
+@pytest.mark.parametrize("same_wall_time", [False, True])
+def test_earliest_gap_across_dst_fold_uses_instants(selection, same_wall_time):
+    zone = ZoneInfo("America/New_York")
+    earlier = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0)
+    later = datetime(2026, 11, 1, 1, 45 if same_wall_time else 15, tzinfo=zone, fold=1)
+    assert earlier.astimezone(UTC) < later.astimezone(UTC)
+    if selection == "source":
+        rows = [
+            connector(
+                last_outcome="failed", last_successful_read=later, oldest_unprocessed_item=earlier
+            )
+        ]
+    else:
+        # Later comes first: a wall-clock equality must not select it by input order.
+        rows = [
+            connector(connector_id="a-later", last_outcome="failed", last_successful_read=later),
+            connector(
+                connector_id="b-earlier", last_outcome="failed", last_successful_read=earlier
+            ),
+        ]
+    statement = coverage(rows)
+    if selection == "source":
+        since = statement.sources[0].since
+    elif selection == "aggregate":
+        since = statement.since
+    else:
+        gap = item_coverage_gap(
+            statement,
+            contributed_connector_ids=[r.connector_id for r in rows],
+            references_complete=True,
+        )
+        since = gap.since
+    assert since.astimezone(UTC) == earlier.astimezone(UTC)
+    assert earlier.fold == 0 and later.fold == 1
+    assert earlier.tzinfo is later.tzinfo is zone
+
+
+@pytest.mark.parametrize("microsecond,expected", [(0, "no_record"), (1, "not_seen_since")])
+def test_current_interval_boundary_uses_elapsed_instants_across_dst_fold(microsecond, expected):
+    zone = ZoneInfo("America/New_York")
+    success = datetime(2026, 11, 1, 1, 30, tzinfo=zone, fold=0)
+    now = datetime(2026, 11, 1, 1, 30, microsecond=microsecond, tzinfo=zone, fold=1)
+    result = coverage([connector(last_successful_read=success, last_attempted_read=now)], now=now)
+    assert answer(result).answer == expected
+    assert result.sources[0].behind_seconds == pytest.approx(microsecond / 1_000_000)
+
+
+def test_historical_question_and_upload_use_elapsed_instants_across_dst_fold():
+    zone = ZoneInfo("America/New_York")
+    success = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0)
+    question = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+    row = connector(last_successful_read=success, last_attempted_read=question)
+    current = coverage([row], now=question)
+    historical = coverage([row], now=question, question_at=question)
+    upload = coverage([replace(row, expected_read_interval=None)], now=question)
+    assert answer(current).answer == "no_record"
+    for result in (historical, upload):
+        assert answer(result).answer == "not_seen_since"
+        assert result.sources[0].behind_seconds == 1800
+
+
+def test_future_question_in_later_fold_refuses_despite_earlier_wall_time():
+    zone = ZoneInfo("America/New_York")
+    now = datetime(2026, 11, 1, 1, 45, tzinfo=zone, fold=0)
+    question = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+    with pytest.raises(CoverageError, match="^invalid_coverage_time$"):
+        coverage([], now=now, question_at=question)
+
+
+def test_unknown_gap_stays_unknown_beside_fold_backlog():
+    zone = ZoneInfo("America/New_York")
+    backlog = datetime(2026, 11, 1, 1, 15, tzinfo=zone, fold=1)
+    statement = coverage([connector(last_successful_read=None, oldest_unprocessed_item=backlog)])
+    assert statement.since is None
+    assert statement.sources[0].since is None
+    assert answer(statement).answer == "not_seen_since"
