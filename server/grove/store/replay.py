@@ -64,15 +64,37 @@ _CLOCKS = ("became_true", "stopped_being_true")
 _BOUNDS = ("earliest", "latest")
 _UNKNOWN = "unknown"
 _MARKERS: dict[str, frozenset[str]] = {
-    "item": frozenset({"reopened", "merged_into", "verified"}),
-    "link": frozenset({"restated", "no_head_update", "verified"}),
+    "item": frozenset(
+        {
+            "reopened",
+            "merged_into",
+            "verified",
+            "cascade_mark",
+            "cascade_proposal",
+            "cascade_disposition",
+        }
+    ),
+    "link": frozenset(
+        {"restated", "no_head_update", "verified", "cascade_end", "cascade_explanation"}
+    ),
 }
 # Markers that never move their row, so they add no version: a known link restated, and the
 # reason a correction gives for no head update, which can land on a link that a correction of an
 # earlier batch made (the writer leaves that link's version as it was). The undo's conflict
 # check leaves out the same set (grove.writer.composite.STILL_MARKERS). A verification marker
 # itself changes no field; its clock/re-check entries count any actual version change.
-_NO_VERSION = frozenset({"restated", "no_head_update", "verified"})
+_NO_VERSION = frozenset(
+    {
+        "restated",
+        "no_head_update",
+        "verified",
+        "cascade_mark",
+        "cascade_proposal",
+        "cascade_disposition",
+        "cascade_end",
+        "cascade_explanation",
+    }
+)
 # Item fields of the entry vocabulary that a later migration may add to the catalogue.
 _ITEM_FIELDS = frozenset({"lesson_in"})
 _FIXED = frozenset({"id", "world_id", "version", "touched_at"})
@@ -204,11 +226,11 @@ class _Replay:
         self.validate = validate
         self.world_id: str | None = None
         self.rows: dict[str, dict[str, dict[str, Any]]] = {name: {} for name in TABLES}
-        self.where: dict[str, str] = {}
-        self.groups: dict[str, set[tuple[Any, Any]]] = {}
-        self.touched: dict[str, datetime | None] = {}
+        self.where: dict[str | tuple[str, str], str] = {}
+        self.groups: dict[str | tuple[str, str], set[tuple[Any, Any]]] = {}
+        self.touched: dict[str | tuple[str, str], datetime | None] = {}
         self.heads: dict[tuple[str, str], datetime] = {}
-        self.born: dict[str, datetime | None] = {}
+        self.born: dict[str | tuple[str, str], datetime | None] = {}
         self.keys: dict[str, str] = {}
         self.active: dict[str, str] = {}
         self.forgotten: set[str] = set()
@@ -217,6 +239,11 @@ class _Replay:
         self.blanked: set[tuple[str, str]] = set()
         self.sequence: int | None = None
         self.last: int | None = None
+
+    @staticmethod
+    def identity(entity_type: str, entity_id: str) -> str | tuple[str, str]:
+        # S13: a Belief side row uses its Item id but has its own history and version.
+        return (entity_type, entity_id) if entity_type == "belief" else entity_id
 
     # Checks ------------------------------------------------------------------------------------
 
@@ -282,10 +309,11 @@ class _Replay:
                 return
         else:
             self.change(entry, entity_type, entity_id, name)
-        self.touched[entity_id] = _instant(entry.get("recorded_at"))
+        identity = self.identity(entity_type, entity_id)
+        self.touched[identity] = _instant(entry.get("recorded_at"))
         if not entry.get("history_only") and name not in _NO_VERSION:
             group = (entry.get("change_set_id"), entry.get("reason"))
-            self.groups.setdefault(entity_id, set()).add(group)
+            self.groups.setdefault(identity, set()).add(group)
 
     # Row entries -------------------------------------------------------------------------------
 
@@ -323,7 +351,8 @@ class _Replay:
         row = self.typed(name, value["row"])
         if row.get(_KEYS[name]) != entity_id:
             self.fail("row_id", "the row's id is not the entry's entity id")
-        if entity_id in self.where:
+        identity = self.identity(entity_type, entity_id)
+        if identity in self.where:
             self.fail("id_not_new", f"{entity_id} exists already")
         self.world(row.get("world_id"))
         if name == "items":
@@ -342,8 +371,8 @@ class _Replay:
             if row.get("active_key"):
                 self.active[key] = entity_id
         self.rows[name][entity_id] = row
-        self.where[entity_id] = name
-        self.born[entity_id] = _instant(entry.get("world_time"))
+        self.where[identity] = name
+        self.born[identity] = _instant(entry.get("world_time"))
         return True
 
     def standard_key(self, row: Mapping[str, Any]) -> str:
@@ -439,7 +468,7 @@ class _Replay:
             self.fail("bad_value", "properties are an object")
 
     def change(self, entry: Mapping[str, Any], entity_type: str, entity_id: str, name: Any) -> None:
-        table = self.where.get(entity_id)
+        table = self.where.get(self.identity(entity_type, entity_id))
         if table is None:
             self.fail("missing_entity", f"no {entity_type} {entity_id} so far")
         if table not in ENTITY_TABLES[entity_type]:
@@ -569,10 +598,11 @@ class _Replay:
     # Derived columns ---------------------------------------------------------------------------
 
     def finish(self) -> dict[str, dict[str, dict[str, Any]]]:
-        for rows in self.rows.values():
+        for name, rows in self.rows.items():
             for entity_id, row in rows.items():
-                row["version"] = len(self.groups.get(entity_id, ())) or 1
-                touched = self.touched.get(entity_id)
+                identity = self.identity("belief" if name == "beliefs" else "item", entity_id)
+                row["version"] = len(self.groups.get(identity, ())) or 1
+                touched = self.touched.get(identity)
                 if touched is not None:
                     row["touched_at"] = touched
                 else:

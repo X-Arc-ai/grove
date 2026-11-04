@@ -29,6 +29,7 @@ from datetime import UTC, datetime
 from typing import BinaryIO
 
 from grove.screening import Denylist, Message, RenameMap, Screener, ScreeningConfig
+from grove.source_facts import TextSourceFacts
 from grove.store.enums import ENUMS
 
 SPEAKER_KINDS = frozenset(ENUMS["speaker_kind"])
@@ -184,15 +185,52 @@ def utc_from_iso(value: object) -> datetime | None:
 
 
 @dataclass(frozen=True, slots=True)
+class CalendarEvent:
+    """Code-held provider facts, distinct from upload options and screened event prose."""
+
+    scheduled_at: datetime | None
+    timezone: str
+    status: str
+    updated_at: datetime | None = None
+
+    def __post_init__(self) -> None:
+        from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+        if self.status not in ("confirmed", "tentative", "cancelled"):
+            raise ValueError("invalid Calendar schedule status")
+        if self.scheduled_at is None and self.status != "cancelled":
+            raise ValueError("only a cancellation can have no schedule time")
+        for at in (self.scheduled_at, self.updated_at):
+            if at is not None and (not isinstance(at, datetime) or at.utcoffset() is None):
+                raise ValueError("Calendar facts require aware instants")
+        if not isinstance(self.timezone, str) or not 1 <= len(self.timezone) <= 128:
+            raise ValueError("invalid Calendar timezone")
+        try:
+            ZoneInfo(self.timezone)
+        except (ValueError, ZoneInfoNotFoundError):
+            raise ValueError("invalid Calendar timezone") from None
+
+    def to_writer(self) -> dict[str, str | None]:
+        return {
+            "scheduled_at": self.scheduled_at.isoformat() if self.scheduled_at else None,
+            "timezone": self.timezone,
+            "status": self.status,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ParsedMessage:
     """One message as a parser read it. Screening runs on it next; nothing here is stored yet."""
 
     key: str
     text: str
     at: datetime | None
-    speaker_kind: str
+    speaker_kind: str | None
     modality: str = "text"
     sender: str | None = None
+    calendar_event: CalendarEvent | None = None
+    source_facts: TextSourceFacts | None = None
 
     def __post_init__(self) -> None:
         if not _is_code(self.key, limit=80):
@@ -203,12 +241,29 @@ class ParsedMessage:
             not isinstance(self.at, datetime) or self.at.utcoffset() is None
         ):
             raise ValueError("ParsedMessage.at must be an aware datetime or None")
-        if self.speaker_kind not in SPEAKER_KINDS:
+        if self.source_facts is not None:
+            if type(self.source_facts) is not TextSourceFacts:
+                raise ValueError("ParsedMessage.source_facts must be typed")
+            self.source_facts.check_at(self.at)
+            if self.calendar_event is not None:
+                raise ValueError("Calendar and text source facts cannot be mixed")
+            if self.modality != "text" or type(self.modality) is not str:
+                raise ValueError("text source facts require text modality")
+            if self.speaker_kind is not None and type(self.speaker_kind) is not str:
+                raise ValueError("text source speaker must be a closed code or None")
+        if self.speaker_kind not in SPEAKER_KINDS and not (
+            self.speaker_kind is None and self.source_facts is not None
+        ):
             raise ValueError("ParsedMessage.speaker_kind must be a speaker_kind code")
         if self.modality not in MODALITIES:
             raise ValueError("ParsedMessage.modality must be a modality code")
         if self.sender is not None and not isinstance(self.sender, str):
             raise TypeError("ParsedMessage.sender must be a str or None")
+        if self.calendar_event is not None and (
+            type(self.calendar_event) is not CalendarEvent
+            or self.calendar_event.scheduled_at != self.at
+        ):
+            raise ValueError("Calendar facts must match the message's schedule time")
         # The parser retains these objects until every member is read. Bound retained text
         # here as well as at screening, so earlier members cannot retain huge Unicode strings.
         object.__setattr__(self, "text", kept_text(self.text))

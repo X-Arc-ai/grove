@@ -489,9 +489,43 @@ def test_catalogue_names_equal_migration_names():
     assert set(in_files) == catalogue_schema_names()
 
 
-def test_migration_files_are_numbered_without_a_gap():
-    numbers = [int(p.name[:4]) for p in sorted(MIGRATIONS.glob("*.cypher"))]
-    assert numbers == list(range(1, len(numbers) + 1))
+def assert_migration_names(names):
+    assert names
+    numbers = []
+    for name in names:
+        match = re.fullmatch(r"([0-9]{4})_[a-z][a-z0-9_]*\.cypher", name)
+        assert match is not None, name
+        number = int(match[1])
+        assert number > 0, name
+        numbers.append(number)
+    assert numbers == sorted(set(numbers)), "migration versions must be unique and ordered"
+
+
+def test_migration_files_have_unique_positive_versions_and_valid_order():
+    # Independent additive migrations can merge in a different order from their reservations.
+    # Their full names and checksums remain the migration ledger's identities.
+    assert_migration_names([p.name for p in sorted(MIGRATIONS.glob("*.cypher"))])
+
+
+def test_migration_names_allow_reserved_number_gaps():
+    assert_migration_names(["0001_ledger.cypher", "0013_source_connections.cypher"])
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        [],
+        ["0000_invalid.cypher"],
+        ["001x_invalid.cypher"],
+        ["0011invalid.cypher"],
+        ["0011_Invalid.cypher"],
+        ["0011_one.cypher", "0011_two.cypher"],
+        ["0013_later.cypher", "0011_earlier.cypher"],
+    ],
+)
+def test_migration_name_guard_rejects_invalid_duplicate_or_unordered_versions(names):
+    with pytest.raises(AssertionError):
+        assert_migration_names(names)
 
 
 def test_primitive_ids_are_fixed():

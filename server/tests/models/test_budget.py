@@ -57,6 +57,7 @@ CONTINUE_JOBS = (
     "triage_fallback",
     "extraction",
     "transcription",
+    "image_read",
     "verification_load_bearing",
     "second_opinion_load_bearing",
     "second_opinion_correlated",

@@ -3,7 +3,7 @@
 import argparse
 import sys
 
-from grove.lints import clock_rule, no_names, runner_rule, writer_rule
+from grove.lints import clock_rule, no_names, runner_rule, schema_rule, writer_rule
 from grove.lints._scan import LintError, repo_root
 
 LINTS = {
@@ -11,6 +11,7 @@ LINTS = {
     "clock": clock_rule.check,
     "writer": writer_rule.check,
     "runner": runner_rule.check,
+    "schema": schema_rule.check,
 }
 
 
