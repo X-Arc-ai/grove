@@ -15,7 +15,16 @@ MAX_FACT_BYTES = 2048
 MAX_POSITION = (1 << 63) - 1
 WHATSAPP_TEXT = ("whatsapp", "whatsapp.export.v1")
 DOCUMENT_TEXT = ("document", "document.text.v1")
-_LOCATOR_KINDS = {WHATSAPP_TEXT: "line_bytes", DOCUMENT_TEXT: "bytes"}
+DOCUMENT_PDF = ("document", "document.pdf.v1")
+DOCUMENT_DOCX = ("document", "document.docx.v1")
+DOCUMENT_PPTX = ("document", "document.pptx.v1")
+_LOCATOR_KINDS = {
+    WHATSAPP_TEXT: "line_bytes",
+    DOCUMENT_TEXT: "bytes",
+    DOCUMENT_PDF: "page",
+    DOCUMENT_DOCX: "block",
+    DOCUMENT_PPTX: "slide_block",
+}
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -89,9 +98,25 @@ class SourceLocator:
     byte_start: int | None = None
     byte_end: int | None = None
     page: int | None = None
+    block: int | None = None
+    slide: int | None = None
 
     def __post_init__(self) -> None:
-        _code(self.kind, ("line_bytes", "bytes", "page"))
+        _code(self.kind, ("line_bytes", "bytes", "page", "block", "slide_block"))
+        if self.kind in ("block", "slide_block"):
+            _integer(self.block, 1, MAX_POSITION)
+            if self.kind == "slide_block":
+                _integer(self.slide, 1, MAX_POSITION)
+            elif self.slide is not None:
+                raise ValueError("block locator cannot contain a slide")
+            if any(
+                v is not None
+                for v in (self.line_start, self.line_end, self.byte_start, self.byte_end, self.page)
+            ):
+                raise ValueError("office locator cannot contain byte or page positions")
+            return
+        if self.block is not None or self.slide is not None:
+            raise ValueError("legacy locator cannot contain office positions")
         if self.kind == "page":
             _integer(self.page, 1, MAX_POSITION)
             if any(
@@ -114,10 +139,26 @@ class SourceLocator:
         elif self.line_start is not None or self.line_end is not None:
             raise ValueError("byte locator cannot contain line positions")
 
-    def check_extent(self, *, byte_count=None, line_count=None, page_count=None) -> None:
+    def check_extent(
+        self,
+        *,
+        byte_count=None,
+        line_count=None,
+        page_count=None,
+        block_count=None,
+        slide_count=None,
+    ) -> None:
         """Called by a parser while the actual artifact is still available."""
         self.__post_init__()
-        if self.kind == "page":
+        if self.kind in ("block", "slide_block"):
+            _integer(block_count, 1, MAX_POSITION)
+            if self.block > block_count:
+                raise ValueError("source block exceeds the artifact")
+            if self.kind == "slide_block":
+                _integer(slide_count, 1, MAX_POSITION)
+                if self.slide > slide_count:
+                    raise ValueError("source slide exceeds the artifact")
+        elif self.kind == "page":
             _integer(page_count, 1, MAX_POSITION)
             if self.page > page_count:
                 raise ValueError("source page exceeds the artifact")
@@ -256,7 +297,11 @@ class TextSourceFacts:
         return json.loads(self.canonical_json())
 
     def canonical_json(self) -> str:
-        return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        row = asdict(self)
+        if self.locator.kind not in ("block", "slide_block"):
+            del row["locator"]["block"]
+            del row["locator"]["slide"]
+        return json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
     @property
     def encoded_size(self) -> int:
@@ -279,7 +324,13 @@ class TextSourceFacts:
             locator = SourceLocator(
                 **_keys(
                     row["locator"],
-                    ("kind", "line_start", "line_end", "byte_start", "byte_end", "page"),
+                    ("kind", "line_start", "line_end", "byte_start", "byte_end", "page")
+                    + (
+                        ("block", "slide")
+                        if isinstance(row["locator"], dict)
+                        and row["locator"].get("kind") in ("block", "slide_block")
+                        else ()
+                    ),
                 )
             )
             time = dict(
@@ -341,7 +392,7 @@ def _unique_object(pairs: list) -> dict:
 
 
 def check_text_transport(identity: object, facts: TextSourceFacts, at: datetime | None) -> None:
-    """Only the two internal adapter tuples may carry facts through the real Screener."""
+    """Only the exact registered adapter tuples carry typed facts through the Screener."""
     if (
         type(identity) is not tuple
         or len(identity) != 2

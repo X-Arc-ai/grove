@@ -11,7 +11,6 @@ from grove.api.config import ApiSettings
 from grove.privacy import (
     ABSENT,
     CODE_POLICY,
-    PENDING,
     PRESENT,
     STATIC,
     flow_statement,
@@ -25,7 +24,7 @@ def statuses(statement):
 
 def test_static_statement_does_not_claim_a_deployment():
     found = statuses(flow_statement({}, runtime=False))
-    assert set(found.values()) == {STATIC, PENDING}
+    assert set(found.values()) == {STATIC}
     assert "Runs" not in markdown_statement()
 
 
@@ -165,3 +164,11 @@ def test_google_uses_effective_app_settings_and_public_response_is_not_cached(mo
 def test_checked_in_statement_matches_generator():
     path = Path(__file__).resolve().parents[3] / "docs/data-flow.md"
     assert path.read_text() == markdown_statement()
+
+
+def test_material_flow_distinguishes_retention_and_graph_admission():
+    row = next(r for r in flow_statement({}, runtime=True)["rows"] if r["id"] == "files")
+    assert row["status"] == CODE_POLICY
+    assert "Original binaries are not retained" in row["terms"]
+    assert "pending typed graph admission" in row["terms"]
+    assert "ordinary Learner queue" in row["terms"]

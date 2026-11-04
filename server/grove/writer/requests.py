@@ -43,6 +43,7 @@ from grove.writer.errors import (
     WriteFailed,
     WriteOutcomeUnknown,
 )
+from grove.writer.forget_ledger import material_request_guard
 from grove.writer.history import Stamp
 from grove.writer.receipts import Receipt, read_receipt
 from grove.writer.tx import WorldTx, WorldWriter
@@ -762,9 +763,10 @@ def claim_next_request(
         for candidate in candidates:
             request_id = candidate["r"]["id"]
             try:
-                claimed = writer.transaction(
-                    lambda tx, key=request_id: _claim_one(tx, key, worker, now, lease)
-                )
+                with material_request_guard(driver, world_id, [request_id]):
+                    claimed = writer.transaction(
+                        lambda tx, key=request_id: _claim_one(tx, key, worker, now, lease)
+                    )
             except Neo4jError as error:
                 if _lock_wait_ended(error):
                     continue
@@ -834,7 +836,8 @@ def finish_request(
         tx.run(_UPDATE, id=request_id, columns=columns)
         return {**row, **columns}
 
-    return _full_state(driver, world_id, _worked(driver, world_id, request_id, work))
+    with material_request_guard(driver, world_id, [request_id]):
+        return _full_state(driver, world_id, _worked(driver, world_id, request_id, work))
 
 
 def fail_request(
@@ -969,7 +972,10 @@ def apply_request(
         raise _unknown_request(request_id)
     refuse_protected_request(before)
     try:
-        receipt = apply_batch(driver, world_id, caller, batch, request_id=request_id, run_id=run_id)
+        with material_request_guard(driver, world_id, [request_id]):
+            receipt = apply_batch(
+                driver, world_id, caller, batch, request_id=request_id, run_id=run_id
+            )
     except BatchDeclined as declined:
         if _passes_through(declined):
             raise

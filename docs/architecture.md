@@ -121,3 +121,21 @@ Neither measures the complete initial transfer. The 500,000-byte total target re
 `/healthz` reports service/store access and a revision, not memory truth or feature completion.
 Focused document checks do not replace product tests or the owner rehearsal. This refresh uses
 the explicit CI/review publication waiver; fresh public acceptance and final-candidate scans remain open.
+
+## Browser material boundary
+
+Browser material routes require the session, same Origin and `X-Grove-Action: materials`.
+Create and edit require a UUID `Idempotency-Key`. WorldWriter checks the current session and
+persisted demo designation before the first write. A private ledger lock precedes the World
+lock. Every material read and write refuses an external intent that lacks its matching committed
+ForgetLedger row. Recovery must replay that intent before the material becomes readable again.
+Material note Requests use the same canonical check before a claim, Learner input, proposal,
+or successful no-op. The external lock remains held through the protected read or World
+transaction. A pending intent returns unavailable and preserves the Request for recovery.
+An ordinary source-span erasure retains the other title/body Sources and the revision order.
+Material counts describe the remaining body messages. Snapshot validation accepts erased
+Source references with empty content and verifies those counts before and after ledger replay.
+Only a material-family tombstone marks every revision deleted.
+Files remain source-only. Notes use the existing Learner pass and writer, never a synchronous
+model call in an HTTP handler. Whole-brain reset must include material revisions, title/body
+Sources, note Requests/Episodes and the ordinary derived graph state.

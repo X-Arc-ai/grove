@@ -117,7 +117,13 @@ def validate_ledger_rows(world_id: str, rows: Iterable[Mapping]) -> list[dict]:
             if not isinstance(row.get("id"), str) or row["id"] in ids:
                 raise ValueError("invalid forget ledger identity")
             ids.add(row["id"])
-        if row.get("target_type") not in {"item", "field_value", "named_value", "source_span"}:
+        if row.get("target_type") not in {
+            "item",
+            "field_value",
+            "named_value",
+            "source_span",
+            "material",
+        }:
             raise ValueError("invalid forget target type")
         for name in ("approved_at",):
             value = row.get(name)
@@ -166,6 +172,8 @@ def forget(
     approval_token: str,
     actor: str,
     ledger_dir: Path | str | None = None,
+    material_session=None,
+    session_hash=None,
 ) -> dict:
     from grove.writer.forget_approvals import consume_approval, target_digest, validate_target
 
@@ -177,6 +185,21 @@ def forget(
 
         def work(tx: WorldTx):
             tx.lock_world()
+            if target["type"] == "material":
+                from grove.writer.forget_ledger import checked_under_lock
+                from grove.writer.materials import (
+                    MaterialSessionEnded,
+                    check_revision,
+                    check_session,
+                )
+
+                if material_session is None or session_hash is None:
+                    raise MaterialSessionEnded()
+                check_session(tx, material_session, session_hash)
+                check_revision(tx, target)
+                checked_under_lock(
+                    root, world_id, [r["f"] for r in tx.run("MATCH (f:ForgetLedger) RETURN f")]
+                )
             consume_approval(tx, approval_token, target_hash, actor)
             before = read_inventory(tx)
             plan = build_plan(before, target)
