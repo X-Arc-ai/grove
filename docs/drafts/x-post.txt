@@ -1,1 +1,1 @@
-Grove build update: 33 PRs merged. The deployed demo separates a real source upload from prepared memory for Muse recall. Owner acceptance remains unverified. General memory, privacy, and remaining features are incomplete. Event and pre-event work are recorded separately.
+Grove gives AI assistants dated, sourced memory. Our private build includes a graph, screened material storage, and a prepared synthetic recall demo. Files remain outside graph extraction. Full runtime and Muse acceptance remain open. This is an unsent draft.
