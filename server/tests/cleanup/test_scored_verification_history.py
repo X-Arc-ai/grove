@@ -72,7 +72,9 @@ def env(base_env):
     store.rows("Kind")[0].update(
         name="Work", status_vocabulary=json.dumps([{"status": "open", "role": "open"}])
     )
-    store.rows("Meaning")[0].update(name="Synthetic state", from_kinds='["*"]', to_kinds='["*"]')
+    store.rows("Meaning")[0].update(
+        name="Synthetic state", from_kinds='{"any": true}', to_kinds='{"any": true}'
+    )
     store.rows("Item")[0].update(title="Synthetic claim", recheck_by=NEXT)
     store.add("Connector", id="connector", type="web_pages")
     store.add("Source", id="source", connector_id="connector", received_at=AT)
