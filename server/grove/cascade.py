@@ -341,7 +341,7 @@ def plan(snapshot: Mapping[str, Any], changes: Iterable[Mapping[str, Any]]) -> C
             resume = (
                 items[target].get("status_role") == "blocked"
                 and not still_held
-                and previous.get("role") not in TERMINAL_ROLES | {"blocked", "reported_done"}
+                and previous.get("role") not in TERMINAL_ROLES | {"blocked"}
                 and previous.get("status") is not None
                 and previous.get("role") is not None
             )
