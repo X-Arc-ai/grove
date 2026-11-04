@@ -866,6 +866,7 @@ HISTORY_VALUES = Table(
         _WORLD,
         _col("value", "text_home", note="the value or the forgotten marker"),
         _col("forgotten at", "instant"),
+        *_version_touched(),
         _ruling(
             "item_id",
             "id",
@@ -1557,6 +1558,7 @@ FORGET_LEDGER = Table(
         _col("approved at", "instant"),
         _col("receipt", "json_ids", note="counts per place, never the value"),
         _col("the date after which no backup holds the value", "date", "backups_clear_after"),
+        _ruling("plan", "json_ids", "D14: opaque row selectors and digests, never target text"),
     ),
     uniques=_keys("forget_ledger", ("id",)),
     indexes=_ranges("forget_ledger", ("world_id",)),
@@ -1856,7 +1858,28 @@ OAUTH_GRANTS = Table(
     ),
 )
 
-LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS)
+FORGET_APPROVALS = Table(
+    name="forget_approvals",
+    label="ForgetApproval",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D14",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("user_id", "id", "the approving person"),
+        _ruling("token_hash", "code", "SHA-256; the raw token is never stored"),
+        _ruling("target_digest", "code", "bound to the exact requested target"),
+        _ruling("created_at", "instant", "approval time"),
+        _ruling("expires_at", "instant", "short approval lifetime"),
+        _ruling("used_at", "instant", "consumed atomically with the cascade"),
+    ),
+    uniques=_keys("forget_approvals", ("id",), ("token_hash",)),
+    indexes=_ranges("forget_approvals", ("world_id",)),
+)
+
+LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS, FORGET_APPROVALS)
 
 # B.1's five groups, in B.1 order.
 B1_GROUPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
@@ -1958,6 +1981,27 @@ FULLTEXT_INDEXES: tuple[FulltextIndex, ...] = (
         ("world_id", "phrase", "normalised_phrase"),
     ),
     FulltextIndex("grove_past_values", ("PastValue",), ("world_id", "value")),
+    FulltextIndex(
+        "grove_forget_values",
+        ("Item", "Alias", "HistoryValue", "Kind", "Meaning", "PropertyName", "RunRecord", "Source"),
+        (
+            "world_id",
+            "title",
+            "summary",
+            "body",
+            "properties",
+            "property_values",
+            "search_terms",
+            "status",
+            "status_vocabulary",
+            "phrase",
+            "normalised_phrase",
+            "value",
+            "name",
+            "proposed_operations",
+            "content",
+        ),
+    ),
     FulltextIndex(
         "grove_value_index",
         ("Item", "Alias", "HistoryValue", "Kind", "Meaning", "PropertyName", "RunRecord"),

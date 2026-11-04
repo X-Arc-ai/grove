@@ -458,7 +458,7 @@ Keys: `items_id_unique` (id).
 
 Indexes: `items_world_id_kind_status_role_idx` (world_id, kind, status_role); `items_world_id_became_true_earliest_idx` (world_id, became_true_earliest); `items_world_id_became_true_latest_idx` (world_id, became_true_latest); `items_world_id_recorded_idx` (world_id, recorded); `items_title_text` (title) text.
 
-Full text: `grove_items_lexical`, `grove_value_index`.
+Full text: `grove_items_lexical`, `grove_forget_values`, `grove_value_index`.
 
 B.1's (world_id, became true) is two indexes, one per bound: a range index leaves out a row without the property, and a precision of before has no earliest bound. Full text and trigram are S17. Scheduled times live in properties (line 920).
 
@@ -544,7 +544,7 @@ Keys: `kinds_id_unique` (id); `kinds_world_id_name_unique` (world_id, name).
 
 Indexes: none.
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -582,7 +582,7 @@ Keys: `meanings_id_unique` (id); `meanings_world_id_name_unique` (world_id, name
 
 Indexes: none.
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 S26: lifecycle class, status vocabulary, required fields, required links stay on kinds.
 
@@ -629,7 +629,7 @@ Keys: `property_names_id_unique` (id); `property_names_world_id_kind_name_unique
 
 Indexes: none.
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -664,7 +664,7 @@ Keys: `aliases_id_unique` (id); `aliases_world_id_normalised_phrase_target_type_
 
 Indexes: `aliases_normalised_phrase_text` (normalised_phrase) text.
 
-Full text: `grove_aliases_lexical`, `grove_value_index`.
+Full text: `grove_aliases_lexical`, `grove_forget_values`, `grove_value_index`.
 
 B.1's target is the pair target_type, target_id. Trigram on the phrase is S17.
 
@@ -823,6 +823,8 @@ Indexes: `capabilities_connector_type_registry_id_idx` (connector_type, registry
 Keys: `sources_id_unique` (id).
 
 Indexes: `sources_world_id_connector_id_external_locator_idx` (world_id, connector_id, external_locator).
+
+Full text: `grove_forget_values`.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -1008,7 +1010,7 @@ Keys: `history_values_id_unique` (id).
 
 Indexes: none.
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 A row that holds an old value of an item's content column also has the label :PastValue (S18). No text is copied, so a forget that replaces the value clears the index.
 
@@ -1018,6 +1020,8 @@ A row that holds an old value of an item's content column also has the label :Pa
 | world_id | `world_id` | `id` | b1 |  |
 | value | `value` | `text_home` | b1 | the value or the forgotten marker |
 | forgotten at | `forgotten_at` | `instant` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 | (none) | `item_id` | `id` | ruling | S18: only on a row that also has the label PastValue |
 
 ### requests
@@ -1115,7 +1119,7 @@ Keys: `run_records_id_unique` (id).
 
 Indexes: `run_records_world_id_agent_started_idx` (world_id, agent, started).
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -1586,6 +1590,7 @@ The copy kept outside the dump belongs to the forget lane (S23).
 | approved at | `approved_at` | `instant` | b1 |  |
 | receipt | `receipt` | `json_ids` | b1 | counts per place, never the value |
 | the date after which no backup holds the value | `backups_clear_after` | `date` | b1 |  |
+| (none) | `plan` | `json_ids` | ruling | D14: opaque row selectors and digests, never target text |
 
 ### oauth_clients
 
@@ -1821,6 +1826,25 @@ S45: a person's consent to a host, one row per (client, world). A new consent to
 | (none) | `granted_at` | `instant` | convention | the last consent |
 | (none) | `revoked_at` | `instant` | convention | absent while the grant is live |
 
+### forget_approvals
+
+`:ForgetApproval`, node. Scope world. Restore group snapshot. Owner D14.
+
+Keys: `forget_approvals_id_unique` (id); `forget_approvals_token_hash_unique` (token_hash).
+
+Indexes: `forget_approvals_world_id_idx` (world_id).
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `user_id` | `id` | ruling | the approving person |
+| (none) | `token_hash` | `code` | ruling | SHA-256; the raw token is never stored |
+| (none) | `target_digest` | `code` | ruling | bound to the exact requested target |
+| (none) | `created_at` | `instant` | ruling | approval time |
+| (none) | `expires_at` | `instant` | ruling | short approval lifetime |
+| (none) | `used_at` | `instant` | ruling | consumed atomically with the cascade |
+
 ## Full-text indexes
 
 | Name | Labels | Properties | Analyzer |
@@ -1828,6 +1852,7 @@ S45: a person's consent to a host, one row per (client, world). A new consent to
 | `grove_items_lexical` | `Item` | `world_id`, `title`, `summary`, `body`, `property_values`, `search_terms` | `standard-folding` |
 | `grove_aliases_lexical` | `Alias` | `world_id`, `phrase`, `normalised_phrase` | `standard-folding` |
 | `grove_past_values` | `PastValue` | `world_id`, `value` | `standard-folding` |
+| `grove_forget_values` | `Item`, `Alias`, `HistoryValue`, `Kind`, `Meaning`, `PropertyName`, `RunRecord`, `Source` | `world_id`, `title`, `summary`, `body`, `properties`, `property_values`, `search_terms`, `status`, `status_vocabulary`, `phrase`, `normalised_phrase`, `value`, `name`, `proposed_operations`, `content` | `standard-folding` |
 | `grove_value_index` | `Item`, `Alias`, `HistoryValue`, `Kind`, `Meaning`, `PropertyName`, `RunRecord` | `world_id`, `title`, `summary`, `body`, `property_values`, `search_terms`, `phrase`, `normalised_phrase`, `value`, `name`, `proposed_operations` | `standard-folding` |
 
 <!-- generated:end -->
