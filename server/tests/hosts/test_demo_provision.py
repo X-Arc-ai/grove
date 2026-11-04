@@ -20,12 +20,14 @@ from grove.demo_policy import (
 from grove.ids import new_id
 from grove.mcp.store import StoreHandler, request_identity
 from grove.mcp.tools import ToolContext
+from grove.runner.passes import caller_for
 from grove.screening import Message, Screener, ScreeningConfig
 from grove.store.query import PlatformQuery, WorldQuery
 from grove.views.session import find_session, token_hash
 from grove.writer import Caller, enqueue_request
 from grove.writer.accounts import create_session, email_hash, ensure_account, ensure_demo_account
 from grove.writer.ingest import ensure_connector
+from grove.writer.requests import claim_next_request, finish_request
 from grove.writer.sources import (
     add_screened_source,
     record_connector,
@@ -220,6 +222,17 @@ def test_private_email_file_requires_private_mode_and_config_match(
     file.chmod(0o644)
     with pytest.raises(DemoDenied):
         private_email_hash()
+    file.chmod(0o600)
+    link = tmp_path / "demo-link"
+    link.symlink_to(file)
+    monkeypatch.setenv("GROVE_DEMO_EMAIL_FILE", str(link))
+    with pytest.raises(DemoDenied):
+        private_email_hash()
+    link.unlink()
+    link.hardlink_to(file)
+    monkeypatch.setenv("GROVE_DEMO_EMAIL_FILE", str(file))
+    with pytest.raises(DemoDenied):
+        private_email_hash()
 
 
 def test_command_never_calls_a_queued_request_ready(driver, demo_accounts):
@@ -251,3 +264,17 @@ def test_command_never_calls_a_queued_request_ready(driver, demo_accounts):
         "MATCH (s:Source) WHERE s.demo_version IS NOT NULL RETURN s"
     )
     assert len(retained) == 1
+
+
+def test_empty_pass_saved_receipt_is_not_a_ready_dataset(driver, demo_accounts):
+    accounts, _, hashed = demo_accounts
+    handler = StoreHandler(screener=Screener(ScreeningConfig()), wait_seconds=0)
+    options = {"wait_seconds": 0, "world_id_for": accounts.world_id_for, "handler": handler}
+    assert provision(driver, hashed, **options)["state"] == "saving"
+    account = ensure_demo_account(driver, hashed, world_id_for=accounts.world_id_for)
+    worker = caller_for("learner")
+    claimed = claim_next_request(driver, account.world_id, worker, worker="demo-empty-pass")
+    assert claimed is not None
+    saved = finish_request(driver, account.world_id, worker, claimed.id, worker="demo-empty-pass")
+    assert saved.api_state == "saved"
+    assert provision(driver, hashed, **options) == {"state": "saved", "saved_requests": 1}
