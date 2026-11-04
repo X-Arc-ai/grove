@@ -288,7 +288,7 @@
     var primary=upload?'<button class="gp-primary" data-action="upload-export"'+(!canUpload(id)||!selected.file||selected.pending?' disabled':'')+'>'+(selected.pending?'Upload in progress':'Upload '+(id==='notes'?'file':'export'))+'</button>':id==='muse'?'<button class="gp-primary" data-import="muse">Connect Muse</button>':'<button class="gp-primary" data-action="export-requested"'+(live&&ui.reminderRequest?' disabled':'')+'>'+(id==='chats'?'I have my export':'I’ve requested it')+'</button>';
     var devices=id==='chats'&&!upload?'<div class="gp-device-choice" aria-label="WhatsApp device">'+[['iphone','iPhone'],['android','Android']].map(function(d){return '<button data-guide-device="'+d[0]+'" aria-pressed="'+(ui.guideDevice===d[0])+'">'+d[1]+'</button>';}).join('')+'</div>':'';
     var controls=frames.length>1?'<div class="gp-film-tools"><button class="gp-text" data-action="film-toggle" aria-label="Pause guide">Ⅱ</button></div>':'';
-    var content=header+devices+film+picker+controls+'<footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">'+(upload?(id==='notes'||id==='chats'?'Later':'When the email arrives'):'Back')+'</button>'+primary+'</footer>';
+    var content=header+devices+film+readableGuide(frames)+picker+controls+'<footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">'+(upload?(id==='notes'||id==='chats'?'Later':'When the email arrives'):'Back')+'</button>'+primary+'</footer>';
     if(api.getState().onboardingComplete){content=content.replace(header,'<p class="gp-guide-purpose">'+(upload?'Upload your export to bring your context into Grove':'Follow the steps to export your history')+help+'</p>');return settingsFrame('<div class="gp-nested-guide '+(upload?'gp-upload-guide':'')+'">'+content+'</div>','sources',sourceTrail(id,upload));}
     return shell(content,'gp-guide gp-visual-guide'+(upload?' gp-upload-guide':''),false);
   }
@@ -301,7 +301,33 @@
   function transferFilm(id){return '<div class="film-transfer"><h2>'+(id==='muse'?'Your context, connected':id==='notes'?'Bring your files':'Bring your history')+'</h2><div class="film-route"><span class="film-end">'+icon(id)+'</span><span class="film-line" aria-hidden="true">→</span><span class="film-file">'+icon('notes')+'<small>'+(id==='notes'?'Notes':id==='muse'?'Context':id==='chats'?'.txt / .zip':'.zip')+'</small></span><span class="film-line" aria-hidden="true">→</span><span class="film-end film-grove">g<b></b></span></div><div class="film-labels"><span>'+(id==='muse'?'Muse':id==='notes'?'Your files':id==='chats'?'WhatsApp':'Email')+'</span><span>'+(id==='muse'?'Connect':id==='notes'?'Add':id==='chats'?'Save or share':'Download')+'</span><span>Grove</span></div></div>';}
   function filmThemeCSS(){return document.documentElement.getAttribute('data-theme')==='dark'?'html,body,.film-stage,.film-transfer,.film-instruction{background:#111113!important;color:#f0f0f0!important}.film-labels,.film-instruction>span,.film-line{color:#b3b3ac!important}.film-end{border-color:#50504d!important}.film-frame [class*="bg-"]{background-color:#19191c!important}.film-frame [class*="text-"]{color:#e8e8e5!important}.film-frame [class*="border-"]{border-color:#444448!important}':'';}
   function filmCSS(count,duration){var fade=(100/count).toFixed(6);return filmThemeCSS()+'.film-server{font:15px ui-monospace,monospace;padding:16px;border:1px solid currentColor;border-radius:6px;margin-top:20px}html,body{margin:0;width:760px;height:475px;overflow:hidden;background:#f7f6f0}.film-stage{position:relative;width:760px;height:475px;pointer-events:none;user-select:none}.film-frame{position:absolute;inset:0;opacity:0;animation:filmFrame '+duration+'s steps(1,end) infinite}.film-frame:only-child{opacity:1;animation:none}.film-frame:last-child{z-index:2}@keyframes filmFrame{0%{opacity:1} '+fade+'%,100%{opacity:0}}.film-transfer,.film-instruction{box-sizing:border-box;width:760px;height:475px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#f7f6f0;color:#242521;font-family:ui-monospace,monospace}.film-transfer h2,.film-instruction h2{font-size:25px;font-weight:500;letter-spacing:-1px;margin:0 0 46px}.film-route{display:grid;grid-template-columns:100px 85px 100px 85px 100px;align-items:center;justify-items:center;gap:12px}.film-end,.film-file{width:70px;height:70px;display:flex;align-items:center;justify-content:center}.film-end{border:1px solid #d6d5cd;border-radius:50%}.film-end svg{width:30px;height:30px}.film-file{flex-direction:column;gap:8px}.film-file svg{width:31px;height:31px}.film-file small{font-size:11px;white-space:nowrap;text-align:center}.film-line{width:85px;text-align:center;color:#a6a69c;font:300 28px ui-monospace,monospace}.film-line i{position:absolute;width:5px;height:5px;border-radius:50%;background:#c4a044;top:-2px;animation:filmDot 3.6s ease-in-out infinite}.film-labels{display:grid;grid-template-columns:100px 100px 100px;column-gap:109px;width:518px;margin-top:25px;font-size:12px;color:#77786f;text-align:center}.film-grove{position:relative;font-size:36px;letter-spacing:-4px}.film-grove b{position:absolute;width:6px;height:6px;border-radius:50%;background:#c4a044;right:17px;top:23px}.film-instruction h2{margin:20px 0;font-size:27px}.film-instruction p{font-size:14px;max-width:540px;text-align:center;line-height:1.8}.film-instruction>span{color:#8c8d83;font-size:12px}.film-logo{margin-bottom:30px}.film-logo svg{width:34px;height:34px}[data-target]{animation:filmTarget 1.8s ease-in-out infinite}@keyframes filmDot{0%{left:0;opacity:0}25%,75%{opacity:1}100%{left:100%;opacity:0}}@keyframes fileFloat{50%{transform:translateY(-5px)}}@keyframes filmTarget{50%{outline-color:#eedc9e}}@media(prefers-reduced-motion:reduce){*{animation:none!important}.film-frame{display:none}.film-frame:first-child{display:block;opacity:1}}';}
-  function fitGuide(){var frame=root.querySelector('.gp-app-frame');if(frame){var iframe=frame.querySelector('iframe');if(!iframe.dataset.started){iframe.dataset.started=String(performance.now());iframe.dataset.base=iframe.getAttribute('srcdoc');}iframe.style.transform='scale('+(frame.clientWidth/760)+')';}}
+  // The illustration keeps its reference proportions. Mobile instructions remain
+  // real, unscaled text and follow the same elapsed-time clock as its active frame.
+  var guideTextTimer=null;
+  function readableGuide(frames){
+    if(!frames.length||!frames.every(function(f){return f.title&&f.detail;}))return '';
+    return '<div class="gp-guide-reader" data-guide-reader aria-label="Current guide instruction">'+frames.map(function(f,i){return '<section data-guide-step="'+i+'"'+(i?' hidden':'')+'><small>Step '+(i+1)+' of '+frames.length+'</small><h2>'+esc(f.title)+'</h2><p>'+esc(f.detail)+'</p></section>';}).join('')+'</div>';
+  }
+  function syncGuideText(){
+    var frame=root.querySelector('.gp-app-frame iframe'),reader=root.querySelector('[data-guide-reader]');
+    if(!frame||!reader){clearInterval(guideTextTimer);guideTextTimer=null;return;}
+    var sections=reader.querySelectorAll('[data-guide-step]');
+    var seconds=Number((frame.dataset.base.match(/data-frame-seconds="([\d.]+)"/)||[])[1])||3;
+    var elapsed=Number(frame.dataset.elapsed)||0;
+    if(frame.dataset.paused!=='true')elapsed+=(performance.now()-Number(frame.dataset.started))/1000;
+    var active=reduceMotion.matches?0:Math.floor(elapsed/seconds)%sections.length;
+    sections.forEach(function(section,i){section.hidden=i!==active;});
+  }
+  function fitGuide(){
+    clearInterval(guideTextTimer);guideTextTimer=null;
+    var frame=root.querySelector('.gp-app-frame');
+    if(frame){
+      var iframe=frame.querySelector('iframe');
+      if(!iframe.dataset.started){iframe.dataset.started=String(performance.now());iframe.dataset.base=iframe.getAttribute('srcdoc');}
+      iframe.style.transform='scale('+(frame.clientWidth/760)+')';
+      if(root.querySelector('[data-guide-reader]')){syncGuideText();guideTextTimer=setInterval(syncGuideText,100);}
+    }
+  }
   window.addEventListener('resize',fitGuide);
   window.addEventListener('grove:theme',function(){if(ui.guide||ui.host)render(true);});
   function info(copy){return '<span class="gp-info" tabindex="0" role="note" aria-label="'+esc(copy)+'">i<span class="gp-tooltip" role="tooltip">'+esc(copy)+'</span></span>';}
@@ -436,7 +462,7 @@
       if(ui.host!=='grok'){
         var frames=steps.map(function(step,i){return '<section class="film-frame" style="animation-delay:-'+(9-i*3).toFixed(2)+'s"><div class="film-instruction"><div class="film-logo">'+icon(ui.host)+'</div><span>0'+(i+1)+' / 03</span><h2>'+esc(step[0])+'</h2><p>'+esc(step[1])+'</p>'+(i===1?'<div class="film-server">'+esc(MCP_URL)+'</div>':'')+'</div></section>';}).join('');
         var doc='<!doctype html><html><head><meta charset="utf-8"><style>'+filmCSS(3,9)+'</style></head><body><div class="film-stage" data-frame-seconds="3" data-frame-count="3">'+frames+'</div></body></html>';
-        visual='<div class="gp-app-frame" aria-label="Illustrated '+esc(name)+' connection guide"><iframe title="Automatic '+esc(name)+' connection guide" tabindex="-1" aria-hidden="true" inert sandbox srcdoc="'+esc(doc)+'"></iframe></div><div class="gp-film-tools"><button class="gp-text" data-action="film-toggle" aria-label="Pause guide">Ⅱ</button></div>';
+        visual='<div class="gp-app-frame" aria-label="Illustrated '+esc(name)+' connection guide"><iframe title="Automatic '+esc(name)+' connection guide" tabindex="-1" aria-hidden="true" inert sandbox srcdoc="'+esc(doc)+'"></iframe></div>'+readableGuide(steps.map(function(step){return {title:step[0],detail:step[1]};}))+'<div class="gp-film-tools"><button class="gp-text" data-action="film-toggle" aria-label="Pause guide">Ⅱ</button></div>';
       }
       return settingsFrame('<div class="gp-host-guide"><p class="gp-section-copy">Complete the connection in your AI app</p>'+visual+'<div class="gp-mcp-body"><ol class="gp-section-copy">'+steps.map(function(step){return '<li>'+esc(step[1])+'</li>';}).join('')+'</ol>'+mcpLink()+'<p class="gp-section-copy">This guide does not connect your account. Review access in Grove before approval.</p></div></div>','connections',[['Connections','host-back'],['Use Grove in '+name]]);
     }
@@ -587,7 +613,7 @@
           var selected=reduceMotion.matches?0:Math.floor(elapsed/seconds)%count;
           doc=doc.replace('</style>','*{animation-play-state:paused!important}.film-frame{animation:none!important;opacity:0!important;visibility:hidden!important}.film-frame:nth-child('+(selected+1)+'){opacity:1!important;visibility:visible!important}</style>');
         }
-        frame.setAttribute('srcdoc',doc);if(track)track.style.animationPlayState=paused?'paused':'running';button.textContent=paused?'▷':'Ⅱ';button.setAttribute('aria-label',paused?'Play guide':'Pause guide');
+        frame.setAttribute('srcdoc',doc);if(track)track.style.animationPlayState=paused?'paused':'running';button.textContent=paused?'▷':'Ⅱ';button.setAttribute('aria-label',paused?'Play guide':'Pause guide');syncGuideText();
       }
     }
     else if(action==='guide-next')move(function(){ui.guideStep++;render(true);});

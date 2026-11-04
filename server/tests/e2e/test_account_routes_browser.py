@@ -1239,3 +1239,82 @@ def test_fidelity_pipedream_search_and_session_discard_old_results(context):
     )
     page.wait_for_timeout(50)
     assert not page.locator('[data-pipedream-select="linear"]').count()
+
+
+@pytest.mark.parametrize("provider", ["muse", "chatgpt", "claude", "iphone", "android"])
+def test_mobile_guide_instruction_is_readable_and_tracks_frame(context, provider):
+    page = context.new_page()
+    page.set_viewport_size({"width": 375, "height": 667})
+    page.goto("/login")
+    login(page, "readable-" + provider + "@example.test")
+    finish(page)
+    page.locator("#profile-button").click()
+    if provider in ("iphone", "android"):
+        page.locator('[data-settings-tab="sources"]').click()
+        page.locator('[data-add-group="chats"]').click()
+        page.locator('[data-guide="chats"]').click()
+        page.locator('[data-guide-device="' + provider + '"]').click()
+    else:
+        page.locator('[data-settings-tab="connections"]').click()
+        page.locator('[data-host-inline="' + provider + '"]').click()
+    iframe = page.locator(".gp-app-frame iframe")
+    iframe.wait_for(state="visible")
+    inner = iframe.element_handle().content_frame()
+    count = int(inner.locator(".film-stage").get_attribute("data-frame-count"))
+    seconds = float(inner.locator(".film-stage").get_attribute("data-frame-seconds"))
+    for step in range(count):
+        iframe.evaluate(
+            """(el, elapsed) => {
+              el.dataset.started=String(performance.now()-elapsed*1000);
+              el.dataset.elapsed='0';
+            }""",
+            step * seconds + 0.02,
+        )
+        page.get_by_role("button", name="Pause guide", exact=True).click()
+        page.wait_for_timeout(120)
+        inner = iframe.element_handle().content_frame()
+        active = inner.locator(".film-frame").nth(step)
+        heading = active.locator("h2").inner_text()
+        body = active.locator(".film-instruction p, .wa-caption p").inner_text()
+        reader = page.locator("[data-guide-reader] section:not([hidden])")
+        if reader.count():
+            reader.scroll_into_view_if_needed()
+            assert reader.locator("h2").inner_text() == heading
+            assert reader.locator("p").inner_text() == body
+            sizes = reader.evaluate("""el => [el.querySelector('h2'),el.querySelector('p')].map(
+              n => parseFloat(getComputedStyle(n).fontSize)*
+                n.getBoundingClientRect().width/n.offsetWidth)
+            """)
+            assert reader.evaluate("el=>el.scrollWidth<=el.clientWidth")
+            assert reader.locator("p").evaluate("el=>el.scrollHeight<=el.clientHeight")
+        else:
+            scale = iframe.evaluate("el=>el.getBoundingClientRect().width/el.offsetWidth")
+            sizes = active.evaluate("""el => [el.querySelector('h2'),
+              el.querySelector('.film-instruction p, .wa-caption p')].map(
+                n=>parseFloat(getComputedStyle(n).fontSize))""")
+            sizes = [size * scale for size in sizes]
+        assert sizes[0] >= 18, sizes
+        assert sizes[1] >= 14, sizes
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        if step == count - 1:
+            shot(page, "readable-mobile-" + provider)
+        page.get_by_role("button", name="Play guide", exact=True).click()
+    # Cross a real animation boundary and verify the text follows it.
+    iframe.evaluate(
+        """(el, elapsed) => {
+          el.dataset.started=String(performance.now()-elapsed*1000);
+          el.dataset.elapsed='0';
+        }""",
+        seconds - 0.3,
+    )
+    page.get_by_role("button", name="Pause guide", exact=True).click()
+    page.get_by_role("button", name="Play guide", exact=True).click()
+    page.wait_for_timeout(650)
+    page.get_by_role("button", name="Pause guide", exact=True).click()
+    reader = page.locator("[data-guide-reader] section:not([hidden])")
+    assert reader.get_attribute("data-guide-step") == "1"
+    inner = iframe.element_handle().content_frame()
+    opacities = inner.locator(".film-frame").evaluate_all(
+        "els=>els.map(el=>Number(getComputedStyle(el).opacity))"
+    )
+    assert opacities[1] == 1 and sum(value > 0 for value in opacities) == 1
