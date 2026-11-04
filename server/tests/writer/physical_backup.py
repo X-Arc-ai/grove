@@ -303,6 +303,7 @@ class Drill:
         self.stage = "preflight"
         self.runtime = root / "runtime"
         self.dumps: list[dict[str, Any]] = []
+        self.source_sizes: list[dict[str, Any]] = []
 
     def docker(self, tag: str, *args: str, **kwargs: Any) -> str:
         return self.commands.run(tag, ["docker", *args], **kwargs)
@@ -394,9 +395,23 @@ class Drill:
 
     def _remote_size(self, path: str, limit: int) -> int:
         output = self.docker("source_size", "exec", self.identity.service, "du", "-sbL", path)
-        value = output.split()[0]
-        require(value.isdecimal() and int(value) <= limit, "copy_size_limit")
-        return int(value)
+        fields = output.split(maxsplit=1)
+        value = fields[0] if fields else ""
+        require(
+            value.isascii() and value.isdecimal() and len(value) <= 20,
+            "invalid_copy_size_output",
+        )
+        size = int(value)
+        self.source_sizes.append(
+            {
+                "stage": self.stage,
+                "kind": "data" if path == self.current_data else "runtime",
+                "bytes": size,
+                "limit": limit,
+            }
+        )
+        require(size <= limit, "copy_size_limit")
+        return size
 
     def _admin_env(self) -> dict[str, str]:
         return {
@@ -668,6 +683,7 @@ def main() -> int:
         if drill is not None:
             report["stage"] = drill.stage
             report["dumps"] = drill.dumps
+            report["source_sizes"] = drill.source_sizes
         if commands is not None:
             report["commands"] = commands.receipts
         if root is not None:
