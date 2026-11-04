@@ -78,6 +78,17 @@ calling a report an artifact is not an independent proof that the report is true
 - `POST /v1/connectors/<id>/disconnect` clears local provider credentials and stops reads.
   It retains source history and does not revoke other calendars through Google's shared grant.
 
+Request admission and disconnect take the same database world lock. A committed admission
+defines a request's start. Disconnect prevents later admissions and later source commits.
+It cannot retract a request already admitted, even if that request pauses before its network
+send. Each response needs a fresh connected-state, owner and lease check before use; a stale
+response is discarded. Each source transaction repeats those checks under the world lock
+before it takes the connector lock. A transaction that starts first commits before disconnect
+can succeed. Disconnect between event/commit transactions blocks the remaining writes.
+These checks use database state across processes, not an in-memory cancellation flag.
+An expired lease stops the old reader even when no replacement or disconnect occurs.
+Failed cleanup cannot change a disconnected or newer owner's credentials, cursor or coverage.
+
 `GROVE_CONNECTOR_POLL=1` starts one serial poll loop in the API. The default is disabled until
 the operator provisions the source configuration. Every thirty seconds it selects one due connection. The initial
 read interval is five minutes. Reads use a database lease. API shutdown waits for an active
@@ -97,6 +108,27 @@ the database and retain it for database restoration. Replacing it without re-enc
 new consent. A refresh response that omits a replacement refresh token retains the old one.
 
 Deployment needs the key mount and, for Git, the private allowlist and read-only clone mounts.
+The checked-in Compose file sets `GROVE_CONNECTOR_KEY_FILE=/run/grove/connectors/key` and
+`GROVE_CONNECTOR_POLL=1` for the API only. It binds `/etc/grove/connectors` read-only at
+`/run/grove/connectors` with `create_host_path: false`. Before an authorized deployment,
+the deploy owner must provision that directory with mode 700 and ownership `10001:10001`,
+the API image's uid/gid. The `key` file must be regular, mode 600, and owned by `10001:10001`.
+Do not use a symlink. An absent directory refuses the mount; an absent or invalid key refuses
+Calendar consent and reads without sending provider requests. Other routes remain available
+when the directory exists but the key is absent. The API never creates a key on demand.
+
+The deploy owner must retain the same key in a separate private backup, mode 600 or an
+approved secret store, before mount/poll activation. Do not put the key in the repository,
+logs, messages, an ordinary database dump, or a secret hash report. Restored ciphertext
+requires this exact key; replacing the key is not a credential restoration procedure.
+
+Git remains optional. Calendar requires neither `repositories.json` nor a clone directory.
+An operator can later set `GROVE_GIT_REPOSITORIES_FILE` in the API environment and mount
+approved synthetic clones read-only through a separately reviewed deployment configuration.
+The map must be a regular mode-600 file readable by the API and map only synthetic world
+IDs and aliases to approved clone paths. Personal and client repositories are forbidden.
+No clone directory or real repository is selected by the default Compose configuration.
+
 The connector PR alone does not establish a live deployment or a completed human consent.
 Calendar remains `Planned` in the public data-flow table until those steps run.
 
