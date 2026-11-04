@@ -49,7 +49,14 @@ PLAN_KEYS = {
 _HASH = re.compile(r"[0-9a-f]{64}")
 _LOCATOR = re.compile(r"sha256:[0-9a-f]{64}")
 _RANGE = re.compile(r"(line|char):(\d+)(?:-(\d+))?")
-_PROTECTED = {"change_entries", "forget_ledger", "forget_approvals"}
+_PROTECTED = {
+    "change_entries",
+    "forget_ledger",
+    "forget_approvals",
+    "authority_projections",
+    "authority_operations",
+    "authority_approval_uses",
+}
 
 
 def digest(text: str) -> str:
