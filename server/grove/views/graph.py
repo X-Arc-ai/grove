@@ -16,6 +16,7 @@ from typing import Any
 
 from grove.store.current import Standing, standings_of
 from grove.store.query import WorldQuery
+from grove.store.words import clock_words, provenance_timezone
 from grove.views.registry import Registry, read_registry
 from grove.views.session import ViewSession
 from grove.views.times import instant, iso_z
@@ -308,9 +309,17 @@ def node_payload(
     found = standings_of(world, [item])[item_id]
     node = node_data(item, registry, position, self_item_id, found)
     content = _text(item.get("summary")) or _text(item.get("body"))
+    # The clocks in words (D4): only the item page shows them, so the graph list never pays for
+    # them. Dates read in the person's timezone from the creating row, else UTC.
+    clocks = clock_words(world, item_id, timezone=provenance_timezone(world, item))
     return {
         "node": node
-        | {"title": node["label"], "content": content, "status_field_value": node["status"]},
+        | {
+            "title": node["label"],
+            "content": content,
+            "status_field_value": node["status"],
+            "clocks": clocks,
+        },
         "required_props": [],
         "optional_props": registry.optional_props(item.get("kind")),
         "required_prop_names": [],

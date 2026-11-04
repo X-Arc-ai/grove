@@ -45,7 +45,7 @@ from grove.writer.source_types import ORDER, RANK
 
 SUCCESSOR_MEANINGS = (MEANING_CORRECTED_BY, MEANING_SUPERSEDED_BY)
 # Entry fields that mark an event and hold no column (D3, S47).
-MARKERS = frozenset({"reopened", "merged_into", "restated", "no_head_update"})
+MARKERS = frozenset({"reopened", "merged_into", "restated", "no_head_update", "verified"})
 _CLOCK_FIELDS = ("became_true", "stopped_being_true")
 _INSTANT_FIELDS = frozenset({"status_since", "recheck_by", "last_confirmed"})
 _JSON_FIELDS = frozenset({"recheck_how"})
@@ -80,7 +80,7 @@ _ENTRIES_OF_SET = "MATCH (e:ChangeEntry {change_set_id: $id}) RETURN e ORDER BY 
 _UNDONE = "MATCH (e:ChangeEntry {inverse_of: $id}) RETURN e.sequence AS sequence LIMIT 1"
 # The markers that leave their row as it was (S47): no version moves with them, so no undo
 # conflicts on them. grove.store.replay._NO_VERSION is the same set (a test holds the two equal).
-STILL_MARKERS = frozenset({"restated", "no_head_update"})
+STILL_MARKERS = frozenset({"restated", "no_head_update", "verified"})
 _LATER_MOVES = (
     "MATCH (e:ChangeEntry) WHERE e.sequence > $after AND e.entity_id IN $ids "
     "AND e.history_only = false AND NOT e.field IN $still "

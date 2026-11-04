@@ -25,7 +25,7 @@ from neo4j.exceptions import ConstraintError
 from grove import clock
 from grove.ids import new_id
 from grove.store.connection import DATABASE
-from grove.store.query import CYPHER_PREFIX, PlatformQuery, collect
+from grove.store.query import CYPHER_PREFIX, PlatformQuery, WorldQuery, collect
 from grove.writer.apply import apply_ops
 from grove.writer.caller import Caller
 from grove.writer.errors import BatchDeclined
@@ -205,7 +205,12 @@ def _ensure_connector(driver: Driver, world_id: str) -> str:
 
 
 def _record_first_episode(driver: Driver, world_id: str, connector_id: str, source_id: str) -> str:
-    at = clock.now(world_id)
+    # The episode's window is the moment the pointer source was stored: the own item's row is
+    # dated then, and a row may not be dated outside its episode (S51).
+    found = WorldQuery(driver, world_id).read(
+        "MATCH (s:Source {id: $id}) RETURN s.received_at AS at", id=source_id
+    )
+    at = (found[0]["at"] if found else None) or clock.now(world_id)
     for attempt in range(_ATTEMPTS):
         try:
             return record_episode(
@@ -273,7 +278,12 @@ def _create_own_item(
             commit_id=new_id(world_id),
             change_set_id=new_id(world_id),
         )
-        ops, observations = _own_item_batch(title, source_id, episode_id, at)
+        # The row speaks for the sign-in itself: the moment its pointer source was stored, never a
+        # later time (a source cannot speak for a time after it was read, S51).
+        spoken = tx.run("MATCH (s:Source {id: $id}) RETURN s.received_at AS at", id=source_id)[0][
+            "at"
+        ]
+        ops, observations = _own_item_batch(title, source_id, episode_id, spoken or at)
         faults, by_index = shape_refusals({"ops": ops, "evidence": list(observations.values())})
         if faults:
             raise BatchDeclined(faults, batch_size=len(ops))

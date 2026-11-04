@@ -1,5 +1,5 @@
 {
-  "seed_version": "1",
+  "seed_version": "2",
   "kinds": [
     {
       "name": "person",
@@ -301,5 +301,14 @@
         {"phrase": "linked to", "reversed": false}
       ]
     }
+  ],
+  "property_names": [
+    {"kind": "plan", "name": "scheduled for", "value_type": "time", "temporal_class": "event", "scheduled_role": "start", "description": "When the plan is set to happen; a plan's re-check by is this time plus one day."},
+    {"kind": "task", "name": "due", "value_type": "time", "temporal_class": "event", "scheduled_role": "due", "description": "When the task is due."},
+    {"kind": "trip", "name": "starts", "value_type": "time", "temporal_class": "event", "scheduled_role": "start", "description": "When the trip is set to start; the trip's own start comes only from a source that confirms it took place."},
+    {"kind": "trip", "name": "ends", "value_type": "time", "temporal_class": "event", "scheduled_role": "end", "description": "When the trip is set to end."},
+    {"kind": "period", "name": "starts", "value_type": "time", "temporal_class": "event", "scheduled_role": "start", "description": "When the period is set to start."},
+    {"kind": "period", "name": "ends", "value_type": "time", "temporal_class": "event", "scheduled_role": "end", "description": "When the period is set to end, as a source announces it in advance."},
+    {"kind": "event", "name": "scheduled for", "value_type": "time", "temporal_class": "event", "scheduled_role": "start", "description": "When the event is set to happen; it reads planned until a source confirms it took place."}
   ]
 }

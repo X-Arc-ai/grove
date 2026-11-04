@@ -37,6 +37,17 @@ from grove.writer.registry import Registry
 from grove.writer.resolver import title_scores
 from grove.writer.source_types import claim_fields
 from grove.writer.tx import WorldTx
+from grove.writer.verify import (
+    CreateConfirm,
+    LateBearing,
+    can_confirm,
+    check_calendar_confirmation,
+    check_late_bearing,
+    confirm_at_create,
+    plan_horizon,
+    scheduled_latest,
+    verify_op,
+)
 
 # Fields whose head follows the latest world time (D1); the others always move the head.
 CLAIM_FIELDS = frozenset({"title", "summary", "body", "properties", "became_true"})
@@ -95,8 +106,16 @@ class _Run:
         caller_kind: str | None = None,
     ) -> None:
         self.tx = tx
-        self.stamp = stamp
         self.caller_kind = caller_kind
+        self.cache: dict[str, Any] = {}
+        # Claims an operation of this batch changed or ended, for verify's moved and retired.
+        self.changed_claims: set[str] = set()
+        self.retired_claims: set[str] = set()
+        self.create_confirms: list[CreateConfirm] = []
+        self.late_bearing: list[LateBearing] = []
+        # Bounded periods whose became-true time this batch made known (D5 rule 2).
+        self.period_starts: dict[str, int] = {}
+        self.stamp = stamp
         self.registry = Registry.load(tx)
         self.observations = observations
         self.resolved: dict[str, dict[str, Any] | Refused] = {}
@@ -143,7 +162,7 @@ class _Run:
         found = self.resolved.get(ev_id)
         if found is None:
             try:
-                found = resolve_observation(self.tx, self.observations[ev_id])
+                found = resolve_observation(self.tx, self.observations[ev_id], now=self.at)
             except Refused as refused:
                 found = refused
             self.resolved[ev_id] = found
@@ -265,6 +284,7 @@ def _existing_evidence(run: _Run, evidence_id: str) -> dict[str, Any]:
             {"evidence_id": evidence_id},
         )
     row = rows[0]["e"]
+    check_calendar_confirmation(run, row)
     columns = {key: row.get(key) for key in OBSERVATION_COLUMNS}
     columns["premises"] = list(columns.get("premises") or [])
     return columns
@@ -281,11 +301,16 @@ def _plans(run: _Run, refs: list[dict[str, Any]]) -> list[_Plan]:
     return plans
 
 
-def _world_time(plans: list[_Plan]) -> datetime | None:
-    """The time an operation speaks for: the newest source time among its supporting rows."""
+def _world_time(plans: list[_Plan], now: datetime | None = None) -> datetime | None:
+    """The time an operation speaks for: the newest source time among its supporting rows, and
+    never later than the batch. A calendar entry or a reminder may be dated ahead: what it says
+    of a later day is a scheduled field, never a clock of this operation (D4)."""
     supporting = [plan.source_time for plan in plans if plan.polarity == "supports"]
     times = supporting or [plan.source_time for plan in plans]
-    return max(times) if times else None
+    if not times:
+        return None
+    newest = max(times)
+    return min(newest, now) if now is not None else newest
 
 
 def _first_supporting(plans: list[_Plan]) -> str | None:
@@ -308,6 +333,7 @@ def _settle(run: _Run, plans: list[_Plan], target_id: str) -> None:
         same = run.tx.run(_SAME_EVIDENCE, key=key[0], target=target_id, polarity=plan.polarity)
         if same:
             row = same[0]["e"]
+            check_calendar_confirmation(run, row)
             plan.id, plan.known = row["id"], True
             run.cited_evidence.append(row)
         seen[key] = plan.id
@@ -409,6 +435,15 @@ def _check_properties(
                 {"property": declared["name"], "item": item_id},
             )
         named[declared["name"]] = value
+        if declared.get("scheduled_role") and value is not None and scheduled_latest(value) is None:
+            # A scheduled time is a clock or an instant with its offset (D4): never a guess.
+            raise Refused(
+                "invalid_arguments",
+                "scheduled_value",
+                f"the scheduled property {declared['name']!r} holds a clock or an ISO time with "
+                "its offset",
+                {"property": declared["name"]},
+            )
         if declared.get("temporal_class") == "state" and declared["name"] not in state:
             state.append(declared["name"])
     if state and kind.get("lifecycle_class") != "record":
@@ -631,7 +666,7 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     if op.get("properties"):
         properties = _check_properties(run, kind, op["properties"])
     plans = _plans(run, op["evidence_refs"])
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     provenance = _first_supporting(plans)
     values = {**op, "properties": _json(properties)}
     for name in _required_fields(kind):
@@ -697,6 +732,10 @@ def _create_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         {name for name, value in (properties or {}).items() if value is not None},
         created,
     )
+    if kind.get("lifecycle_class") == "bounded_period" and not became.unknown:
+        run.period_starts[item_id] = index
+    if op.get("confirmed_by_call") is not None:
+        run.create_confirms.append(CreateConfirm(index, op, "item", item_id, plans))
     _record_pairs(run, item_id, pairs, provenance)
     if overridden:
         write_override_row(run.tx, run.stamp.request_id, op["op_id"], overridden, run.at)
@@ -719,7 +758,7 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         _not_a_record(kind, "only search terms may change")
     plans = _plans(run, op["evidence_refs"])
     _settle(run, plans, item_id)
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     required = {"title", *_required_fields(kind)}
 
     changes: list[tuple[str, Any, Any, dict[str, Any]]] = []
@@ -812,8 +851,15 @@ def _update_item(run: _Run, index: int, op: dict[str, Any]) -> None:
             if not history_only:
                 run.tx.run(_SET_ITEM, id=item_id, columns=columns)
                 moved = True
+                if (
+                    name == "became_true"
+                    and kind.get("lifecycle_class") == "bounded_period"
+                    and new != "unknown"
+                ):
+                    run.period_starts[item_id] = index
         if moved:
             _bump(run, _BUMP_ITEM, item_id)
+            run.changed_claims.add(item_id)
     else:
         reason_id = run.text(op["reason"])
     created = _write_evidence(run, plans, "item", item_id, reason_id)
@@ -943,7 +989,7 @@ def _change_status(run: _Run, index: int, op: dict[str, Any]) -> None:
     status, role = run.registry.resolve_status(kind, op["status"])
     plans = _plans(run, op["evidence_refs"])
     _settle(run, plans, item_id)
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     stop = None
     if role in TERMINAL_ROLES:
         if op.get("stopped_being_true") is not None:
@@ -996,6 +1042,7 @@ def _change_status(run: _Run, index: int, op: dict[str, Any]) -> None:
     if columns:
         run.tx.run(_SET_ITEM, id=item_id, columns=columns)
         _bump(run, _BUMP_ITEM, item_id)
+        run.changed_claims.add(item_id)
     _write_evidence(run, plans, "item", item_id, reason_id)
     run.touch(item_id, index)
 
@@ -1039,7 +1086,7 @@ def _end_item(run: _Run, index: int, op: dict[str, Any]) -> None:
         raise Refused("end_before_start", "end_before_start", "it ended before it began", {})
     plans = _plans(run, op["evidence_refs"])
     _settle(run, plans, item_id)
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
     _end_entry(run, "item", item_id, None, op["end_class"], world_time, reason_id, evidence_id)
@@ -1049,6 +1096,9 @@ def _end_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     }
     run.tx.run(_SET_ITEM, id=item_id, columns=columns)
     _bump(run, _BUMP_ITEM, item_id)
+    run.changed_claims.add(item_id)
+    if op["end_class"] == "retired":
+        run.retired_claims.add(item_id)
     _write_evidence(run, plans, "item", item_id, reason_id)
     run.touch(item_id, index)
 
@@ -1078,7 +1128,7 @@ def _reopen_item(run: _Run, index: int, op: dict[str, Any]) -> None:
     # The world time comes from the evidence, never from the moment of processing (D4). With no
     # evidence it is unknown: the entries carry none and the status since is left unset, so a
     # later status change from older evidence still moves the head (D1).
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
     run.entry(
@@ -1181,6 +1231,7 @@ def _end_prior(
     }
     run.tx.run(_SET_LINK, id=prior["id"], columns=columns)
     _bump(run, _BUMP_LINK, prior["id"])
+    run.changed_claims.add(prior["id"])
 
 
 def _create_link(run: _Run, index: int, op: dict[str, Any]) -> None:
@@ -1232,7 +1283,7 @@ def _create_link(run: _Run, index: int, op: dict[str, Any]) -> None:
             {"field": "original_phrase"},
         )
     plans = _plans(run, op["evidence_refs"])
-    world_time = _world_time(plans)
+    world_time = _world_time(plans, run.at)
     provenance = _first_supporting(plans)
     key = f"{run.stamp.world_id}|{from_id}|{meaning['id']}|{to_id}"
 
@@ -1324,6 +1375,8 @@ def _create_link(run: _Run, index: int, op: dict[str, Any]) -> None:
         for prior in priors:
             _end_prior(run, prior, stop, start or world_time, reason_id, provenance)
     _write_evidence(run, plans, "link", link_id, reason_id)
+    if op.get("confirmed_by_call") is not None:
+        run.create_confirms.append(CreateConfirm(index, op, "link", link_id, plans))
     run.head_changes.update((from_id, to_id))
 
 
@@ -1346,7 +1399,7 @@ def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
         raise Refused("end_before_start", "end_before_start", "it ended before it began", {})
     plans = _plans(run, op.get("evidence_refs") or [])
     _settle(run, plans, link_id)
-    world_time = _world_time(plans) or sort_key(stop) or run.at
+    world_time = _world_time(plans, run.at) or sort_key(stop) or run.at
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
     _end_entry(run, "link", link_id, None, op["end_class"], world_time, reason_id, evidence_id)
@@ -1368,6 +1421,9 @@ def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
     }
     run.tx.run(_SET_LINK, id=link_id, columns=columns)
     _bump(run, _BUMP_LINK, link_id)
+    run.changed_claims.add(link_id)
+    if op["end_class"] == "retired":
+        run.retired_claims.add(link_id)
     _write_evidence(run, plans, "link", link_id, reason_id)
     run.head_changes.update((link["from_item"], link["to_item"]))
 
@@ -1522,6 +1578,7 @@ _HANDLERS = {
     "end_link": _end_link,
     "attach_evidence": _attach_evidence,
     "end_evidence": _end_evidence,
+    "verify": verify_op,
     "propose_word": ontology.propose_word,
     "promote_word": ontology.promote_word,
 }
@@ -1530,9 +1587,33 @@ _HANDLERS = {
 # The end of the batch -------------------------------------------------------------------------
 
 
+def _scheduled_values(run: _Run, item: dict[str, Any]) -> list[Any]:
+    properties = json.loads(item.get("properties") or "{}")
+    values = []
+    for name, value in properties.items():
+        declared = run.registry.property_name(item["kind"], name)
+        if declared is not None and declared.get("scheduled_role") and value is not None:
+            values.append(value)
+    return values
+
+
 def _check_item(run: _Run, item_id: str) -> None:
     item = _one(run, _READ_ITEM, "item", item_id, lock=False)
     kind = run.registry.kind(item["kind"])
+    if _claim_about_now(run, item, kind) and item.get("recheck_by") is None:
+        horizon = plan_horizon(_scheduled_values(run, item))
+        if horizon is not None:
+            # Appendix C: a plan's re-check by is its scheduled time plus one day, set in code.
+            run.entry(
+                entity_type="item",
+                entity_id=item_id,
+                field="recheck_by",
+                new=horizon,
+                world_time=None,
+                reason_id=None,
+            )
+            run.tx.run(_SET_ITEM, id=item_id, columns={"recheck_by": horizon})
+            item = {**item, "recheck_by": horizon}
     if _claim_about_now(run, item, kind) and item.get("recheck_by") is None:
         raise Refused(
             "missing_recheck",
@@ -1589,12 +1670,13 @@ def _rolled_up_from_parts(run: _Run, item_id: str, premises: list[str]) -> bool:
         return False
     rows = run.tx.run(
         "MATCH (e:Evidence) WHERE e.id IN $ids RETURN e.id AS id, e.target_id AS target, "
-        "e.active AS active, e.polarity AS polarity, e.source_type AS source_type",
+        "e.active AS active, e.polarity AS polarity, e.source_type AS source_type, e AS evidence",
         ids=premises,
     )
     if len(rows) != len(set(premises)):
         return False
     for row in rows:
+        check_calendar_confirmation(run, row["evidence"])
         if not (
             row["active"]
             and row["polarity"] == "supports"
@@ -1619,7 +1701,10 @@ def _confirmed_in_batch(run: _Run, item_id: str) -> bool:
         ):
             continue
         if row.get("derivation") == "observed":
-            return True
+            # The confirming row must come from a source that can prove this claim (D5's table).
+            if can_confirm(run, row, "item", item_id):
+                return True
+            continue
         if row.get("derivation") == "rolled_up" and _rolled_up_from_parts(
             run, item_id, list(row.get("premises") or [])
         ):
@@ -1674,8 +1759,49 @@ def _finish(run: _Run, ops: list[Any]) -> None:
             _check_item(run, item_id)
         except Refused as refused:
             run.refuse(index, ops[index], refused)
+    for pending in run.create_confirms:
+        if pending.index in run.refused:
+            continue
+        try:
+            confirm_at_create(run, pending)
+        except Refused as refused:
+            run.refuse(pending.index, ops[pending.index], refused)
+    for late in run.late_bearing:
+        if late.index in run.refused:
+            continue
+        try:
+            check_late_bearing(run, late)
+        except Refused as refused:
+            run.refuse(late.index, ops[late.index], refused)
+    for item_id, index in run.period_starts.items():
+        if index in run.refused:
+            continue
+        try:
+            confirmed = _confirmed_in_batch(run, item_id)
+        except Refused as refused:
+            run.refuse(index, ops[index], refused)
+            continue
+        if not confirmed:
+            run.refuse(
+                index,
+                ops[index],
+                Refused(
+                    "terminal_needs_confirmation",
+                    "period_start_needs_confirmation",
+                    "a period gets its became-true time only from confirming evidence in this "
+                    "batch; a plan, a calendar entry or a report leaves it unknown",
+                    {"alternative": "became_true unknown"},
+                ),
+            )
     for item_id, index in run.done_items.items():
-        if index not in run.refused and not _confirmed_in_batch(run, item_id):
+        if index in run.refused:
+            continue
+        try:
+            confirmed = _confirmed_in_batch(run, item_id)
+        except Refused as refused:
+            run.refuse(index, ops[index], refused)
+            continue
+        if not confirmed:
             run.refuse(
                 index,
                 ops[index],

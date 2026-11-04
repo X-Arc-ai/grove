@@ -175,6 +175,8 @@ def test_past_world_end_keeps_true_then_and_believed_then_apart(driver, seeded, 
     studio, guild, link = two_items_and_a_link(driver, w, chat)
     # On 3 November Grove learns that the studio left the guild on 28 October.
     frozen.set(NOV_3)
+    # This later export can contain the later message timestamps.
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     told = observation(chat, "b1", 2, at=NOV_3)
     apply(driver, w, [end_link(link, "ended_in_the_world", clock_at(OCT_28), "b1")], [told])
     query = WorldQuery(driver, w)
@@ -222,6 +224,8 @@ def test_world_as_of_drops_a_refuted_link_always_and_an_ended_one_after_its_stop
     items = [created_id(receipt, nth=n) for n in range(3)]
     ended, refuted = (created_id(receipt, ">", "link", nth=n) for n in range(2))
     frozen.set(NOV_3)
+    # This later export can contain the later message timestamps.
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     apply(
         driver,
         w,
@@ -263,6 +267,8 @@ def test_a_link_ended_at_an_unknown_or_before_time_stood_until_its_place(
     receipt = apply(driver, w, ops, [observation(chat, "a1", 1, at=OCT_20)])
     unknown, before, refuted = (created_id(receipt, ">", "link", nth=n) for n in range(3))
     frozen.set(NOV_3)
+    # This later export can contain the later message timestamps.
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     apply(
         driver,
         w,
@@ -301,6 +307,8 @@ def test_item_content_as_of_follows_the_replay(driver, seeded, chat, frozen):
     shop = create_item("organisation", "Rowan's print shop", "c1")
     shop_id = created_id(apply(driver, w, [shop], [observation(chat, "c1", 1, at=OCT_20)]))
     frozen.set(OCT_25 + HOUR)
+    # This later export can contain the later message timestamps.
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     renamed = update(
         shop_id,
         version_of(driver, w, shop_id),
@@ -335,6 +343,8 @@ def test_an_item_ended_in_the_past_reads_ended_after_its_stop(driver, seeded, ch
     # end entry's world time places the end. The kiosk closed some time before 28 October: a
     # stop clock with no earliest bound sits at its latest (grove.writer.clocks.sort_key).
     frozen.set(NOV_3)
+    # This later export can contain the later message timestamps.
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     told = observation(chat, "c2", 2, at=NOV_3)
     ops = [
         end_item(shop, "ended_in_the_world", clock_at(OCT_28), "c2"),
@@ -446,11 +456,15 @@ def test_a_replayed_stop_clock_drops_while_the_status_is_not_terminal(driver, se
     task = create_item("task", "Book the Velmora hall", "s1", status="open", recheck_by=RECHECK)
     task_id = created_id(apply(driver, w, [task], [observation(chat, "s1", 1, at=OCT_20)]))
     frozen.set(OCT_30 + HOUR)
+    # This later export can contain the later message timestamps.
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     working = change_status(task_id, "in progress", "s2")
     apply(driver, w, [working], [observation(chat, "s2", 2, at=OCT_30)])
     # On 3 November a message of 25 October says it was cancelled then: older than the head's
     # status, so it goes to history only.
     frozen.set(NOV_3)
+    # This later export can contain the later message timestamps.
+    chat = make_source(driver, w, "whatsapp", helpers.CHAT_LINES)
     cancelled = change_status(task_id, "cancelled", "s3")
     apply(driver, w, [cancelled], [observation(chat, "s3", 3, at=OCT_25)])
     # Its stop clock as a history-only entry: what change_status writes on this path in Part A
@@ -549,7 +563,6 @@ def test_evidence_fields_and_planned_origin_follow_the_time_read(driver, seeded,
         "calendar",
         ["Ilse flies to Velmora, 28 October", "Okonkwo dinner, 30 October"],
     )
-    pages = make_source(driver, w, "web_pages", ["Boarding pass scanned: Ilse, Velmora flight"])
 
     def entry(ev_id: str, line: int, at: datetime) -> dict[str, Any]:
         return observation(
@@ -564,6 +577,8 @@ def test_evidence_fields_and_planned_origin_follow_the_time_read(driver, seeded,
     receipt = apply(driver, w, ops, [entry("p1", 1, OCT_20), reported])
     trip_id, dinner_id = created_id(receipt, nth=0), created_id(receipt, nth=1)
     frozen.set(OCT_30 + HOUR)
+    # Read the actual boarding-pass artifact when it arrives, after the planned entry.
+    pages = make_source(driver, w, "screenshots", ["Boarding pass scanned: Ilse, Velmora flight"])
     start = {
         "earliest": iso(OCT_28),
         "latest": iso(OCT_28 + timedelta(days=1, seconds=-1)),
@@ -576,7 +591,7 @@ def test_evidence_fields_and_planned_origin_follow_the_time_read(driver, seeded,
         "p2",
         "the boarding pass shows the flight",
     )
-    confirmed = observation(pages, "p2", 1, at=OCT_30, locator="whole")
+    confirmed = observation(pages, "p2", 1, at=OCT_30, locator="whole", statement_class="artifact")
     # A calendar entry of 30 October on the dinner: from then on a plan scheduled it (D5).
     scheduled = {
         "op": "attach_evidence",
