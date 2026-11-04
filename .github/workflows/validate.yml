@@ -91,6 +91,9 @@ jobs:
       - name: Runner lint
         run: uv run python -m grove.lints runner
 
+      - name: Schema lint
+        run: uv run python -m grove.lints schema
+
       - name: Migrations on the empty store, twice
         run: |
           first="$(uv run python -m grove.writer.migrate --require-empty)"
