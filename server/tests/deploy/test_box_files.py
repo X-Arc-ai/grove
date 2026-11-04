@@ -628,7 +628,7 @@ def test_the_gateway_listens_where_the_runner_can_reach_it():
     assert url == f"http://gateway:{env['GROVE_GATEWAY_PORT']}/v1"
     assert set(SERVICES["runner"]["networks"]) <= set(SERVICES["gateway"]["networks"])
     assert SERVICES["runner"]["depends_on"] == {
-        "api": {"condition": "service_started"},
+        "api": {"condition": "service_healthy"},
         "gateway": {"condition": "service_started"},
     }
 
