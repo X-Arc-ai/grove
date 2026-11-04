@@ -5,13 +5,15 @@ import importlib
 import pytest
 from fastapi.testclient import TestClient
 
+from grove import clock
 from grove.api.app import create_app
 from grove.runner.brain import pass_input
-from grove.runner.passes import caller_for, run_record, start_pass
+from grove.runner.passes import caller_for, end_pass, run_record, start_pass
 from grove.store.query import WorldQuery
 from grove.views.session import token_hash
 from grove.writer import apply_request, claim_next_request, finish_request
 from grove.writer.forget_ledger import LedgerUnavailable, read_ledger
+from grove.writer.requests import pending_requests
 from grove.writer.restore import replay_ledger
 from tests.runner.helpers import FAST, new_auth, queue_store
 from tests.writer import test_materials
@@ -157,6 +159,76 @@ def test_nonmaterial_dispatch_needs_no_material_ledger(driver, material_world, m
     grant = start_pass(driver, new_auth()[0], world, agent="learner", settings=FAST)
     packet = pass_input(driver, world, run_record(driver, world, grant.run_id))
     assert packet["requests"][0]["input_complete"]
+
+
+@pytest.mark.parametrize("material_state", ["saved", "retry", "leased"])
+@pytest.mark.parametrize("ledger_state", ["pending", "unconfigured"])
+def test_not_due_material_preserves_nonmaterial_dispatch(
+    driver, material_world, monkeypatch, material_state, ledger_state
+):
+    world = material_world[0].world_id
+    test_clock = clock.TestClock()
+    test_clock.set(clock.now())
+    with clock.using(test_clock):
+        item = test_materials.write_note(driver, material_world)["id"]
+        caller = caller_for("learner")
+        auth, token = new_auth()
+        if material_state == "leased":
+            claimed = claim_next_request(driver, world, caller, worker="other-worker")
+            assert claimed is not None
+        else:
+            first = start_pass(driver, auth, world, agent="learner", settings=FAST)
+            if material_state == "saved":
+                finish_request(driver, world, caller, first.input_ids[0], worker=first.run_id)
+            end_pass(driver, world, first.run_id, outcome="ok")
+        before = request_rows(driver, world)
+        assert len(before) == 1
+        assert (
+            before[0]["r"]["status"]
+            == {"saved": "saved", "retry": "failed", "leased": "applying"}[material_state]
+        )
+        assert pending_requests(driver, world) == []
+        pending_delete(driver, material_world, monkeypatch, item)
+        ledger_before = read_ledger(material_world[2], world)
+        if ledger_state == "unconfigured":
+            monkeypatch.delenv("GROVE_FORGET_LEDGER_DIR")
+        ordinary = queue_store(driver, world)
+        assert [row.request_id for row in pending_requests(driver, world)] == [ordinary]
+        app = create_app(driver=driver)
+        app.state.runner_auth = auth
+        app.state.pass_settings = FAST
+        response = TestClient(app).post(
+            "/v1/internal/runner/passes",
+            headers={"Authorization": "Bearer " + token},
+            json={"world_id": world, "agent": "learner"},
+        )
+        assert response.status_code == 201
+        grant = response.json()["grant"]
+        assert grant["input_ids"] == [ordinary]
+        packet = pass_input(driver, world, run_record(driver, world, grant["run_id"]))
+        assert len(packet["requests"]) == 1 and packet["requests"][0]["input_complete"]
+        assert "Elm Street" in packet["data"]
+        assert "Mira" not in packet["data"] and "Cedar" not in packet["data"]
+        finish_request(driver, world, caller, ordinary, worker=grant["run_id"])
+        end_pass(driver, world, grant["run_id"], outcome="ok")
+        assert [row for row in request_rows(driver, world) if row["r"]["id"] != ordinary] == before
+        assert read_ledger(material_world[2], world) == ledger_before
+        if material_state != "saved":
+            test_clock.advance(seconds=600)
+            assert [row.request_id for row in pending_requests(driver, world)] == [
+                before[0]["r"]["id"]
+            ]
+            requests_before = request_rows(driver, world)
+            runs_before = WorldQuery(driver, world).read(
+                "MATCH (r:RunRecord) RETURN r ORDER BY r.id"
+            )
+            with pytest.raises(LedgerUnavailable):
+                start_pass(driver, auth, world, agent="learner", settings=FAST)
+            assert request_rows(driver, world) == requests_before
+            assert (
+                WorldQuery(driver, world).read("MATCH (r:RunRecord) RETURN r ORDER BY r.id")
+                == runs_before
+            )
 
 
 def test_pending_material_intent_between_preflight_and_claim_refuses(

@@ -297,9 +297,9 @@ def start_pass(
     if agent != "learner" and is_demo_world(driver, world_id):
         return None
     if agent == "learner":
-        # Refuse an already pending intent before creating a run or issuing tokens.
+        # Refuse pending intents for due material work before creating a run or tokens.
         # Each claim repeats the check under the ledger lock through its World transaction.
-        with material_request_guard(driver, world_id):
+        with material_request_guard(driver, world_id, due_at=clock.now(world_id)):
             pass
     catalog = load_catalog()
     _, job = AGENTS[agent]
