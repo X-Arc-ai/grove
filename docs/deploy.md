@@ -91,7 +91,8 @@ the shell that runs it.
 ## The runner's secrets
 
 `deploy/runner-secrets.sh` makes `gateway.env`, `runner.env` and `runner-auth.env` on the box, mode
-600 and root's. Initialize these files **before** the first deploy that starts the gateway.
+600 and root's. Initialize these files **before** the first deploy that starts the gateway;
+the API must pass its health check before the runner starts.
 The gateway intentionally refuses startup without a secret of at least 32 bytes; it cannot answer
 `/health` until its constructor succeeds. The runner's separate unconfigured wait does not make
 the gateway healthy. An absent or short secret must never be bypassed to complete a deploy.
