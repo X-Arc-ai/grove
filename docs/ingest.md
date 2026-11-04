@@ -1,5 +1,8 @@
 # Ingest: connectors, uploads and the take-in pipeline
 
+Read-only Calendar and local Git connections use this pipeline through `take_parsed`.
+Their consent, scope, cursor and operator configuration are in `docs/source-connectors.md`.
+
 Spec: A.4 (connectors), D2 (sources and episodes), D5 (speaker and source types), D10 (batches,
 order and time), D13 (coverage), D14 (screening). This file is the contract for every lane that
 adds a connector. Code: `server/grove/ingest/` and `server/grove/writer/ingest.py`.
@@ -158,6 +161,15 @@ world lock. `auth_reference` is `upload`.
 An episode with no `run_id` is unprocessed: that is the handoff to the update agent.
 
 ## The upload route
+
+The dedicated Calendar reader can attach a typed `CalendarEvent` through
+`ParsedMessage.calendar_event`. This is code-held provider data, not an `Upload` option.
+`take_in` refuses these facts from any upload parser. `take_parsed` permits them only for
+the dedicated Calendar provider/type/parser tuple. After screening, `write_chat_delta`
+passes each source part's retained `calendar_events` map to `write_screened_source` in
+the same transaction. Dropped messages leave no event facts. Calendar and Git readers
+also pass exact-key speaker kinds separately. `docs/source-connectors.md` defines the
+provider APIs and the D5 contract.
 
 `POST /v1/sources/upload?provider=<code>`, the raw file as the body.
 

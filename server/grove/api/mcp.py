@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 from grove import clock
 from grove.api.config import ApiSettings
 from grove.api.errors import INVALID_ARGUMENTS, ApiError, invalid_arguments, unauthenticated
+from grove.mcp.demo import tools_for_request
 from grove.mcp.tools import ToolContext
 from grove.mcp.transport import (
     INVALID_REQUEST,
@@ -187,7 +188,7 @@ async def _post(request: Request, token: TokenRow) -> Response:
         payload: Any = parse_body(raw)
     except ParseFailed:
         return _rpc_refusal(PARSE_ERROR, "the body is not valid JSON")
-    tools = request.app.state.mcp_tools
+    tools = tools_for_request(request, token)
     try:
         answered = await run_in_threadpool(answer, payload, tools, _context(request, token))
     except ScopeDenied as denied:

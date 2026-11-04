@@ -210,6 +210,7 @@ def test_the_api_drops_every_capability_and_mounts_the_oauth_file_and_the_screen
     assert [mount["source"] for mount in api["volumes"]] == [
         "/etc/grove/google-oauth.json",
         "/etc/grove/screening",
+        "/etc/grove/connectors",
     ]
     assert "privileged" not in api and "devices" not in api
 
