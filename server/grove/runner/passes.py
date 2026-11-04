@@ -165,6 +165,7 @@ def due_work(
         if query.read(_DUE_REQUEST, now=now):
             due.append({"world_id": world_id, "agent": "learner"})
         else:
+            _ensure_connector_job(driver, world_id)
             agents = {row["agent"] for row in query.read(_DUE_JOBS, now=now)}
             for agent in ("curator", "connector"):
                 if agent in agents:
@@ -367,6 +368,7 @@ def _next_agent(driver: Driver, world_id: str) -> str | None:
     now = clock.now(world_id)
     if query.read(_DUE_REQUEST, now=now):
         return "learner"
+    _ensure_connector_job(driver, world_id)
     agents = {row["agent"] for row in query.read(_DUE_JOBS, now=now)}
     for agent in ("curator", "connector"):
         if agent in agents:
@@ -410,6 +412,25 @@ def end_pass(
         return record
     agent = record["agent"]
     query = WorldQuery(driver, world_id)
+    if agent == "connector" and outcome == "ok":
+        # An agent's prose cannot mark an unresolved queue complete. The guarded writer batch
+        # resolves or escalates every open row atomically; skipped work retries as a failed job.
+        open_rows = query.read("MATCH (c:Contradiction {status: 'open'}) RETURN c.id AS id LIMIT 1")
+        pending_support = query.read(
+            "MATCH (s:SupportChanged) WHERE s.taken_at IS NULL RETURN s.belief_id AS id LIMIT 1"
+        )
+        due_retest = query.read(
+            "MATCH (b:Belief {externally_testable: true}) MATCH (i:Item {id: b.item_id}) "
+            "WHERE b.state <> 'superseded' AND i.recheck_by <= $now RETURN i.id AS id LIMIT 1",
+            now=clock.now(world_id),
+        )
+        saved = query.read(
+            "MATCH (r:Request {run_id: $run, status: 'saved'}) RETURN r.id AS id LIMIT 1",
+            run=run_id,
+        )
+        if open_rows or pending_support or due_retest or not saved:
+            outcome = "failed"
+            summary = "The Connector left required work unresolved or committed no guarded batch."
     if agent == "learner":
         caller = caller_for(agent)
         code = NOT_PROPOSED if outcome == "ok" else f"pass_{outcome}"
@@ -456,43 +477,43 @@ def _schedule_after(driver: Driver, world_id: str, agent: str, run_id: str) -> N
             input_references=changed,
             priority=_PRIORITY["curator"],
         )
-    if agent != "connector" and connector_due(driver, world_id):
+    if agent != "connector":
+        _ensure_connector_job(driver, world_id)
+
+
+def connector_due(driver: Driver, world_id: str) -> bool:
+    """D12's P0 triggers, including drift and due retests on an otherwise idle world."""
+    from grove.consolidation.packet import job_trigger, work
+
+    query = WorldQuery(driver, world_id)
+    if query.read(
+        "MATCH (j:Job {agent_or_job_type: 'connector'}) "
+        "WHERE j.state IN ['queued', 'claimed'] RETURN j.id AS id LIMIT 1"
+    ):
+        return False
+    pending = work(driver, world_id)
+    if not pending["triggers"]:
+        return False
+    failed = query.read(
+        "MATCH (j:Job {agent_or_job_type: 'connector', state: 'failed'}) "
+        "RETURN j.trigger AS trigger ORDER BY j.touched_at DESC LIMIT 1"
+    )
+    return not failed or failed[0]["trigger"] != job_trigger(pending)
+
+
+def _ensure_connector_job(driver: Driver, world_id: str) -> None:
+    from grove.consolidation.packet import job_trigger, work
+
+    if connector_due(driver, world_id):
+        pending = work(driver, world_id)
         run_rows.enqueue_job(
             driver,
             world_id,
             agent="connector",
-            trigger="revisions",
-            input_references=[],
+            trigger=job_trigger(pending),
+            input_references=[row["id"] for row in pending["changed"]],
             priority=_PRIORITY["connector"],
         )
-
-
-def connector_due(driver: Driver, world_id: str) -> bool:
-    """Appendix C line 3269: 10 changed items since the Connector's last pass started, or a
-    contradiction detected since then. A queued Connector job already covers it."""
-    query = WorldQuery(driver, world_id)
-    if query.read(
-        "MATCH (j:Job {agent_or_job_type: 'connector', state: 'queued'}) RETURN j.id AS id LIMIT 1"
-    ):
-        return False
-    last = query.read(
-        "MATCH (r:RunRecord {agent: 'connector'}) RETURN r.started AS started "
-        "ORDER BY r.started DESC LIMIT 1"
-    )
-    since = last[0]["started"] if last else datetime(1970, 1, 1, tzinfo=clock.now(world_id).tzinfo)
-    contradictions = query.read(
-        "MATCH (c:Contradiction) WHERE c.detected_at > $since RETURN c.id AS id LIMIT 1",
-        since=since,
-    )
-    if contradictions:
-        return True
-    changed = query.read(
-        "MATCH (c:ChangeEntry) WHERE c.entity_type = 'item' AND c.recorded_at > $since "
-        "AND (c.actor IS NULL OR c.actor <> 'agent:connector') "
-        "RETURN count(DISTINCT c.entity_id) AS n",
-        since=since,
-    )
-    return changed[0]["n"] >= CONNECTOR_CHANGED_ITEMS
 
 
 def stale_cutoff(record: dict[str, Any], settings: PassSettings) -> datetime:
