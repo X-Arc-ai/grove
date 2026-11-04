@@ -23,9 +23,9 @@
   </header>
   <main class="wrap">
     <div class="page-head">
-      <p class="kicker">Last updated 2 November 2026</p>
+      <p class="kicker">Last updated 4 November 2026</p>
       <h1>Privacy</h1>
-      <p class="page-lead">This page states what Grove does with your data today. Where something does not run yet, the page says so.</p>
+      <p class="page-lead">This page describes Grove's data paths and this server's configuration. A configured path is not proof of a completed operation.</p>
     </div>
     <div class="page">
       <ul class="toc" aria-label="On this page">
@@ -42,8 +42,11 @@
         <section id="what-grove-reads">
           <h2>What Grove reads</h2>
           <p>At sign-in, Grove reads what Google sends (your name, your address and a flag that says Google verified the address), or the address you type to get an email code.</p>
-          <p>After that, Grove reads only what you bring or connect: chats, notes, files and images you upload, voice notes, and your calendar if you connect it. The table under <a href="#where-your-data-goes">Where your data goes</a> says which of these paths run today.</p>
-          <p>Grove does not ask Google for your mail or your files.</p>
+          <p>After that, Grove reads only what you bring or connect: chats, notes, files and images you upload, voice notes, and your calendar if you connect it. The table under <a href="#where-your-data-goes">Where your data goes</a> distinguishes available code, configuration and pending work.</p>
+          <p>The direct Git connector reads commit metadata from a local clone approved for your world. It does not fetch remote changes, run hooks or read worktree files. A commit does not prove deployment.</p>
+          <p>Pipedream connections use a separate hosted authorization page and account-status checks. Grove sends an opaque owner identifier and the selected app to Pipedream. This component imports no source content and runs no provider actions. A connection status is not an import result.</p>
+          <p>Grove's Google sign-in and direct Calendar connector do not request Gmail or Drive access. Pipedream requests provider consent separately; review its scopes on the hosted page.</p>
+          <p>Grove's use and transfer of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</p>
         </section>
         <section id="what-grove-asks-google-for">
           <h2>What Grove asks Google for, and why</h2>
@@ -52,24 +55,26 @@
             <table class="pairs">
               <thead><tr><th scope="col">Scope</th><th scope="col">Why Grove asks</th></tr></thead>
               <tbody>
-                <tr><td><code>openid</code></td><td>At sign-in, to know it is you.</td></tr>
+                <tr><td><code>openid</code></td><td>At sign-in, to know it is you. At calendar consent, to identify the Google account you connect.</td></tr>
                 <tr><td><code>email</code></td><td>At sign-in, for your address, which finds your world.</td></tr>
                 <tr><td><code>profile</code></td><td>At sign-in, for your name, which goes on your own item.</td></tr>
                 <tr><td><code>calendar.readonly</code></td><td>Only when you connect the calendar, in its own consent. Read-only, to learn your events.</td></tr>
               </tbody>
             </table>
           </div>
+          <p>Grove follows the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including its Limited Use requirements, for Google API data.</p>
         </section>
         <section id="where-your-data-goes">
           <h2>Where your data goes</h2>
-          <p>Each row is one path your data can take. Runs means the path is live today. Planned means it does not run yet, and no data of yours takes it.</p>
+          <p id="flow-state">Each row is one path your data can take. Deployment is not checked in this static copy. The page can read this server's current configuration when it is available.</p>
+          <p>Settings present means the required settings exist. It does not prove a successful connection, import or model call. Implementation pending means this build does not yet provide that path.</p>
           <div class="card">
 <!-- data-flow-table -->
           </div>
         </section>
         <section id="where-it-is-stored">
           <h2>Where it is stored</h2>
-          <p>Grove's store runs on a server of X-ARC at Hetzner in Helsinki, Finland. A daily offline dump is kept on the same server for 30 days.</p>
+          <p>The deployment configuration places Grove's store on an X-ARC server at Hetzner in Helsinki, Finland. The backup policy specifies a daily offline dump on the same server, kept for 30 days. This page does not verify that a backup completed.</p>
           <p>Grove keeps hashes, not the values, for your address, for session tokens and for sign-in codes. Your name from Google is stored as the title of your own item.</p>
         </section>
         <section id="which-models-see-it">
@@ -78,25 +83,29 @@
           <ul>
             <li>Meta Model API, Muse Spark 1.3: screened text.</li>
             <li>Meta Model API, Voice Transcribe: voice notes.</li>
-            <li>Muse Glimmer on Modal: screened text and images. Until Modal's data terms are named here, this path carries synthetic data only.</li>
+            <li>Muse Glimmer on Modal: screened text and images. This build run uses synthetic data only.</li>
           </ul>
-          <p>When the upload path runs, screening in code on Grove's server comes first. The terms of each path are in the table.</p>
+          <p>When the upload path runs, screening in code on Grove's server comes first. There is no local runner. Ambiguous sensitive content is dropped or masked; it is not sent to a model for screening.</p>
+          <p>Provider policies: <a href="https://dev.meta.ai/legal/terms-of-service">Meta Model API Terms of Service</a>, <a href="https://modal.com/legal/terms">Modal Terms of Service</a>, <a href="https://modal.com/legal/privacy-policy">Modal Privacy Policy</a>, <a href="https://resend.com/legal/privacy-policy">Resend Privacy Policy</a>, and <a href="https://resend.com/legal/dpa">Resend Data Processing Addendum</a>.</p>
         </section>
         <section id="how-to-forget">
           <h2>How to forget</h2>
-          <p>The forget control is not built yet. It comes with a later release, and this section will then say how to use it.</p>
-          <p>Today, write to <a href="mailto:contact@x-arc.ai">contact@x-arc.ai</a> to have your world deleted. A dump made before the deletion stays on the server until its 30 days end.</p>
+          <p><a href="/forget">Open the forget control</a>, sign in, choose an item, a field or an exact phrase, then select Review removal. Check the selection and select Confirm and forget. Each request requires a new approval.</p>
+          <p>The control refuses a request when the private forget ledger is not configured. A successful receipt lists counts and the date when older backups expire. The receipt does not repeat the removed content.</p>
+          <p>Forget removes matching content from Grove's store, history and indexes. A restore must replay the latest separate ledger before it serves data. Copies already downloaded or sent to an AI provider are outside this operation.</p>
+          <p>If the control is unavailable, write to <a href="mailto:contact@x-arc.ai">contact@x-arc.ai</a>. An AI host needs the sensitive-write scope and your separate approval for every forget request.</p>
           <p>Logging out does not delete your world. It ends the session, and your next sign-in opens the same world.</p>
         </section>
         <section id="cookies">
           <h2>Cookies</h2>
-          <p>Grove sets two cookies. It has no tracking and no analytics.</p>
+          <p>Grove uses three cookies. It has no tracking and no analytics.</p>
           <div class="card">
             <table class="pairs">
               <thead><tr><th scope="col">Cookie</th><th scope="col">What it does</th></tr></thead>
               <tbody>
                 <tr><td><code>grove_session</code></td><td>Keeps you signed in, for up to 30 days. Grove stores only a hash of its value.</td></tr>
                 <tr><td><code>__Host-grove_google</code></td><td>The short Google state cookie. It lives for 10 minutes while you sign in with Google, to check that Google's answer belongs to your request.</td></tr>
+                <tr><td><code>__Host-grove_calendar</code></td><td>The encrypted calendar consent state. It lives for 10 minutes and binds Google's answer to your current Grove session.</td></tr>
               </tbody>
             </table>
           </div>
@@ -118,5 +127,6 @@
       </nav>
     </div>
   </footer>
+  <script src="./privacy.js"></script>
 </body>
 </html>

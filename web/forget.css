@@ -1,0 +1,18 @@
+.forget-wrap{max-width:820px;padding-bottom:72px}
+.forget-wrap .page-head{padding-bottom:28px}
+.forget-card{border:1px solid var(--border);border-radius:8px;padding:28px;background:var(--surface);margin-top:24px}
+.forget-card label{display:block;font-weight:600;margin:20px 0 6px}
+.forget-card>label:first-child{margin-top:0}
+.forget-card input,.forget-card select{display:block;width:100%;min-height:46px;padding:10px 12px;border:1px solid var(--border);border-radius:5px;background:var(--bg);color:var(--text);font:inherit}
+.forget-card p{margin:14px 0}
+.forget-card h2{font:500 20px/1.4 var(--mono)}
+.forget-card button{cursor:pointer;margin-top:22px}
+.forget-card button:disabled{opacity:.55;cursor:wait}
+.forget-card :focus-visible{outline:2px solid var(--ring-company);outline-offset:3px}
+.forget-actions{display:flex;gap:12px;flex-wrap:wrap}
+.forget-actions .secondary{background:transparent;color:var(--text);border-color:var(--border)}
+.forget-actions .danger{background:#8f3028;border-color:#8f3028;color:#fff}
+#choice{font-weight:600;overflow-wrap:anywhere}
+#status{min-height:26px}
+[hidden]{display:none!important}
+@media(max-width:600px){.forget-card{padding:20px}.forget-actions .button{width:100%}.forget-actions{gap:0}}

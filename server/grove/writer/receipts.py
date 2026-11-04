@@ -3,8 +3,11 @@ read transaction. A stored receipt holds ids and codes only; titles, meaning nam
 read fresh when it is rendered, so no copy of free text sits in it.
 
 Grammar: `+` item created, `>` link created, `*` field changed, `x` ended, `^` reopened,
-`=` evidence attached (or a known link restated), `-` evidence ended, `o` ontology (a word minted,
-an alias made from a mint, a word promoted).
+`=` evidence attached (or a known link restated), `-` evidence ended, `v` verified (D4: the
+disposition, the time the evidence speaks for, the source, and the next re-check by),
+`u` change set undone, `o` ontology (a word minted, an alias made from a mint, a word promoted).
+A merge prints `* item <a> merged into <b>`, and a spent record
+`x record <r> (spent; lesson in <b>)`.
 """
 
 import json
@@ -63,6 +66,9 @@ class ReceiptLine:
     world_time: str | None = None
     already_known: bool = False
     stored_ended: bool = False
+    # The other item a line names: the survivor of a merge, the lesson of a spent record, or the
+    # change set an undo reverts.
+    target_id: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value not in (None, False)}
@@ -139,7 +145,16 @@ def read_receipt(
         for entry in entries
         if entry.get("new_value_id")
         and (
-            entry["field"] in ("end_class", "end_reason")
+            entry["field"]
+            in (
+                "end_class",
+                "end_reason",
+                "verified",
+                "merged_into",
+                "lesson_in",
+                "cascade_mark",
+                "cascade_proposal",
+            )
             or (entry["entity_type"] in ("link", "registry_row") and entry["field"] == "row")
         )
     ]
@@ -161,11 +176,28 @@ def read_receipt(
             )
         }
 
+    lessons = {
+        entry["entity_id"]: values.get(entry.get("new_value_id"))
+        for entry in entries
+        if entry["field"] == "lesson_in"
+    }
     lines: list[ReceiptLine] = []
+    undone: set[str] = set()
     for entry in entries:
-        line = _line(entry, values, evidence, touched)
+        inverse_of = entry.get("inverse_of")
+        if inverse_of and inverse_of not in undone:
+            undone.add(inverse_of)
+            lines.append(ReceiptLine("u", "change_set", inverse_of, target_id=inverse_of))
+        line = _line(entry, values, evidence, touched, lessons)
         if line is not None:
             lines.append(line)
+    # A verify's `v` line carries its re-check by, so the `*` line of that field would repeat it.
+    verified = {line.entity_id for line in lines if line.symbol == "v"}
+    lines = [
+        line
+        for line in lines
+        if not (line.symbol == "*" and line.field == "recheck_by" and line.entity_id in verified)
+    ]
     return Receipt("saved", commit_id, change_set_id, request_id, tuple(lines))
 
 
@@ -174,16 +206,40 @@ def _line(
     values: dict[str, Any],
     evidence: dict[str, dict[str, Any]],
     touched: dict[str, set[str]],
+    lessons: dict[str, Any] | None = None,
 ) -> ReceiptLine | None:
     entity_type, entity_id, name = entry["entity_type"], entry["entity_id"], entry["field"]
     value_id = entry.get("new_value_id")
+    if name in ("cascade_mark", "cascade_proposal"):
+        detail = values.get(value_id) or {}
+        return ReceiptLine(
+            "~" if name == "cascade_mark" else "?",
+            "item",
+            entity_id,
+            value_id=detail.get("id"),
+            target_id=detail.get("trigger_id"),
+            field=detail.get("action"),
+        )
+    if name == "verified" and entity_type in ("item", "link", "belief"):
+        # The value holds the verification id; the line keeps the id, never the text.
+        return ReceiptLine(
+            "v",
+            "link" if entity_type == "link" else "item",
+            entity_id,
+            value_id=values.get(value_id),
+        )
     if entity_type in ("item", "belief"):
         if name == "row":
             return ReceiptLine("+", "item", entity_id)
         if name == "reopened":
             return ReceiptLine("^", "item", entity_id)
+        if name == "merged_into" and values.get(value_id):
+            return ReceiptLine(
+                "*", "item", entity_id, field="merged_into", target_id=values[value_id]
+            )
         if name == "end_class" and values.get(value_id):
-            return ReceiptLine("x", "item", entity_id, end_class=values[value_id])
+            lesson = (lessons or {}).get(entity_id) if values[value_id] == "spent" else None
+            return ReceiptLine("x", "item", entity_id, end_class=values[value_id], target_id=lesson)
         if name in VISIBLE_FIELDS:
             history_only = bool(entry.get("history_only"))
             when = entry.get("world_time")
@@ -225,7 +281,7 @@ def _line(
                 polarity=row["polarity"],
                 source_type=row["source_type"],
             )
-        if name == "end_reason":
+        if name == "end_reason" and values.get(value_id):
             return ReceiptLine("-", "evidence", entity_id, end_reason=values.get(value_id))
     if entity_type == "registry_row" and name in ("row", "status"):
         # O10: a mint or an alias (row), a promotion (status). The table rides in field.
@@ -295,16 +351,83 @@ def _lookups(query: WorldQuery, receipt: Receipt) -> dict[str, dict[str, Any]]:
         row["id"]: row["name"]
         for row in query.read("MATCH (m:Meaning) RETURN m.id AS id, m.name AS name")
     }
-    values = _values(query, [line.value_id for line in receipt.lines if line.value_id])
+    values = _values(
+        query, [line.value_id for line in receipt.lines if line.value_id and line.symbol != "v"]
+    )
     words = _registry_words(query, receipt)
+    verification_ids = [line.value_id for line in receipt.lines if line.symbol == "v"]
+    verifications = {}
+    if verification_ids:
+        verifications = {
+            row["v"]["id"]: row["v"]
+            for row in query.read(
+                "MATCH (v:Verification) WHERE v.id IN $ids RETURN v", ids=verification_ids
+            )
+        }
+        source_ids = sorted(
+            {
+                piece["source_id"]
+                for row in verifications.values()
+                for piece in json.loads(row.get("evidence_pieces") or "[]")
+            }
+        )
+        types = {
+            row["id"]: row["type"]
+            for row in query.read(
+                "MATCH (s:Source) WHERE s.id IN $ids MATCH (c:Connector {id: s.connector_id}) "
+                "RETURN s.id AS id, c.type AS type",
+                ids=source_ids,
+            )
+        }
+        for row in verifications.values():
+            row["source_types_by_id"] = types
     return {
         "links": links,
         "items": items,
         "kinds": kinds,
         "meanings": meanings,
         "values": values,
+        "verifications": verifications,
         "words": words,
     }
+
+
+# How a `v` line names a source: the connector type, in words (no title, no locator).
+SOURCE_WORDS = {
+    "calendar": "the calendar",
+    "whatsapp": "a chat message",
+    "past_ai_conversations": "an AI conversation",
+    "voice_notes": "a voice note",
+    "notes_files_releases": "a file",
+    "screenshots": "a screenshot",
+    "git": "a commit",
+    "web_pages": "a fetched page",
+    "ai_host": "your words, through your AI host",
+    "person_in_views": "your answer",
+    "reminders": "a reminder",
+    "identity": "a profile",
+    "scripted": "a scripted source",
+}
+
+
+def _verified_text(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
+    head = f"v {line.entity_type} {short_id(line.entity_id)}: "
+    row = found["verifications"].get(line.value_id or "")
+    if row is None:
+        return head + "verified"
+    disposition = row.get("disposition") or "verified"
+    text = head + disposition
+    pieces = [p for p in json.loads(row.get("evidence_pieces") or "[]") if p.get("admitted")]
+    if disposition == "confirmed" and pieces:
+        newest = max(pieces, key=lambda piece: piece["time_spoken_for"])
+        at = datetime.fromisoformat(newest["time_spoken_for"]).astimezone(UTC)
+        kind = row.get("source_types_by_id", {}).get(newest["source_id"], "")
+        text += f" {at.strftime('%m-%d %H:%M')} against {SOURCE_WORDS.get(kind, 'a source')}"
+    after = row.get("recheck_by_after")
+    if after is not None and disposition in ("confirmed", "deferred"):
+        moment = after if isinstance(after, datetime) else datetime.fromisoformat(str(after))
+        text += f"; re-check by {moment.astimezone(UTC).strftime('%m-%d')}"
+    return text
 
 
 _WORD_TYPES = {"Kind": "kind", "Meaning": "meaning", "PropertyName": "property name"}
@@ -386,6 +509,13 @@ def _link_text(link_id: str, found: dict[str, dict[str, Any]]) -> str:
 
 def _render_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
     entity = short_id(line.entity_id)
+    if line.symbol == "~":
+        return (
+            f"~ item {entity} affected by {short_id(line.target_id or '')} "
+            f"(mark {short_id(line.value_id or '')})"
+        )
+    if line.symbol == "?":
+        return f"? proposal {short_id(line.value_id or '')}: item {entity} ({line.field})"
     if line.symbol == "+":
         item = found["items"].get(line.entity_id, {})
         kind = found["kinds"].get(item.get("kind"), "?")
@@ -395,6 +525,10 @@ def _render_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
         if line.stored_ended:
             text += f" (stored ended: {_LINK_END_WORDS.get(line.end_class or '', line.end_class)})"
         return text
+    if line.symbol == "u":
+        return f"u change set {short_id(line.entity_id)} undone"
+    if line.symbol == "*" and line.field == "merged_into":
+        return f"* item {entity} merged into {short_id(line.target_id or '')}"
     if line.symbol == "*":
         value = _shown(found["values"].get(line.value_id))
         text = f"* item {entity}: {line.field}={value}"
@@ -406,6 +540,8 @@ def _render_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
     if line.symbol == "x" and line.entity_type == "link":
         words = _LINK_END_WORDS.get(line.end_class or "", line.end_class)
         return f"x {_link_text(line.entity_id, found)} ({words})"
+    if line.symbol == "x" and line.end_class == "spent" and line.target_id:
+        return f"x record {entity} (spent; lesson in {short_id(line.target_id)})"
     if line.symbol == "x":
         return f"x item {entity} ({_ITEM_END_WORDS.get(line.end_class or '', line.end_class)})"
     if line.symbol == "^":
@@ -419,6 +555,8 @@ def _render_line(line: ReceiptLine, found: dict[str, dict[str, Any]]) -> str:
         )
     if line.symbol == "-":
         return f"- evidence {entity} ({line.end_reason})"
+    if line.symbol == "v":
+        return _verified_text(line, found)
     if line.symbol == "o":
         return _ontology_line(line, found)
     return f"{line.symbol} {line.entity_type} {entity}"

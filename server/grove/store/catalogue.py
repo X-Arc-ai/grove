@@ -237,6 +237,11 @@ ITEMS = Table(
         _col("speaker", "enum:speaker_kind", note="of the evidence that sets the source type"),
         _col("modality", "enum:modality"),
         *_provenance(),
+        _ruling(
+            "lesson_in",
+            "id",
+            "S46, line 829: the belief or head that holds a spent record's lesson",
+        ),
         _col("version", "int"),
         _col("touched at", "instant"),
     ),
@@ -476,6 +481,12 @@ ONTOLOGY_CHANGE_LOG = Table(
         _col("actor", "code"),
         _col("at", "instant"),
         _col("undone by", "id"),
+        _ruling(
+            "change_set_id",
+            "id",
+            "S46: the change set of the batch that wrote the row; an undo finds the rows it "
+            "reverses by it",
+        ),
         # O10: undone by changes after the row is written, so the row carries the S12 pair.
         *_version_touched(),
     ),
@@ -548,11 +559,36 @@ CONNECTORS = Table(
         _ID,
         _WORLD,
         _col("type", "enum:connector_type"),
+        _ruling(
+            "provider",
+            "code",
+            "the upload format of an upload connector: claude_code, codex, chatgpt, claude_ai "
+            "(ingest-a1); one row per world, type and provider",
+        ),
         _col("auth reference", "code"),
+        _ruling("instance_key", "code", "opaque identity of one selected calendar or repository"),
+        _ruling(
+            "credential_ciphertext",
+            "code",
+            "AES-GCM sealed provider tokens; key held outside the store",
+        ),
+        _ruling("connection_status", "code", "pending, connected or disconnected"),
+        _ruling("oauth_state_hash", "code", "single-use SHA256 of pending consent state"),
+        _ruling("oauth_expires_at", "instant", "pending consent deadline"),
+        _ruling("sync_cursor", "code", "provider cursor, separate from the message-time watermark"),
+        _ruling(
+            "event_versions", "json_ids", "bounded event and field fingerprints; no event text"
+        ),
+        _ruling("sync_owner", "id", "owner of the current bounded sync lease"),
+        _ruling("sync_until", "instant", "sync lease deadline"),
         _col("scope", "json_ids", note="an allowlist compiled into the read (D14)"),
         _col("settings", "json_ids", note="calendar log mode, calendar id, from date, days logged"),
         _col("batch rule", "code"),
-        _col("staleness limit", "int", note="days; absent means always fresh"),
+        _col(
+            "staleness limit",
+            "int",
+            note="days; absent means the type's Appendix C value (S54), always fresh for git",
+        ),
         _col("expected read interval", "int", note="seconds (D7)"),
         _col("watermark", "locator"),
         _col("last attempted read", "instant"),
@@ -576,7 +612,7 @@ CONNECTORS = Table(
         ),
         *_version_touched(),
     ),
-    uniques=_keys("connectors", ("id",)),
+    uniques=_keys("connectors", ("id",), ("world_id", "provider", "instance_key")),
     indexes=_ranges("connectors", ("world_id", "type")),
     notes="S27: parser, locator format, source-type mapping and speaker rules are code, not rows.",
 )
@@ -604,6 +640,11 @@ CAPABILITIES = Table(
         _col("staleness limit", "int", note="days, where it differs"),
         _col("origin", "enum:capability_origin"),
         _col("reason", "value_id"),
+        _ruling(
+            "accepted_judgment_id",
+            "id",
+            "S54: the second model's field_fit judgment that accepts a row minted with a word",
+        ),
         *_version_touched(),
     ),
     uniques=_keys("capabilities", ("id",)),
@@ -631,6 +672,21 @@ SOURCES = Table(
         _col("the screened content or a pointer to it", "locator", "content_pointer"),
         _col("parser version", "code"),
         _col("untrusted", "bool"),
+        _ruling(
+            "speakers",
+            "json_ids",
+            "S51: message key to {kind, locator, sender, original_author}, set by the connector",
+        ),
+        _ruling(
+            "document",
+            "bool",
+            "S51: the connector stored an uploaded file or picture, not typed text",
+        ),
+        _ruling(
+            "calendar_events",
+            "json_ids",
+            "S51: bounded retained-message facts: scheduled_at, timezone, status and updated_at",
+        ),
         _col("forget state", "enum:forget_state", note="changed in place by a forget (line 2525)"),
         *_version_touched(),
     ),
@@ -694,6 +750,7 @@ EVIDENCE = Table(
         _col("speaker kind", "enum:speaker_kind"),
         _col("speaker item", "id"),
         _col("original author", "id", note="an item id, for forwarded content"),
+        _ruling("sender", "code", "S51: the sender code of the source's metadata"),
         _col("modality", "enum:modality"),
         _col("active", "bool"),
         _col("recorded", "instant"),
@@ -849,6 +906,7 @@ HISTORY_VALUES = Table(
         _WORLD,
         _col("value", "text_home", note="the value or the forgotten marker"),
         _col("forgotten at", "instant"),
+        *_version_touched(),
         _ruling(
             "item_id",
             "id",
@@ -905,6 +963,7 @@ REQUESTS = Table(
         _ruling("host_message_id", "locator", "S41: B.3 remember, for the later pass"),
         _ruling("said_at", "instant", "S41: B.3 remember, for the later pass"),
         _ruling("about", "ids", "S41: B.3 remember, for the later pass"),
+        _ruling("relay", "enum:relay", "S53: remember, answer or correction"),
     ),
     uniques=_keys("requests", ("world_id", "id")),
     indexes=_ranges("requests", ("world_id", "status")),
@@ -1095,6 +1154,12 @@ JUDGMENTS = Table(
             "`value:<id>`",
         ),
         _col("the evidence row", "id", "evidence_id", note="where there is one"),
+        _ruling(
+            "source_id",
+            "id",
+            "S51: the stored source a judge read when no evidence row exists yet",
+        ),
+        _ruling("locator", "locator", "S51: where in that source"),
         _col("verdict", "enum:verdict"),
         _col("stated confidence", "float"),
         _col("correlated", "bool", note="true when the second verdict is the same model family"),
@@ -1156,7 +1221,7 @@ VERIFICATIONS = Table(
         _col("agree", "float", note="computed by the writer"),
         _col("disagree", "float", note="computed by the writer"),
         _col("ratio", "float", note="computed by the writer"),
-        _col("band", "code", note="computed by the writer; line 957 gives conditions, no names"),
+        _col("band", "enum:verification_band", note="computed by the writer (S52)"),
         _col("load-bearing", "bool", note="as the writer found it"),
         _col("disposition", "enum:disposition"),
         _col("override reason", "value_id"),
@@ -1540,6 +1605,7 @@ FORGET_LEDGER = Table(
         _col("approved at", "instant"),
         _col("receipt", "json_ids", note="counts per place, never the value"),
         _col("the date after which no backup holds the value", "date", "backups_clear_after"),
+        _ruling("plan", "json_ids", "D14: opaque row selectors and digests, never target text"),
     ),
     uniques=_keys("forget_ledger", ("id",)),
     indexes=_ranges("forget_ledger", ("world_id",)),
@@ -1839,7 +1905,28 @@ OAUTH_GRANTS = Table(
     ),
 )
 
-LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS)
+FORGET_APPROVALS = Table(
+    name="forget_approvals",
+    label="ForgetApproval",
+    element="node",
+    scope="world",
+    group="snapshot",
+    owner="D14",
+    columns=(
+        _ID,
+        _WORLD,
+        _ruling("user_id", "id", "the approving person"),
+        _ruling("token_hash", "code", "SHA-256; the raw token is never stored"),
+        _ruling("target_digest", "code", "bound to the exact requested target"),
+        _ruling("created_at", "instant", "approval time"),
+        _ruling("expires_at", "instant", "short approval lifetime"),
+        _ruling("used_at", "instant", "consumed atomically with the cascade"),
+    ),
+    uniques=_keys("forget_approvals", ("id",), ("token_hash",)),
+    indexes=_ranges("forget_approvals", ("world_id",)),
+)
+
+LATER_TABLES: tuple[Table, ...] = (MAP_POSITIONS, OAUTH_GRANTS, FORGET_APPROVALS)
 
 # B.1's five groups, in B.1 order.
 B1_GROUPS: tuple[tuple[str, tuple[Table, ...]], ...] = (
@@ -1941,6 +2028,27 @@ FULLTEXT_INDEXES: tuple[FulltextIndex, ...] = (
         ("world_id", "phrase", "normalised_phrase"),
     ),
     FulltextIndex("grove_past_values", ("PastValue",), ("world_id", "value")),
+    FulltextIndex(
+        "grove_forget_values",
+        ("Item", "Alias", "HistoryValue", "Kind", "Meaning", "PropertyName", "RunRecord", "Source"),
+        (
+            "world_id",
+            "title",
+            "summary",
+            "body",
+            "properties",
+            "property_values",
+            "search_terms",
+            "status",
+            "status_vocabulary",
+            "phrase",
+            "normalised_phrase",
+            "value",
+            "name",
+            "proposed_operations",
+            "content",
+        ),
+    ),
     FulltextIndex(
         "grove_value_index",
         ("Item", "Alias", "HistoryValue", "Kind", "Meaning", "PropertyName", "RunRecord"),

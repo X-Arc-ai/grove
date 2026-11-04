@@ -4,8 +4,20 @@ import re
 
 import yaml
 
+from grove.api.uploads import (
+    DEFAULT_MAX_BYTES,
+    MAX_BYTES_VAR,
+    MAX_PARALLEL_UPLOADS,
+    PREFIX,
+    router,
+    upload_cap,
+)
+from grove.config import DENYLIST_VAR, RENAME_MAP_VAR
 from grove.oauth import MAX_REGISTRATIONS_PER_WINDOW
 from tests.deploy.conftest import DEPLOY, REPO
+
+UPLOAD_PATH = PREFIX + "/upload"
+SCREENING_MOUNT = "/run/grove/screening"
 
 COMPOSE = yaml.safe_load((DEPLOY / "compose.yml").read_text(encoding="utf-8"))
 SERVICES = COMPOSE["services"]
@@ -51,8 +63,8 @@ def test_the_api_listens_on_loopback_only_and_runs_as_production():
 def test_the_runner_holds_no_store_credential_and_no_model_key():
     runner = SERVICES["runner"]
     assert _env_files(runner) == ["/etc/grove/runner.env"]
-    assert runner["networks"] == ["runner"]
-    assert COMPOSE["networks"]["runner"]["internal"] is True
+    assert runner["networks"] == ["runner_v2"]
+    assert COMPOSE["networks"]["runner_v2"]["internal"] is True
     assert "store" not in runner["networks"]
     assert runner["user"] == "10002:10002"
     assert runner["environment"]["GROVE_ENV"] == "production"
@@ -72,7 +84,7 @@ def test_the_api_reads_the_secret_files_of_the_map():
         "/etc/grove/glimmer.env",
     }
     assert all(e["required"] is False for e in SERVICES["api"]["env_file"] if isinstance(e, dict))
-    (mount,) = SERVICES["api"]["volumes"]
+    (mount,) = [m for m in SERVICES["api"]["volumes"] if m["target"].endswith(".json")]
     assert mount["source"] == "/etc/grove/google-oauth.json"
     assert mount["read_only"] is True
     assert mount["bind"]["create_host_path"] is False
@@ -115,7 +127,7 @@ def test_nginx_passes_everything_to_the_api_and_reads_no_user_agent():
         assert "$http_user_agent" not in text
         assert "deny " not in text
     assert "location / {" in https
-    assert https.count("proxy_pass http://127.0.0.1:8000;") == 6
+    assert https.count("proxy_pass http://127.0.0.1:8000;") == 7
     assert "root /var/www/grove-acme;" in http
     assert "return 301 https://$host$request_uri;" in http
 
@@ -191,11 +203,15 @@ def test_the_runner_mounts_its_home_and_nothing_else():
     }
 
 
-def test_the_api_drops_every_capability_and_mounts_one_file():
+def test_the_api_drops_every_capability_and_mounts_the_oauth_file_and_the_screening_folder():
     api = SERVICES["api"]
     assert api["cap_drop"] == ["ALL"]
     assert api["security_opt"] == ["no-new-privileges:true"]
-    assert [mount["source"] for mount in api["volumes"]] == ["/etc/grove/google-oauth.json"]
+    assert [mount["source"] for mount in api["volumes"]] == [
+        "/etc/grove/google-oauth.json",
+        "/etc/grove/screening",
+        "/etc/grove/connectors",
+    ]
     assert "privileged" not in api and "devices" not in api
 
 
@@ -235,9 +251,10 @@ def test_no_box_script_runs_a_one_off_container_with_stdin_open():
                 assert path.name == "lib.sh" and line.rstrip().endswith("</dev/null"), path.name
 
 
-def test_no_path_takes_a_large_body_yet():
+def test_only_the_upload_path_takes_a_large_body():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
-    assert re.findall(r"client_max_body_size (\S+);", https) == ["10m"]
+    assert re.findall(r"client_max_body_size (\S+);", https) == ["10m", "256m"]
+    assert "client_max_body_size 256m;" in _location(https, f"location = {UPLOAD_PATH} {{")
 
 
 # ---- review round five ------------------------------------------------------------------------
@@ -330,7 +347,7 @@ def test_nginx_gives_registration_its_own_zone_that_one_address_cannot_fill_the_
     assert MAX_REGISTRATIONS_PER_WINDOW == 1000
 
 
-def test_nginx_has_seven_locations_and_no_rule_that_can_answer_for_the_api():
+def test_nginx_has_eight_locations_and_no_rule_that_can_answer_for_the_api():
     https = (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
     assert re.findall(r"^[ \t]*location\b.*$", https, re.MULTILINE) == [
         "    location / {",
@@ -340,6 +357,7 @@ def test_nginx_has_seven_locations_and_no_rule_that_can_answer_for_the_api():
         "    location = /authorize {",
         "    location = /authorize/decision {",
         "    location = /token {",
+        "    location = /v1/sources/upload {",
     ]
     for word in (
         "auth_basic",
@@ -410,6 +428,145 @@ def test_the_image_gets_the_data_flow_file_for_the_privacy_page_and_no_other_doc
     assert ignored.index("!docs/data-flow.md") > ignored.index("docs/*")
 
 
+# ---- uploads and the screening files ----------------------------------------------------------
+
+_UNITS = {"": 1, "k": 1024, "m": 1024**2, "g": 1024**3}
+
+
+def _size_bytes(text: str) -> int:
+    """A size as nginx and the kernel's tmpfs read it: a whole number with k, m or g."""
+    match = re.fullmatch(r"(\d+)([kmg]?)", text.lower())
+    assert match, text
+    return int(match.group(1)) * _UNITS[match.group(2)]
+
+
+def _https() -> str:
+    return (DEPLOY / "nginx" / "grove-https.conf.template").read_text(encoding="utf-8")
+
+
+def _without_comments(text: str) -> str:
+    return re.sub(r"#[^\n]*", "", text)
+
+
+def _location_blocks(https: str) -> dict[str, str]:
+    """Each location's match, such as '= /token', with the text inside its braces."""
+    pattern = r"^[ \t]*location\s+([^{]+?)\s*\{([^}]*)\}"
+    return dict(re.findall(pattern, _without_comments(https), re.MULTILINE))
+
+
+def _screening_mount() -> dict:
+    (mount,) = [m for m in SERVICES["api"]["volumes"] if m["target"] == SCREENING_MOUNT]
+    return mount
+
+
+def test_the_api_names_both_screening_files_inside_the_screening_mount():
+    env = SERVICES["api"]["environment"]
+    assert env[RENAME_MAP_VAR] == f"{SCREENING_MOUNT}/rename.json"
+    assert env[DENYLIST_VAR] == f"{SCREENING_MOUNT}/denylist.txt"
+    # apply.sh hands these two names to the API user; any other name would stay root's at 600.
+    apply = (DEPLOY / "apply.sh").read_text(encoding="utf-8")
+    assert apply.count("for name in rename.json denylist.txt; do") == 2
+
+
+def test_the_screening_folder_is_mounted_read_only_and_never_made_by_docker():
+    mount = _screening_mount()
+    assert mount["type"] == "bind"
+    # The folder, not a file: a file mount would fail every deploy while that file is absent.
+    assert mount["source"] == "/etc/grove/screening"
+    assert mount["read_only"] is True
+    assert mount["bind"]["create_host_path"] is False
+    targets = [m["target"] for m in SERVICES["api"]["volumes"]]
+    assert not [target for target in targets if target.startswith(SCREENING_MOUNT + "/")]
+
+
+def test_no_other_service_gets_a_screening_setting_or_the_upload_cap():
+    for name in ("runner", "gateway", "neo4j"):
+        service = SERVICES[name]
+        env = service.get("environment", {})
+        for variable in (RENAME_MAP_VAR, DENYLIST_VAR, MAX_BYTES_VAR):
+            assert variable not in env, (name, variable)
+        assert "screening" not in str(service.get("volumes", [])), name
+
+
+def test_the_api_takes_the_code_default_as_its_upload_cap(monkeypatch):
+    value = SERVICES["api"]["environment"][MAX_BYTES_VAR]
+    assert value == "268435456" == str(DEFAULT_MAX_BYTES)
+    monkeypatch.setenv(MAX_BYTES_VAR, value)
+    assert upload_cap() == DEFAULT_MAX_BYTES == 256 * 1024 * 1024
+
+
+def test_the_api_tmp_holds_every_upload_spool_at_the_cap():
+    """A large body spools to a file in /tmp, the one place the read-only root lets it go, and
+    MAX_PARALLEL_UPLOADS of them can run at once."""
+    (entry,) = SERVICES["api"]["tmpfs"]
+    target, _, options = entry.partition(":")
+    assert target == "/tmp"
+    sizes = [option.removeprefix("size=") for option in options.split(",") if "size=" in option]
+    assert len(sizes) == 1
+    size = _size_bytes(sizes[0])
+    assert size > MAX_PARALLEL_UPLOADS * DEFAULT_MAX_BYTES
+    # No room for one more: the tmpfs is inside the api's memory limit.
+    assert size < (MAX_PARALLEL_UPLOADS + 1) * DEFAULT_MAX_BYTES
+    # A tmpfs is memory: with no size it may take half of the box's 8 GB.
+    assert size <= 1024**3
+    # tempfile writes to /tmp only while no TMPDIR points elsewhere.
+    assert "TMPDIR" not in SERVICES["api"]["environment"]
+    assert "TMPDIR" not in (DEPLOY / "api.Dockerfile").read_text(encoding="utf-8")
+
+
+def test_the_upload_location_takes_the_api_cap_and_streams_the_body():
+    block = _location_blocks(_https())[f"= {UPLOAD_PATH}"]
+    directives = [line.strip() for line in block.splitlines() if line.strip()]
+    assert directives == [
+        "client_max_body_size 256m;",
+        "proxy_request_buffering off;",
+        "proxy_read_timeout 600s;",
+        "proxy_send_timeout 600s;",
+        "proxy_pass http://127.0.0.1:8000;",
+    ]
+    limit = re.search(r"client_max_body_size (\S+);", block).group(1)
+    assert _size_bytes(limit) == DEFAULT_MAX_BYTES == 268435456
+
+
+def test_the_upload_location_is_the_route_the_api_serves():
+    served = {(route.path, method) for route in router.routes for method in route.methods}
+    assert (UPLOAD_PATH, "POST") in served
+    assert UPLOAD_PATH == "/v1/sources/upload"
+    # An exact match, so /v1/sources/connectors and every other path keep the 10m limit.
+    assert f"location = {UPLOAD_PATH} {{" in _https()
+
+
+def test_every_other_path_keeps_the_10m_limit_and_request_buffering():
+    https = _https()
+    blocks = _location_blocks(https)
+    assert len(blocks) == 8
+    for match, block in blocks.items():
+        if match == f"= {UPLOAD_PATH}":
+            continue
+        for directive in ("client_max_body_size", "proxy_request_buffering", "proxy_send_timeout"):
+            assert directive not in block, (match, directive)
+    server_level = re.sub(r"location\s+[^{]+\{[^}]*\}", "", _without_comments(https))
+    assert re.findall(r"client_max_body_size (\S+);", server_level) == ["10m"]
+    assert _size_bytes("10m") == 10 * 1024 * 1024
+    assert "proxy_request_buffering" not in server_level
+    assert "proxy_send_timeout" not in server_level
+
+
+def test_the_api_has_a_memory_limit_with_no_swap_that_holds_one_upload():
+    """One upload at the caps of grove.ingest holds about 2.5 GiB. The limit keeps a worst case
+    inside the api container, and leaves the store and the 8 GB box their memory."""
+    api = SERVICES["api"]
+    assert api["mem_limit"] == "4g"
+    assert api["memswap_limit"] == api["mem_limit"]
+    assert MAX_PARALLEL_UPLOADS == 1
+    neo4j = SERVICES["neo4j"]["environment"]
+    store = _size_bytes(neo4j["NEO4J_server_memory_heap_max__size"]) + _size_bytes(
+        neo4j["NEO4J_server_memory_pagecache_size"]
+    )
+    assert store + _size_bytes(api["mem_limit"]) <= 6 * 1024**3
+    assert api["restart"] == "unless-stopped"
+
+
 # ---- the runner lane: the gateway and the runner loop -----------------------------------------
 
 # Every key the gateway service may have: it holds the model keys and the gateway secret.
@@ -438,7 +595,7 @@ def test_the_gateway_runs_from_the_api_image_with_no_build_and_no_port():
     # No build key: `compose build api runner` builds the image it runs.
     assert "build" not in gateway and "ports" not in gateway
     assert gateway["command"] == ["python", "-m", "grove.models.gateway"]
-    assert gateway["networks"] == ["store", "runner", "egress"]
+    assert gateway["networks"] == ["store", "runner_v2", "egress"]
     assert gateway["read_only"] is True
     assert gateway["tmpfs"] == ["/tmp"]
     assert gateway["cap_drop"] == ["ALL"]
@@ -472,13 +629,13 @@ def test_the_gateway_listens_where_the_runner_can_reach_it():
     assert url == f"http://gateway:{env['GROVE_GATEWAY_PORT']}/v1"
     assert set(SERVICES["runner"]["networks"]) <= set(SERVICES["gateway"]["networks"])
     assert SERVICES["runner"]["depends_on"] == {
-        "api": {"condition": "service_started"},
+        "api": {"condition": "service_healthy"},
         "gateway": {"condition": "service_started"},
     }
 
 
 def test_the_runner_network_has_a_stable_bridge_name_and_no_route_out():
-    runner = COMPOSE["networks"]["runner"]
+    runner = COMPOSE["networks"]["runner_v2"]
     assert runner["internal"] is True
     name = runner["driver_opts"]["com.docker.network.bridge.name"]
     assert name == "grove-runner"
@@ -527,3 +684,11 @@ def test_nginx_answers_no_internal_route_from_outside_the_box():
     assert "return 404;" in block and "proxy_pass" not in block
     http = (DEPLOY / "nginx" / "grove-http.conf.template").read_text(encoding="utf-8")
     assert "proxy_pass" not in http
+
+
+def test_the_runner_transition_uses_a_new_logical_key_and_docker_name():
+    assert "runner" not in COMPOSE["networks"]
+    assert COMPOSE["networks"]["runner_v2"]["name"] == "grove_runner_v2"
+    assert SERVICES["api"]["networks"] == ["store", "runner_v2", "egress"]
+    assert SERVICES["gateway"]["networks"] == ["store", "runner_v2", "egress"]
+    assert SERVICES["runner"]["networks"] == ["runner_v2"]

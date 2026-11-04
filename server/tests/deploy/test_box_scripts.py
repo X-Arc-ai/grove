@@ -10,6 +10,7 @@ import subprocess
 import time
 
 import pytest
+import yaml
 
 from grove import clock
 from tests.deploy.conftest import BASE, FP, HOST, OTHER_SHA, SHA
@@ -131,6 +132,94 @@ def test_apply_refuses_to_run_without_the_lock(box):
     assert done.returncode != 0
     assert "takes the box lock" in done.stderr
     assert not box.calls()
+
+
+@pytest.mark.parametrize(
+    "name,value",
+    [
+        ("gateway.env", None),
+        ("runner.env", None),
+        ("runner-auth.env", None),
+        ("gateway.env", "GROVE_GATEWAY_SECRET=\n"),
+        ("gateway.env", "GROVE_GATEWAY_SECRET=too-short\n"),
+        ("runner.env", "GROVE_RUNNER_TOKEN=\n"),
+        ("runner-auth.env", "GROVE_RUNNER_TOKEN_SHA256=" + "0" * 64 + "\n"),
+    ],
+)
+def test_apply_configuration_preflight_preserves_all_state_before_any_mutation(box, name, value):
+    revisions = box.network_revisions()
+    shutil.copytree(revisions / SHA / "deploy", box.src / "deploy", dirs_exist_ok=True)
+    (box.root / "fake" / "HEAD").write_text(SHA)
+    (box.state / "previous.sha").write_text("a" * 40 + "\n")
+    path = box.etc / name
+    if value is None:
+        path.unlink()
+    else:
+        path.write_text(value)
+    before = {
+        str(p.relative_to(box.root)): (
+            p.read_bytes(),
+            p.stat().st_mode,
+            p.stat().st_mtime_ns,
+            p.stat().st_ctime_ns,
+        )
+        for folder in (box.etc, box.state, box.nginx)
+        for p in folder.rglob("*")
+        if p.is_file()
+    }
+    network = box.network_state()
+    done = box.run("apply.sh", SHA, "develop", GROVE_LOCK_HELD="1")
+    assert done.returncode != 0
+    assert done.stderr == f"runner_configuration_invalid {name}\n"
+    assert box.calls() == ["git rev-parse HEAD"]
+    assert not (box.etc / "screening").exists()
+    assert box.network_state() == network
+    after = {
+        str(p.relative_to(box.root)): (
+            p.read_bytes(),
+            p.stat().st_mode,
+            p.stat().st_mtime_ns,
+            p.stat().st_ctime_ns,
+        )
+        for folder in (box.etc, box.state, box.nginx)
+        for p in folder.rglob("*")
+        if p.is_file()
+    }
+    assert after == before
+
+
+def test_gateway_fixture_refuses_health_without_configuration_even_without_preflight(box):
+    revisions = box.network_revisions()
+    apply = revisions / SHA / "deploy/apply.sh"
+    apply.write_text(
+        apply.read_text().replace(
+            'GROVE_ETC_DIR="$GROVE_ETC" "$here/runner-secrets.sh" --check\n', ""
+        )
+    )
+    (box.etc / "gateway.env").unlink()
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "synthetic gateway configuration unavailable" in done.stderr
+    assert not box.network_state()["containers"]["gateway"]["healthy"]
+    assert "runs, services NOT healthy" in box.log_text("deploy.log")
+
+
+def test_deploy_configuration_refusal_preserves_legacy_services_and_both_markers(box):
+    box.network_revisions()
+    assert box.run("install-host.sh").returncode == 0
+    (box.etc / "gateway.env").unlink()
+    (box.state / "previous.sha").write_text("a" * 40 + "\n")
+    network = box.network_state()
+    markers = {p.name: p.read_bytes() for p in box.state.iterdir()}
+    start = len(box.calls())
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "runner_configuration_invalid gateway.env" in done.stderr
+    assert box.network_state() == network
+    assert {p.name: p.read_bytes() for p in box.state.iterdir()} == markers
+    assert not any(call.startswith("docker ") for call in box.calls()[start:])
+    assert (box.root / "fake" / "HEAD").read_text() == OTHER_SHA
+    assert "synthetic legacy revision" in (box.nginx / "sites-enabled/grove-https.conf").read_text()
 
 
 def test_apply_refuses_when_a_secret_file_is_missing(box):
@@ -904,7 +993,7 @@ def test_apply_refuses_a_secret_folder_open_to_others(box):
     box.etc.chmod(0o750)
     done = box.run("deploy.sh", SHA)
     assert done.returncode != 0
-    assert "open to group or others" in done.stderr
+    assert "runner_configuration_invalid configuration_directory" in done.stderr
     assert not [call for call in box.calls() if call.startswith("docker")]
 
 
@@ -974,6 +1063,297 @@ def test_the_smoke_asks_for_every_page(box):
     box.index(f"{BASE}/privacy")
 
 
+# ---- uploads and the screening files ----------------------------------------------------------
+
+SCREENING_FILES = ("rename.json", "denylist.txt")
+UPLOADS_503 = "uploads answer 503 until both screening files are placed"
+# Synthetic content: invented names only.
+SCREENING_TEXT = {
+    "rename.json": '{"Invented Person": "Person A"}\n',
+    "denylist.txt": "Invented Codename\n",
+}
+OPEN_MODES = [0o644, 0o640, 0o620, 0o610, 0o604, 0o602, 0o601]
+
+
+def _place(box, name: str, mode: int = 0o600):
+    folder = box.etc / "screening"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    path = folder / name
+    path.write_text(SCREENING_TEXT[name])
+    path.chmod(mode)
+    return path
+
+
+def _mode(path) -> int:
+    return path.lstat().st_mode & 0o777
+
+
+def _uploads_lines(done) -> list[str]:
+    return [line for line in (done.stdout + done.stderr).splitlines() if UPLOADS_503 in line]
+
+
+def _chowns(box) -> list[str]:
+    return [call for call in box.calls() if call.startswith("chown")]
+
+
+def _chown_at(box, path) -> int:
+    """The position of the chown of exactly this path: the folder's path starts its files' paths."""
+    return box.calls().index(f"chown 10001:10001 {path}")
+
+
+def test_a_deploy_with_no_screening_files_serves_and_says_uploads_answer_503(box):
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    (line,) = _uploads_lines(done)
+    assert line.endswith(f"{UPLOADS_503}; absent: rename.json denylist.txt")
+    # The file names only: no path of the box.
+    assert "/" not in line
+    folder = box.etc / "screening"
+    assert folder.is_dir() and _mode(folder) == 0o500
+    assert _chown_at(box, folder) < box.index("up --detach --wait neo4j")
+    box.index("up --detach --wait --remove-orphans api gateway runner")
+    assert f"deploy {SHA} ref=develop previous=none: served, smoke ok" in box.log_text("deploy.log")
+
+
+def test_one_absent_screening_file_still_serves_and_names_only_that_file(box):
+    placed = _place(box, "rename.json")
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    (line,) = _uploads_lines(done)
+    assert line.endswith(f"{UPLOADS_503}; absent: denylist.txt")
+    assert _chown_at(box, placed) < _chown_at(box, box.etc / "screening")
+    assert _mode(placed) == 0o400
+
+
+def test_a_deploy_hands_the_screening_files_to_the_api_user_at_400(box):
+    paths = [_place(box, name) for name in SCREENING_FILES]
+    folder = box.etc / "screening"
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stderr
+    assert not _uploads_lines(done)
+    for path in paths:
+        assert _mode(path) == 0o400, path.name
+        # The fake chown records the call; an unprivileged test cannot change an owner.
+        assert _chown_at(box, path) < _chown_at(box, folder)
+    assert _mode(folder) == 0o500
+    assert _chown_at(box, folder) < box.index("up --detach --wait neo4j")
+    shown = done.stdout + done.stderr
+    for text in SCREENING_TEXT.values():
+        assert text.strip() not in shown
+
+    # The next deploy finds them at 400, which is as private as 600, and goes on.
+    box.env["FAKE_LOG"] = str(box.root / "calls-2.log")
+    again = box.run("deploy.sh", SHA)
+    assert again.returncode == 0, again.stderr
+    assert not _uploads_lines(again)
+    assert [_mode(path) for path in paths] == [0o400, 0o400]
+
+
+@pytest.mark.parametrize("name", SCREENING_FILES)
+def test_a_screening_file_open_to_others_stops_the_deploy_before_any_chown(box, name):
+    for other in SCREENING_FILES:
+        _place(box, other, 0o644 if other == name else 0o600)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert f"the screening file {name} is open to group or others: place it at 600" in done.stderr
+    # Not one chown, and the mode is as the person placed it: the deploy hides nothing.
+    assert not _chowns(box)
+    assert _mode(box.etc / "screening" / name) == 0o644
+    assert not [call for call in box.calls() if call.startswith("docker")]
+
+
+@pytest.mark.parametrize("mode", OPEN_MODES[1:], ids=oct)
+def test_every_group_or_other_bit_on_a_screening_file_stops_the_deploy(box, mode):
+    _place(box, "denylist.txt", mode)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "the screening file denylist.txt is open to group or others" in done.stderr
+    assert not _chowns(box)
+
+
+@pytest.mark.parametrize("target_exists", [True, False])
+def test_a_screening_file_that_is_a_link_stops_the_deploy(box, target_exists):
+    """chown and chmod follow a link, so a link could hand any file of the box to the API."""
+    target = box.root / "elsewhere.txt"
+    if target_exists:
+        target.write_text("Invented Codename\n")
+        target.chmod(0o600)
+    (box.etc / "screening").mkdir(mode=0o700)
+    (box.etc / "screening" / "denylist.txt").symlink_to(target)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "the screening file denylist.txt is not a plain file" in done.stderr
+    assert not _chowns(box)
+    if target_exists:
+        assert _mode(target) == 0o600
+
+
+def test_a_screening_folder_that_is_a_link_stops_the_deploy(box):
+    elsewhere = box.root / "elsewhere"
+    elsewhere.mkdir(mode=0o700)
+    (box.etc / "screening").symlink_to(elsewhere)
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode != 0
+    assert "the screening folder is not a plain folder" in done.stderr
+    assert not _chowns(box)
+    assert _mode(elsewhere) == 0o700
+
+
+# ---- a network transition with existing service endpoints -----------------------------------
+
+
+@pytest.fixture
+def network_box(box):
+    revisions = box.network_revisions()
+    assert box.run("install-host.sh").returncode == 0
+    initial = box.network_state()
+    credentials = {
+        path: (path.read_bytes(), _mode(path)) for path in box.etc.iterdir() if path.is_file()
+    }
+    yield box, revisions, initial
+    final = box.network_state()
+    assert final["containers"]["neo4j"] == initial["containers"]["neo4j"]
+    assert final["volumes"] == initial["volumes"]
+    for field in ("id", "key", "internal", "options"):
+        assert final["networks"]["grove_store"][field] == initial["networks"]["grove_store"][field]
+    for path, expected in credentials.items():
+        assert (path.read_bytes(), _mode(path)) == expected
+    assert not any(
+        forbidden in call
+        for call in box.calls()
+        for forbidden in (
+            " down",
+            "volume rm",
+            "volume prune",
+            "network disconnect",
+            "stop neo4j",
+            "rm neo4j",
+        )
+    )
+    assert not any(event[:2] == ["remove-container", "neo4j"] for event in final["events"])
+    # These commands are fake. No agent, model gateway, or source upload is part of a deploy.
+    assert not any("opencode" in call or "/v1/internal/runner/due" in call for call in box.calls())
+
+
+def test_runner_network_upgrade_with_active_legacy_endpoints(network_box):
+    box, _, initial = network_box
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stdout + done.stderr
+    state = box.network_state()
+    assert state["networks"]["grove_runner"]["id"] == initial["networks"]["grove_runner"]["id"]
+    assert state["networks"]["grove_runner"]["endpoints"] == []
+    assert state["networks"]["grove_runner_v2"]["key"] == "runner_v2"
+    assert ["migration", SHA, OTHER_SHA] in state["events"]
+    migration = state["events"].index(["migration", SHA, OTHER_SHA])
+    replacements = [i for i, event in enumerate(state["events"]) if event[0] == "remove-container"]
+    assert replacements and min(replacements) > migration
+    assert not any(event[0] == "disconnect-for-rename" for event in state["events"])
+    assert "ok healthz build=" + SHA in done.stdout
+
+
+@pytest.mark.parametrize("failure", ["create", "migrate"])
+def test_old_entrypoint_preserves_legacy_services_before_target_promotion(network_box, failure):
+    box, _, initial = network_box
+    done = box.run("deploy.sh", SHA, FAKE_NETWORK_FAILURE=failure)
+    assert done.returncode != 0
+    assert (
+        f"synthetic {'network creation' if failure == 'create' else 'migration'} failure"
+        in done.stderr
+    )
+    state = box.network_state()
+    assert state["containers"] == initial["containers"]
+    assert state["networks"]["grove_runner"] == initial["networks"]["grove_runner"]
+    assert (box.root / "fake" / "HEAD").read_text() == OTHER_SHA
+    assert (box.state / "deployed.sha").read_text().strip() == OTHER_SHA
+    assert "synthetic legacy revision" in (box.nginx / "sites-enabled/grove-https.conf").read_text()
+    assert "host files are back at " + OTHER_SHA in done.stdout
+    assert box.run("smoke.sh", BASE, OTHER_SHA).returncode == 0
+
+
+def test_runner_network_name_only_change_does_not_preserve_legacy_network(network_box):
+    box, revisions, _ = network_box
+    path = revisions / SHA / "deploy/compose.yml"
+    config = yaml.safe_load(path.read_text())
+    definition = config["networks"].pop("runner_v2")
+    config["networks"]["runner"] = definition
+    for service in config["services"].values():
+        service["networks"] = [
+            "runner" if key == "runner_v2" else key for key in service["networks"]
+        ]
+    path.write_text(yaml.safe_dump(config, sort_keys=False))
+    done = box.run("deploy.sh", SHA, FAKE_NETWORK_FAILURE="migrate")
+    assert done.returncode != 0
+    state = box.network_state()
+    assert any(event[0] == "disconnect-for-rename" for event in state["events"])
+    assert "grove_runner" not in state["networks"]
+    # A restored marker and checkout cannot make a disconnected legacy API healthy.
+    assert (box.state / "deployed.sha").read_text().strip() == OTHER_SHA
+    assert box.run("smoke.sh", BASE, OTHER_SHA).returncode != 0
+
+
+def test_target_service_start_failure_preserves_truthful_build_state(network_box):
+    box, _, _ = network_box
+    done = box.run("deploy.sh", SHA, FAKE_NETWORK_FAILURE="start")
+    assert done.returncode != 0
+    assert "runs, services NOT healthy" in box.log_text("deploy.log")
+    assert "host files are back" not in done.stdout
+    assert (box.root / "fake" / "HEAD").read_text() == SHA
+    assert (box.state / "deployed.sha").read_text().strip() == SHA
+    assert (box.state / "previous.sha").read_text().strip() == OTHER_SHA
+    assert box.run("smoke.sh", BASE, SHA).returncode != 0
+
+
+def test_same_sha_redeploy_reuses_the_new_runner_network(network_box):
+    box, _, _ = network_box
+    assert box.run("deploy.sh", SHA).returncode == 0
+    identity = box.network_state()["networks"]["grove_runner_v2"]["id"]
+    done = box.run("deploy.sh", SHA)
+    assert done.returncode == 0, done.stdout + done.stderr
+    state = box.network_state()
+    assert state["networks"]["grove_runner_v2"]["id"] == identity
+    assert state["events"].count(["create-network", "grove_runner_v2"]) == 1
+    assert (box.state / "previous.sha").read_text().strip() == OTHER_SHA
+
+
+@pytest.mark.parametrize("failed_start", [False, True])
+def test_rollback_reuses_legacy_network_and_removes_gateway_orphan(network_box, failed_start):
+    box, _, initial = network_box
+    first = box.run("deploy.sh", SHA, FAKE_NETWORK_FAILURE="start" if failed_start else "")
+    assert (first.returncode != 0) == failed_start
+    assert "gateway" in box.network_state()["containers"]
+    done = box.run("deploy.sh", OTHER_SHA)
+    assert done.returncode == 0, done.stdout + done.stderr
+    state = box.network_state()
+    assert state["networks"]["grove_runner"]["id"] == initial["networks"]["grove_runner"]["id"]
+    assert state["networks"]["grove_runner_v2"]["endpoints"] == []
+    assert "gateway" not in state["containers"]
+    assert ["remove-container", "gateway"] in state["events"]
+    assert (box.state / "deployed.sha").read_text().strip() == OTHER_SHA
+    assert (box.state / "previous.sha").read_text().strip() == SHA
+    assert "ok healthz build=" + OTHER_SHA in done.stdout
+
+
+def test_network_health_does_not_trust_the_deployed_marker(network_box):
+    box, _, _ = network_box
+    box.deployed(SHA)
+    assert box.run("smoke.sh", BASE, OTHER_SHA).returncode == 0
+    state = box.network_state()
+    del state["containers"]["api"]
+    with open(box.env["FAKE_NETWORK_STATE"], "w") as handle:
+        json.dump(state, handle)
+    box.deployed(OTHER_SHA)
+    assert box.run("smoke.sh", BASE, OTHER_SHA).returncode != 0
+
+
+def test_network_transition_respects_the_existing_host_lock(network_box):
+    box, _, initial = network_box
+    done = box.run("deploy.sh", SHA, FAKE_FLOCK_STATUS="1")
+    assert done.returncode != 0
+    assert "holds" in done.stderr
+    assert box.network_state() == initial
+    assert not [call for call in box.calls() if call.startswith("docker ")]
+
+
 # ---- the runner lane: the gateway -------------------------------------------------------------
 
 
@@ -985,16 +1365,24 @@ def test_the_services_script_fails_when_only_the_gateway_is_unhealthy(box):
     box.index("ps --quiet gateway", box.index("start api gateway runner"))
 
 
-def test_a_backup_stops_the_gateway_before_its_first_fingerprint(box):
+@pytest.mark.parametrize("source_folder", ["source", "gateway-source"])
+def test_a_backup_stops_the_gateway_before_its_first_fingerprint(box, source_folder):
     # The gateway writes a model_calls row for each call: a row written between the two
     # fingerprints fails the backup with "the store changed across the dump".
+    # A source path may contain a service name; it is not a service argument.
+    source = box.root / source_folder
+    source.symlink_to(box.src, target_is_directory=True)
+    box.env["GROVE_SRC"] = str(source)
     box.deployed()
     done = box.run("backup.sh")
     assert done.returncode == 0, done.stderr
     stop = box.index("stop runner gateway api")
     first = box.index("grove.store.dump_fingerprint")
     assert stop < first
-    assert not [
-        call for call in box.calls()[stop:first] if " start " in f" {call} " and "gateway" in call
+    early_starts = [
+        call.rsplit(" start ", 1)[1].split()
+        for call in box.calls()[stop:first]
+        if " start " in call
     ]
+    assert all("gateway" not in services for services in early_starts)
     box.index("start api gateway runner", box.index(f"--expect {FP}", first))
