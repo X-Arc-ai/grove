@@ -29,6 +29,7 @@ from grove.api.errors import (
     unauthenticated,
 )
 from grove.api.session import current_session
+from grove.api.views import check_json_type, read_json_body
 from grove.config import ConfigError
 from grove.demo.screening import lumen_fixture, new_demo_screener
 from grove.demo_policy import is_demo_world
@@ -37,7 +38,16 @@ from grove.ingest.take_in import take_in
 from grove.ingest.tokens import find_upload_grant
 from grove.screening import Screener, ScreeningConfig
 from grove.store.query import PlatformQuery, WorldQuery
-from grove.views.session import ViewSession
+from grove.views.onboarding import (
+    InvalidPendingExports,
+    PendingExportDenied,
+    PendingExportSessionEnded,
+    capture_pending_export,
+    pending_exports,
+    require_provider,
+)
+from grove.views.session import SESSION_COOKIE, ViewSession, token_hash
+from grove.writer.onboarding import complete_export, request_export
 
 PREFIX = "/v1/sources"
 
@@ -74,6 +84,89 @@ _CONNECTORS = (
 
 router = APIRouter(prefix=PREFIX)
 Session = Annotated[ViewSession, Depends(current_session)]
+
+
+def _reminder_error(error: Exception) -> ApiError:
+    if isinstance(error, PendingExportSessionEnded):
+        return unauthenticated()
+    if isinstance(error, PendingExportDenied):
+        return ApiError(403, "scope_denied", "export reminders are unavailable for this account")
+    return _not_configured("export reminders are unavailable")
+
+
+@router.get("/pending-exports")
+def get_pending_exports(request: Request, session: Session) -> dict:
+    if "authorization" in request.headers:
+        raise unauthenticated("export reminders require a session")
+    if request.query_params:
+        raise invalid_arguments("query fields are not accepted", "query")
+    try:
+        return pending_exports(request.app.state.driver, session)
+    except (InvalidPendingExports, PendingExportDenied) as error:
+        raise _reminder_error(error) from None
+
+
+@router.post("/pending-exports/{provider}")
+async def post_pending_export(request: Request, session: Session, provider: str) -> dict:
+    if "authorization" in request.headers:
+        raise unauthenticated("export reminders require a session")
+    origin = request.headers.get("origin")
+    if (origin and origin != request.app.state.settings.public_base_url) or request.headers.get(
+        "sec-fetch-site"
+    ) == "cross-site":
+        raise ApiError(403, "forbidden", "request origin is not allowed")
+    if request.query_params:
+        raise invalid_arguments("query fields are not accepted", "query")
+    try:
+        require_provider(provider)
+    except InvalidPendingExports:
+        raise invalid_arguments("unknown export provider", "provider") from None
+    check_json_type(request)
+    body = await read_json_body(request, 1024)
+    if not isinstance(body, dict) or body:
+        raise invalid_arguments("an empty object is required", "body")
+    try:
+        return await run_in_threadpool(
+            request_export,
+            request.app.state.driver,
+            session,
+            token_hash(request.cookies[SESSION_COOKIE]),
+            provider,
+        )
+    except (InvalidPendingExports, PendingExportDenied, PendingExportSessionEnded) as error:
+        raise _reminder_error(error) from None
+
+
+async def _capture_reminder(request: Request, world_id: str, provider: str):
+    try:
+        return await run_in_threadpool(
+            capture_pending_export, request.app.state.driver, world_id, provider
+        )
+    except (InvalidPendingExports, PendingExportDenied) as error:
+        raise _reminder_error(error) from None
+
+
+async def _finish_upload(request: Request, result, captured) -> dict:
+    body = result.to_api()
+    if (
+        captured is None
+        or body.get("state") not in ("taken_in", "nothing_new")
+        or type(body.get("failed_chats")) is not int
+        or body["failed_chats"] != 0
+    ):
+        return body
+    try:
+        state = await run_in_threadpool(complete_export, request.app.state.driver, captured)
+    except Exception:
+        # The source transaction already committed. Report its real result and retain the
+        # reminder; never turn a metadata failure into a false source import failure.
+        body["reminder"] = {"status": "unavailable"}
+    else:
+        body["reminder"] = {"status": "updated"}
+        # Upload-only tokens must not acquire access to the account's reminder list.
+        if "authorization" not in request.headers:
+            body["reminder"]["snapshot"] = state
+    return body
 
 
 def upload_cap() -> int:
@@ -198,6 +291,7 @@ async def post_upload(request: Request) -> dict[str, Any]:
         raise _busy()
     spool: IO[bytes] | None = None
     try:
+        captured = await _capture_reminder(request, world_id, provider)
         spool, size = await _spool_body(request, cap)
         if size == 0:
             raise invalid_arguments("the body is empty", "body")
@@ -217,7 +311,7 @@ async def post_upload(request: Request) -> dict[str, Any]:
         if spool is not None:
             spool.close()
         UPLOAD_SLOTS.release()
-    return result.to_api()
+    return await _finish_upload(request, result, captured)
 
 
 async def _invented_upload(
@@ -240,6 +334,7 @@ async def _invented_upload(
         raise _busy()
     spool = None
     try:
+        captured = await _capture_reminder(request, world_id, provider)
         try:
             _check_declared_length(request, len(fixture))
             spool, size = await _spool_body(request, len(fixture))
@@ -256,7 +351,7 @@ async def _invented_upload(
             Upload(spool, size),
             screener=new_demo_screener(),
         )
-        return result.to_api()
+        return await _finish_upload(request, result, captured)
     finally:
         if spool is not None:
             spool.close()
