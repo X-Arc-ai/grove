@@ -8,6 +8,7 @@ re-import of the same export finds every key stored, so it writes no source, no 
 episode: only the connector's coverage times move. docs/ingest.md has the contract.
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
@@ -244,6 +245,36 @@ def take_in(
     connector_id = ensure_connector(
         driver, world_id, spec.connector_type, spec.provider, batch_rule=spec.batch_rule
     )
+    return take_parsed(
+        driver, world_id, spec, connector_id, chats, screener=screener, attempted_at=attempted
+    )
+
+
+def take_parsed(
+    driver: Driver,
+    world_id: str,
+    spec: ConnectorSpec,
+    connector_id: str,
+    chats: Sequence[ParsedChat],
+    *,
+    screener: Screener,
+    attempted_at: datetime | None = None,
+    record_coverage: bool = True,
+) -> TakeInResult:
+    """Apply a code-owned connector read through the same screened, atomic ingest path.
+
+    The connector must already belong to this world and have the expected type and provider.
+    This is not an upload format: HTTP clients cannot label arbitrary uploads as artifacts.
+    """
+    rows = WorldQuery(driver, world_id).read(
+        "MATCH (c:Connector {id: $id}) RETURN c.type AS type, c.provider AS provider",
+        id=connector_id,
+    )
+    if not rows or rows[0] != {"type": spec.connector_type, "provider": spec.provider}:
+        raise InvalidRecord("invalid_arguments", "connector", "connector does not match the reader")
+    if not isinstance(screener, Screener):
+        raise TypeError("take_parsed needs a Screener")
+    attempted = attempted_at or clock.now(world_id)
     result = TakeInResult(state=NOTHING_NEW, provider=spec.provider, connector_id=connector_id)
     result.chats = len(chats)
     for chat in chats:
@@ -257,12 +288,13 @@ def take_in(
         result.state = KEPT_OUT
     elif result.failed_chats:
         result.state = FAILED
-    record_read(
-        driver,
-        world_id,
-        connector_id,
-        outcome=_OUTCOME[result.state],
-        failed=result.failed_chats,
-        attempted_at=attempted,
-    )
+    if record_coverage:
+        record_read(
+            driver,
+            world_id,
+            connector_id,
+            outcome=_OUTCOME[result.state],
+            failed=result.failed_chats,
+            attempted_at=attempted,
+        )
     return result

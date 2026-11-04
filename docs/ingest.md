@@ -1,5 +1,8 @@
 # Ingest: connectors, uploads and the take-in pipeline
 
+Read-only Calendar and local Git connections use this pipeline through `take_parsed`.
+Their consent, scope, cursor and operator configuration are in `docs/source-connectors.md`.
+
 Spec: A.4 (connectors), D2 (sources and episodes), D5 (speaker and source types), D10 (batches,
 order and time), D13 (coverage), D14 (screening). This file is the contract for every lane that
 adds a connector. Code: `server/grove/ingest/` and `server/grove/writer/ingest.py`.

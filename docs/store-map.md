@@ -746,7 +746,7 @@ S28: B.1 has no membership column. The map lists this as an open point.
 
 `:Connector`, node. Scope world. Restore group snapshot. Owner D5, D10, D13.
 
-Keys: `connectors_id_unique` (id).
+Keys: `connectors_id_unique` (id); `connectors_world_id_provider_instance_key_unique` (world_id, provider, instance_key).
 
 Indexes: `connectors_world_id_type_idx` (world_id, type).
 
@@ -759,6 +759,15 @@ S27: parser, locator format, source-type mapping and speaker rules are code, not
 | type | `type` | `enum:connector_type` | b1 |  |
 | (none) | `provider` | `code` | ruling | the upload format of an upload connector: claude_code, codex, chatgpt, claude_ai (ingest-a1); one row per world, type and provider |
 | auth reference | `auth_reference` | `code` | b1 |  |
+| (none) | `instance_key` | `code` | ruling | opaque identity of one selected calendar or repository |
+| (none) | `credential_ciphertext` | `code` | ruling | AES-GCM sealed provider tokens; key held outside the store |
+| (none) | `connection_status` | `code` | ruling | pending, connected or disconnected |
+| (none) | `oauth_state_hash` | `code` | ruling | single-use SHA256 of pending consent state |
+| (none) | `oauth_expires_at` | `instant` | ruling | pending consent deadline |
+| (none) | `sync_cursor` | `code` | ruling | provider cursor, separate from the message-time watermark |
+| (none) | `event_versions` | `json_ids` | ruling | bounded event and field fingerprints; no event text |
+| (none) | `sync_owner` | `id` | ruling | owner of the current bounded sync lease |
+| (none) | `sync_until` | `instant` | ruling | sync lease deadline |
 | scope | `scope` | `json_ids` | b1 | an allowlist compiled into the read (D14) |
 | settings | `settings` | `json_ids` | b1 | calendar log mode, calendar id, from date, days logged |
 | batch rule | `batch_rule` | `code` | b1 |  |

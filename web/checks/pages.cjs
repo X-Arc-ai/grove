@@ -18,7 +18,8 @@ for(const text of ['Give your AI a world to understand','Grove builds a live, ti
 const headings=[...privacy.matchAll(/<h2>([^<]*)<\/h2>/g)].map(m=>decode(m[1]));
 assert.deepStrictEqual(headings,['What Grove reads','What Grove asks Google for, and why','Where your data goes','Where it is stored','Which models see it','How to forget','Cookies','Contact'],'The privacy page has every section');
 for(const scope of ['openid','email','profile','calendar.readonly'])assert(privacy.includes('<code>'+scope+'</code>'),'The privacy page names the scope '+scope);
-for(const text of ['Only when you connect the calendar, in its own consent','Hetzner in Helsinki, Finland','daily offline dump','30 days','hashes','Muse Spark 1.3','Voice Transcribe','Muse Glimmer on Modal','The forget control is not built yet','write to contact@x-arc.ai to have your world deleted','grove_session','grove_google','no tracking and no analytics','Last updated 2 November 2026'])assert(privacyText.includes(text),'The privacy page says: '+text);
+for(const text of ['Only when you connect the calendar, in its own consent','Hetzner in Helsinki, Finland','daily offline dump','30 days','hashes','Muse Spark 1.3','Voice Transcribe','Muse Glimmer on Modal','The forget control is not built yet','write to contact@x-arc.ai to have your world deleted','grove_session','grove_google','grove_calendar','Limited Use requirements','no tracking and no analytics','Last updated 4 November 2026'])assert(privacyText.includes(text),'The privacy page says: '+text);
+assert(privacy.includes('https://developers.google.com/terms/api-services-user-data-policy'),'The privacy page links the Google data policy');
 assert(privacy.includes('href="mailto:contact@x-arc.ai"'),'The privacy page links the contact');
 assert(home.includes('/privacy#where-your-data-goes')&&privacy.includes('id="where-your-data-goes"'),'The homepage link lands on the table');
 
