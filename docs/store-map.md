@@ -106,7 +106,7 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S18. Past values** (spec lines 834, 1387). A `:HistoryValue` that holds an old value of an item's content column also has the label `:PastValue` and the property `item_id`. No text is copied, so a forget that replaces the value clears the index.
 
-**S19. The value index and sources** (spec lines 2525, 2560). The value index leaves out `sources`, as line 2560 does. A forget reaches a source span by its locator. So a value the person names inside source text has no index path; see the open points.
+**S19. The value index and sources** (spec lines 2525, 2560). `grove_forget_values` covers every declared text home, including Source.content, Item.status and Kind.status_vocabulary. The D14 plan also scans the complete world inventory, so correctness does not depend on tokenization or a search result limit. Source-span targets bind an exact source and message key or line range. Unrelated source messages remain intact.
 
 **S20. Writes outside the agents** (spec lines 2501, 3120, 3121). `model_calls` and `judgments` are written only by the model-call layer, sessions and OAuth rows by sign-in, job claims by the runner, and budgets by the model-call layer (S39 replaced "budgets by the runner"). Each such write must be a function in `server/grove/writer/`, and only its owner calls it. `models`, `signin`, `hosts-a` and `runner` build them. The writer rule stands: only `server/grove/writer/` opens write transactions, and the writer lint enforces it.
 
@@ -114,7 +114,7 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S22. Seeded rows** (spec lines 802, 806, 3222). Seeded registry rows are projections, so `create_world` writes one change entry per seeded row (`entity_type = registry_row`, `field = row`, `new_value_id` = a history value that holds the JSON `{"table": ..., "row": ...}`, `actor = seed`). Primitive rows are fixed in code and are not rebuilt from history.
 
-**S23. The forget ledger** (spec lines 808, 3147). `forget_ledger` is `:ForgetLedger` in the store. Its copy outside the dump is the job of the `forget` lane.
+**S23. The forget ledger** (spec lines 808, 3147). `ForgetLedger` stores opaque erasure plans and receipts. `GROVE_FORGET_LEDGER_DIR` names a private directory outside database snapshots. A per-directory lock and atomic fsync/rename persist each approved intent before the database transaction commits. The file has a format, world, row count and checksum; the latest file must cover every committed intent. A failed database transaction may leave an extra approved intent, which recovery still applies. A missing, corrupt, changed or incomplete file refuses erasure or restore. The backup operator must retain this directory separately and supply its latest file to the shared restore helper; deployment wiring remains the deployment lane's work.
 
 **S24. Days and voice** (spec lines 2684, 3120, 3122). `model_calls.day` and `budgets.day` are DATE values taken from the clock provider. Voice calls add `audio_seconds`. The price table is a config file owned by the `models` lane.
 
@@ -130,7 +130,7 @@ A ruling states the design. Where the code does not exist yet, the named owner l
 
 **S30. Primitive rows declare their fields** (spec lines 650, 1270, 1757, 1763, 3257). The four primitive meanings all have `direction` `from_to`, `cardinality` `many`, `carries_consequences` false, `decomposition` false, `rolls_up_completion` false, `generic` false and `status` `canonical`, and no `downstream_end` and no `default_horizon`. Endpoints use the seed's JSON form. `describes` goes from `{"kinds": [<id of the belief kind>], "classes": []}` to `{"any": true}`, with temporal class `permanent` (line 1757). `superseded by` and `corrected by` go from any to any, with temporal class `permanent`. `affected by` goes from any to any, from the affected item to the trigger item (line 1270), with temporal class `event`. The belief kind has `lifecycle_class` `lasting_thing`, an empty `status_vocabulary`, empty `required_fields`, `required_links` `[<id of describes>]` (line 1763), empty `propagating_fields`, and `status` `canonical`. The spec states no cardinality or temporal class for the last three meanings. `many` is chosen because it refuses nothing that the writer's own operations allow. The seed writes these fields when it creates a row and also when it finds one, so a change in code reaches a store that holds older rows.
 
-**S31. A status word is a registry name** (spec lines 648, 2092, 2561). A kind's status vocabulary is its own, and an agent can mint a new status word. So a status word is neither a closed enumeration nor developer configuration. Line 2561 lists the registry's names as a home of free text, so `items.status` is `text_home` and `kinds.status_vocabulary` is `json_home`. The value index must gain both; `forget` owns the value index and adds them (see the open points). Until then, a forget of a status word renames the word in the kind.
+**S31. A status word is a registry name** (spec lines 648, 2092, 2561). A kind's status vocabulary is its own, and an agent can mint a new status word. Status words are text homes, not developer configuration: Item.status and Kind.status_vocabulary are indexed by `grove_forget_values`. D14 replaces a forgotten status consistently in the registry, current items and their history while preserving the code-held status role.
 
 **S32. Subject references and client ids** (spec lines 1594, 1667, 2426, 3036, 3121, 3148). The type class `ref` is text of the form `<target type>:<id>`. A pair is the two references in sorted order, joined by `|`. A word that has no row yet is `value:<history value id>`, where the history value holds the proposed name. A source event is `event:<connector id>:<message key>`. `judgments.subject` and `audit_grades.subject` are `ref`. `oauth_clients.client_id` is `locator` and is an exception to S4: dynamic registration gives a UUIDv7, and a Client ID Metadata Document gives its URL.
 
@@ -190,19 +190,54 @@ Truth-clock rulings S51-S55 were S46-S50 before integration with D3 and upload c
 
 **S55. Scheduled times and horizons** (spec lines 920, 925, 932, 1078, Appendix C; closes the open point on `scheduled_role`). The starter set gains property names with a scheduled role (seed version 2): `plan.scheduled for` (start), `task.due` (due), `trip.starts` and `period.starts` (start), `trip.ends` and `period.ends` (end), `event.scheduled for` (start). A world seeded at version 1 gets these rows at its next `create_world`. A scheduled value is a clock object or an ISO time with its offset (rule `scheduled_value`). A claim about now that arrives with no re-check by and holds a scheduled value gets the earliest value's latest bound plus one day, written by the writer, so a backfilled plan whose date has passed arrives already due. A bounded period's became-true time needs a confirming row in its batch (rule `period_start_needs_confirmation`), so a trip gets its start only from a source that confirms it took place.
 
+## D14 erasure and restore
+
+`POST /v1/forget/approve` requires the person's session and explicit confirmation. Its five-minute,
+one-use token binds the world, user and exact target digest. `POST /v1/forget` consumes that token
+under the world lock; an OAuth caller additionally needs `grove.sensitive_write`.
+The target is an item, a current field or history value, a named value, or an exact source span.
+
+The cascade covers all declared text homes and value-id references. It redacts a create-value
+column without removing the other columns or rewriting ChangeEntry rows. It removes matching
+aliases and map positions, ends affected evidence, clears affected examples and locator copies,
+and queues affected beliefs for reevaluation. Whole-source and message-key hashes prevent repeat
+imports through the screened ingestion path. The raw `record_source` helper remains a test-only API.
+Opaque normalized length/digest predicates also find older text variants absent from the current
+inventory. A newly discovered old source keeps its unrelated messages but blocks future import
+of that whole source through a stored locator hash. A historical Source image with no matching
+live Source locator refuses before erasure or replay. The approved ledger payload stays immutable.
+Malformed primary identifiers that contain target text refuse before erasure because changing
+append-only identity would invalidate history; successful erasure never retains such a copy.
+
+`restore_loaded` is the shared post-load procedure for logical snapshots and physical dumps.
+It validates the entire supplied ledger and its coverage of stored intents before replay.
+It first checks the loaded D3 fingerprint, then compares the actual cascade result with the
+fingerprint computed from the approved plans. Legacy ledger rows remain supported, including
+mixed ledgers and their existing `row_value` refusal. Writers and readers must stay stopped
+until the complete procedure succeeds. A failure does not authorize service activation.
+
+The physical CI drill uses only its existing job-owned service. It restores an old offline dump,
+proves that omission of the newest ledger exposes a canary, replays that ledger, and checks every
+retained control-world row. It reconstructs a clean test store before its next dump so deleted
+bytes from the old store cannot survive in that dump. This test does not install or authorize
+a production reconstruction procedure. The receipt reports the 30-day backup policy and states
+that downloaded exports remain outside this operation.
+
+The schema lint checks source declarations. The runtime drill checks all value homes, indirect
+value references, histories, full-text indexes and trigram reads. A type declaration alone does
+not prove that a stored value follows that type.
+
 ## Open points for later lanes
 
 | Point | Spec lines | Owner lane |
 |---|---|---|
 | How an item's area membership is stored. | 1368, 2145, 3095 | `cleanup`, `hosts-b` |
-| A value the person names inside source text has no index path. | 2518, 2525, 2560 | `forget` |
 | Which bound orders `latest`, and where "unknown" sorts. Both bounds have an index. | 1390, 1487 | `hosts-b` |
 | Where a search term's type and language live. `items.search_terms` holds the text of each term. | 2076, 2098 | `ingest-b` |
 | The deferral count: stored, or derived from `verifications`. | 2159, 2174 | `cleanup` |
 | The grade rows of controls, and findings raised by agent runs: their run id and their text. | 2198, 2376, 2427 | `evals`, `cleanup` |
-| Rows outside the S12 list that change after they are written carry no version: `support_changed.taken_at`, `history_values.forgotten_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, and the finished times of `audit_runs` and `area_audits`. Each owner adds the pair when it writes the row. `requests` has it (S41); `jobs` and `run_records` have it (`runner`), and `ontology_change_log` (`ontology`, O10). | 3081 | `beliefs` (`support_changed`), `forget` (`history_values`), `models` (`budgets`), `truth-clock` (`horizon_stats`), `walk` (`walk_rotation`), `evals` (`checks`, `audit_runs`), `cleanup` (`area_audits`) |
+| Rows outside the S12 list that change after they are written carry no version: `support_changed.taken_at`, `budgets.spent`, `horizon_stats`, `walk_rotation`, `checks`, and the finished times of `audit_runs` and `area_audits`. Each owner adds the pair when it writes the row. `requests` has it (S41); `jobs` and `run_records` have it (`runner`), and `ontology_change_log` (`ontology`, O10). | 3081 | `beliefs` (`support_changed`), `models` (`budgets`), `truth-clock` (`horizon_stats`), `walk` (`walk_rotation`), `evals` (`checks`, `audit_runs`), `cleanup` (`area_audits`) |
 | The 5 second wait of remember, built from `request_state`. A hash of the host's idempotency key as the request id, prefixed with the OAuth client id (S41). `to_api()` has no receipt text, so a host renders through `render_receipt`. A surfaced failure answers remember with the typed error `unavailable`. `verbatim` requires `host_message_id`, and the schema of remember checks that: the queue only stores the two. | 754, 3195, 3294 | `hosts-b` |
-| The value index must gain the status words, `items.status` and `kinds.status_vocabulary` (S31). Until then, a forget of a status word renames the word in the kind. | 2560, 2561 | `forget` |
 | `why` of a contradiction from `grove.cleanup.v1` (the `grove.extract.v1` form) has no value-id column in `contradictions`. | 2087, 2199, 3133 | `beliefs` |
 | Migrations run from the checkout's `server/` folder, never from the installed package: the wheel does not hold them. Closed by `deploy-a`: the API image holds `server/` as in a checkout with an editable install, and a deploy runs the migrations from it (`docs/deploy.md`). | none; a build fact | `deploy-a` |
 | `GROVE_ENV=production` must be set on the box, or the guard that refuses a test clock does not run. Closed by `deploy-a`: `deploy/compose.yml` sets it for `api` and `runner`, and a test checks it. | 354, 991 | `deploy-a` |
@@ -219,13 +254,10 @@ Truth-clock rulings S51-S55 were S46-S50 before integration with D3 and upload c
 | Voice Transcribe takes WAV only here, with no contact names and no language bias: the forms probed for those two fields were refused. | 2673 | `ingest-a2` |
 | `brain fetch` must send through `AllowlistTransport`, which checks each redirect hop, and not call `EgressPolicy.check` and then use another client. | 2559 | `cleanup` |
 | Glimmer's idle time and cold starts bill on Modal and not in `model_calls`, and the workspace has no spend limit. The server stops after one idle minute, but one call after a quiet time costs about 0.26 USD of GPU at the H100 price: a cold start of about three minutes and the idle minute. So a call every four minutes bills a GPU all day, about 95 USD, and triage continues at the ceiling. A later lane that sends Glimmer a steady stream must batch it. `modal billing report` shows the true spend. | 2659 | `ingest-b`, `deploy-b` |
-| `docs/data-flow.md` had no rows for the mail provider, Google sign-in, Calendar and backups. Closed by `signin`: the rows are there, and `web/build.py` generates the table of the privacy page from them. `forget` still replaces the page with a statement from the deployed configuration. | 2540 to 2552 | `forget` |
 | The person's own item. The views read an optional `World.self_item_id` and mark that item as the person's own (`self_item_id` in the session and graph answers). Closed by `signin` (S40): the `worlds` row has the column, and the first sign-in writes it in the transaction that makes the item. | none; a build fact | `signin` |
-| The privacy page (`web/privacy.html`, section "How to forget") says the forget control is not built yet and tells a person to write to `contact@x-arc.ai` to have a world deleted, and that a dump made before the deletion stays until its 30 days end. When the control ships, `forget` must rewrite that section to say how to use it, change "Last updated" (a constant in that file), and generate `docs/data-flow.md` from the deployed configuration, with each row's Runs or Planned as it stands then, including the Resend terms that the page says are not named yet. | none; a build fact | `forget` |
 | `docs/data-flow.md` marks a path Runs or Planned, and `web/build.py` builds the privacy page's table from it. A lane whose path starts to run with a person's data changes its row to Runs in the same PR: past AI conversation uploads (Runs since `ingest-a1`), WhatsApp, voice notes, notes, files and images (`ingest-a2`), the calendar (`ingest-a3`), model calls (`ingest-b`), evidence packets (`hosts-b`). | none; a build fact | `ingest-a2`, `ingest-a3`, `ingest-b`, `hosts-b` |
 | The Calendar privacy page includes Google's API Services User Data Policy and Limited Use statement (`ingest-a3`). Live consent and provider review remain separate from the local disclosure checks. | none; a build fact | `ingest-a3`, deploy owner |
 | The session contract the views read: the cookie `grove_session`; `:Session.token_hash` is the lowercase sha256 hex of the cookie value; a session is valid while `revoked_at` is absent and `expires_at` is later than the clock's now; `:Session.user_id` leads to the oldest `:World` with that `owner_user_id`. `docs/views.md` states it in full. Closed by `signin`: `server/grove/writer/accounts.py` and `server/grove/api/auth.py` write these rows and this cookie, and `docs/signin.md` states them. | none; a build fact | `signin` |
-| A `map_positions` row keeps `item_id` and its coordinates after its item is forgotten. The forget of an item must remove its map position too. | none; a build fact | `forget` |
 | The views' account, sources, questions and workers still use the simulation's local browser state. A sign-in that brings another account resets that state in the tab that signs in (`signin`). A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b` |
 | The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`. Closed by `deploy-a`: the API image runs `web/build.py` and sets that variable, and the deploy smoke asks for the page. | none; a build fact | `deploy-a` |
 | A judgment marked correlated counts toward the two judges of a contradiction: D9 and B.2 ask only for two models. | 3165 | `beliefs` |
@@ -246,8 +278,6 @@ Truth-clock rulings S51-S55 were S46-S50 before integration with D3 and upload c
 | The neo4j driver logs the parameters of every query at DEBUG, and so the screened content of each source write. Production must keep the `neo4j` logger above DEBUG, because logs hold ids, counts and operation names only. | 2534 | `deploy-b` |
 | The view endpoints' `known_as_of` and `as_of` still filter the head of each row. The history reads exist (S48): the slider calls `known_as_of` for the record axis and `world_as_of` for the world axis. | none; a build fact | `views-c` |
 | The daily backup records the dump fingerprint only. D3's restore compares D3's fingerprint (S49), so the backup must record `python -m grove.writer.restore fingerprint --world <id>` for each world beside each dump, while the writers are stopped. | 812, 3065 | `deploy-b` |
-| A create entry's `row` value holds the whole row as JSON, the content columns' text included (title, summary, body, properties). The ledger replay refuses a `field_value` or `named_value` row that names such a value (`ReplayRefused`, rule `row_value`), before it marks any value, because the marker would remove the row and the replay would then refuse its evidence and links. A title that never changed lives only there. The forget of one content value of a create value needs its own design: for example a ledger row that names the column (`locators`), and a replay and a live forget that write the row value again with only that column marked. An `item` ledger row removes the row on purpose and is not refused. | 834, 2525 | `forget` |
-| An item forget reaches the item, its links and the evidence rows on them. The `:Alias` rows that carry the item's names are not reached: the alias a merge made from the absorbed title (S46), and the aliases that target the item. The forget of an item must name them too. | 2525 | `forget` |
 | On the world axis, a slot link whose ending is placed at its latest bound or its end entry's world time (S48) can stand together with the new link of the same one-of-a-kind slot when the new link's start has no earliest bound: an unknown start counts as started (S43). Neither rule is wrong alone; a slot read decides which link it shows. | 814, 652 | `hosts-b` |
 | An undo of a successor's creation refutes the successor, and the "corrected by" or "superseded by" link to it stays active, so the record reads overtaken by an item that was never true. A refute of the successor leaves the same state. What happens to the items that a refuted successor overtakes is the walk's (D6). | 832, 3173 | `walk` |
 | A capability row has no status column, so no operation ends one: an undo of a mint that wrote a capability is refused (rule `no_ending`, S46). A capability's ending, and what its readers do with a retired word's capability, belong to the lane that reads capabilities (D5). | 1577, 3089 | `truth-clock` |
@@ -262,6 +292,13 @@ A point that a later lane resolves leaves the table above and is listed here wit
 
 | Point | Spec lines | Resolved by |
 |---|---|---|
+| A value the person names inside source text has no index path. | 2518, 2525, 2560 | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
+| The value index must gain the status words, `items.status` and `kinds.status_vocabulary` (S31). Until then, a forget of a status word renames the word in the kind. | 2560, 2561 | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
+| `docs/data-flow.md` had no rows for the mail provider, Google sign-in, Calendar and backups. Closed by `signin`: the rows are there, and `web/build.py` generates the table of the privacy page from them. `forget` still replaces the page with a statement from the deployed configuration. | 2540 to 2552 | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
+| The privacy page (`web/privacy.html`, section "How to forget") says the forget control is not built yet and tells a person to write to `contact@x-arc.ai` to have a world deleted, and that a dump made before the deletion stays until its 30 days end. When the control ships, `forget` must rewrite that section to say how to use it, change "Last updated" (a constant in that file), and generate `docs/data-flow.md` from the deployed configuration, with each row's Runs or Planned as it stands then, including the Resend terms that the page says are not named yet. | none; a build fact | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
+| A `map_positions` row keeps `item_id` and its coordinates after its item is forgotten. The forget of an item must remove its map position too. | none; a build fact | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
+| A create entry's `row` value holds the whole row as JSON, the content columns' text included (title, summary, body, properties). The ledger replay refuses a `field_value` or `named_value` row that names such a value (`ReplayRefused`, rule `row_value`), before it marks any value, because the marker would remove the row and the replay would then refuse its evidence and links. A title that never changed lives only there. The forget of one content value of a create value needs its own design: for example a ledger row that names the column (`locators`), and a replay and a live forget that write the row value again with only that column marked. An `item` ledger row removes the row on purpose and is not refused. | 834, 2525 | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
+| An item forget reaches the item, its links and the evidence rows on them. The `:Alias` rows that carry the item's names are not reached: the alias a merge made from the absorbed title (S46), and the aliases that target the item. The forget of an item must name them too. | 2525 | `forget`: D14 erasure and restore above; generated `/v1/privacy` configuration statement. |
 | The names of the verification bands. | 957 | `truth-clock`: S52 |
 | The verdicts of a judge call have no writer. | 996, 3121 | `truth-clock` and `ontology`: `server/grove/writer/judgments.py`, called only by the model-call layer (`server/grove/models/verify_judge.py`, the claims of D4; `server/grove/models/judge.py`, the words of D8) |
 | The job table has no row for load-bearing verification. | 2659 | `truth-clock`: the jobs `verification_load_bearing`, `second_opinion_load_bearing` and `second_opinion_correlated` continue at the ceiling (`docs/models.md`) |
@@ -489,7 +526,7 @@ Keys: `items_id_unique` (id).
 
 Indexes: `items_world_id_kind_status_role_idx` (world_id, kind, status_role); `items_world_id_became_true_earliest_idx` (world_id, became_true_earliest); `items_world_id_became_true_latest_idx` (world_id, became_true_latest); `items_world_id_recorded_idx` (world_id, recorded); `items_title_text` (title) text.
 
-Full text: `grove_items_lexical`, `grove_value_index`.
+Full text: `grove_items_lexical`, `grove_forget_values`, `grove_value_index`.
 
 B.1's (world_id, became true) is two indexes, one per bound: a range index leaves out a row without the property, and a precision of before has no earliest bound. Full text and trigram are S17. Scheduled times live in properties (line 920).
 
@@ -575,7 +612,7 @@ Keys: `kinds_id_unique` (id); `kinds_world_id_name_unique` (world_id, name).
 
 Indexes: none.
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -613,7 +650,7 @@ Keys: `meanings_id_unique` (id); `meanings_world_id_name_unique` (world_id, name
 
 Indexes: none.
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 S26: lifecycle class, status vocabulary, required fields, required links stay on kinds.
 
@@ -660,7 +697,7 @@ Keys: `property_names_id_unique` (id); `property_names_world_id_kind_name_unique
 
 Indexes: none.
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -695,7 +732,7 @@ Keys: `aliases_id_unique` (id); `aliases_world_id_normalised_phrase_target_type_
 
 Indexes: `aliases_normalised_phrase_text` (normalised_phrase) text.
 
-Full text: `grove_aliases_lexical`, `grove_value_index`.
+Full text: `grove_aliases_lexical`, `grove_forget_values`, `grove_value_index`.
 
 B.1's target is the pair target_type, target_id. Trigram on the phrase is S17.
 
@@ -864,6 +901,8 @@ Indexes: `capabilities_connector_type_registry_id_idx` (connector_type, registry
 Keys: `sources_id_unique` (id).
 
 Indexes: `sources_world_id_connector_id_external_locator_idx` (world_id, connector_id, external_locator).
+
+Full text: `grove_forget_values`.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -1053,7 +1092,7 @@ Keys: `history_values_id_unique` (id).
 
 Indexes: none.
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 A row that holds an old value of an item's content column also has the label :PastValue (S18). No text is copied, so a forget that replaces the value clears the index.
 
@@ -1063,6 +1102,8 @@ A row that holds an old value of an item's content column also has the label :Pa
 | world_id | `world_id` | `id` | b1 |  |
 | value | `value` | `text_home` | b1 | the value or the forgotten marker |
 | forgotten at | `forgotten_at` | `instant` | b1 |  |
+| version | `version` | `int` | ruling | S12, line 3081 |
+| touched at | `touched_at` | `instant` | ruling | S12, line 3081 |
 | (none) | `item_id` | `id` | ruling | S18: only on a row that also has the label PastValue |
 
 ### requests
@@ -1161,7 +1202,7 @@ Keys: `run_records_id_unique` (id).
 
 Indexes: `run_records_world_id_agent_started_idx` (world_id, agent, started).
 
-Full text: `grove_value_index`.
+Full text: `grove_forget_values`, `grove_value_index`.
 
 | Spec column | Property | Type class | Origin | Note |
 |---|---|---|---|---|
@@ -1634,6 +1675,7 @@ The copy kept outside the dump belongs to the forget lane (S23).
 | approved at | `approved_at` | `instant` | b1 |  |
 | receipt | `receipt` | `json_ids` | b1 | counts per place, never the value |
 | the date after which no backup holds the value | `backups_clear_after` | `date` | b1 |  |
+| (none) | `plan` | `json_ids` | ruling | D14: opaque row selectors and digests, never target text |
 
 ### oauth_clients
 
@@ -1869,6 +1911,25 @@ S45: a person's consent to a host, one row per (client, world). A new consent to
 | (none) | `granted_at` | `instant` | convention | the last consent |
 | (none) | `revoked_at` | `instant` | convention | absent while the grant is live |
 
+### forget_approvals
+
+`:ForgetApproval`, node. Scope world. Restore group snapshot. Owner D14.
+
+Keys: `forget_approvals_id_unique` (id); `forget_approvals_token_hash_unique` (token_hash).
+
+Indexes: `forget_approvals_world_id_idx` (world_id).
+
+| Spec column | Property | Type class | Origin | Note |
+|---|---|---|---|---|
+| id | `id` | `id` | b1 | UUIDv7 text from new_id() (S4) |
+| world_id | `world_id` | `id` | b1 |  |
+| (none) | `user_id` | `id` | ruling | the approving person |
+| (none) | `token_hash` | `code` | ruling | SHA-256; the raw token is never stored |
+| (none) | `target_digest` | `code` | ruling | bound to the exact requested target |
+| (none) | `created_at` | `instant` | ruling | approval time |
+| (none) | `expires_at` | `instant` | ruling | short approval lifetime |
+| (none) | `used_at` | `instant` | ruling | consumed atomically with the cascade |
+
 ## Full-text indexes
 
 | Name | Labels | Properties | Analyzer |
@@ -1876,6 +1937,7 @@ S45: a person's consent to a host, one row per (client, world). A new consent to
 | `grove_items_lexical` | `Item` | `world_id`, `title`, `summary`, `body`, `property_values`, `search_terms` | `standard-folding` |
 | `grove_aliases_lexical` | `Alias` | `world_id`, `phrase`, `normalised_phrase` | `standard-folding` |
 | `grove_past_values` | `PastValue` | `world_id`, `value` | `standard-folding` |
+| `grove_forget_values` | `Item`, `Alias`, `HistoryValue`, `Kind`, `Meaning`, `PropertyName`, `RunRecord`, `Source` | `world_id`, `title`, `summary`, `body`, `properties`, `property_values`, `search_terms`, `status`, `status_vocabulary`, `phrase`, `normalised_phrase`, `value`, `name`, `proposed_operations`, `content` | `standard-folding` |
 | `grove_value_index` | `Item`, `Alias`, `HistoryValue`, `Kind`, `Meaning`, `PropertyName`, `RunRecord` | `world_id`, `title`, `summary`, `body`, `property_values`, `search_terms`, `phrase`, `normalised_phrase`, `value`, `name`, `proposed_operations` | `standard-folding` |
 
 <!-- generated:end -->

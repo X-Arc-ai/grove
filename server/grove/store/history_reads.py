@@ -30,7 +30,7 @@ _LINKS_OF = (
     "MATCH (:Item)-[l:LINK]->(:Item) WHERE l.from_item = $id OR l.to_item = $id RETURN l.id AS id"
 )
 _EVIDENCE_OF = "MATCH (e:Evidence) WHERE e.target_id IN $ids RETURN e.id AS id"
-_BELIEFS_OF = "MATCH (b:Belief {item_id: $id}) RETURN b.id AS id"
+_BELIEFS_OF = "MATCH (b:Belief {item_id: $id}) RETURN b.item_id AS id"
 _ENTRIES_OF = (
     "MATCH (e:ChangeEntry) WHERE (e.entity_type = 'item' AND e.entity_id = $id) "
     "OR (e.entity_type = 'link' AND e.entity_id IN $links) "
