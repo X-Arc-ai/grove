@@ -19,8 +19,14 @@ def test_fixed_corpus_counts_topology_and_content():
     assert len(set(links)) == len(links) == 6279
     assert len({item.title for item in items}) == len(items)
     assert Counter(item.kind for item in items) == {
-        "person": 160, "organisation": 80, "plan": 160, "task": 800,
-        "decision": 240, "event": 240, "observation": 200, "assumption": 200,
+        "person": 160,
+        "organisation": 80,
+        "plan": 160,
+        "task": 800,
+        "decision": 240,
+        "event": 240,
+        "observation": 200,
+        "assumption": 200,
     }
     adjacency = {key: set() for key in keys}
     for link in links:
@@ -53,8 +59,11 @@ def test_arbitrary_or_modified_corpus_refuses(monkeypatch):
         screen_story("unapproved-source")
     original = corpus.stories()
     changed = replace(original[0].items[0], summary="unapproved replacement")
-    monkeypatch.setattr(corpus, "stories", lambda: (
-        replace(original[0], items=(changed, *original[0].items[1:])), *original[1:]))
+    monkeypatch.setattr(
+        corpus,
+        "stories",
+        lambda: (replace(original[0], items=(changed, *original[0].items[1:])), *original[1:]),
+    )
     with pytest.raises(DemoDenied):
         require_corpus_identity()
 
