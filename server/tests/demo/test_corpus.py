@@ -75,3 +75,12 @@ def test_topic_selection_is_bounded_and_relevant():
     assert any("book lockers" in title for title in selected)
     assert corpus.topic_items("unrelated-private-identity") == ()
     assert corpus.topic_items(None) == ()
+    decisions = corpus.topic_items("What did Willow Dapple Cove decide?", 6)
+    expected = {
+        item.title
+        for story in corpus.stories()
+        if story.topic == "Willow Dapple Cove"
+        for item in story.items
+        if item.kind == "decision"
+    }
+    assert set(decisions) == expected
