@@ -122,6 +122,8 @@ class PacketReleaseMiddleware:
     the lifetime of callback tasks; this wrapper owns the shared deadline and retained leases.
     Deadline checks occur before ASGI send calls. Cancellation must remain effective inside the
     transport; this wrapper cannot retract bytes after an irrevocable transport handoff.
+    Private work reserves ten percent (at most 50 ms) of the original bound for safe error
+    delivery. An error closes the private scope first; its send still obeys that original end.
     """
 
     def __init__(
@@ -202,10 +204,22 @@ class PacketReleaseMiddleware:
         except ApiError as error:
             if released or owned is None or not owned.active:
                 raise
+            if budget is not None:
+                # response_budget already invalidated private work. A safe refusal has no
+                # private payload and must not retain the owner's lease while its send waits.
+                owned.close()
             response = JSONResponse(
                 error.body(), status_code=error.status, headers={"Cache-Control": "no-store"}
             )
-            await response(scope, receive, send)
+
+            async def error_send(message: Message) -> None:
+                if budget is not None:
+                    budget.error_remaining()
+                await send(message)
+
+            delivery = budget.error_delivery() if budget is not None else nullcontext()
+            async with delivery:
+                await response(scope, receive, error_send)
         finally:
             if token is not None:
                 _RELEASE_SCOPE.reset(token)

@@ -7,18 +7,21 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 
 import anyio
+import httpx
 import pytest
 from starlette.concurrency import run_in_threadpool
 
 from grove import clock
-from grove.api.errors import ApiError
+from grove.api.app import create_app
+from grove.api.config import ApiSettings
+from grove.api.errors import ApiError, unavailable
 from grove.api.packet_release import (
     PacketReleaseMiddleware,
     activate_packet_response,
     require_packet_response,
     retain_packet_lease,
 )
-from grove.reads.runtime import ReadRuntime, deadline, request_budget
+from grove.reads.runtime import ReadRuntime, deadline, request_budget, response_budget
 
 SCOPE = {"type": "http", "path": "/mcp", "method": "POST", "headers": []}
 
@@ -275,7 +278,7 @@ def test_activated_packet_size_limit_replaces_no_private_prefix():
             await body(send, b"private" * 10)
 
         async def send(message):
-            assert events == ["enter"]
+            assert events == ["enter", "exit"]
             output.append(message)
 
         await guarded(app, max_body_bytes=10)(SCOPE, receive, send)
@@ -516,5 +519,149 @@ def test_cancelled_native_worker_retains_its_existing_slot_until_exit():
         finally:
             release.set()
             await runtime.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("failure", ["oversize", "timeout", "api_error"])
+@pytest.mark.parametrize("stage", ["start", "body"])
+def test_error_delivery_uses_remaining_budget_and_releases_lease(failure, stage):
+    async def scenario():
+        events, handles, output = [], [], []
+
+        async def app(scope, receive, send):
+            handles.append(await activate_packet_response(seconds=0.025))
+            retain_packet_lease(lease(events))
+            if failure == "timeout":
+                await asyncio.Event().wait()
+            if failure == "api_error":
+                raise unavailable("synthetic refusal")
+            await body(send, b"private" * 4)
+
+        async def send(message):
+            assert events == ["enter", "exit"]
+            assert handles[0].cancelled.is_set()
+            with pytest.raises(ApiError):
+                require_packet_response()
+            output.append(message)
+            if message["type"] == "http.response.start":
+                assert message["status"] == 503
+            if message["type"] == f"http.response.{stage}":
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    events.append("send_cancelled")
+
+        task = asyncio.create_task(guarded(app, max_body_bytes=8)(SCOPE, receive, send))
+        try:
+            # Observe component completion without cancelling it through wait_for().
+            done, _ = await asyncio.wait({task}, timeout=0.25)
+            assert task in done, "error delivery outlived the packet budget"
+            with pytest.raises(ApiError) as caught:
+                await task
+            assert caught.value.details == {"rule": "snapshot_busy"}
+            assert handles[0].cancelled.is_set()
+            assert events == ["enter", "exit", "send_cancelled"]
+            assert not any(b"private" in message.get("body", b"") for message in output)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(scenario())
+
+
+def test_reserved_error_delivery_keeps_typed_503_through_the_actual_app_stack(monkeypatch):
+    monkeypatch.delenv("GROVE_WEB_DIST", raising=False)
+
+    async def scenario():
+        events, handles = [], []
+        app = create_app(ApiSettings("http://127.0.0.1"), driver=object())
+
+        @app.post("/budget-probe")
+        async def route():
+            handles.append(await activate_packet_response(seconds=0.1))
+            retain_packet_lease(lease(events))
+            await asyncio.Event().wait()
+
+        app.add_middleware(
+            PacketReleaseMiddleware, paths=frozenset({"/budget-probe"}), require_activation=True
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1"
+        ) as client:
+            response = await client.post("/budget-probe")
+        assert response.status_code == 503
+        assert response.json()["error"]["details"] == {"rule": "snapshot_busy"}
+        assert response.headers["cache-control"] == "no-store"
+        assert handles[0].cancelled.is_set()
+        assert events == ["enter", "exit"]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(("seconds", "reserve"), [(0.1, 0.01), (2, 0.05)])
+def test_error_reserve_and_hard_end_do_not_extend_on_reactivation(seconds, reserve):
+    async def scenario():
+        async with response_budget() as budget:
+            current = budget.activate(seconds=seconds)
+            original = current.at
+            hard_when, work_when = budget._hard_when, budget._timeout.when()
+            assert hard_when - work_when == pytest.approx(reserve, abs=0.001)
+            await asyncio.sleep(0)
+            assert budget.activate() is current
+            assert current.at == original
+            assert budget._hard_when <= hard_when
+            assert budget._timeout.when() <= work_when
+            budget.activate(seconds=0.05)
+            assert current.at < original
+            assert budget._hard_when < hard_when
+            assert budget._timeout.when() < work_when
+
+    asyncio.run(scenario())
+
+
+def test_consumed_hard_bound_does_not_start_an_error_response():
+    async def scenario():
+        events, output = [], []
+        fake = clock.TestClock()
+        fake.set(datetime(2026, 11, 4, tzinfo=UTC))
+
+        async def app(scope, receive, send):
+            await activate_packet_response(seconds=0.1)
+            retain_packet_lease(lease(events))
+            fake.advance(seconds=1)
+            raise unavailable("synthetic refusal")
+
+        async def send(message):
+            output.append(message)
+
+        with clock.using(fake), pytest.raises(ApiError) as caught:
+            await guarded(app)(SCOPE, receive, send)
+        assert caught.value.details == {"rule": "snapshot_busy"}
+        assert events == ["enter", "exit"]
+        assert output == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("origin", ["app", "send"])
+@pytest.mark.parametrize("activate", [False, True])
+def test_unrelated_timeout_exception_keeps_its_identity(origin, activate):
+    async def scenario():
+        original = TimeoutError("synthetic unrelated timeout")
+
+        async def app(scope, receive, send):
+            if activate:
+                await activate_packet_response()
+            if origin == "app":
+                raise original
+            await body(send, b"store-only")
+
+        async def send(message):
+            raise original
+
+        with pytest.raises(TimeoutError) as caught:
+            await guarded(app)(SCOPE, receive, send)
+        assert caught.value is original
 
     asyncio.run(scenario())
