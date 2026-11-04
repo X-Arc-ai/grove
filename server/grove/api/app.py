@@ -15,7 +15,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 
-from grove.api import health, mcp, oauth, uploads, wellknown
+from grove.api import belief_tools, health, mcp, oauth, uploads, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
@@ -142,6 +142,7 @@ def create_app(
     app.include_router(uploads.router)
     app.include_router(auth_router)
     app.include_router(internal_router)
+    app.include_router(belief_tools.router)
     folder = os.environ.get(WEB_DIST_ENV)
     if folder:
         _add_web_pages(app, folder)
