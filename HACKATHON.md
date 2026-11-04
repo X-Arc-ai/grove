@@ -104,12 +104,26 @@ PR table. No independent public citation for the private experiments is supplied
 
 ## Release evidence
 
-[Submission status](docs/submission-status.md) records the unchanged source baseline and
-the dated release evidence update at 2026-11-04 19:04:34 UTC: Request19 closure and separate
-verification PASSED. The PR60 API and retained runner/gateway revisions remain distinct.
+[Submission status](docs/submission-status.md) records the PR #66 recording API source
+`a9da90686d687639a75a154172adbe2bfb4a1ea7` and its separate develop merge
+`7d94266e1512ef9c5815d343518131a18bc6cbd8`. At 2026-11-04 20:06:46 UTC,
+26 independent anonymous public checks passed, including 15 exact asset hashes.
+The API-only release over PR60 left the runner/gateway revision unchanged and ran no migration or seed.
+The independent predeploy UI review used synthetic APIs and 30 desktop/mobile screenshots;
+its bounded pass does not establish real user or Muse acceptance.
+
+A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC:
+one source, one episode, and two kept messages; the exact repeat added zero new records.
+The upload did not change the graph. Real prepared-account Muse use remains **NOT RUN**,
+and the manual account/Muse flow remains stopped.
+
+Historical release evidence at 2026-11-04 19:04:34 UTC: Request19 closure and separate
+verification PASSED. At that time, the PR60 API and retained runner/gateway revisions were distinct.
 Request18 remains FAILED. This operational closure was not a new code deployment.
 The [receipt facts](docs/submission-status.md#request19-release-evidence-update) preserve
-the completed closure and its limits. Materials remain merged but not deployed.
+the completed closure and its limits. Materials and their prerequisites remain merged but not deployed.
+Operation A inventory returned HOLD with no mutation. Riverlight remains uncommitted, unverified,
+and not seeded. These updates do not alter the fixed event table above.
 [The operator checklist](docs/submission-checklist.md) records the remaining owner/Muse
 rehearsal, full corpus, video, final links, and release decisions.
 

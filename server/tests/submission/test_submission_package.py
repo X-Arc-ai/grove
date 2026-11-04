@@ -5,7 +5,11 @@ import re
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[3]
+RECORDING_SOURCE = "7d94266e1512ef9c5815d343518131a18bc6cbd8"
+RECORDING_API = "a9da90686d687639a75a154172adbe2bfb4a1ea7"
 SOURCE = "c145cf8b450f3ae7ab43989cf07969ee5b493057"
 API = "564cc99b9c8a718f163503cc23227a8f2908fcd1"
 WORKERS = "266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e"
@@ -20,6 +24,45 @@ DOCUMENTS = (
     "docs/submission-status.md",
     "docs/submission-checklist.md",
 )
+RELEASE_DOCUMENTS = tuple(name for name in DOCUMENTS if name != "CONTRIBUTING.md") + (
+    "docs/drafts/submission-writeup.txt",
+)
+
+
+@pytest.mark.parametrize("name", RELEASE_DOCUMENTS)
+def test_recording_release_records_current_api_and_separate_develop_merge(name):
+    text = " ".join((ROOT / name).read_text().split())
+    for expected in (RECORDING_SOURCE, RECORDING_API, "PR #66", "20:06:46 UTC"):
+        assert expected in text, (name, expected)
+    if name == "docs/submission-status.md":
+        revisions = text.split("## Source and deployed revisions", 1)[1].split("## ", 1)[0]
+        assert f"| Recorded served API, PR #66 | `{RECORDING_API}` |" in revisions
+        assert f"| Accepted source baseline | `{RECORDING_SOURCE}` |" in revisions
+        assert f"| Retained runner and gateway | `{WORKERS}` |" in revisions
+        assert f"| Verified `deployed.sha` | `{RECORDING_API}` |" in revisions
+        assert f"| Previous recording API, PR #60 | `{API}` |" in revisions
+
+
+@pytest.mark.parametrize("name", RELEASE_DOCUMENTS)
+def test_real_zip_pass_does_not_become_graph_or_muse_acceptance(name):
+    text = " ".join((ROOT / name).read_text().split())
+    for expected in (
+        "19:53:06 UTC",
+        "real Claude ZIP upload",
+        "one source, one episode, and two kept messages",
+        "repeat added zero",
+        "did not change the graph",
+        "prepared-account Muse",
+        "NOT RUN",
+    ):
+        assert expected in text, (name, expected)
+    for stale in (
+        "owner login/upload/Muse rehearsal remains **NOT RUN**",
+        "owner login, upload, and Muse rehearsal remain NOT RUN",
+        "Current owner login, upload, logout, provider consent, and Muse rehearsal: **NOT RUN**",
+        "login/upload/Muse flow is paused and remains **NOT RUN** for this release",
+    ):
+        assert stale not in text, (name, stale)
 
 
 def test_readme_has_complete_local_start_sequence():
@@ -49,7 +92,9 @@ def test_readme_has_complete_local_start_sequence():
 def test_release_record_separates_source_and_each_deployed_revision():
     for name in ("docs/submission-status.md", "docs/architecture.md"):
         text = (ROOT / name).read_text()
-        for expected in (SOURCE, API, WORKERS, "2026-11-04", "19:04 UTC", "NOT RUN"):
+        for expected in (
+            RECORDING_SOURCE, RECORDING_API, WORKERS, "2026-11-04", "20:06:46 UTC", "NOT RUN"
+        ):
             assert expected in text, (name, expected)
         assert "Request18 remains FAILED" in text, name
         assert "Request19 closure and separate verification PASSED" in " ".join(text.split()), name
@@ -62,18 +107,20 @@ def test_release_record_separates_source_and_each_deployed_revision():
 def test_published_ui_keeps_deployment_and_materials_boundaries():
     for name in ("docs/submission-status.md", "docs/architecture.md"):
         text = (ROOT / name).read_text()
-        for expected in (SOURCE, API, "PR #60", "PR #61", MATERIALS, MATERIAL_SOURCE):
+        for expected in (
+            RECORDING_SOURCE, RECORDING_API, API, "PR #66", "PR #61", MATERIALS, MATERIAL_SOURCE
+        ):
             assert expected in text, (name, expected)
         assert "published source" in text.lower(), name
-        assert "not deployed in the recorded PR60 API" in text, name
+        assert "not deployed in the recording API" in text, name
         assert "held_provenance" in text and "no file Request" in text, name
         assert "ordinary Requests" in text, name
         assert "0019_material_revisions.cypher" in text, name
         assert "canonical external ledger" in text, name
         assert "API/runner source" in text, name
     draft = (ROOT / "docs/drafts/submission-writeup.txt").read_text()
-    assert SOURCE in draft and API in draft and MATERIALS in draft
-    assert "published UI repair in PR #60" in draft
+    assert RECORDING_SOURCE in draft and RECORDING_API in draft and MATERIALS in draft
+    assert "recording API serves PR #66" in draft
     assert "not full deployed acceptance" in draft
     assert "held_provenance with no file Request" in draft
     assert "Notes use ordinary Requests" in draft
@@ -82,9 +129,9 @@ def test_published_ui_keeps_deployment_and_materials_boundaries():
 
 def test_source_update_preserves_the_dated_event_table():
     readme = (ROOT / "README.md").read_text()
-    assert SOURCE in readme
-    assert "published UI repair in PR #60" in readme
-    assert "2026-11-04 19:04 UTC" in readme
+    assert RECORDING_SOURCE in readme
+    assert "recording release serves PR #66" in readme
+    assert "2026-11-04 20:06:46 UTC" in readme
     assert "Request18 remains FAILED" in readme
     record = (ROOT / "HACKATHON.md").read_text()
     assert "GitHub snapshot: 2026-11-04 at 18:36 UTC" in record
