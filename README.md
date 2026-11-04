@@ -1,67 +1,82 @@
 # Grove
 
 Grove builds a dated, sourced model of a person's world for AI assistants. Typed items and links
-carry evidence and time fields. One writer validates changes and returns receipts. The planned
-experience connects an assistant to that world through two MCP tools: `store` and `recall`.
+carry evidence and time fields. One writer validates changes and returns receipts.
 
 ## Current release status
 
-This is a pre-release build. The complete judge path below has **not yet passed** on the public
-host. As checked on 2026-11-03, public MCP tools are not available in the merged implementation.
-The public host serves `9a5cb23ba2935a66f0091e72ccc7e38c54695722`; the documentation baseline is
-`57da012f05eecfd0641773e12e4f3a0912bff5cb`. A healthy server does not prove upload, extraction,
-recall, or a completed connection. See [release evidence and open gates](docs/submission-status.md).
+This is a pre-release build. The complete judge path has **not yet passed** on the public host.
+At the 2026-11-04 13:51 UTC check, public `/healthz` reported service/store OK and build
+`cac4b95cbc7ce5284c04fcb684ebb2f115162144`. The source baseline for these documents is `6346a9fc7c6c9b8119a9e7310cb93944f2fb1afe`.
+Later source publication does not update that deployment.
 
-The implemented parts include the store and writer, request queue, source screening, model-call
-layer, sign-in, OAuth transport, initial graph views, runner infrastructure, and ontology floor.
-The full feature scope remains open. [HACKATHON.md](HACKATHON.md) separates merged work, open PRs,
-and pre-event material. [Architecture](docs/architecture.md) explains the data paths and their status.
+The deployed demonstration supports an exact invented Lumen upload for an ordinary account and
+restricted Cedar `store`/`recall` tools for a separate prepared account. General public MCP tools are not available:
+`DEFAULT_TOOLS` remains empty outside the restricted demo. General private-export processing is
+not enabled on this host. Owner login/upload/Muse acceptance and actual provider consent are **NOT RUN**.
+See [release evidence and open acceptance](docs/submission-status.md).
 
-## Judge path
+The source includes storage, the writer, corrections and restore, truth-clock checks, chat uploads,
+Calendar/Git connectors, OAuth, the runner, bounded consequences, and further inactive components.
+That list does not establish complete feature or public acceptance. [Architecture](docs/architecture.md)
+records the boundaries. [HACKATHON.md](HACKATHON.md) records event PRs and pre-event attribution.
 
-Use invented content for this demonstration. The upload and assistant steps are the acceptance
-script for the completed release; do not interpret a simulated screen as a successful import.
+## Judge path for the current demonstration
+
+Use invented content only. The two accounts below serve different purposes. An upload result
+proves source retention; it does not prove graph extraction or create the prepared Cedar data.
+The release owner must supply authorized access to the prepared account separately. No account
+identifier, login code, or token belongs in this repository.
 
 ### 1. Open Grove and sign in
 
 1. Open [Grove](https://app.grove.x-arc.ai/) in a fresh browser profile.
-2. Select **Sign in**, then use Google or the email-code option with an account you control.
-3. For email sign-in, enter the six-digit code from your inbox. For Google, finish its consent flow.
-4. Confirm that Grove opens your world. Sign out and sign in again to confirm that the world remains.
+2. Use a new ordinary account you control. Select **Continue with email** and enter the code from
+   its inbox. Google sign-in is also implemented; Calendar consent is separate from identity login.
+3. If the welcome screen appears, select **Get Started**.
+4. Confirm the five source choices: Muse, WhatsApp, ChatGPT, Claude, and Grok.
 
-Google sign-in requests identity scopes. Calendar access is a separate consent step. Apple sign-in
-is not available. Read the [privacy page](https://app.grove.x-arc.ai/privacy) before you add content.
-If no account credential or email code is available, stop at sign-in; no completed connection exists.
+Read the [privacy page](https://app.grove.x-arc.ai/privacy) before you add content. Apple sign-in
+is unavailable. If no authorized account credential or inbox access exists, stop at sign-in and
+record the step as blocked. A private window does not make an existing server account empty.
 
-### 2. Add one export
+### 2. Upload the Lumen example
 
-**Pending release acceptance:** the merged snapshot has no upload endpoint, and some source
-screens still use simulation state. A selected filename or a progress animation is not a receipt.
+Use the exact [Lumen example file](server/grove/demo/lumen-upload.json), which contains 361 bytes
+of invented content. Save its original bytes. Do not edit, reformat, or ZIP the file.
 
-After the upload and source views ship:
+1. Select **Claude**, then inspect the export guide and its **Pause** control.
+2. Select **I’ve requested it**, then **Choose your export** and the Lumen file.
+3. Select **Upload export** once and wait for the real server result.
+4. On the first upload, require **Import accepted**, one source, one episode, one message read,
+   one message kept, and zero failed chats.
+5. Require the notice **Your graph has not changed from this upload.**
+6. Upload the same file again. Require **No new messages**, zero new sources/episodes, and zero
+   failed chats. This checks the exact repeat only, not arbitrary overlapping exports.
 
-1. Make a short AI conversation with invented names, such as a plan for Kestrel Studio on 12 November.
-2. Export that conversation in a supported format: a Claude Code JSONL session, a Codex rollout,
-   a ChatGPT export, or a claude.ai export. Use the matching provider in Grove's chat-source screen.
-3. Select the export and submit it. Wait for a saved result from the server.
-4. Open the resulting item and inspect its source evidence. Confirm that the invented plan is present.
-5. Import the same export again. Confirm that it does not create duplicate items.
+A guide reminder does not request an export from a provider. A selected filename, animation,
+or retained source is not proof of graph extraction. Other upload bytes retain normal screening
+requirements; the current host does not enable general private exports.
 
-Record a failure if the upload has no server receipt or no resulting evidence. The final UI labels
-and this procedure require verification after the source-view release.
+Finish setup with **Skip for now** on unavailable source steps. The app catalog, file sections,
+and Muse directions remain visible. Unsupported operations must not claim success.
+Log out of the ordinary account and refresh before the prepared-account exercise.
 
-### 3. Connect Muse Code
+### 3. Connect Muse Code to the prepared account
+
+Use the separate prepared account supplied by the release owner. Do not upload Lumen into the prepared account.
+Do not run a seed or store command: its Cedar fact already exists. The current positive exercise
+uses recall only. A queued result would not prove a saved write in any future write test.
 
 Prerequisites: Muse Code is already installed, and its Meta API access is available. The settings
-format and login command below were tested with Muse Code 1.4.14 against local OAuth transport.
-The public end-to-end exercise is still pending. Grove login and Meta API access are separate.
+format and login command were tested with Muse Code 1.4.14 against local OAuth transport.
+The current public Muse Code exercise remains **NOT RUN**. Grove login and Meta API access are separate.
 
 For an isolated test, use a new empty directory as the child process's `HOME`. Set
 `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME` to directories inside it.
-Set `MUSE_NO_AUTO_UPDATE=1` to keep the installed launcher from updating during the test.
-Start all Muse commands from an empty directory in that test HOME. Do not copy existing settings,
-skills, conversations, or credentials into the directory. Supply `META_API_KEY` through your secure
-environment if Muse requires it; do not put it in the settings file or a command argument.
+Set `MUSE_NO_AUTO_UPDATE=1`. Start Muse commands from an empty directory in that test HOME.
+Do not copy existing settings, skills, conversations, or credentials. Supply `META_API_KEY`
+through your secure environment if required; never put it in settings or command arguments.
 
 Create `.config/muse/settings.json` inside the isolated HOME:
 
@@ -77,54 +92,59 @@ Create `.config/muse/settings.json` inside the isolated HOME:
 }
 ```
 
-From that same isolated environment, run:
+From the same isolated environment, run:
 
 ```sh
 muse mcp login grove --headless
 ```
 
-Open the displayed authorization URL in the fresh browser. Sign in to Grove if asked. Check the
-requested permissions, then select **Approve**. Return the final loopback redirect URL to the
-waiting Muse command if it asks. Treat that URL as a credential; do not publish it. A successful
-OAuth login proves authorization only. It does not prove that either MCP tool exists.
+Open the authorization URL. Sign in with the prepared account, review permissions, and select
+**Approve**. Return the final loopback URL to Muse if requested. Treat that URL as a credential.
+A successful OAuth login proves authorization only; require an actual tool result next.
 
-When the release exposes both tools, run:
-
-```sh
-muse exec --model muse-spark-1.3 --no-foreign-personal-context --contributor-mode off   "Use Grove recall. What changed this week, and what does it break?"
-```
-
-Then run:
+Run a new conversation:
 
 ```sh
-muse exec --model muse-spark-1.3 --no-foreign-personal-context --contributor-mode off   "Use Grove store to remember: Kestrel Studio plans a rehearsal on 12 November."
+muse exec --model muse-spark-1.3 --no-foreign-personal-context --contributor-mode off "Use Grove. What room and time are set for the Cedar demo?"
 ```
 
-Confirm that the first answer cites Grove evidence or states what it does not know. Confirm that
-the second result reaches **saved**, has a receipt, and appears in Grove's views. A queued result
-is not saved. If Muse reports that a Grove tool is unavailable, this test fails. End test access with
-`muse mcp logout grove` and remove the isolated test HOME when its evidence is safely retained.
+Approve only `recall` if Muse requests tool permission. Require an actual successful Grove call,
+then compare the answer with its returned evidence. Repeat the query in a separate new conversation.
+Do not supply the expected answer or a previous transcript in either prompt. A guessed answer after
+a tool error is a failure. If `store` executes, stop and report it without a seed or retry.
+End the test with `muse mcp logout grove`. Remove the isolated HOME after safe evidence retention.
 
 ### Muse app alternative
 
-The intended connection URL is `https://app.grove.x-arc.ai/mcp`. Add it as a remote MCP connection
-in the Muse app, complete Grove sign-in and consent, then use the two prompts above. The app's
-current menu labels and this public connection remain unverified. This alternative is not a
-completed acceptance result; the Muse Code path above is the primary reproducible procedure.
+In Muse Desktop, add `https://app.grove.x-arc.ai/mcp` as a remote MCP connection. Complete normal
+Grove login and consent with the prepared account. Enable the connector, then use the same recall
+prompt in two new conversations. Inspect the actual tool results. Exact menu labels remain
+unverified. The owner's required Desktop rehearsal is separate from the isolated Code exercise;
+both remain **NOT RUN** at this snapshot.
+
+### Provider connections and unavailable features
+
+[Pipedream](docs/pipedream.md) supports authorization and status only. It imports no emails,
+Calendar events, or Notion pages. Actual provider consent and connected status remain unverified.
+The prepared Cedar account refuses Pipedream and imports. Ordinary accounts can use the consent
+flow where available; a provider logo or new tab is not a successful connection.
+
+Worker activity, growth metrics, and Questions remain unavailable. Guidance, reminders, profile
+edits, and settings download remain browser-local. Full history, privacy, general imports, and
+other incomplete features remain acceptance work; source publication does not complete them.
 
 ## Development
 
 The server uses Python 3.12, `uv`, FastAPI, and Neo4j Community. The web client is plain JavaScript.
 Read [the store map](docs/store-map.md), [sign-in](docs/signin.md), [hosts](docs/hosts.md),
-[models](docs/models.md), [runner](docs/runner.md), and [deployment](docs/deploy.md) for their contracts.
-The local OAuth example in `docs/hosts.md` uses synthetic tools; it does not substitute for public acceptance.
+[models](docs/models.md), [runner](docs/runner.md), and [deployment](docs/deploy.md).
 
 ```sh
 cd server
 uv sync --frozen
-uv run python -m pytest tests/submission -q
+uv run python -m pytest tests/submission tests/store/test_store_map.py::test_public_docs_point_to_no_private_plan -q
 ```
 
-These document checks parse the Muse settings, check the required login and model flags, retain
-the empty-tool warning, and resolve document links. They do not exercise an account or a live import.
-The existing package suites and `Validate` cover product code. [Apache-2.0](LICENSE).
+These focused checks validate document contracts, provenance, and current demo boundaries.
+They do not exercise an account, import, provider, or model. CI and independent review were waived
+as publication gates for this refresh; no old test result certifies the new candidate. [Apache-2.0](LICENSE).

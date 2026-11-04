@@ -1,13 +1,13 @@
-DRAFT FOR ANAS. Snapshot: 2026-11-03. Refresh before submission.
+DRAFT FOR ANAS. Snapshot: 2026-11-04 13:51 UTC. Refresh before submission.
 
-14 pull requests merged into develop by this checkpoint. Three more feature pull requests remain open. These counts describe repository progress, not a complete release.
+33 pull requests merged into develop at this checkpoint. The Request7 deployment record contains 14 host/Mac smoke checks, 15 exact public assets, and six refusal checks. These counts describe source and service checks, not a complete product release.
 
-Grove builds a dated, sourced model of a person's world that an AI assistant can use. The event implementation includes a Neo4j store, a validating writer with receipts, a durable queue, source screening, sign-in, OAuth transport, initial graph views, a model-call layer, runner infrastructure, and an ontology floor with two recorded judgments.
+Grove builds a dated, sourced model of a person's world for AI assistants. The source includes a Neo4j store, a validating writer with receipts, corrections and restore, truth-clock checks, a durable queue, source screening, chat uploads, Calendar/Git connectors, sign-in, OAuth, model calls, a runner, ontology, and bounded consequence components. Further text and media components are published but inactive.
 
-Spark, Voice Transcribe, and Glimmer have live synthetic probe evidence. Glimmer runs on Modal. The runner demonstrated an OpenCode tool call through the internal gateway. These component results do not establish the complete public experience.
+The public host served cac4b95cbc7ce5284c04fcb684ebb2f115162144 at this check. The demo separates a real, exact-byte Lumen source upload in an ordinary account from prepared Cedar memory in another account. The upload does not create the Cedar graph. Earlier controlled preparation saved one request and directly recalled one eligible item. Actual owner login, upload, and Muse acceptance remain NOT RUN.
 
-The public host currently serves revision 9a5cb23ba2935a66f0091e72ccc7e38c54695722. Its health response reports the service and store as healthy. The merged baseline is 57da012f05eecfd0641773e12e4f3a0912bff5cb. Public upload, extraction, recall, and a saved receipt visible in the browser still need end-to-end acceptance. The public MCP tool set is empty at this baseline, and the runner deployment remains pending.
+The restricted demo pair does not provide general memory access. General imports, complete D7/D14 privacy and reads, typed persistence, remaining feature scope, and the full public judge path remain incomplete. Pipedream supports authorization and status only; it imports no content. Actual provider consent remains unverified.
 
-The source of each event contribution is recorded in HACKATHON.md with its PR and date. The export guides, graph visualizer, worker renderer, and associated simulation assets predate the event. Earlier Grove research motivated this design. It is not an evaluation of this implementation. No historical benchmark score is claimed for this build.
+HACKATHON.md records each event PR and its UTC date. The export guides, graph visualizer, worker renderer, and associated simulation assets predate the event. Earlier research motivated the design; it is not an evaluation of this implementation. No historical benchmark score is claimed for this build.
 
-Before this draft becomes a submission: complete the approved feature scope, record the public judge path and film with invented data, refresh the event history, verify the exact release candidate, and obtain the release owner's approval. The time evaluation, completed public demonstration, final video link, and public repository link remain acceptance gates. Do not substitute component test counts for these results.
+CI and review were waived as publication gates for this refresh. Failed, cancelled, waived, and unrun checks do not count as passes. Before submission, complete and record the required acceptance, refresh the history and exact release-candidate scans, and supply the final video and public repository links. This is an unsent draft, not a submitted entry.

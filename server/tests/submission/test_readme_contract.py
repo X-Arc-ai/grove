@@ -1,5 +1,6 @@
 """Executable checks for the published setup text, not end-to-end acceptance."""
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -38,6 +39,50 @@ def test_readme_does_not_claim_available_tools_when_registry_is_empty():
     if not DEFAULT_TOOLS:
         assert "public MCP tools are not available" in text
         assert "not yet passed" in text
+
+
+def test_readme_separates_retained_upload_from_prepared_recall():
+    """The public demo must not imply that the upload produced the prepared graph."""
+    text = (ROOT / "README.md").read_text()
+    upload = text.split("### 2. Upload the Lumen example", 1)[1].split("### 3.", 1)[0]
+    fixture = ROOT / "server/grove/demo/lumen-upload.json"
+    assert fixture.is_file()
+    assert "server/grove/demo/lumen-upload.json" in upload
+    assert "Claude" in upload
+    assert "Do not edit, reformat, or ZIP" in upload
+    assert "Your graph has not changed from this upload." in upload
+    assert "separate prepared account" in text
+    assert "Do not upload Lumen into the prepared account" in text
+    assert "Do not run a seed or store command" in text
+    assert "Use Grove store to remember" not in text
+
+
+def test_current_release_docs_distinguish_general_tools_from_restricted_demo():
+    """An empty general registry does not mean the deployed demo pair is absent."""
+    registry = ast.parse((ROOT / "server/grove/mcp/tools.py").read_text())
+    demo = next(
+        node for node in registry.body
+        if isinstance(node, ast.FunctionDef) and node.name == "demo_tools"
+    )
+    names = {
+        node.value.value
+        for node in ast.walk(demo)
+        if isinstance(node, ast.keyword)
+        and node.arg == "name"
+        and isinstance(node.value, ast.Constant)
+    }
+    assert names == {"store", "recall"}
+    for relative in ("README.md", "docs/architecture.md", "docs/submission-status.md"):
+        text = (ROOT / relative).read_text()
+        assert "Cedar" in text, relative
+        assert "restricted" in text.lower(), relative
+        assert "general" in text.lower(), relative
+        assert "NOT RUN" in text, relative
+    readme = (ROOT / "README.md").read_text()
+    assert "the merged snapshot has no upload endpoint" not in readme
+    assert "[Pipedream](docs/pipedream.md)" in readme
+    assert "authorization and status only" in readme
+    assert "imports no" in readme
 
 
 def test_submission_document_links_resolve():
