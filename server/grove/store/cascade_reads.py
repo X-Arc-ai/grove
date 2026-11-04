@@ -75,7 +75,9 @@ def snapshot(source: Any, trigger_ids: list[str], *, now: datetime, registry=Non
     )
     values = {}
     value_ids = [
-        r["e"].get("new_value_id") for r in rows if r["e"]["field"] in ("status", "status_role")
+        r["e"].get("new_value_id")
+        for r in rows
+        if r["e"]["field"] in ("row", "status", "status_role")
     ]
     if value_ids:
         values = {
@@ -101,11 +103,19 @@ def snapshot(source: Any, trigger_ids: list[str], *, now: datetime, registry=Non
             "end_class",
         ):
             latest[item_id] = max(latest.get(item_id, at), at)
-        if field == "status":
+        if field == "row":
+            created = (values.get(entry.get("new_value_id")) or {}).get("row", {})
+            status[item_id] = created.get("status")
+            if (
+                created.get("status_role") in ("open", "active", "reported_done")
+                and status[item_id]
+            ):
+                prior[item_id] = {"status": status[item_id], "role": created["status_role"]}
+        elif field == "status":
             status[item_id] = values.get(entry.get("new_value_id"))
         elif field == "status_role":
             role = values.get(entry.get("new_value_id"))
-            if role in ("open", "active") and status.get(item_id):
+            if role in ("open", "active", "reported_done") and status.get(item_id):
                 prior[item_id] = {"status": status[item_id], "role": role}
     return {
         "items": items,

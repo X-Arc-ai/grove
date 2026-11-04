@@ -1857,9 +1857,10 @@ def apply_ops(
     apply_batch passes before_commit=False and calls the seam itself, after the request's
     `saved`, so a kill there leaves both written and nothing committed."""
     # The composite operations import this module, so they join the table at the first batch.
+    from grove.writer.cascade_decisions import HANDLERS as CASCADE_DECISIONS
     from grove.writer.composite import HANDLERS as COMPOSITE
 
-    handlers = {**_HANDLERS, **COMPOSITE}
+    handlers = {**_HANDLERS, **COMPOSITE, **CASCADE_DECISIONS}
     run = _Run(tx, stamp, observations, caller_kind)
     for index, op in enumerate(ops):
         run.current_op = op

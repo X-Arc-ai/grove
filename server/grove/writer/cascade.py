@@ -8,11 +8,12 @@ import json
 
 from grove.store.cascade_reads import snapshot
 from grove.store.current import TERMINAL_ROLES
-from grove.store.primitives import MEANING_AFFECTED_BY
+from grove.store.primitives import KIND_BELIEF, MEANING_AFFECTED_BY
 from grove.writer.clocks import Clock, clock_columns, parse_clock, sort_key
 from grove.writer.errors import Refused
 from grove.writer.history import compact, encode, row_json
 from grove.writer.registry import Registry
+from grove.writer.source_types import RANK
 
 MARKERS = frozenset({"cascade_mark", "cascade_proposal", "cascade_end", "cascade_disposition"})
 
@@ -38,9 +39,25 @@ def _changes(run) -> list[dict]:
         if not rows:
             continue
         item = rows[0]["i"]
+        if item["kind"] == KIND_BELIEF:
+            # D9 supplies a checked, operation-specific trigger; its item evidence may be older.
+            continue
         kind = run.registry.kind(item["kind"])
         propagating = _decoded(kind.get("propagating_fields") or "[]")
         names = {p if isinstance(p, str) else p.get("name") for p in propagating}
+        # D4's code-held schedule declarations also declare D6 date propagation. Existing
+        # worlds need no migration and neither rule guesses a property's meaning from its name.
+        names.update(
+            p["name"]
+            for p in run.registry.property_names
+            if p["kind"] == item["kind"] and p.get("scheduled_role") in ("start", "due", "end")
+        )
+        names = {
+            declared["name"]
+            for name in names
+            if (declared := run.registry.property_name(item["kind"], name))
+            and declared.get("value_type") == "time"
+        }
         fields, terminal, reopened = [], False, False
         relevant = []
         for entry in entries:
@@ -66,15 +83,29 @@ def _changes(run) -> list[dict]:
         if not relevant:
             continue
         entry = relevant[-1]
+        operation = entry.get("operation") or {}
         evidence_id = entry.get("evidence_id")
-        evidence = (
-            run.tx.run("MATCH (e:Evidence {id: $id}) RETURN e", id=evidence_id)
-            if evidence_id
-            else []
+        proofs = []
+        for ref in operation.get("evidence_refs") or []:
+            polarity = "contradicts" if operation.get("op") == "refute" else "supports"
+            if ref.get("polarity") != polarity:
+                continue
+            if ref.get("ev_id"):
+                proofs.append(run.observation(ref["ev_id"]))
+            else:
+                rows = run.tx.run("MATCH (e:Evidence {id: $id}) RETURN e", id=ref["evidence_id"])
+                proofs.extend(row["e"] for row in rows)
+        proof = max(
+            proofs,
+            key=lambda row: (
+                RANK.get(row.get("source_type"), -1)
+                if row.get("derivation") not in ("inferred", "rolled_up")
+                else -1
+            ),
+            default={},
         )
-        proof = evidence[0]["e"] if evidence else {}
         source_type = proof.get("source_type", "said")
-        if proof.get("derivation") == "inferred":
+        if proof.get("derivation") in ("inferred", "rolled_up"):
             source_type = "said"
         when = entry.get("world_time")
         stop = next(
@@ -95,7 +126,6 @@ def _changes(run) -> list[dict]:
                 else stop
             )
             when = sort_key(parse_clock(stop))
-        operation = entry.get("operation") or {}
         result.append(
             {
                 "item_id": item_id,
@@ -111,7 +141,23 @@ def _changes(run) -> list[dict]:
                 "evidence_id": evidence_id,
             }
         )
-    return result
+    return result + list(run.cache.get("cascade_pending", ())) + typed_changes(run)
+
+
+def typed_changes(run) -> list[dict]:
+    """The code-held D9 handoff. Public batches cannot write run.cache or its authority flag."""
+    changes = []
+    for raw in run.cache.get("belief_cascade_changes", ()):
+        change = dict(raw)
+        if change["change_set_id"] != run.stamp.change_set_id:
+            raise ValueError("a belief trigger must belong to this change set")
+        found = run.tx.run("MATCH (i:Item {id: $id}) RETURN i.kind AS kind", id=change["item_id"])
+        if not found or found[0]["kind"] != KIND_BELIEF:
+            raise ValueError("a belief trigger must name a belief in this world")
+        if change.get("derivation") in ("inferred", "rolled_up"):
+            change["source_type"] = "said"
+        changes.append(change)
+    return changes
 
 
 def _marker(run, item_id: str, field: str, value: dict, *, inverse_of=None):
@@ -136,6 +182,9 @@ def _proposal(run, suggestion: dict, mark_ids: list[str], held: dict) -> str:
         "link_ids": suggestion.get("link_ids", []),
         "target_version": held["items"].get(target, {}).get("version"),
         "trigger_source_type": suggestion.get("source_type", "said"),
+        "trigger_change": suggestion.get("trigger_change")
+        or (suggestion.get("detail") or {}).get("trigger_change")
+        or {},
     }
     # Status vocabulary is stored as a value, never copied into JSON metadata.
     operations = []
@@ -242,6 +291,7 @@ def apply_cascade(run) -> None:
     )
     proposed = plan(held, changes)
     suggestions = list(proposed.proposals)
+    failed_downstream = set()
     for ending in proposed.endings:
         when = ending["world_time"]
         stop = ending.get("end_clock") or {
@@ -259,6 +309,11 @@ def apply_cascade(run) -> None:
         try:
             prepared = ap._prepare_end_link(run, operation)
         except Refused as error:
+            failed = next(link for link in held["links"] if link["id"] == ending["link_id"])
+            meaning = held["meanings"][failed["meaning"]]
+            failed_downstream.add(
+                failed["from_item" if meaning["downstream_end"] == "from" else "to_item"]
+            )
             suggestions.append(
                 {
                     "rule": "R1",
@@ -285,6 +340,17 @@ def apply_cascade(run) -> None:
     for mark in proposed.marks:
         mark_ids[(mark["trigger_id"], mark["affected_item"])] = _mark(run, mark, held)
     for suggestion in suggestions:
+        if suggestion["action"] == "resume" and suggestion["target_item"] in failed_downstream:
+            suggestion = {**suggestion, "action": "review"}
+            suggestion.pop("suggested_status", None)
+        trigger = next(c for c in changes if c["item_id"] == suggestion["trigger_id"])
+        suggestion = {
+            **suggestion,
+            "trigger_change": {
+                key: trigger.get(key)
+                for key in ("world_time", "terminal", "reopened", "person_correction", "end_clock")
+            },
+        }
         ids = [
             mark_ids[(suggestion["trigger_id"], target)]
             for target in suggestion.get("mark_targets", [])
@@ -298,7 +364,12 @@ def apply_cascade(run) -> None:
                 proposal=proposal_id,
             )
     # The end of an affected item is an explicit resolution. The mark remains history.
-    ended = [c["item_id"] for c in changes if c["terminal"]]
+    ended = [
+        c["item_id"]
+        for c in changes
+        if held["items"][c["item_id"]].get("end_class")
+        or held["items"][c["item_id"]].get("status_role") in TERMINAL_ROLES
+    ]
     if ended:
         run.tx.run(
             "MATCH (m:Impact) WHERE m.affected_item IN $ids AND m.state IN $states "
@@ -311,6 +382,9 @@ def apply_cascade(run) -> None:
 
 
 def undo_marks(run, change_set: str) -> None:
+    from grove.writer.cascade_refutations import undo_refutation_reports
+
+    undo_refutation_reports(run, change_set)
     rows = run.tx.run("MATCH (m:Impact {trigger_change_set: $id}) RETURN m", id=change_set)
     for found in rows:
         mark = found["m"]

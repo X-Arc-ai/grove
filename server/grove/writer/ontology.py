@@ -89,7 +89,7 @@ _CODE = r"[a-z0-9_]{1,40}"
 
 # What a caller may declare per word type; required ones are checked in _declared_*.
 _DECLARED_KEYS = {
-    "kind": frozenset({"lifecycle_class", "status_vocabulary"}),
+    "kind": frozenset({"lifecycle_class", "status_vocabulary", "propagating_fields"}),
     "meaning": frozenset(
         {
             "from_kinds",
@@ -133,7 +133,6 @@ WRITER_SET = frozenset(
         "earning_episodes",
         "required_fields",
         "required_links",
-        "propagating_fields",
         "scheduled_role",
     }
 )
@@ -422,12 +421,24 @@ def _declared_kind(declared: dict[str, Any]) -> tuple[dict[str, Any], tuple[str,
         declared.get("lifecycle_class"), "lifecycle_class", ENUMS["lifecycle_class"]
     )
     vocabulary = _vocabulary(lifecycle_class, declared.get("status_vocabulary"))
+    fields = declared.get("propagating_fields", [])
+    if not isinstance(fields, list) or len(fields) > 32:
+        raise _bad("type", "propagating_fields is a list of at most 32 date declarations")
+    seen = set()
+    for declared_field in fields:
+        if not isinstance(declared_field, dict) or set(declared_field) != {"name", "role"}:
+            raise _bad("type", "each propagating field declares name and role")
+        name = _text(declared_field["name"], "propagating field name")
+        _enum(declared_field["role"], "propagating role", ("start", "due", "end"))
+        if name in seen:
+            raise _bad("type", "a propagating field is declared once")
+        seen.add(name)
     columns = {
         "lifecycle_class": lifecycle_class,
         "status_vocabulary": json.dumps(vocabulary, ensure_ascii=False),
         "required_fields": "[]",
         "required_links": "[]",
-        "propagating_fields": "[]",
+        "propagating_fields": json.dumps(fields, ensure_ascii=False),
     }
     return columns, ("status_vocabulary",) if vocabulary else ()
 

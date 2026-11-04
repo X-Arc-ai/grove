@@ -197,7 +197,6 @@ Truth-clock rulings S51-S55 were S46-S50 before integration with D3 and upload c
 | How an item's area membership is stored. | 1368, 2145, 3095 | `cleanup`, `hosts-b` |
 | A value the person names inside source text has no index path. | 2518, 2525, 2560 | `forget` |
 | Which bound orders `latest`, and where "unknown" sorts. Both bounds have an index. | 1390, 1487 | `hosts-b` |
-| The stakes value of an R2 mark, and a mark's clocks. | 1247, 1254, 1270 | `walk` |
 | Where a search term's type and language live. `items.search_terms` holds the text of each term. | 2076, 2098 | `ingest-b` |
 | The deferral count: stored, or derived from `verifications`. | 2159, 2174 | `cleanup` |
 | The grade rows of controls, and findings raised by agent runs: their run id and their text. | 2198, 2376, 2427 | `evals`, `cleanup` |
@@ -229,7 +228,6 @@ Truth-clock rulings S51-S55 were S46-S50 before integration with D3 and upload c
 | A `map_positions` row keeps `item_id` and its coordinates after its item is forgotten. The forget of an item must remove its map position too. | none; a build fact | `forget` |
 | The views' account, sources, questions and workers still use the simulation's local browser state. A sign-in that brings another account resets that state in the tab that signs in (`signin`). A second tab that signs in as another person brings no 401, so the first tab clears nothing. | none; a build fact | `views-b` |
 | The API serves the built page at `/` only when `GROVE_WEB_DIST` names `web/dist`. Closed by `deploy-a`: the API image runs `web/build.py` and sets that variable, and the deploy smoke asks for the page. | none; a build fact | `deploy-a` |
-| `change_status` and `end_item` do not trigger the walk yet, and `reopen_item` does not yet send an R1 ending back as a proposal. | 3160 to 3162 | `walk` |
 | A judgment marked correlated counts toward the two judges of a contradiction: D9 and B.2 ask only for two models. | 3165 | `beliefs` |
 | `grove.extract.v1` must offer the statement class `artifact` (S51), and the connectors must write `sources.speakers` from each message's own metadata (an automated sender, a forwarded message's author, each with its locator), and `sources.document` true for an uploaded file or picture, or an automated booking confirmation stays a chat line and an uploaded receipt stays `said`. | 1086, 1112, 1129 | `ingest-a1`, `ingest-b` |
 | The Calendar connector must pass trusted retained-message `calendar_events` facts through `add_screened_source`: scheduled instant, IANA timezone, provider status and optional revision time. S51 enforces those facts for new and reused evidence. The real provider adapter and consent flow remain separate acceptance work. | 1097, 1099 | `ingest-a3` |
@@ -256,7 +254,6 @@ Truth-clock rulings S51-S55 were S46-S50 before integration with D3 and upload c
 | B.2 lets cleanup merge "within an area". The writer checks no area, because no area membership is stored yet; the runner's curator (cleanup) can send merge through `/brain/propose`. | 3170 | `cleanup` |
 | Every read path the hosts serve (recall, neighbours, hops, what changed, export, the MCP tools) attaches the successors of an overtaken item, through `standings`, `world_as_of` or `known_as_of`, each tested by name, as `test_d3_integration.py` does for the paths that exist now. | 832 | `hosts-b` |
 | Belief items are refused by correct, refute, supersede, merge and undo (rule `belief_transition`; an undo of a belief entry, rule `not_undoable`). The beliefs lane's transitions and their one-step undo replace that refusal. | 1809, 1811 | `beliefs` |
-| Ending an item does not end its consequence links yet (D3's build rule for archived items, D6). | 2789 | `walk` |
 | The update agent owns these coverage fields of a connector row: `held_nothing_count`, `extracted_count` and `items_taken_in_over_7_days`; it sets an episode's `run_id` when a pass takes it and moves `oldest_unprocessed_item` to the oldest episode still without one (S50, `docs/ingest.md`). | 2001, 3101 | `ingest-b` |
 | An upload is parsed, screened and stored inside its request, which nginx holds for 600 s. An export too large for that needs a job of its own, with its state readable by the views. | 2041 | `ingest-b`, `views-b` |
 | A message that screening drops is counted again in a later read's receipt when that read stores new messages of the same chat, because the delta is the keys not stored. | 2505 | `forget` |
@@ -440,6 +437,22 @@ D8's floor (Appendix D, P0 item 8): provisional mints with a recorded reason, th
 **O15. The direction of an alias made from a mint** (spec lines 1590, 1595, 1633). A meaning proposal may state `reversed: true`: the phrase reads its nearest neighbour from the other end, as "is a prerequisite for" reads "depends on". The judges see the stated reading and compare the phrase in it; the same-word subject binds it (O3); the alias carries it, so a link written with the phrase swaps its ends. The judges' instructions say that a phrase read from the other end, when the proposal says it is not, is a different word. The writer also refuses an alias whose declared ends fit the neighbour only the other way round (`invalid_arguments`, rule `alias_direction`). What no code can catch: two models that both call a reversed phrase the same word, between two ends of any kind. A text of the proposal is at most 2,000 characters and a name at most 120 (rule `too_long`).
 
 **O13. Value lists** (spec lines 1583, 3241). `meanings.direction` is `from_to` only: every meaning runs from its first endpoint to its second, and a reversed phrasing is a reversed alias. `property_names.value_type` is one of `text`, `number`, `boolean`, `date`, `instant`; a minted property name declares one. The writer does not yet check a property value against its type.
+
+## D6 P0 storage and consumer boundary
+
+`docs/cascade.md` states the single R1/R2/R4 planner, transaction adapter, and explanation path.
+An R2 mark has low stakes and its trigger's world clock. Unknown time stays unknown. Impact and
+CascadeProposal remain snapshot rows; the affected-by link and R1 endings have ordinary history.
+The five `cascade_*` history markers retain metadata without projecting user properties or
+creating undo version conflicts. Explanations, decision reasons, and suggested status text use
+HistoryValue IDs. The explanation job changes only that cache and job metadata after commit.
+
+The ordinary-item report gate writes existing Contradiction rows with the exact standing entry
+and fresh contrary evidence ID. D9 owns the belief state machine and the general contradiction
+workflow. D7 owns transaction-bound packet reads, public hypothetical parsing and REST/MCP
+responses. D14 owns complete physical forget coverage, including every value ID and metadata
+reference added by this module. Those combined consumer results are later acceptance, not
+inferred from the walk suite. No D6 migration is required.
 
 <!-- generated:begin -->
 ## Type classes

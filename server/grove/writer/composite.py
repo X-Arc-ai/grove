@@ -228,6 +228,7 @@ def _end_item_row(
     ap._end_entry(run, "item", item_id, None, end_class, world_time, reason_id, evidence_id)
     run.tx.run(ap._SET_ITEM, id=item_id, columns={"end_class": end_class, **(extra or {})})
     ap._bump(run, ap._BUMP_ITEM, item_id)
+    run.changed_claims.add(item_id)
 
 
 # correct --------------------------------------------------------------------------------------
@@ -329,11 +330,16 @@ def _refute_item(run: ap._Run, index: int, op: dict[str, Any], item_id: str) -> 
     plans = ap._plans(run, op["evidence_refs"])
     ap._settle(run, plans, item_id)
     _check_rank(run, item, plans)
+    from grove.writer.cascade_refutations import defer_refutation, settle_refutation
+
+    if defer_refutation(run, index, op, item, plans):
+        return
     world_time = ap._world_time(plans)
     reason_id = run.text(op["reason"])
     # Refuted: never true, so no world end time is stored (D3, "end classes").
     _end_item_row(run, item_id, "refuted", world_time, reason_id, _evidence_id(plans))
     ap._write_evidence(run, plans, "item", item_id, reason_id)
+    settle_refutation(run, item_id, reason_id)
     run.touch(item_id, index)
 
 
@@ -872,10 +878,11 @@ class _Undo:
             self.bump("item", entity_id)
             run.touch(entity_id, self.index)
         elif entity_type == "link":
-            link = ap._one(run, ap._LOCK_LINK, "link", entity_id, lock=True)
+            link = ap._one(run, ap._READ_LINK, "link", entity_id, lock=False)
             if link.get("meaning") == MEANING_AFFECTED_BY:
                 # D6 retains the mark link as history; the snapshot disposition becomes undone.
                 return
+            link = ap._one(run, ap._LOCK_LINK, "link", entity_id, lock=True)
             if link.get("end_class") == "refuted":
                 return
             self.entry(
