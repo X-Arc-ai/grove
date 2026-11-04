@@ -288,7 +288,11 @@ links in the batch's one transaction, and nothing is deleted:
   retires a minted word or alias, or sets a promoted word back to provisional, and names itself in
   the change-log row's `undone_by` (O10, S46). It is refused while an active item, link,
   property or alias of a later batch uses the word (`version_conflict`, rule `word_in_use`), and
-  for a capability minted with the word, which has no ending (rule `no_ending`).
+  for a capability minted with the word, which has no ending (rule `no_ending`). These checks
+  also apply to a later undo that would retire the word again. The next operation in the batch
+  sees the updated registry. Older log rows are matched to their history; an ambiguous old
+  automatic promotion is refused (`ontology_log_ambiguous`). A batch that undoes several change
+  sets keeps every branch in the log when it is itself undone.
 - `retire_record` ends a record on the record axis only: `end_class` `spent` and `lesson_in` (the
   new item column), both entries with no world time, and no stop clock. `current()` stops returning
   it; history and world-axis as-of reads keep it, and its evidence rows stay active.
