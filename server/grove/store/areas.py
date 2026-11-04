@@ -375,7 +375,7 @@ def _other(link: AreaLink, item: str) -> str:
 
 
 def area_membership(area: AreaDefinition, graph: AreaGraph) -> AreaMembership:
-    """Compute the complete structural neighbourhood before any ranking or page limit."""
+    """Compute complete membership; only area_index can validate successor registry metadata."""
     _validate_definition(area, graph)
     rule = area.partition_rule
     meanings = frozenset(rule.meaning_ids)
@@ -417,7 +417,7 @@ def area_membership(area: AreaDefinition, graph: AreaGraph) -> AreaMembership:
         tuple(sorted(first_links)),
         tuple(sorted(path_links)),
         area.status,
-        area.merged_into if area.merged_into in graph.authorized_area_ids else None,
+        None,
     )
 
 
@@ -464,9 +464,10 @@ def area_index(
         if not _visible_item(graph, area.hub_item) or area.id not in graph.authorized_area_ids:
             continue
         membership = area_membership(area, graph)
-        # A raw immediate successor could bypass the visibility check on the resolved successor.
-        if membership.merged_into is not None and target is None:
-            membership = replace(membership, merged_into=None)
+        # Direct membership has no target definitions. Attach successor metadata only after
+        # the complete registry check validates every target hub and intermediate merge bridge.
+        if target is not None:
+            membership = replace(membership, merged_into=area.merged_into)
         result.append(AreaIndexEntry(membership, target))
     return tuple(result)
 

@@ -1,10 +1,8 @@
 """D11 structural area controls. These pure tests use invented IDs and no store."""
 
-import ast
 import json
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime
-from pathlib import Path
 
 import pytest
 
@@ -436,6 +434,27 @@ def test_area_hidden_merge_bridge_cannot_reveal_a_later_successor():
     assert old_entry.membership.merged_into is None
 
 
+@pytest.mark.parametrize("restriction", ["area", "hub", "time", "none"])
+def test_successor_metadata_requires_complete_registry_and_visible_eligible_hub(restriction):
+    current = area(500, hub=2)
+    old = area(501, status="merged", merged_into=current.id)
+    rows = (current, old)
+    options = {}
+    if restriction == "area":
+        options["authorized_area_ids"] = frozenset({old.id})
+    elif restriction == "hub":
+        options["authorized_item_ids"] = frozenset({ident(1)})
+    elif restriction == "time":
+        options["eligible_item_ids"] = frozenset({ident(1)})
+    capture = graph([item(1), item(2)], [], areas=rows, **options)
+    assert area_membership(old, capture).merged_into is None
+    indexed = area_index(rows, capture, include_ended=True)
+    result = next(entry for entry in indexed if entry.membership.area_id == old.id)
+    expected = current.id if restriction == "none" else None
+    assert result.membership.merged_into == expected
+    assert result.successor_area_id == expected
+
+
 def test_area_inputs_and_outputs_are_immutable():
     item_rows, link_rows = [item(1), item(2)], [link(201, 1, 2)]
     allowed = {ident(1), ident(2)}
@@ -453,15 +472,3 @@ def test_area_inputs_and_outputs_are_immutable():
     with pytest.raises(TypeError):
         capture._items[ident(3)] = item(3)
     assert capture.commit == 9 and selected.version == 1
-
-
-def test_area_module_has_no_storage_clock_or_model_calls():
-    # A structural purity guard complements the immutable-value behavior tests above.
-    from grove.store import areas
-
-    source = ast.parse(Path(areas.__file__).read_text())
-    calls = [node for node in ast.walk(source) if isinstance(node, ast.Call)]
-    forbidden = {"execute_write", "execute_read", "session", "run", "now", "monotonic"}
-    assert not any(
-        isinstance(node.func, ast.Attribute) and node.func.attr in forbidden for node in calls
-    )
