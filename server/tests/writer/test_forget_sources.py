@@ -250,3 +250,72 @@ def test_source_write_waits_for_a_concurrent_forget_world_lock(driver, world):
     assert done.is_set()
     assert len(errors) == 1 and isinstance(errors[0], ForgottenSource)
     assert sources(driver, world) == []
+
+
+def test_recovered_old_source_refuses_raw_locator_and_preserves_other_source(driver, world):
+    """A restored source discovered by predicates needs no mutable ledger extension."""
+    from grove.writer.forget import read_inventory, write_inventory
+    from grove.writer.forget_plan import WORLD_TABLES, build_plan, transform
+
+    place = "old-export-before-approval"
+    source_connector = connector(driver, world)
+    current = {name: [] for name in WORLD_TABLES}
+    plan = build_plan(current, {"type": "named_value", "value": "Amber Finch"})
+    approved = ledger(driver, world)
+    plant_node(
+        driver,
+        world,
+        "Source",
+        connector_id=source_connector,
+        external_locator=place,
+        forget_state="kept",
+        content=json.dumps(
+            [
+                {"key": "one", "text": "Earlier Amber Finch boarded the ferry", "sender": None},
+                {"key": "two", "text": "Retain the ordinary shipping note", "sender": None},
+            ]
+        ),
+    )
+
+    def recover(tx):
+        tx.lock_world()
+        before = read_inventory(tx)
+        after, _ = transform(before, plan, T0)
+        write_inventory(tx, before, after)
+
+    WorldWriter(driver, world).transaction(recover)
+    query = WorldQuery(driver, world)
+    assert source_is_forgotten(query, place)
+    assert blocked_message_keys(query, place, ["one", "two", "new"]) == {"one", "two", "new"}
+    assert not source_is_forgotten(query, "unrelated-export")
+    before = read_inventory(query)
+    with pytest.raises(ForgottenSource):
+        record_source(
+            driver,
+            world,
+            connector_id=source_connector,
+            external_locator=place,
+            content="Amber Finch could return",
+            parser_version="v1",
+        )
+    assert read_inventory(query) == before
+    assert before["forget_ledger"] == [approved]
+    assert [m["text"] for m in json.loads(before["sources"][0]["content"])] == [
+        "Retain the ordinary shipping note"
+    ]
+
+
+def test_known_partial_source_remains_a_message_specific_gate(driver, world):
+    place = "known-partial-source"
+    ledger(driver, world, message_locator_key(place, "one"))
+    plant_node(
+        driver,
+        world,
+        "Source",
+        external_locator=place,
+        forget_state="span_forgotten",
+        content=json.dumps([{"key": "two", "text": "Retained message"}]),
+    )
+    query = WorldQuery(driver, world)
+    assert not source_is_forgotten(query, place)
+    assert blocked_message_keys(query, place, ["one", "two", "new"]) == {"one"}
