@@ -25,30 +25,31 @@
       if (root.dataset.pipedreamMounted) return;
       root.dataset.pipedreamMounted = 'true';
       var owner = account(), states = {}, configured = false, busy = false, version = 0;
-      var note = '', popup = null;
+      var note = '', popup = null, query = '', googleOpen = false;
+      var catalog = window.GroveIntegrations || [];
+      var defaults = [{id:'google',name:'Google',category:'Gmail, Drive, Calendar'}, {id:'notion',name:'Notion',category:'Notes & knowledge'}, {id:'slack',name:'Slack',category:'Team conversations'}, {id:'microsoft',name:'Microsoft 365',category:'Mail, files & teams'}, {id:'linear',name:'Linear',category:'Projects & tasks'}, {id:'dropbox',name:'Dropbox',category:'Files & folders'}];
       function current(ticket) {
         return root.isConnected && owner && account() === owner && ticket === version;
       }
+      function results() {
+        var rows = query.trim() ? catalog.filter(function (p) { return (p.name+' '+p.category).toLowerCase().includes(query.trim().toLowerCase()); }).slice(0,30) : defaults;
+        if (googleOpen && !query.trim()) rows = [{id:'gmail',name:'Gmail'}, {id:'google_calendar',name:'Google Calendar'}, {id:'google_drive',name:'Google Drive'}];
+        return rows.map(function (p) {
+          var supported = providers.find(function (item) { return item.id === p.id; });
+          var group = p.id === 'google', state = supported ? states[p.id] || 'checking' : 'unavailable';
+          var mark = (window.GroveIcons || {})[supported ? supported.icon : p.id] || '<span class="gp-app-initial">'+esc(p.name.slice(0,2))+'</span>';
+          return '<button type="button" class="gp-integration '+(state==='connected'?'is-connected':'')+'" '+(group?'data-pipedream-google':'data-pipedream-connect="'+esc(p.id)+'"')+' aria-label="'+(group?'Choose a Google app':state==='connected'?'Connected to '+esc(p.name):'Connect '+esc(p.name))+'" '+(!group&&(!supported||!configured||busy||state==='connected')?'disabled':'')+'><span class="gp-integration-mark">'+mark+'</span><span><strong>'+esc(p.name)+'</strong><small'+(supported?' data-pipedream-status="'+p.id+'"':'')+'>'+esc(group?p.category:labels[state])+'</small></span><span class="gp-integration-status">'+(state==='connected'?'✓':'+')+'</span></button>';
+        }).join('') || '<p class="gp-empty-sources">No matches — try another name</p>';
+      }
+      function bindResults() {
+        root.querySelectorAll('[data-pipedream-connect]').forEach(function (button) { button.onclick=function(){if(providers.some(function(p){return p.id===button.dataset.pipedreamConnect;}))connect(button.dataset.pipedreamConnect);}; });
+        var group=root.querySelector('[data-pipedream-google]');if(group)group.onclick=function(){googleOpen=true;paint();};
+      }
       function paint() {
-        root.innerHTML = '<p class="gp-section-copy">Connect an account with Pipedream. ' +
-          'This only checks the connection. Emails, events and pages are not imported.</p>' +
-          '<div class="gp-integrations">' + providers.map(function (p) {
-            var state = states[p.id] || 'checking';
-            var mark = (window.GroveIcons || {})[p.icon] || esc(p.name.slice(0, 1));
-            return '<button type="button" class="gp-integration ' +
-              (state === 'connected' ? 'is-connected' : '') + '" data-pipedream-connect="' + p.id +
-              '" aria-label="' + (state === 'connected' ? 'Connected to ' : 'Connect ') + p.name +
-              '" ' + (!configured || busy || state === 'connected' ? 'disabled' : '') + '>' +
-              '<span class="gp-integration-mark">' + mark + '</span><span><strong>' + p.name +
-              '</strong><small data-pipedream-status="' + p.id + '">' + labels[state] +
-              '</small></span><span class="gp-integration-status">' +
-              (state === 'connected' ? '✓' : '+') + '</span></button>';
-          }).join('') + '</div><p class="gp-section-copy" role="status" aria-live="polite">' +
-          esc(note) + '</p><button type="button" class="gp-small" data-pipedream-refresh ' +
-          (busy ? 'disabled' : '') + '>Check connections</button>';
-        root.querySelectorAll('[data-pipedream-connect]').forEach(function (button) {
-          button.onclick = function () { connect(button.dataset.pipedreamConnect); };
-        });
+        root.innerHTML = '<label class="gp-integration-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" placeholder="Search 3,000+ integrations" aria-label="Search 3,000+ integrations" data-pipedream-search value="'+esc(query)+'"></label>'+ (googleOpen&&!query?'<button class="gp-text" data-pipedream-back>All apps</button>':'')+'<div class="gp-integrations" data-pipedream-results>'+results()+'</div><p class="gp-section-copy">Connect an account with Pipedream. Emails, events and pages are not imported.</p><p class="gp-section-copy" role="status" aria-live="polite">'+esc(note)+'</p><button type="button" class="gp-small" data-pipedream-refresh '+(busy?'disabled':'')+'>Check connections</button>';
+        bindResults();
+        root.querySelector('[data-pipedream-search]').oninput=function(e){query=e.target.value;root.querySelector('[data-pipedream-results]').innerHTML=results();bindResults();};
+        var back=root.querySelector('[data-pipedream-back]');if(back)back.onclick=function(){googleOpen=false;paint();};
         root.querySelector('[data-pipedream-refresh]').onclick = refresh;
       }
       function error(res, fallback) {
