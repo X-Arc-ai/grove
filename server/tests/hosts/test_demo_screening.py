@@ -46,7 +46,8 @@ def test_exact_lumen_file_uses_real_screening_and_parser(
     with TestClient(app, base_url=BASE) as web:
         web.cookies.update(person.cookies)
         response = web.post(
-            "/v1/sources/upload?provider=claude_ai", content=lumen_fixture(),
+            "/v1/sources/upload?provider=claude_ai",
+            content=lumen_fixture(),
             headers={"content-type": "application/json"},
         )
         assert response.status_code == 200
@@ -88,14 +89,18 @@ def test_other_upload_inputs_keep_the_configuration_refusal(
 def test_cedar_world_refuses_lumen_upload(driver, demo, missing_globals):
     session_token = "invented-demo-session-" + uuid4().hex
     create_session(
-        driver, demo.user_id, token_hash(session_token), method="email",
+        driver,
+        demo.user_id,
+        token_hash(session_token),
+        method="email",
         expires_at=clock.now() + timedelta(minutes=5),
     )
     app = create_app(ApiSettings(BASE), driver=driver)
     with TestClient(app, base_url=BASE) as web:
         web.cookies.set(SESSION_COOKIE, session_token)
         response = web.post(
-            "/v1/sources/upload?provider=claude_ai", content=lumen_fixture(),
+            "/v1/sources/upload?provider=claude_ai",
+            content=lumen_fixture(),
             headers={"content-type": "application/json"},
         )
     assert response.status_code == 403

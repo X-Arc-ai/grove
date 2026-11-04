@@ -91,8 +91,11 @@ def _refuse_demo(tx: WorldTx) -> None:
 
 def _clears_authority(columns: dict) -> bool:
     clearing = {
-        "credential_ciphertext", "oauth_state_hash", "oauth_expires_at",
-        "sync_cursor", "event_versions",
+        "credential_ciphertext",
+        "oauth_state_hash",
+        "oauth_expires_at",
+        "sync_cursor",
+        "event_versions",
     }
     return all(
         (key in clearing and value is None)

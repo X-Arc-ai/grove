@@ -135,6 +135,9 @@ class _Run:
         # correct operations: (index, successor id, whether a no-head-update reason was given).
         self.corrections: list[tuple[int, str, bool]] = []
         self.ontology = ontology.OntologyState()
+        # D6 reads the evidence and world time of the operation that changed the claim.
+        self.cascade_entries: list[dict[str, Any]] = []
+        self.current_op: dict[str, Any] = {}
 
     @property
     def at(self) -> datetime:
@@ -148,6 +151,8 @@ class _Run:
 
     def entry(self, **fields: Any) -> None:
         add_entry(self.tx, self.stamp, **fields)
+        if fields.get("entity_type") in ("item", "belief"):
+            self.cascade_entries.append({**fields, "operation": self.current_op})
 
     def refuse(self, index: int, op: Any, refused: Refused) -> None:
         if index in self.refused:
@@ -1380,10 +1385,14 @@ def _create_link(run: _Run, index: int, op: dict[str, Any]) -> None:
     run.head_changes.update((from_id, to_id))
 
 
-def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
+def _prepare_end_link(run: _Run, op: dict[str, Any]) -> tuple:
+    """Validate before any write; D6 turns a refusal here into a stored proposal.
+
+    The batch already holds the world lock. A read therefore protects the same state without
+    changing touched_at on a link whose ending must be refused.
+    """
     link_id = run.ref(op["link"], "link")
-    run.summaries[index] = f"link {run.label(op['link'])}"
-    link = _one(run, _LOCK_LINK, "link", link_id, lock=True)
+    link = _one(run, _READ_LINK, "link", link_id, lock=False)
     if link.get("meaning") in PRIMITIVE_MEANING_IDS:
         # A successor or subject link moves only with its composite operation (D3, D9).
         raise Refused(
@@ -1400,6 +1409,12 @@ def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
     plans = _plans(run, op.get("evidence_refs") or [])
     _settle(run, plans, link_id)
     world_time = _world_time(plans, run.at) or sort_key(stop) or run.at
+    return link, stop, plans, world_time
+
+
+def _write_end_link(run: _Run, op: dict[str, Any], prepared: tuple) -> None:
+    link, stop, plans, world_time = prepared
+    link_id = link["id"]
     reason_id = run.text(op["reason"])
     evidence_id = _first_supporting(plans)
     _end_entry(run, "link", link_id, None, op["end_class"], world_time, reason_id, evidence_id)
@@ -1416,6 +1431,7 @@ def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
     columns = {
         "active_key": None,
         "end_class": op["end_class"],
+        "touched_at": run.at,
         **clock_columns("stopped_being_true", stop),
         **words,
     }
@@ -1426,6 +1442,11 @@ def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
         run.retired_claims.add(link_id)
     _write_evidence(run, plans, "link", link_id, reason_id)
     run.head_changes.update((link["from_item"], link["to_item"]))
+
+
+def _end_link(run: _Run, index: int, op: dict[str, Any]) -> None:
+    run.summaries[index] = f"link {run.label(op['link'])}"
+    _write_end_link(run, op, _prepare_end_link(run, op))
 
 
 # attach_evidence and end_evidence -------------------------------------------------------------
@@ -1836,11 +1857,13 @@ def apply_ops(
     apply_batch passes before_commit=False and calls the seam itself, after the request's
     `saved`, so a kill there leaves both written and nothing committed."""
     # The composite operations import this module, so they join the table at the first batch.
+    from grove.writer.cascade_decisions import HANDLERS as CASCADE_DECISIONS
     from grove.writer.composite import HANDLERS as COMPOSITE
 
-    handlers = {**_HANDLERS, **COMPOSITE}
+    handlers = {**_HANDLERS, **COMPOSITE, **CASCADE_DECISIONS}
     run = _Run(tx, stamp, observations, caller_kind)
     for index, op in enumerate(ops):
+        run.current_op = op
         if index in pre_refused:
             run.refused[index] = pre_refused[index]
             if is_temp(op.get("temp_id") if isinstance(op, dict) else None):
@@ -1863,5 +1886,8 @@ def apply_ops(
             },
             request_id=stamp.request_id,
         )
+    from grove.writer.cascade import apply_cascade
+
+    apply_cascade(run)
     if before_commit:
         _before_commit()
