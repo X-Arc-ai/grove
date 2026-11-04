@@ -34,6 +34,7 @@ from grove.store.d3_fingerprint import (
     read_once,
 )
 from grove.store.learner_snapshot import validate_learner_snapshot
+from grove.store.material_snapshot import validate_material_snapshot
 from grove.store.query import CYPHER_PREFIX
 from grove.store.replay import (
     FORGOTTEN_MARKER,
@@ -234,6 +235,12 @@ def _snapshot_rows(world_id: str, snapshot: Mapping[str, Any]) -> dict[tuple[str
             for name, rows in snapshot["rows"].items()
         }
     )
+    validate_material_snapshot(
+        {
+            name: [{key: _untag(value) for key, value in row["properties"].items()} for row in rows]
+            for name, rows in snapshot["rows"].items()
+        }
+    )
     return groups
 
 
@@ -359,7 +366,7 @@ def _ledger_row(world_id: str, row: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("a forget ledger row of another world")
     target = typed.get("target_type")
     if target not in (*_FORGET_VALUES, _FORGET_ITEM) and not (
-        target == "source_span" and typed.get("plan")
+        target in {"source_span", "material"} and typed.get("plan")
     ):
         # A source span is the forget lane's: its text lives in sources, not in the history.
         raise ValueError(f"a forget of target type {target!r} is not replayed here")
@@ -612,6 +619,7 @@ def restore_loaded(
     }
     stored = read_once(driver, world_id, read_inventory, timeout=_TIMEOUT)
     validate_learner_snapshot(stored)
+    validate_material_snapshot(stored)
     _require_stored_ledger(world_id, stored["forget_ledger"], ledger)
     rebuild_in_place(driver, world_id, measures)
     if any("plan" in row for row in ledger):
@@ -652,6 +660,7 @@ def restore_loaded(
                 expected_inventory, json.loads(row["plan"]), row["approved_at"]
             )
         validate_learner_snapshot(expected_inventory)
+        validate_material_snapshot(expected_inventory)
         expected = inventory_fingerprint(expected_inventory)
         forgotten = legacy_gone | replay_ledger(driver, world_id, planned)
         _keep_ledger(driver, world_id, ledger)

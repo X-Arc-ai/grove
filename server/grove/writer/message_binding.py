@@ -45,6 +45,8 @@ def retained_messages(source: dict, connector: dict) -> list[dict] | None:
     Detect typed identities even for empty, malformed or pointer-only sources. A typed fact
     on any retained row rejects the complete source, including rows outside the selected range.
     """
+    if source.get("parser_version") == "material.title.v1":
+        raise _bad("material_title_unadmitted")
     if (
         source.get("parser_version") in _TYPED_PARSERS
         or connector.get("provider") in _TYPED_PROVIDERS
