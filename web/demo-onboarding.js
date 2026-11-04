@@ -19,14 +19,9 @@
   });
   // Keep only fixed public controls in this URL. No file or account data belongs here.
   window.history.replaceState(null, '', '/demo/onboarding' + (start ? '?provider=' + provider + '&start=1' : ''));
-  document.title = 'Simulation · Grove';
+  document.title = 'Grove';
+  window.__GROVE_SIM_TICK_MS__ = 3000;
   document.addEventListener('DOMContentLoaded', function () {
-    var marker = document.createElement('aside');
-    marker.id = 'grove-demo-marker';
-    marker.setAttribute('aria-label', 'Simulation controls');
-    marker.innerHTML = '<div><strong>Simulation</strong><span>Invented data. Your file was not uploaded or saved.</span></div>' +
-      '<a href="/demo/onboarding">Restart demo</a><a href="/">Return to live Grove</a>';
-    document.body.appendChild(marker);
     if (start) window.GroveSimulation.importSource('conversations', {
       provider: provider, name: 'Synthetic example', label: provider === 'claude' ? 'Claude' : 'ChatGPT'
     });
