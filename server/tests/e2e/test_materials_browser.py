@@ -226,12 +226,23 @@ def test_file_bytes_formats_and_encoded_filename(material_page, extension):
         data = template_presentation()
     name = "Café %20." + extension
     before = page.context.request.get("/v1/views/graph").json()
-    page.get_by_role("button", name="Add files +", exact=True).click()
+    add_files = page.get_by_role("button", name="Add files +", exact=True)
+    expect(add_files).to_be_enabled()
+    add_files.click()
     page.locator("[data-material-file]").set_input_files(
         {"name": name, "mimeType": "application/octet-stream", "buffer": data}
     )
-    page.get_by_role("button", name="Upload file", exact=True).click()
+    with page.expect_response(
+        lambda response: (
+            response.url.endswith("/v1/materials/files") and response.request.method == "POST"
+        )
+    ) as upload:
+        page.get_by_role("button", name="Upload file", exact=True).click()
+    assert upload.value.status == 201
+    assert upload.value.request.header_value("content-length") == str(len(data))
     page.get_by_text("File saved. Brain extraction needs source details.", exact=True).wait_for()
+    expect(page.get_by_role("heading", name="Add what matters", exact=True)).to_be_visible()
+    shot(page, "onboarding-file-saved-" + extension)
     saved = materials(page)[0]
     assert saved["title"] == name
     assert saved["request"] is None and saved["graph_state"] == "held_provenance"
