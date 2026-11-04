@@ -539,7 +539,8 @@
     },1800);
   }
   function render(force){var s=api.getState(),onboard=!s.auth||!s.onboardingComplete;if(!s.auth&&!ui.authStage)ui.authStage='signin';if(!logoutPage()&&(ui.panel!=='profile'||ui.settingsTab!=='account'))ui.logoutError='';var shape=[onboard,ui.step,ui.panel,ui.guide,ui.guideStep,ui.guideStage,ui.settingsTab,ui.host,ui.authStage,ui.sourceTab,ui.filePicker,ui.noteEditor,ui.confirm&&JSON.stringify(ui.confirm),ui.requestTab,ui.requestId,(s.requests||[]).map(function(r){return r.id+':'+r.status;}).join(','),Object.keys(s.pendingExports).join(','),Object.keys(s.accountImports).map(function(id){return id+':'+s.accountImports[id].status;}).join(','),(s.connectedHosts||[]).join(','),(s.mcpClients||[]).map(function(c){return c.id;}).join(',')].join('|');
-    if(force||shape!==lastShape){lastShape=shape;var content=ui.authStage?signIn():logoutPage()?logoutConfirmation():(live||demo)&&ui.host?hostGuide():ui.guide?guide():onboard?(ui.step===0?welcome():setup()):ui.panel==='profile'?profile():ui.panel==='health'?health():ui.panel==='connections'?connections():ui.panel==='sources'?sourcesPanel():ui.panel==='requests'?requestsPanel():'';if(ui.confirm)content='<div class="gp-confirm-context" inert aria-hidden="true">'+content.replace('aria-modal="true"','aria-modal="false"')+'</div>'+confirmation();modalRoot.innerHTML=content;if(ui.error&&content){var err=document.createElement('p');err.className='gp-footnote';err.setAttribute('role','alert');err.textContent=ui.error;var dialog=modalRoot.querySelector('.gp-auth-form')||modalRoot.querySelector('section');if(dialog)dialog.appendChild(err);}bind();if(ui.confirmScroll!=null){var pane=modalRoot.querySelector('.gp-settings-content');if(pane)pane.scrollTop=ui.confirmScroll;if(!ui.confirm)ui.confirmScroll=null;}fitGuide();positionRequests();if(window.GroveEntryScene)window.GroveEntryScene.mount(modalRoot.querySelector('.gp-entry-canvas'));settleEntrance();if(force&&content){focus(ui.confirm?'#gp-confirm-title':ui.confirmReturn||'#gp-title');if(!ui.confirm)ui.confirmReturn=null;}}
+    var changed=force||shape!==lastShape;
+    if(changed){lastShape=shape;var content=ui.authStage?signIn():logoutPage()?logoutConfirmation():(live||demo)&&ui.host?hostGuide():ui.guide?guide():onboard?(ui.step===0?welcome():setup()):ui.panel==='profile'?profile():ui.panel==='health'?health():ui.panel==='connections'?connections():ui.panel==='sources'?sourcesPanel():ui.panel==='requests'?requestsPanel():'';if(ui.confirm)content='<div class="gp-confirm-context" inert aria-hidden="true">'+content.replace('aria-modal="true"','aria-modal="false"')+'</div>'+confirmation();modalRoot.innerHTML=content;if(ui.error&&content){var err=document.createElement('p');err.className='gp-footnote';err.setAttribute('role','alert');err.textContent=ui.error;var dialog=modalRoot.querySelector('.gp-auth-form')||modalRoot.querySelector('section');if(dialog)dialog.appendChild(err);}bind();if(ui.confirmScroll!=null){var pane=modalRoot.querySelector('.gp-settings-content');if(pane)pane.scrollTop=ui.confirmScroll;if(!ui.confirm)ui.confirmScroll=null;}fitGuide();positionRequests();if(window.GroveEntryScene)window.GroveEntryScene.mount(modalRoot.querySelector('.gp-entry-canvas'));settleEntrance();if(force&&content){focus(ui.confirm?'#gp-confirm-title':ui.confirmReturn||'#gp-title');if(!ui.confirm)ui.confirmReturn=null;}}
     document.body.classList.toggle('gp-onboarding-open',onboard);document.body.classList.toggle('gp-welcome-open',onboard&&ui.step===0&&!ui.authStage);document.body.classList.toggle('gp-auth-open',!!ui.authStage);document.body.classList.toggle('gp-modal-open',(!!ui.panel&&ui.panel!=='requests')||!!ui.guide||!!((live||demo)&&ui.host));document.body.classList.toggle('gp-tour-open',!!ui.tour);
     document.body.classList.toggle('gp-logout-open',!!logoutPage());
     var fullModal=onboard||logoutPage()||!!((live||demo)&&ui.host)||!!ui.guide||['profile','health','connections','sources'].includes(ui.panel);
@@ -551,6 +552,8 @@
     if(chrome.innerHTML!==bottom){chrome.innerHTML=bottom;bindChrome();}
     var rq=document.getElementById('requests-button'),pending=(s.requests||[]).filter(function(r){return r.status==='open';}).length;rq.hidden=onboard;rq.classList.toggle('has-pending',pending>0);rq.setAttribute('aria-label','Grove needs your input'+(pending?', '+pending+(pending===1?' question':' questions'):''));rq.setAttribute('aria-expanded',String(ui.panel==='requests'));
     sessionNote.textContent=ui.offline?SIGNIN_COPY.offline:(ui.reminderError||'');sessionNote.hidden=!sessionNote.textContent;
+    // Preserve native input focus and file selection during graph-only updates.
+    if(changed&&live&&window.GroveMaterials)window.GroveMaterials.mount(modalRoot);
     updateLive();renderTour();
     if(live)refreshLiveData(false);
   }
@@ -707,6 +710,7 @@
     else{x=r.left;y=r.top-ch-gap;}
     x=Math.max(16,Math.min(w-cw-16,x));y=Math.max(20,Math.min(h-ch-20,y));
     card.style.left=Math.round(x)+'px';card.style.top=Math.round(y)+'px';
+    if(ui.tour===5&&live&&w<=700)document.body.style.setProperty('--grove-tour-card-bottom',Math.round(y+ch+gap)+'px');
   }
   function renderTour(){
     document.body.classList.toggle('gp-tour-open',!!ui.tour&&!ui.panel);
