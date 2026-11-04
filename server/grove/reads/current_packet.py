@@ -323,12 +323,7 @@ class CurrentRenderer:
         how = ASK_THE_PERSON if raw_how == ASK_THE_PERSON else _json(raw_how, (dict, str), {})
         if isinstance(how, str) and how != ASK_THE_PERSON:
             raise PacketError("invalid_recheck_instruction")
-        if (
-            isinstance(how, dict)
-            and "connector" in how
-            and how["connector"] not in {row.connector_id for row in self.coverage.sources}
-        ):
-            raise PacketError("missing_recheck_connector")
+        self._check_recheck_sources(item["id"], how)
         clocks["recheck_how"] = how
         clocks["recheck_display"] = recheck_words(
             clocks["recheck_by"], how=how_words(how), zone=UTC, now=self.captured_at
@@ -339,6 +334,31 @@ class CurrentRenderer:
             if verification is None or verification.get("claim_id") != item["id"]:
                 raise PacketError("missing_confirmation")
         return clocks
+
+    def _check_recheck_sources(self, item_id: str, how: Any) -> None:
+        if not isinstance(how, dict) or "connector" not in how:
+            return
+        # D4 stores a connector type here, not an instance ID. The caller resolves the
+        # particular instances; matching a type alone must not invent those references.
+        source_kind = how["connector"]
+        by_id = {row.connector_id: row for row in self.coverage.sources}
+        known_kinds = {row.source_kind for row in by_id.values()} | set(self.coverage.not_connected)
+        if not isinstance(source_kind, str) or source_kind not in known_kinds:
+            raise PacketError("missing_recheck_connector")
+        refs = self.recheck_references.get(item_id, {})
+        ids = refs.get("connector_ids", ())
+        missing = refs.get("missing_kinds", ())
+        for values in (ids, missing):
+            if not isinstance(values, (list, tuple)) or any(
+                not isinstance(value, str) or not value for value in values
+            ):
+                raise PacketError("invalid_recheck_reference")
+        if any(
+            identity not in by_id or by_id[identity].source_kind != source_kind for identity in ids
+        ):
+            raise PacketError("missing_recheck_connector")
+        if refs.get("complete") is True and not ids and source_kind not in missing:
+            raise PacketError("missing_recheck_connector")
 
     def _link(self, item_id: str, link: Mapping) -> dict:
         other_id = link["to_item"] if link["from_item"] == item_id else link["from_item"]
