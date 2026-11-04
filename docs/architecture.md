@@ -1,9 +1,11 @@
 # Architecture
 
-Source baseline: `c145cf8b450f3ae7ab43989cf07969ee5b493057`, recorded on 2026-11-04 at 19:04 UTC.
-The recorded API serves PR #60, `564cc99b9c8a718f163503cc23227a8f2908fcd1`.
+Source baseline: `7d94266e1512ef9c5815d343518131a18bc6cbd8`, the separate develop merge of PR #66.
+The recording API serves PR #66 source `a9da90686d687639a75a154172adbe2bfb4a1ea7`
+over PR60 `564cc99b9c8a718f163503cc23227a8f2908fcd1`.
+At 2026-11-04 20:06:46 UTC, 26 independent anonymous public checks passed, including 15 exact asset hashes.
 The runner and gateway remain on `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e`.
-Release evidence update: 2026-11-04 at 19:04:34 UTC. Request19 closure and separate
+Historical release evidence: 2026-11-04 at 19:04:34 UTC. Request19 closure and separate
 verification PASSED. Request18 remains FAILED. This was not a new code deployment.
 These are distinct revisions and outcomes. [Submission status](submission-status.md) records evidence limits.
 
@@ -64,31 +66,37 @@ Muse acceptance remain **NOT RUN**. The source refuses mixed read/write MCP batc
 
 The browser contains the approved pre-event presentation assets and subsequent API integration.
 Worker status has a [recorded API contract](worker-activity.md). A toggle or status record does
-not prove complete worker execution. The UI repair in PR #60 is published source in this baseline.
-The recorded API serves PR #60; this does not establish owner or full UI acceptance.
-Its source checks do not prove deployed acceptance. Full responsive, control, and first-load
-transfer acceptance remain open.
+not prove complete worker execution. The PR #66 recording update changes seven UI/test paths over PR60.
+Its independent predeploy review inspected 30 desktop/mobile screenshots with synthetic APIs.
+That bounded review passed; it does not establish a real user or Muse pass. Full responsive,
+control, and first-load transfer acceptance remain open.
 Disabled or disclosed controls still require implementation where the feature scope requires them.
 
 ## Sources and materials
 
 PR #58 changes ordinary authenticated ChatGPT/Claude JSON and ZIP uploads to a fresh mandatory
 screening policy. It removes the exact-Lumen-only fallback without bypassing screening.
-It is present in this source baseline and the recorded PR60 API.
+It is present in this source baseline and the PR #66 recording API.
 An accepted upload retains screened Sources, Episodes, and receipts; it does not create graph
 Items or links. The prepared graph is a separate dataset. See [ingest](ingest.md).
+
+A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC:
+one source, one episode, and two kept messages; the exact repeat added zero new records.
+The upload did not change the graph. Real prepared-account Muse use remains **NOT RUN**;
+the manual account/Muse flow remains stopped.
 
 Calendar and Git have read-only connector source and revocation rules. Actual configured
 provider consent remains separate acceptance. [Pipedream](pipedream.md) imports no content.
 PR #59 adds corrected account status, public catalog metadata, and confirmed account-scoped
-disconnection. That source is in the recorded PR60 API. A connected badge proves no import.
+disconnection. That source remains in the recording API. A connected badge proves no import.
 
 Internal document, WhatsApp, image, and audio parsers exist. PR #61 merged materials as
 `0682eb201ad0ccfb8a8a9d074d07759ec8eb31a1`, from source `d17151421e027a4fe19b269a9f06cf6dcd17fe33`.
 This published source adds screened storage, immutable revisions, and notes with ordinary Requests.
-Files report `held_provenance` and create no file Request. Materials are not deployed in the recorded PR60 API.
+Files report `held_provenance` and create no file Request. Materials are not deployed in the recording API.
 Migration `0019_material_revisions.cypher`, a canonical external ledger, and coordinated
-API/runner source require a future materials release.
+API/runner source require a future materials release. The merged deployment prerequisites remain undeployed;
+Operation A inventory returned HOLD with no mutation. Riverlight is uncommitted, unverified, and not seeded.
 Typed-file graph admission remains separate work. Parser tests do not prove durable retention,
 live extraction, or complete material acceptance. See [media](ingest-media.md),
 [WhatsApp](ingest-whatsapp.md), and [audio](ingest-audio.md).
@@ -112,11 +120,14 @@ The wrapper expected those absent paths, so Request18 remains FAILED. Root separ
 `/healthz` HTTP 200 at exact PR60.
 
 The release evidence update at 2026-11-04 19:04:34 UTC records completed Request19 closure
-and separate verification, both with natural exit 0. `deployed.sha` now matches the PR60 API;
-`previous.sha` retains Request17. The failed barrier is archived and inactive. The closure
+and separate verification, both with natural exit 0. At that time, `deployed.sha` matched the PR60 API;
+`previous.sha` retained Request17. The failed barrier was archived and inactive. The closure
 receipt and terminal record passed verification, and all locks were free at that verification.
 No rebuild, restart, migration, seed, or runtime data write occurred. PR #63 changes the
 source helper, not the served application. See [the receipt facts](submission-status.md#request19-release-evidence-update).
+The later PR #66 recording release performed one API build, replacement, and start.
+It performed no other-service replacement, migration, seed, or retry. The wrapper matched
+402 image paths. Global aggregate counts remained unchanged; they are not an account graph count.
 Health and synthetic backend results do not certify owner login, Muse, live provider consent,
 complete worker behavior, or complete erasure. No new runtime checks ran for this document refresh.
 

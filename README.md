@@ -8,15 +8,17 @@ The repository is **PRIVATE**. This is a pre-release build: the complete user jo
 **not yet passed**. Start with [the recorded status](docs/submission-status.md) for the
 source baseline, deployed service revisions, and open acceptance.
 
-The documented source snapshot at 2026-11-04 19:04 UTC is `c145cf8b450f3ae7ab43989cf07969ee5b493057`.
-It includes the published UI repair in PR #60, materials in PR #61, and the separate
-source helper in PR #63. Published source does not prove deployed acceptance.
+The documented develop snapshot is `7d94266e1512ef9c5815d343518131a18bc6cbd8`.
+The recording release serves PR #66 source `a9da90686d687639a75a154172adbe2bfb4a1ea7`,
+an API-only UI update over PR #60. At 2026-11-04 20:06:46 UTC, all 26 independent anonymous
+public checks passed, including 15 exact asset hashes. The runner/gateway retain their
+separate revision. Materials and their prerequisites are merged but not deployed.
+See [the recording release evidence](docs/submission-status.md#recording-release) for the limits.
 
-Release evidence update: 2026-11-04 at 19:04:34 UTC. Request19 closure and separate
-verification PASSED. The recorded API and `deployed.sha` match PR #60; the runner/gateway
-revisions remain distinct. Request18 remains FAILED. This was operational closure with no
-rebuild, restart, migration, seed, or runtime data write, not a new code deployment.
-See [the dated receipt facts](docs/submission-status.md#request19-release-evidence-update) and remaining acceptance limits.
+Historical release evidence: 2026-11-04 at 19:04:34 UTC. Request19 closure and separate
+verification PASSED. Request18 remains FAILED. That closure involved no rebuild, restart,
+migration, seed, or runtime data write; it was not a new code deployment.
+The [dated Request19 receipt](docs/submission-status.md#request19-release-evidence-update) remains preserved.
 
 ## What is here
 
@@ -97,7 +99,7 @@ different purposes. The release owner supplies authorized access separately. Rea
 Open [Grove](https://app.grove.x-arc.ai/) in a fresh browser profile. Use **Continue with email**
 with an account you control, or configured Google sign-in. Complete the real login flow.
 Do not put account identifiers, codes, tokens, or consent URLs in the repository or video.
-The current owner login/upload/Muse rehearsal remains **NOT RUN** and is paused.
+The manual account/Muse flow remains stopped. Real prepared-account Muse use remains **NOT RUN**.
 
 ### 2. Upload the Lumen example
 
@@ -107,9 +109,11 @@ Submit it once and inspect the server receipt. Repeat it to check **No new messa
 Require the notice **Your graph has not changed from this upload.**
 
 The accepted source also supports ordinary ChatGPT/Claude JSON and ZIP exports through
-mandatory screening. That repair is in the recorded PR60 API; the paused owner flow remains unverified. The upload
-retains screened sources; it does not create the prepared graph. A reminder does not request
-an export from a provider. Log out before the prepared-account exercise.
+mandatory screening. A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC:
+one source, one episode, and two kept messages; the exact repeat added zero new records.
+The upload did not change the graph. This dated result does not prove graph extraction or Muse use.
+PR #66 retains that upload implementation. A reminder does not request an export from a provider.
+Log out before the prepared-account exercise.
 
 ### 3. Connect Muse to the prepared account
 
@@ -168,7 +172,7 @@ If `store` executes, stop and record it without a retry. Finish with `muse mcp l
 ## Further reading
 
 [Pipedream](docs/pipedream.md) supports authorization and status only for provider data;
-it imports no content. The catalog and confirmed disconnect source are in the recorded PR60 API.
+it imports no content. The PR #66 recording API retains the catalog and confirmed disconnect source.
 Real provider consent remains unverified.
 
 - [Architecture](docs/architecture.md) and [store map](docs/store-map.md)

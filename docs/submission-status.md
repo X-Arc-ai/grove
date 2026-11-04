@@ -1,25 +1,58 @@
 # Submission status
 
-Documentation source snapshot: 2026-11-04 at 19:04 UTC. Repository: **PRIVATE**.
+Documentation release snapshot: 2026-11-04 at 20:06:46 UTC. Repository: **PRIVATE**.
 This package records accepted source and dated release evidence. It does not report a new
-host check, complete product acceptance, or external submission. The current owner manual
-login/upload/Muse flow is paused and remains **NOT RUN** for this release.
+host check, complete product acceptance, or external submission. The manual account/Muse flow
+remains stopped. Real prepared-account Muse use remains **NOT RUN**.
 
 ## Source and deployed revisions
 
 | Surface | Recorded revision | Evidence boundary |
 |---|---|---|
-| Accepted source baseline | `c145cf8b450f3ae7ab43989cf07969ee5b493057` | Includes PRs #58 and #59, UI PR #60, materials PR #61, and the separate PR #63 source helper |
-| Recorded served API, PR #60 | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Request19 closure and separate verification PASSED at the dated release update below; Root verified healthy `/healthz`; Request18 remains FAILED |
-| Retained runner and gateway | `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e` | Request19 verified unchanged container identities, states, images, and restart counts |
-| Merged materials, PR #61 | `0682eb201ad0ccfb8a8a9d074d07759ec8eb31a1` | Accepted source `d17151421e027a4fe19b269a9f06cf6dcd17fe33`; all 43 component paths match; not deployed in the recorded PR60 API |
+| Accepted source baseline | `7d94266e1512ef9c5815d343518131a18bc6cbd8` | Separate develop merge of PR #66; includes PRs #58 and #59, materials, and deployment prerequisites; not the deployed source SHA |
+| Recorded served API, PR #66 | `a9da90686d687639a75a154172adbe2bfb4a1ea7` | API-only recording release over exact PR60; independent anonymous public verification passed at 20:06:46 UTC |
+| Retained runner and gateway | `266d0cf7429eb2ca51bd5bebf9f5785acbcd7b2e` | Separate prior revision; the recording release replaced neither service |
+| Merged materials, PR #61 | `0682eb201ad0ccfb8a8a9d074d07759ec8eb31a1` | Accepted source `d17151421e027a4fe19b269a9f06cf6dcd17fe33`; all 43 component paths match; not deployed in the recording API |
 | Source helper, PR #63 | `c145cf8b450f3ae7ab43989cf07969ee5b493057` | Source `f9c29e7e9afcdedcfce8190c9569b9bc71fd294a`; separates checkout and production image manifests; does not change the served application |
-| Verified `deployed.sha` | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Request19 release marker matches the PR60 API |
-| Historical Request17 API, retained `previous.sha` | `cbcfe574e03880569bfcdb9a9732f79a7ef3daea` | Verified previous release marker, not the currently recorded served API |
+| Verified `deployed.sha` | `a9da90686d687639a75a154172adbe2bfb4a1ea7` | Recording release marker matches the deployed PR66 source |
+| Previous recording API, PR #60 | `564cc99b9c8a718f163503cc23227a8f2908fcd1` | Recording release base and `previous.sha`; also the target of the dated ZIP and Request19 checks |
+| Historical Request17 API | `cbcfe574e03880569bfcdb9a9732f79a7ef3daea` | Request19's historical `previous.sha`, not the currently recorded served API |
 
 The document commit belongs in its PR receipt because a commit cannot contain its own final SHA.
 Published source does not prove deployed acceptance. The [event record](../HACKATHON.md)
 retains its distinct GitHub snapshot at 18:36 UTC through PR #59, with later source merges noted separately.
+
+## Recording release
+
+PR #66 deployed source `a9da90686d687639a75a154172adbe2bfb4a1ea7` over exact PR60.
+The separate develop merge is `7d94266e1512ef9c5815d343518131a18bc6cbd8`.
+Its seven changed paths contain UI code and tests. The release performed one API build,
+one API replacement, and one API start, with zero other-service replacements, migrations,
+seeds, or retries. The wrapper matched 402 image paths. Global aggregate counts remained
+unchanged across the release; those aggregates are not an account graph count.
+
+Root's separate anonymous public verification passed all 26 checks at 2026-11-04
+20:06:46 UTC, including 15 exact asset hashes and the exact `/healthz` build.
+The independent predeploy UI review inspected 30 desktop/mobile screenshots with synthetic APIs.
+Its bounded review passed; it was not a real user or Muse pass. The original browser run
+retains 84 passes and two service-worker fixture failures; the corrected targeted run passed
+28 checks. The inherited mobile long-name wrap remains recorded. PR66 Validate was CANCELLED;
+review-verdict was absent and waived. Neither is a CI pass.
+
+The recording receipt SHA-256 is
+`82e9868263ca6776e46ec0755357c3371ed2a9c4f4a50c58dbdd643ba59ba738`.
+This document reports supplied evidence; it did not repeat browser or host checks.
+
+A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC. It retained
+one source, one episode, and two kept messages. The exact repeat added zero new records.
+The upload did not change the graph. This proves that import and duplicate handling for
+the tested archive and release, not graph extraction or real prepared-account Muse use.
+The manual account/Muse flow remains stopped and real prepared-account Muse use remains **NOT RUN**.
+
+Materials and their deployment prerequisites are merged but not deployed. Operation A inventory
+returned **HOLD** with no mutation. Riverlight source is uncommitted and unverified, and it was
+not seeded. The complete 40-story corpus and full product/public acceptance remain open.
+The repository remains private; no public submission is authorized.
 
 ## Preserved Request18 failure
 
@@ -103,7 +136,7 @@ The natural Muse questions and automatic Grove use remain unverified. Backend re
 | Capability | Current source and remaining limit |
 |---|---|
 | Storage, writer, history, and time | Source components exist with scoped tests; a queued request is not a saved receipt |
-| Ordinary chat uploads | PR #58 supports screened ChatGPT/Claude JSON and ZIP retention; no graph Items or links result from retention alone |
+| Ordinary chat uploads | PR #58 supports screened ChatGPT/Claude JSON and ZIP retention; the dated real Claude ZIP and exact repeat passed on PR60; no graph Items or links result from retention alone |
 | Restricted demo | Prepared synthetic Cedar/project data supports restricted recall; the upload does not create that graph |
 | General MCP | `DEFAULT_TOOLS = ()`; the restricted pair does not establish general `store`/`recall` acceptance |
 | Calendar/Git | Read-only connector source exists; actual consent and configured live-source acceptance remain open |
@@ -111,7 +144,7 @@ The natural Muse questions and automatic Grove use remain unverified. Backend re
 | Files and notes | Merged PR #61 supplies screened storage and ordinary note Requests; files remain `held_provenance` with no file Request; typed-file graph admission remains separate |
 | Workers and Questions | Status and inactive protocol components exist; complete D7/D10/D11/D14 runtime acceptance remains open |
 | Privacy, reset, and restore | Source components and guards exist; complete delete-brain and physical/runtime restore acceptance remain open |
-| UI | PR #60 is the recorded served API; source checks apply only to their recorded heads; full control and responsive acceptance remain open |
+| UI | PR #66 is the recorded served API; bounded synthetic desktop/mobile review and anonymous public checks passed; real user, full control, and complete responsive acceptance remain open |
 | Performance | Earlier HTML and asset measurements are historical; total initial transfer and current first-paint acceptance remain unverified |
 
 Unavailable controls do not satisfy the required feature scope. CI or source publication does
