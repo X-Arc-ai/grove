@@ -523,7 +523,8 @@ class Cutover:
                 attempt_deadline = self.commands.deadline
                 self.commands.deadline = min(attempt_deadline, clock.monotonic() + 180)
                 self.compose(
-                    "create",
+                    "up",
+                    "--no-start",
                     "--no-build",
                     "--no-deps",
                     "--force-recreate",
