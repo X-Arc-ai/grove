@@ -15,7 +15,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 
-from grove.api import health, mcp, oauth, uploads, wellknown
+from grove.api import forget, health, mcp, oauth, uploads, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
@@ -38,6 +38,8 @@ NO_STORE_PATHS = (
     AUTH_PREFIX,
     INTERNAL_PREFIX,
     uploads.PREFIX,
+    forget.PREFIX,
+    "/v1/privacy",
     *OAUTH_PATHS,
     "/.well-known/",
 )
@@ -70,6 +72,10 @@ def _add_web_pages(app: FastAPI, folder: str) -> None:
     @app.get("/privacy", include_in_schema=False)
     def privacy() -> FileResponse:
         return page("privacy.html")
+
+    @app.get("/forget", include_in_schema=False)
+    def forget_page() -> FileResponse:
+        return page("forget.html", {"Cache-Control": "no-store"})
 
 
 def create_app(
@@ -140,6 +146,8 @@ def create_app(
     app.include_router(mcp.router)
     app.include_router(router)
     app.include_router(uploads.router)
+    app.include_router(forget.router)
+    app.include_router(forget.public_router)
     app.include_router(auth_router)
     app.include_router(internal_router)
     folder = os.environ.get(WEB_DIST_ENV)

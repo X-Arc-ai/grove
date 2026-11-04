@@ -1,10 +1,10 @@
 """Build Grove's pages into self-contained HTML files in web/dist: the views (index.html), the
-public homepage (home.html), the privacy page (privacy.html) and the consent page (consent.html).
+public homepage (home.html), privacy, consent and forget pages.
 
 Standard library only; runs under the Mac's /usr/bin/python3 (3.9) and under 3.12.
 The views load no fixture. The checks inject a synthetic one into the unbundled sources
 (window.GROVE_FIXTURE); the bundle compiles that hook out, so it always runs live.
-The privacy page's table comes from docs/data-flow.md, so the page cannot say less than that file.
+The privacy generator writes docs/data-flow.md; the page includes every generated table row.
 The consent page is a template: the API fills its two marks at each /authorize (grove.oauth.consent).
 """
 from pathlib import Path
@@ -12,12 +12,25 @@ import base64
 import html as html_text
 import json
 import re
+import importlib.util
 
 ROOT = Path(__file__).resolve().parent
 FIXTURE_HOOK = "window.GROVE_FIXTURE"
 DATA_FLOW = ROOT.parent / "docs" / "data-flow.md"
 TABLE_MARK = "<!-- data-flow-table -->"
 CONSENT_MARKS = ("<!--grove:title-->", "<!--grove:consent-->")
+FLOW_SOURCE = ROOT.parent / "server" / "grove" / "privacy.py"
+
+
+def generate_data_flow():
+    """The same fixed vocabulary serves the build and the runtime configuration endpoint."""
+    if not FLOW_SOURCE.is_file():
+        raise SystemExit("build.py: the data-flow generator is missing")
+    spec = importlib.util.spec_from_file_location("grove_build_privacy", FLOW_SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    DATA_FLOW.parent.mkdir(parents=True, exist_ok=True)
+    DATA_FLOW.write_text(module.markdown_statement(), encoding="utf-8")
 
 
 def asset_url(raw, base):
@@ -105,7 +118,8 @@ def bundle(name):
     return html
 
 
-pages = {name: bundle(name) for name in ("index.html", "home.html", "privacy.html", "consent.html")}
+generate_data_flow()
+pages = {name: bundle(name) for name in ("index.html", "home.html", "privacy.html", "consent.html", "forget.html")}
 for mark in CONSENT_MARKS:
     if pages["consent.html"].count(mark) != 1:
         raise SystemExit("build.py: consent.html must hold the mark " + mark + " exactly once")
