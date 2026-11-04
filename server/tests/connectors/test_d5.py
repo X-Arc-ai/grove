@@ -326,6 +326,11 @@ def test_actual_calendar_observation_cannot_borrow_event_binding(
     src = calendar_source(settings={"log_from": "2027-02-01"})
     key = src["key"] if borrowing == "whole" else "another-message-key"
     locator = "whole" if borrowing == "whole" else "key:" + src["key"]
+    if borrowing == "whole":
+        with pytest.raises(BatchDeclined) as caught:
+            save_event(driver, seeded_world, observe(src, key=key, locator=locator))
+        assert {refusal.rule for refusal in caught.value.refusals} == {"message_key_locator"}
+        return
     _, evidence = save_event(driver, seeded_world, observe(src, key=key, locator=locator))
     assert evidence["source_type"] == "planned"
 

@@ -21,7 +21,7 @@ RANK = {source_type: rank for rank, source_type in enumerate(ORDER)}
 REPORT_CLASSES = frozenset({"report_happened", "report_state"})
 ARTIFACT_CLASS = "artifact"
 # Developer config (S27): what each connector type yields.
-_ALWAYS_CONFIRMED = frozenset({"git", "web_pages", "identity"})
+_ALWAYS_CONFIRMED = frozenset({"web_pages", "identity"})
 _ALWAYS_PLANNED = frozenset({"reminders"})
 _ARTIFACT_CONNECTORS = frozenset({"notes_files_releases", "screenshots"})
 _ANSWER_RELAYS = frozenset({"answer", "correction"})
@@ -58,6 +58,10 @@ def derive_row_source_type(
     if connector_type == "calendar":
         # D5: a passing date never upgrades planned; only the person's log setting does.
         return "confirmed" if facts.logged else "planned"
+    if connector_type == "git":
+        # The object proves its commit/merge artifact, not claims in its message.
+        # A title or a report of deployment remains the author's statement (D5).
+        return "confirmed" if statement_class == ARTIFACT_CLASS else reported
     if facts.automated and (statement_class in REPORT_CLASSES or statement_class == ARTIFACT_CLASS):
         # The system that acted reports its own action (D5's table, line 1086).
         return "confirmed"

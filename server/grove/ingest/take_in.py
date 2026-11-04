@@ -202,6 +202,17 @@ def _take_chat(
             screened_parts.append(screened)
         cuts = cut_episodes(spec, chat, kept, clock.now(world_id))
         moments = [message.at for message in delta if message.at is not None]
+        events = {
+            message.key: message.calendar_event.to_writer()
+            for message in kept
+            if message.calendar_event is not None
+        }
+        speakers = None
+        if spec.provider in ("google_calendar", "git"):
+            speakers = {
+                message.key: {"kind": message.speaker_kind, "locator": "key:" + message.key}
+                for message in kept
+            }
         try:
             written = write_chat_delta(
                 driver,
@@ -212,6 +223,8 @@ def _take_chat(
                 delta_keys=[message.key for message in delta],
                 episodes=cuts,
                 newest_at=max(moments) if moments else None,
+                calendar_events=events or None,
+                speakers=speakers,
             )
         except DeltaMoved:
             continue
@@ -242,6 +255,10 @@ def take_in(
         raise TypeError("take_in needs a Screener")
     attempted = clock.now(world_id)
     chats = list(spec.parse(upload))
+    if any(message.calendar_event is not None for chat in chats for message in chat.messages):
+        raise InvalidRecord(
+            "invalid_arguments", "calendar_facts", "uploads cannot assert Calendar facts"
+        )
     connector_id = ensure_connector(
         driver, world_id, spec.connector_type, spec.provider, batch_rule=spec.batch_rule
     )
@@ -274,6 +291,14 @@ def take_parsed(
         raise InvalidRecord("invalid_arguments", "connector", "connector does not match the reader")
     if not isinstance(screener, Screener):
         raise TypeError("take_parsed needs a Screener")
+    if (spec.provider, spec.connector_type, spec.parser_version) != (
+        "google_calendar",
+        "calendar",
+        "google_calendar.v1",
+    ) and any(message.calendar_event is not None for chat in chats for message in chat.messages):
+        raise InvalidRecord(
+            "invalid_arguments", "calendar_facts", "Calendar facts need the dedicated reader"
+        )
     attempted = attempted_at or clock.now(world_id)
     result = TakeInResult(state=NOTHING_NEW, provider=spec.provider, connector_id=connector_id)
     result.chats = len(chats)
