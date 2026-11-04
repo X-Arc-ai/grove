@@ -642,3 +642,39 @@ def test_operations_request_only_the_documented_scopes(setup, path, method, body
             "connect:accounts:write",
             "connect:apps:*",
         }
+
+
+@pytest.mark.parametrize("slug", ["_0codekit", "_1crm", "__1msg"])
+def test_catalog_accepts_leading_underscores_through_status_and_connect(setup, slug):
+    """Pipedream's first real catalog page includes these valid identifier shapes."""
+    client, app, session, _, _ = setup
+    metadata = {"name_slug": slug, "name": "Example app", "auth_type": "keys"}
+
+    def transport(request):
+        path = request.url.path
+        if path == "/v1/oauth/token":
+            return httpx.Response(200, json={"access_token": "test-access"})
+        if path == "/v1/connect/apps":
+            return httpx.Response(200, json=page([metadata, app_row("gmail")]))
+        if path == "/v1/connect/apps/" + slug:
+            return httpx.Response(200, json={"data": metadata})
+        if path.endswith("/accounts"):
+            assert request.url.params["external_user_id"] == pipedream.external_user_id(session)
+            assert request.url.params["app"] == slug
+            return httpx.Response(200, json=page([]))
+        assert path.endswith("/tokens")
+        assert json.loads(request.content)["app_id"] == slug
+        return httpx.Response(
+            200,
+            json={
+                "connect_link_url": "https://pipedream.com/_static/connect.html?token=test-only",
+                "expires_at": "2026-11-04T23:00:00Z",
+            },
+        )
+
+    override_transport(app, transport)
+    response = client.get(pipedream.PREFIX + "/apps")
+    assert response.status_code == 200
+    assert [row["provider"] for row in response.json()["apps"]] == [slug, "gmail"]
+    assert client.get(pipedream.PREFIX + "/accounts", params={"provider": slug}).status_code == 200
+    assert client.post(pipedream.PREFIX + "/" + slug + "/connect", json={}).status_code == 200
