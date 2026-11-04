@@ -115,6 +115,8 @@ def test_the_views_package_never_imports_the_writer():
 
 def assert_api_writer_boundary(files):
     allowed = {
+        # The app maps the shared refusal type without opening a writer operation.
+        "app.py": {"grove.writer.errors"},
         "views.py": {"grove.writer.positions"},
         "auth.py": {"grove.writer.accounts", "grove.writer.errors"},
         "oauth.py": {"grove.writer.oauth"},
@@ -141,12 +143,20 @@ def test_api_writer_imports_stay_within_the_explicit_route_boundary():
     assert_api_writer_boundary(sorted((SERVER / "grove" / "api").glob("*.py")))
 
 
+def test_api_app_can_import_the_shared_writer_error_type(tmp_path):
+    app = tmp_path / "app.py"
+    app.write_text("from grove.writer.errors import InvalidRecord")
+    assert_api_writer_boundary([app])
+
+
 @pytest.mark.parametrize(
     ("route", "source"),
     [
         ("unapproved.py", "from grove.writer.connectors import connection"),
         ("connectors.py", "from grove.writer.accounts import create_account"),
         ("views.py", "import grove.writer.connectors"),
+        ("app.py", "from grove.writer.accounts import create_account"),
+        ("forget.py", "from grove.writer.connectors import connection"),
     ],
 )
 def test_api_writer_boundary_rejects_unapproved_routes_and_imports(tmp_path, route, source):
