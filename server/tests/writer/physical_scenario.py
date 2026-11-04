@@ -33,7 +33,16 @@ from grove.writer.resolver import lexical_candidates
 from grove.writer.restore import _tag, _untag, take_snapshot
 from grove.writer.testing import plant_session, refuse_real_world
 from grove.writer.worlds import seed_primitives
-from tests.writer.physical_backup import Refused, require
+from tests.writer.physical_backup import (
+    AUX_ENTRY_LIMIT,
+    AUX_LIMIT,
+    BUFFER_SIZE,
+    MANIFEST_LIMIT,
+    Refused,
+    Usage,
+    measure_tree,
+    require,
+)
 
 
 def encoded(value: Any) -> str:
@@ -45,10 +54,33 @@ def private_manifest(root: Path, name: str, value: Any) -> None:
     require(name in {"baseline.json", "sanitized.json"}, "invalid_manifest_name")
     path = root / name
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(descriptor, "w") as handle:
-        handle.write(encoded(value))
-        handle.flush()
-        os.fsync(handle.fileno())
+    try:
+        written = 0
+        encoder = json.JSONEncoder(sort_keys=True, ensure_ascii=False, default=str)
+        with os.fdopen(descriptor, "wb") as handle:
+            for piece in encoder.iterencode(value):
+                # A scalar may be one encoder chunk. Reject its character lower
+                # bound before any UTF-8 allocation, then encode bounded slices.
+                require(written + len(piece) <= MANIFEST_LIMIT, "manifest_size_limit")
+                for offset in range(0, len(piece), BUFFER_SIZE // 4):
+                    data = piece[offset : offset + BUFFER_SIZE // 4].encode("utf-8")
+                    require(written + len(data) <= MANIFEST_LIMIT, "manifest_size_limit")
+                    handle.write(data)
+                    written += len(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # These are the scenario-owned auxiliary files, including both atomic
+        # ledger replacement paths. The orchestrator also counts every root file.
+        usage = Usage()
+        for name in ("baseline.json", "sanitized.json", "ledger"):
+            held = root / name
+            if held.exists():
+                usage += measure_tree(root, held, AUX_LIMIT, entry_limit=AUX_ENTRY_LIMIT)
+        require(usage.bytes <= AUX_LIMIT, "auxiliary_size_limit")
+        require(usage.entries <= AUX_ENTRY_LIMIT, "auxiliary_entry_limit")
+    except BaseException:
+        path.unlink()
+        raise
 
 
 def digest(value: Any) -> str:
