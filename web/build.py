@@ -81,9 +81,16 @@ def script(match, demo=False):
     text = (ROOT / match[1].removeprefix("./")).read_text(encoding="utf-8")
     if name == "conversation-preview.js":
         data = json.loads((ROOT / "demo.synthetic.json").read_text(encoding="utf-8"))
-        payload = "window.GroveClaudePreviewData=" + json.dumps(data).replace("<", "\\u003c") + ";"
+        edges = data["elements"]["edges"]
+        data["elements"]["edges"] = []
+        payload = "window.GroveClaudePreviewData=" + json.dumps(data, separators=(",", ":")).replace("<", "\\u003c") + ";"
+        edge_payload = "window.GroveClaudePreviewData.elements.edges=" + json.dumps(edges, separators=(",", ":")).replace("<", "\\u003c") + ";"
+        # The API serves each public asset only below its 4 MiB boundary.
+        if max(len(payload.encode("utf-8")), len(edge_payload.encode("utf-8"))) > 4 * 1024 * 1024:
+            raise SystemExit("build.py: split the Claude preview into smaller assets")
         url = emit_asset(payload.encode("utf-8"), ".js", "text/javascript")
-        text = "GroveDeferred.register('claude-preview'," + json.dumps(url) + ");\n" + text
+        edge_url = emit_asset(edge_payload.encode("utf-8"), ".js", "text/javascript")
+        text = "GroveDeferred.register('claude-preview'," + json.dumps(url) + ");\n" + "GroveDeferred.register('claude-preview-edges'," + json.dumps(edge_url) + ");\n" + text
     if name in DEFERRED:
         url = emit_asset(text.encode("utf-8"), ".js", "text/javascript")
         return "<script>GroveDeferred.register(" + json.dumps(DEFERRED[name]) + "," + json.dumps(url) + ");</script>"

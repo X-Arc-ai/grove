@@ -37,3 +37,27 @@ def test_old_demo_link_never_needs_a_separate_simulation_artifact(tmp_path):
     response = TestClient(app).get("/demo/onboarding")
     assert response.status_code == 200
     assert response.text == "ordinary login"
+
+
+def test_claude_preview_assets_fit_and_pass_the_real_public_asset_route():
+    """A successful static build must not ship a preview that the API returns as 404."""
+    import re
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    from grove.api.assets import add_public_assets
+
+    web = Path(__file__).resolve().parents[3] / "web"
+    subprocess.run([sys.executable, str(web / "build.py")], check=True, capture_output=True)
+    page = (web / "dist/index.html").read_text()
+    urls = re.findall(r"GroveDeferred\.register\('claude-preview(?:-edges)?',\"([^\"]+)\"\)", page)
+    assert urls, "The authenticated onboarding must register its Claude preview assets"
+    app = FastAPI()
+    add_public_assets(app, web / "dist")
+    client = TestClient(app)
+    for url in urls:
+        response = client.get(url)
+        assert response.status_code == 200, "The Claude preview must pass the real asset size limit"
+        assert response.content == (web / "dist/assets" / url.rsplit("/", 1)[1]).read_bytes()
+        assert response.headers["cache-control"] == "public, max-age=31536000, immutable"
