@@ -24,6 +24,14 @@ from typing import Any
 from neo4j import Driver
 
 from grove import clock
+from grove.demo_policy import (
+    DEMO_INPUTS,
+    DEMO_VERSION,
+    DemoDenied,
+    designation_in_tx,
+    has_designation,
+    require_designation_in_tx,
+)
 from grove.ids import new_id
 from grove.screening import ScreenedSource
 from grove.store.enums import ENUMS
@@ -121,6 +129,8 @@ def record_connector(
         raise InvalidRecord("invalid_arguments", "type", "staleness_limit is whole days")
 
     def work(tx: WorldTx) -> str:
+        if has_designation(designation_in_tx(tx) or {}):
+            raise DemoDenied()
         at = _now(world_id)
         row = compact(
             {
@@ -165,7 +175,19 @@ def record_source(
         _text(content_pointer, "content_pointer")
 
     def work(tx: WorldTx) -> str:
-        _connector(tx, connector_id)
+        connector = _connector(tx, connector_id)
+        if has_designation(designation_in_tx(tx) or {}):
+            require_designation_in_tx(tx)
+            if not (
+                connector.get("type") == "person_in_views"
+                and parser_version == "signin.v1"
+                and content is None
+                and content_pointer == external_locator == "signin:email"
+                and speakers is None
+                and document is False
+                and untrusted is False
+            ):
+                raise DemoDenied()
         at = _now(world_id)
         row = compact(
             {
@@ -332,6 +354,7 @@ def write_screened_source(
     speakers: Mapping[str, Mapping[str, str]] | None = None,
     document: bool = False,
     calendar_events: Mapping[str, Mapping[str, Any]] | None = None,
+    demo_request_id: str | None = None,
 ) -> dict[str, Any]:
     """Write one :Source and its :ScreeningReceipt in the caller's transaction.
 
@@ -352,6 +375,36 @@ def write_screened_source(
     counts = _checked_counts(screened.counts)
     speakers_text = speakers_json(speakers)
     connector = _connector(tx, connector_id)
+    demo_columns = {}
+    if has_designation(designation_in_tx(tx) or {}):
+        require_designation_in_tx(tx)
+        request = (
+            tx.run("MATCH (r:Request {id: $id}) RETURN r", id=demo_request_id)
+            if isinstance(demo_request_id, str)
+            else []
+        )
+        row = request[0]["r"] if len(request) == 1 else {}
+        if not (
+            connector.get("type") == "ai_host"
+            and connector.get("auth_reference") == "oauth"
+            and connector.get("batch_rule") == "host_request"
+            and re.fullmatch(r"host:[0-9a-f]{64}", connector.get("provider", ""))
+            and row.get("caller") == connector["provider"]
+            and row.get("status") == "queued"
+            and row.get("source_id") is None
+            and row.get("relay") is None
+            and not row.get("about")
+            and parser_version == "mcp-store-1"
+            and speakers is None
+            and document is False
+            and calendar_events is None
+            and len(screened.messages) == 1
+            and screened.messages[0].text in DEMO_INPUTS
+            and screened.messages[0].sender is None
+            and screened.locator == ""
+        ):
+            raise DemoDenied()
+        demo_columns = {"demo_version": DEMO_VERSION, "demo_request_id": demo_request_id}
     if calendar_events is not None and connector.get("type") != "calendar":
         raise InvalidRecord(
             "invalid_arguments", "calendar_facts", "Calendar facts need a Calendar connector"
@@ -375,6 +428,7 @@ def write_screened_source(
             "forget_state": _KEPT,
             "version": _FIRST_VERSION,
             "touched_at": at,
+            **demo_columns,
         },
     )
     tx.run(

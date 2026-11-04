@@ -8,12 +8,14 @@
 
   // Every server path the views call. Nothing else in web/ names a server path.
   var ENDPOINTS = {
+    mcp: '/mcp',
     session: '/v1/views/session',
     graph: '/v1/views/graph',
     node: '/v1/views/node/',
     schema: '/v1/views/schema',
     health: '/v1/views/health',
     positions: '/v1/views/positions',
+    upload: '/v1/sources/upload',
     googleStart: '/v1/auth/google/start?next=/',
     emailStart: '/v1/auth/email/start',
     emailVerify: '/v1/auth/email/verify',
@@ -102,6 +104,21 @@
   function postJSON(path, body) { return request('POST', path, body === undefined ? {} : body).then(watchSession.bind(null, sessionsBegun)); }
   function postAuth(path, body) { return request('POST', path, body === undefined ? {} : body); }
 
+  // Upload the selected file itself. JSON request() would serialize only its metadata.
+  // Keep HTTP errors as responses so the upload form can retain the file for a retry.
+  function uploadExport(provider, file) {
+    var code = { chatgpt: 'chatgpt', claude: 'claude_ai' }[provider];
+    if (!code || !(file instanceof File) || !/\.(json|zip)$/i.test(file.name)) {
+      return Promise.reject(new Error('Choose a ChatGPT or Claude export in .json or .zip format.'));
+    }
+    return window.fetch(ENDPOINTS.upload + '?provider=' + code, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { Accept: 'application/json', 'Content-Type': /\.zip$/i.test(file.name) ? 'application/zip' : 'application/json' },
+      body: file,
+    }).then(read);
+  }
+
   // A typed server error ({"error": {"code", "message", ...}}) as one line of text.
   function errorText(body, fallback) {
     var error = body && body.error;
@@ -133,10 +150,12 @@
 
   window.GroveLive = {
     ENDPOINTS: ENDPOINTS,
+    mcpUrl: function () { return new URL(ENDPOINTS.mcp, window.location.href).href; },
     PAGES: PAGES,
     KIND_STYLE: KIND_STYLE,
     getJSON: getJSON,
     postJSON: postJSON,
+    uploadExport: uploadExport,
     errorText: errorText,
     savePositions: savePositions,
     // GET the session: 200 {signed_in, self_item_id, has_items, account, method} when signed in, 401 otherwise.
