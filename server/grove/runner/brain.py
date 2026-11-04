@@ -16,6 +16,7 @@ from grove.prompts import DataBlock, render_blocks
 from grove.store.enums import ENUMS
 from grove.store.query import WorldQuery
 from grove.views.registry import read_registry
+from grove.writer.forget_ledger import material_request_guard
 from grove.writer.provenance import LOCATOR_SCHEMES, connector_type_of
 
 RECALL_LIMIT = 20
@@ -152,6 +153,13 @@ def _request_input(query: WorldQuery, request_id: str, n0: int) -> tuple[dict, l
 
 def pass_input(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str, Any]:
     """The input packet (3.5 rule 3): the pass's requests or job, and the batch form."""
+    if record["agent"] == "learner":
+        with material_request_guard(driver, world_id, list(record.get("input_ids") or [])):
+            return _pass_input(driver, world_id, record)
+    return _pass_input(driver, world_id, record)
+
+
+def _pass_input(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str, Any]:
     if record["agent"] == "curator":
         from grove.cleanup.runtime import require_runtime
 

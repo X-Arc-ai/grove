@@ -72,10 +72,11 @@ _ROWS = (
     ),
     (
         "files",
-        "Voice notes, documents and images",
-        "The configured upload and model paths",
-        "Support depends on the installed connector. "
-        "A listed model is not proof of a completed import.",
+        "Notes and supported text, Markdown, PDF, DOCX and PPTX files",
+        "Grove's screened Sources and bounded material revision metadata",
+        "Original binaries are not retained. Imported dates and authors remain unknown. "
+        "Files are retained pending typed graph admission; notes use the ordinary Learner queue. "
+        "Material deletion covers all revisions through the private forget ledger.",
     ),
     (
         "spark",
@@ -144,11 +145,9 @@ def flow_statement(env=None, *, runtime=False, google_configured=None):
     }
     rows = []
     for key, data, destination, terms in _ROWS:
-        if key == "files":
-            status = PENDING
-        elif not runtime or key == "backups":
+        if not runtime or key == "backups":
             status = STATIC
-        elif key == "uploads":
+        elif key in {"uploads", "files"}:
             status = CODE_POLICY
         else:
             status = PRESENT if checks[key] else ABSENT

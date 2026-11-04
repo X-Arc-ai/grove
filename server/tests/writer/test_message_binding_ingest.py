@@ -74,3 +74,15 @@ def test_chatgpt_message_date_substitution_rolls_back_and_exact_date_succeeds(dr
         [evidence] = query.read("MATCH (e:Evidence) RETURN e")
         assert evidence["e"]["message_key"] == first["key"]
         assert evidence["e"]["source_time"] == datetime.fromisoformat(first["at"])
+
+
+def test_material_title_cannot_supply_evidence():
+    import pytest
+
+    from grove.writer.errors import Refused
+    from grove.writer.message_binding import retained_messages
+
+    with pytest.raises(Refused, match="retained source"):
+        retained_messages(
+            {"parser_version": "material.title.v1", "content": "[]"}, {"type": "person_in_views"}
+        )

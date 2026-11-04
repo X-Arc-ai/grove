@@ -22,6 +22,7 @@ from grove.api import (
     connectors,
     forget,
     health,
+    materials,
     mcp,
     oauth,
     pipedream,
@@ -232,6 +233,7 @@ def create_app(
     app.include_router(oauth.router)
     app.include_router(mcp.router)
     app.include_router(router)
+    app.include_router(materials.router)
     app.include_router(uploads.router)
     app.include_router(forget.router)
     app.include_router(forget.public_router)

@@ -538,3 +538,10 @@ def test_primitive_ids_are_fixed():
     assert PRIMITIVE_WORLD == ""
     assert len(set(PRIMITIVE_IDS)) == 5
     assert KIND_BELIEF == "00000000-0000-7000-8000-000000000005"
+
+
+def test_material_revisions_are_snapshot_metadata_without_text():
+    material = table("material_revisions")
+    assert material.group == "snapshot" and material.scope == "world"
+    assert not any(c.type in {"text_home", "json_home"} for c in material.columns)
+    assert {"title_source_id", "source_ids", "request_id"} <= set(props_of(material))
