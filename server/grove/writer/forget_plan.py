@@ -406,6 +406,15 @@ def _compile_plan(inventory, target=None, *, base=None):
         if not isinstance(target.get("value"), str) or not normalise_phrase(target["value"]):
             raise InvalidRecord("invalid_arguments", "forget_value", "a nonblank value is required")
         needles.add(target["value"])
+    elif kind == "material":
+        family = [
+            r
+            for r in rows.get("material_revisions", [])
+            if r.get("material_id") == target["material_id"]
+        ]
+        if not family or max(r["revision"] for r in family) != target["revision"]:
+            raise InvalidRecord("not_found", "forget_material", "no matching material revision")
+        plan["locators"].append(locator_key("material:" + target["material_id"]))
     elif kind == "source_span":
         source = sources.get(target.get("source_id"))
         if source is None:
@@ -416,6 +425,32 @@ def _compile_plan(inventory, target=None, *, base=None):
         needles.update(_span_text(source, span))
     else:
         raise InvalidRecord("invalid_arguments", "forget_target", "unknown forget target")
+
+    # The opaque family tombstone expands across old snapshots and every revision.
+    material_sources = set()
+    material_requests = set()
+    material_episodes = set()
+    for row in rows.get("material_revisions", []):
+        if locator_key("material:" + row["material_id"]) in plan["locators"]:
+            material_sources.update([row["title_source_id"], *row.get("source_ids", [])])
+            if row.get("request_id"):
+                material_requests.add(row["request_id"])
+            if row.get("episode_id"):
+                material_episodes.add(row["episode_id"])
+    for source_id in material_sources:
+        source = sources.get(source_id)
+        if source is not None:
+            span = _resolve_span(source, None, rows["evidence"])
+            plan["source_spans"].append(span)
+            plan["source_exact"].append(source_id)
+            needles.update(_span_text(source, span))
+    for name, identities in (("requests", material_requests), ("episodes", material_episodes)):
+        for row in rows[name]:
+            if row.get("id") in identities:
+                plan["delete"].append(selector(name, row))
+    for row in rows["screening_receipts"]:
+        if row.get("source_id") in material_sources:
+            plan["delete"].append(selector("screening_receipts", row))
 
     # A restored snapshot can contain dependencies and field values that were no
     # longer present when the person approved the erasure.
@@ -668,6 +703,7 @@ def _compile_plan(inventory, target=None, *, base=None):
             ((affected & beliefs) - remaining - gone) | set(plan["queue_beliefs"])
         ),
         source_ids=sorted(set(plan["source_ids"])),
+        source_exact=sorted(set(plan["source_exact"])),
     )
     for key in ("delete", "history_fields", "item_fields", "evidence_values"):
         unique = {json.dumps(part, sort_keys=True): part for part in plan[key]}
@@ -729,7 +765,16 @@ def validate_plan(plan):
         if (
             not isinstance(keys, dict)
             or not keys
-            or not identifiers(keys.values())
+            or not identifiers(
+                v
+                for k, v in keys.items()
+                if not (part["table"] == "material_revisions" and k == "revision")
+            )
+            or (
+                part["table"] == "material_revisions"
+                and "revision" in keys
+                and (type(keys["revision"]) is not int or not 1 <= keys["revision"] <= 2**31 - 1)
+            )
             or set(keys)
             not in [
                 {p for p in unique.props if p != "world_id"}
@@ -1013,4 +1058,23 @@ def transform(inventory: dict, plan: dict, at: datetime) -> tuple[dict, dict]:
             existing.clear()
             existing.update(desired)
             counts["support_changed"] += 1
+    forgotten_sources = {
+        r["id"] for r in result.get("sources", []) if r.get("forget_state") == "forgotten"
+    }
+    for row in result.get("material_revisions", []):
+        refs = {row["title_source_id"], *row.get("source_ids", [])}
+        if (
+            locator_key("material:" + row["material_id"]) in plan["locators"]
+            or refs <= forgotten_sources
+        ):
+            if row.get("state") != "deleted":
+                row.update(
+                    state="deleted",
+                    part_count=0,
+                    retained_characters=0,
+                    held_count=0,
+                    version=row.get("version", 0) + 1,
+                    touched_at=at,
+                )
+                counts["material_revisions"] += 1
     return result, dict(counts)

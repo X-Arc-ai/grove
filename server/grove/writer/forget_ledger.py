@@ -145,3 +145,17 @@ def append_intent(root: Path, world_id: str, row: dict, database_rows: list[dict
     finally:
         if temporary and os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def checked_under_lock(root: Path, world_id: str, database_rows: list[dict]) -> list[dict]:
+    """Caller owns the ledger lock. No disclosure while an approved intent is pending."""
+    from grove.writer.forget import validate_ledger_rows
+
+    try:
+        external = validate_ledger_rows(world_id, _read(root, world_id, missing=not database_rows))
+        committed = validate_ledger_rows(world_id, database_rows)
+        if {r["id"]: _json(r) for r in external} != {r["id"]: _json(r) for r in committed}:
+            raise ValueError
+        return external
+    except (ValueError, KeyError, TypeError):
+        raise LedgerUnavailable("the material ledger requires recovery") from None

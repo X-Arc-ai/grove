@@ -266,7 +266,7 @@ ENUMS: dict[str, tuple[str, ...]] = {
     # Line 2427.
     "finding_status": ("open", "fixed", "closed_by_recheck", "declined"),
     # Line 2518.
-    "forget_target_type": ("item", "field_value", "source_span", "named_value"),
+    "forget_target_type": ("material", "item", "field_value", "source_span", "named_value"),
     # Line 3148.
     "registration_type": ("dynamic", "metadata_document"),
     # Inactive durable D10 protocol; no value is runtime authority.

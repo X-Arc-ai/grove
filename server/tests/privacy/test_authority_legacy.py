@@ -213,7 +213,10 @@ def test_every_published_plan_selector_and_span_mode():
     source = plan()
     for table, alternatives in legacy.DELETE_KEYS.items():
         for keys in alternatives:
-            source["delete"].append({"table": table, "key": dict.fromkeys(keys, "synthetic-id")})
+            selector = dict.fromkeys(keys, "synthetic-id")
+            if table == "material_revisions" and "revision" in selector:
+                selector["revision"] = 1
+            source["delete"].append({"table": table, "key": selector})
     source["hashes"] = [H]
     source["predicates"] = [{"length": 4, "sha256": H}]
     source["locators"] = ["sha256:" + H]
@@ -523,3 +526,10 @@ def test_legacy_row_span_invalid_or_closed_refuses(index):
     assert caught.value.__context__ is None
     assert caught.value.__cause__ is None
     assert str(caught.value) in ("input_type", "scalar")
+
+
+def test_material_revision_delete_keys_are_explicit():
+    from grove.authority.legacy import DELETE_KEYS, WORLD_TABLES
+
+    assert "material_revisions" in WORLD_TABLES
+    assert frozenset({"id"}) in DELETE_KEYS["material_revisions"]

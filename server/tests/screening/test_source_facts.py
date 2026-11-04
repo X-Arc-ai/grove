@@ -117,3 +117,19 @@ def test_text_document_path_keeps_byte_facts_and_null_source_time():
     )
     assert [m.source_facts for m in result.messages] == [m.source_facts for m in chat.messages]
     assert all(m.at is None and m.speaker_kind is None for m in result.messages)
+
+
+def test_office_facts_require_matching_adapter():
+    import pytest
+
+    from grove.source_facts import (
+        SourceLocator,
+        SourceTimeFacts,
+        TextSourceFacts,
+        check_text_transport,
+    )
+
+    facts = TextSourceFacts("a" * 64, SourceLocator("block", block=1), SourceTimeFacts("absent"))
+    check_text_transport(("document", "document.docx.v1"), facts, None)
+    with pytest.raises(ValueError):
+        check_text_transport(("document", "document.pdf.v1"), facts, None)
