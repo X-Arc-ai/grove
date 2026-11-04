@@ -23,9 +23,9 @@ names a registry word: code reads declared fields and ids only.
 import json
 import re
 from dataclasses import dataclass, field
-from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
+from grove.store import catalogue
 from grove.store.enums import ENUMS
 from grove.store.normalise import normalise_phrase, reads_blank
 from grove.store.primitives import (
@@ -1001,6 +1001,8 @@ def _change(
                 "judgment_ids": list(judgment_ids),
                 "actor": actor or run.stamp.actor,
                 "at": run.at,
+                # S46: an undo of this batch finds the row by it (O10's undone by).
+                "change_set_id": run.stamp.change_set_id,
                 "version": 1,
                 "touched_at": run.at,
             }
@@ -1586,49 +1588,97 @@ def bump_registry(run: Any, label: str, row_id: str) -> None:
     )
 
 
-# O10: the change log of D8's ontology operations names the undo that reversed each row.
-# A range, not `=`: an instant read back from the store and one the writer wrote can carry their
-# zone in two forms, which Cypher's equality tells apart; Python compares the instants exactly.
-_LOG_AT = (
-    "MATCH (c:OntologyChange) WHERE c.at >= $low AND c.at <= $high AND c.undone_by IS NULL "
-    "RETURN c.id AS id, c.at AS at, c.rows_before AS before, c.rows_after AS after"
+# The undo of a registry row's creation (D3's inverse, O10's retire) -------------------------
+_LABEL_TABLES = {
+    "Alias": "aliases",
+    "Kind": "kinds",
+    "Meaning": "meanings",
+    "PropertyName": "property_names",
+    "Capability": "capabilities",
+}
+_LINKS_USING = (
+    "MATCH (:Item)-[l:LINK {meaning: $id}]->(:Item) WHERE l.active_key IS NOT NULL "
+    "RETURN count(l) AS n"
 )
-_LOG_WINDOW = timedelta(seconds=1)
-_LOG_UNDONE_BY = "MATCH (c:OntologyChange) WHERE c.undone_by = $by RETURN c.id AS id"
+_ITEMS_OF_KIND = "MATCH (i:Item {kind: $id}) WHERE i.end_class IS NULL RETURN count(i) AS n"
+_PROPERTIES_OF_KIND = (
+    "MATCH (i:Item {kind: $kind}) WHERE i.end_class IS NULL RETURN i.properties AS properties"
+)
+_ALIASES_OF = (
+    "MATCH (a:Alias {target_id: $id}) WHERE coalesce(a.status, '') <> 'retired' "
+    "RETURN count(a) AS n"
+)
+
+
+def _in_use(run: Any, label: str, row: dict[str, Any]) -> bool:
+    """Whether an active item, link, property or alias uses the word (D8 line 1615)."""
+    if run.tx.run(_ALIASES_OF, id=row["id"])[0]["n"]:
+        return True
+    if label == "Meaning":
+        return bool(run.tx.run(_LINKS_USING, id=row["id"])[0]["n"])
+    if label == "Kind":
+        return bool(run.tx.run(_ITEMS_OF_KIND, id=row["id"])[0]["n"])
+    if label == "PropertyName":
+        for item in run.tx.run(_PROPERTIES_OF_KIND, kind=row.get("kind")):
+            try:
+                properties = json.loads(item["properties"] or "{}")
+            except ValueError:
+                properties = {}
+            if isinstance(properties, dict) and properties.get(row.get("name")) is not None:
+                return True
+    return False
+
+
+def check_retirable(run: Any, label: str, row: dict[str, Any]) -> None:
+    """Refuses the retire that an undo writes for a registry row its change set created.
+
+    A table with no status column has no ending to write, so the creation is not undone (rule
+    `no_ending`; today the capabilities a mint wrote). A word that an active item, link, property
+    or alias still uses is not retired (D8 line 1615, rule `word_in_use`): the undo inverts its
+    own change set's entries newest first, so only rows of later batches are left to count."""
+    columns = catalogue.table(_LABEL_TABLES[label]).columns
+    if not any("status" in column.props for column in columns):
+        raise Refused(
+            "invalid_arguments",
+            "no_ending",
+            f"a {_LABEL_TABLES[label]} row has no ending, so its creation is not undone",
+            {"row": row["id"]},
+        )
+    if label in ("Kind", "Meaning", "PropertyName") and _in_use(run, label, row):
+        raise Refused(
+            "version_conflict",
+            "word_in_use",
+            "a later item, link or alias uses this word: end or re-point it first",
+            {"word": row["id"]},
+        )
+
+
+# O10: the change log of D8's ontology operations names the undo that reversed each row.
+_LOG_OF = "MATCH (c:OntologyChange) WHERE c.change_set_id = $change_set RETURN c.id AS id"
 _SET_LOG = (
     "MATCH (c:OntologyChange {id: $id}) SET c.undone_by = $by, "
     "c.version = coalesce(c.version, 1) + 1, c.touched_at = $at"
 )
+_ENTRIES_OF = "MATCH (e:ChangeEntry {change_set_id: $change_set}) RETURN e ORDER BY e.sequence"
 
 
-def _logged_ids(text: str | None) -> set[str]:
-    """The registry row ids a change-log row's rows before or after name: a row entry's value
-    ({table, row}) or a row's id and fields ({table, id, ...})."""
-    try:
-        parts = json.loads(text or "[]")
-    except ValueError:
-        return set()
-    found: set[str] = set()
-    for part in parts if isinstance(parts, list) else []:
-        if isinstance(part, dict):
-            row = part.get("row") if isinstance(part.get("row"), dict) else part
-            if isinstance(row.get("id"), str):
-                found.add(row["id"])
-    return found
+def _undid(entries: list[dict[str, Any]]) -> str | None:
+    """The change set that an undo's entries invert (their `inverse_of`), or None when they are
+    no undo's."""
+    return next((entry["inverse_of"] for entry in entries if entry.get("inverse_of")), None)
 
 
 def mark_undone(run: Any, entries: list[dict[str, Any]], change_set: str) -> None:
-    """The change-log rows that the undone change set's ontology operations wrote (the rows of
-    its time that name one of its registry rows) take this undo's change set as `undone_by`, with
-    the S12 pair. When the undone change set is itself an undo, the rows it marked are cleared:
-    their operation stands again. The table is a snapshot table, so no change entry is written."""
-    registry = {entry["entity_id"] for entry in entries if entry["entity_type"] == "registry_row"}
-    if registry:
-        at = entries[0]["recorded_at"]
-        for row in run.tx.run(_LOG_AT, low=at - _LOG_WINDOW, high=at + _LOG_WINDOW):
-            if row["at"] != at:
-                continue
-            if (_logged_ids(row["before"]) | _logged_ids(row["after"])) & registry:
-                run.tx.run(_SET_LOG, id=row["id"], by=run.stamp.change_set_id, at=run.at)
-    for row in run.tx.run(_LOG_UNDONE_BY, by=change_set):
-        run.tx.run(_SET_LOG, id=row["id"], by=None, at=run.at)
+    """O10's `undone_by`, after an undo of `change_set` (whose entries are `entries`).
+
+    Below an undo of an undo lies, at the end of the chain, the change set that wrote the
+    change-log rows. An odd count of undos over it, this one included, leaves it reversed, and
+    its rows take this undo's change set; an even count puts it back, and the mark clears. Each
+    write moves the S12 pair; the table is a snapshot table, so no change entry is written."""
+    base, held, undos = change_set, entries, 1
+    while (below := _undid(held)) is not None:
+        base, undos = below, undos + 1
+        held = [row["e"] for row in run.tx.run(_ENTRIES_OF, change_set=below)]
+    by = run.stamp.change_set_id if undos % 2 == 1 else None
+    for row in run.tx.run(_LOG_OF, change_set=base):
+        run.tx.run(_SET_LOG, id=row["id"], by=by, at=run.at)

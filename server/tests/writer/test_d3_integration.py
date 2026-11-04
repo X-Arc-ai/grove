@@ -29,7 +29,7 @@ from grove.store.replay import (
     rebuild,
 )
 from grove.views.graph import Window, graph_payload, node_payload
-from grove.writer.restore import restore, take_snapshot
+from grove.writer.restore import main, rebuild_in_place, restore, take_snapshot
 from grove.writer.worlds import create_world
 from tests.writer.helpers import (
     CHAT_LINES,
@@ -50,6 +50,8 @@ from tests.writer.test_contract_d2 import (
     change_status,
     git_observation,
     make_item,
+    one,
+    refused,
     update_item,
 )
 from tests.writer.test_contract_d3 import (
@@ -65,7 +67,15 @@ from tests.writer.test_contract_d3 import (
     supersede,
     undo,
 )
-from tests.writer.test_ontology import GODPARENT, godparent_link, meaning_row, mint_godparent
+from tests.writer.test_ontology import (
+    GODPARENT,
+    godparent_link,
+    judged,
+    meaning_row,
+    mint_godparent,
+    people,
+    propose,
+)
 from tests.writer.test_restore import (
     history_values,
     last_confirmed,
@@ -689,11 +699,104 @@ def test_an_undo_of_a_mint_retires_the_word_and_marks_its_change_log_row(driver,
     live = live_fingerprint(driver, w)
     assert fingerprint(projection.rows, projection.history, live["tables"]) == live
 
-    apply(driver, w, [undo(first.change_set_id)], [], caller=PERSON)
+    second = apply(driver, w, [undo(first.change_set_id)], [], caller=PERSON)
 
     assert meaning_row(driver, w, GODPARENT)["status"] == "provisional"
     [log] = WorldQuery(driver, w).read("MATCH (c:OntologyChange {operation: 'propose'}) RETURN c")
     assert log["c"].get("undone_by") is None and log["c"]["version"] == 3
+    assert log["c"]["change_set_id"] == mint.change_set_id
+
+    # A third undo reverses the mint again: the row names it, down the chain of undos (R4).
+    third = apply(driver, w, [undo(second.change_set_id)], [], caller=PERSON)
+
+    assert meaning_row(driver, w, GODPARENT)["status"] == "retired"
+    [log] = WorldQuery(driver, w).read("MATCH (c:OntologyChange {operation: 'propose'}) RETURN c")
+    assert (log["c"]["undone_by"], log["c"]["version"]) == (third.change_set_id, 4)
+
+
+def measures_of(driver, w: str) -> dict[str, dict[str, Any]]:
+    """Every word row's D8 measures, read straight from the store."""
+    held: dict[str, dict[str, Any]] = {}
+    for label in ("Kind", "Meaning", "PropertyName"):
+        for row in WorldQuery(driver, w).read(f"MATCH (n:{label}) RETURN n"):
+            held[row["n"]["id"]] = {key: row["n"].get(key) for key in MEASURES}
+    return held
+
+
+def test_a_rebuild_in_place_and_the_rebuild_command_keep_the_measures(driver, seeded, chat, capsys):
+    """S47, the production path (a dump loaded, then `rebuild --world`): the rebuild in place keeps
+    every word's measures, the starter kinds' and the earned word's, which no entry holds (R4)."""
+    w = seeded["world_id"]
+    earned_word(driver, w, chat)
+    before = measures_of(driver, w)
+    assert before[meaning_row(driver, w, GODPARENT)["id"]]["distinct_episodes"] == 3
+    assert any(held["uses"] for word_id, held in before.items())
+    live = live_fingerprint(driver, w)
+
+    rebuild_in_place(driver, w)
+
+    assert measures_of(driver, w) == before
+    assert main(["rebuild", "--world", w, "--expect", live["fingerprint"]]) == 0
+    assert json.loads(capsys.readouterr().out)["match"] is True
+    assert measures_of(driver, w) == before
+
+
+def test_an_undo_of_a_mint_with_a_capability_is_refused_and_the_history_replays(
+    driver, seeded, chat
+):
+    """A capability row has no ending (no status column), so an undo cannot retire it: the undo of
+    the mint that wrote one is refused by name and writes nothing, and the history still replays
+    to the live fingerprint (R4)."""
+    w = seeded["world_id"]
+    capability = {"connector_type": "calendar", "capability": "confirms"}
+    ids = judged(
+        driver,
+        w,
+        fields={
+            "temporal_class": ("permanent", "fits"),
+            "proposed_capability": (capability, "fits"),
+        },
+    )
+    ops = [
+        *people("e1"),
+        propose("e1", ids, proposed_capability=capability),
+        create_link("$ilse", GODPARENT, "$teo", "e1"),
+    ]
+    mint = apply(driver, w, ops, [observation(chat, "e1", 1)], caller=LEARNER)
+
+    refusal = one(refused(driver, w, [undo(mint.change_set_id)], []), "invalid_arguments")
+
+    assert refusal.rule == "no_ending"
+    assert meaning_row(driver, w, GODPARENT)["status"] == "provisional"
+    entries, values = read_history(WorldQuery(driver, w))
+    projection = rebuild(entries, values)
+    live = live_fingerprint(driver, w)
+    assert fingerprint(projection.rows, projection.history, live["tables"]) == live
+
+
+def test_an_undo_of_a_mint_is_refused_while_a_later_link_uses_the_word(driver, seeded, chat):
+    """D8 line 1615: a word is retired only when no active item or link uses it. A later batch's
+    link with the minted word blocks the undo of the mint; the word and both links stay (R4)."""
+    w = seeded["world_id"]
+    mint, _ = mint_godparent(driver, w, chat)
+    source = make_source(driver, w, "whatsapp", ["a second invented chat about the christening"])
+    ops = [
+        create_item("person", "Mirela Stone", "s1", temp_id="$m"),
+        create_item("person", "Oskar Lind", "s1", temp_id="$o"),
+        create_link("$m", GODPARENT, "$o", "s1"),
+    ]
+    apply(driver, w, ops, [observation(source, "s1", 1)], caller=LEARNER)
+    word = meaning_row(driver, w, GODPARENT)
+    links = WorldQuery(driver, w).read(
+        "MATCH (:Item)-[l:LINK {meaning: $id}]->(:Item) RETURN l.id AS id, l.active_key AS key",
+        id=word["id"],
+    )
+    assert len(links) == 2 and all(link["key"] for link in links)
+
+    refusal = one(refused(driver, w, [undo(mint.change_set_id)], []), "version_conflict")
+
+    assert refusal.rule == "word_in_use"
+    assert meaning_row(driver, w, GODPARENT) == word
 
 
 def test_rebuild_matches_live_after_every_d3_operation(driver, every_operation):

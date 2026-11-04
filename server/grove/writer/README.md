@@ -286,7 +286,9 @@ links in the batch's one transaction, and nothing is deleted:
   already (`already_undone`), when it is the starter set (`not_undoable`), or when a value it holds
   was forgotten (`value_forgotten`). An undo can itself be undone. An undo of a D8 operation
   retires a minted word or alias, or sets a promoted word back to provisional, and names itself in
-  the change-log row's `undone_by` (O10, S46).
+  the change-log row's `undone_by` (O10, S46). It is refused while an active item, link,
+  property or alias of a later batch uses the word (`version_conflict`, rule `word_in_use`), and
+  for a capability minted with the word, which has no ending (rule `no_ending`).
 - `retire_record` ends a record on the record axis only: `end_class` `spent` and `lesson_in` (the
   new item column), both entries with no world time, and no stop clock. `current()` stops returning
   it; history and world-axis as-of reads keep it, and its evidence rows stay active.
