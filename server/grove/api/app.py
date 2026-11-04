@@ -15,7 +15,7 @@ import httpx
 from fastapi import FastAPI, Request, Response
 from fastapi.responses import FileResponse
 
-from grove.api import health, mcp, oauth, uploads, wellknown
+from grove.api import cascade, health, mcp, oauth, uploads, wellknown
 from grove.api.auth import AUTH_PREFIX, AuthDeps
 from grove.api.auth import router as auth_router
 from grove.api.config import WEB_DIST_ENV, ApiSettings, load_api_settings
@@ -38,6 +38,7 @@ NO_STORE_PATHS = (
     AUTH_PREFIX,
     INTERNAL_PREFIX,
     uploads.PREFIX,
+    cascade.PREFIX,
     *OAUTH_PATHS,
     "/.well-known/",
 )
@@ -84,13 +85,15 @@ def create_app(
     oauth_deps: OAuthDeps | None = None,
     runner_auth: RunnerAuth | None = None,
     pass_settings: PassSettings | None = None,
+    explanation_dispatcher_factory: Callable[[Driver], cascade.ExplanationDispatcher] | None = None,
 ) -> FastAPI:
     """With a driver, the caller owns it: the app never closes it. With no mailer or google_http,
     sign-in loads the real one at first use. world_id_for gives a test its own t_ worlds.
     mcp_tools is the tool set of /mcp (None means grove.mcp.tools.DEFAULT_TOOLS); oauth_deps hands
     the OAuth routes a fake resolver and transport for metadata documents, or a smaller window.
     With no runner_auth, the internal routes read GROVE_GATEWAY_SECRET and
-    GROVE_RUNNER_TOKEN_SHA256 at first use."""
+    GROVE_RUNNER_TOKEN_SHA256 at first use. The explanation dispatcher starts only for an owned
+    driver, unless explanation_dispatcher_factory explicitly enables it for an injected driver."""
     settings = settings or load_api_settings()
 
     @asynccontextmanager
@@ -98,10 +101,18 @@ def create_app(
         # Opening a driver does not connect, so the API starts while the store is still down.
         if driver is None:
             app.state.driver = driver_factory()
+        dispatcher = None
         try:
+            if driver is None or explanation_dispatcher_factory is not None:
+                factory = explanation_dispatcher_factory or cascade.ExplanationDispatcher
+                candidate = factory(app.state.driver)
+                candidate.start(close_driver=driver is None)
+                dispatcher = candidate
             yield
         finally:
-            if driver is None:
+            if dispatcher is not None:
+                dispatcher.stop()
+            elif driver is None:
                 app.state.driver.close()
 
     # redirect_slashes=False: Starlette builds that redirect from the request, and uvicorn runs
@@ -142,6 +153,7 @@ def create_app(
     app.include_router(uploads.router)
     app.include_router(auth_router)
     app.include_router(internal_router)
+    app.include_router(cascade.router)
     folder = os.environ.get(WEB_DIST_ENV)
     if folder:
         _add_web_pages(app, folder)
