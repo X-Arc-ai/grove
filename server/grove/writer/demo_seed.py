@@ -19,7 +19,7 @@ from grove.demo_policy import (
     require_designation_in_tx,
 )
 from grove.ids import new_id
-from grove.store.query import CYPHER_PREFIX, PlatformQuery, collect
+from grove.store.query import CYPHER_PREFIX, PlatformQuery, WorldQuery, collect
 from grove.writer.api import execute_prepared_in_tx, prepare_batch
 from grove.writer.caller import Caller
 from grove.writer.clocks import parse_instant
@@ -72,6 +72,24 @@ def _matches(row: dict, expected: dict) -> None:
         raise DemoDenied()
 
 
+def _check_creation(kind: str, original: dict, expected: dict) -> None:
+    try:
+        encoded = json.loads(json.dumps(expected, default=lambda value: value.isoformat()))
+        if kind == "item":
+            # A normal endpoint lock touches a prior item when a later story adds
+            # its bridge. This operational clock is not claim content.
+            created_touch = original["row"]["touched_at"]
+            if created_touch != encoded["row"]["recorded"] or parse_instant(
+                encoded["row"]["touched_at"]
+            ) < parse_instant(created_touch):
+                raise DemoDenied()
+            encoded["row"]["touched_at"] = created_touch
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise DemoDenied() from None
+    if original != encoded:
+        raise DemoDenied()
+
+
 def resolve_target(driver, hashed_address: str) -> dict:
     """Resolve existing durable ownership only; never create an account or world."""
     require_corpus_identity()
@@ -83,12 +101,28 @@ def resolve_target(driver, hashed_address: str) -> dict:
     target = require_designation(driver, rows[0]["world"], rows[0]["id"])
     if target.get("email_hash") != hashed_address:
         raise DemoDenied()
+    _own_item(WorldQuery(driver, target["world_id"]), target)
     return target
+
+
+def _own_item(reader, target: dict) -> None:
+    own = target.get("self_item_id")
+    if not isinstance(own, str) or not own:
+        raise DemoDenied()
+    rows = _read(
+        reader,
+        "MATCH (i:Item {id: $id}) MATCH (k:Kind {id: i.kind}) "
+        "RETURN i.id AS id, k.name AS kind, i.end_class AS end_class",
+        id=own,
+    )
+    if len(rows) != 1 or rows[0] != {"id": own, "kind": "person", "end_class": None}:
+        raise DemoDenied()
 
 
 def _guard(tx: WorldTx, target: dict, *, lock: bool = False) -> None:
     current = require_designation_in_tx(tx)
     _matches(current, target)
+    _own_item(tx, current)
     if lock:
         rows = collect(tx.unscoped().run(_LOCK_USER, id=target["user_id"]), None)
         if len(rows) != 1 or rows[0]["id"] != target["user_id"]:
@@ -511,11 +545,9 @@ def _saved(reader, registry, story, digest, known, *, absent=False) -> dict | No
         }
         try:
             original = json.loads(values[entry["new_value_id"]])
-            encoded = json.loads(json.dumps(expected, default=lambda value: value.isoformat()))
         except (ValueError, KeyError, TypeError, AttributeError):
             raise DemoDenied() from None
-        if original != encoded:
-            raise DemoDenied()
+        _check_creation(kind, original, expected)
     if request.get("receipt") is not None:
         try:
             receipt = Receipt.from_json(json.loads(request["receipt"]))
