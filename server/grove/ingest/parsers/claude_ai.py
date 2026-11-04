@@ -232,10 +232,15 @@ class _Chat:
         self.ended: datetime | None = None
 
     def add(
-        self, messages: list[ParsedMessage], started: datetime | None, ended: datetime | None
+        self,
+        messages: list[ParsedMessage],
+        started: datetime | None,
+        ended: datetime | None,
+        upload: Upload,
     ) -> None:
         for message in messages:
             if message.key not in self.keys:
+                upload.budget.take_message(len(message.text))
                 self.keys.add(message.key)
                 self.messages.append(message)
         if started is not None and (self.started is None or started < self.started):
@@ -264,11 +269,15 @@ def parse(upload: Upload) -> Iterator[ParsedChat]:
         messages: list[ParsedMessage] = []
         for position, record in _thread(records):
             messages.extend(_messages(chat_id, position, record))
-        chat = chats.setdefault(chat_id, _Chat(chat_id))
+        chat = chats.get(chat_id)
+        if chat is None:
+            upload.budget.take_chat()
+            chat = chats[chat_id] = _Chat(chat_id)
         chat.add(
             messages,
             utc_from_iso(conversation.get("created_at")),
             utc_from_iso(conversation.get("updated_at")),
+            upload,
         )
     for chat in chats.values():
         yield chat.parsed()

@@ -212,10 +212,12 @@ and screen. Every other path keeps the 10 MB limit. To change the cap, change
 a tmpfs of 320 MiB: room for the one upload that runs at a time, at the cap. A second upload
 while one runs answers 429 `rate_limited` with `retry_after_seconds`.
 
-**Memory.** One upload at the caps of `grove.ingest` holds about 2.5 GiB: the body, its decoded
-text and the parsed values (`docs/ingest.md`, limits). compose gives the api `mem_limit: 4g` with
-no swap past it, the tmpfs inside it. If an upload passes the limit, the kernel stops the api and
-docker starts it again (`restart: unless-stopped`); neo4j and the box keep their memory.
+**Memory.** Archive expansion, lines, chats, messages and text have separate limits
+(`docs/ingest.md`). Synthetic macOS parse-and-screen probes measured up to 1,409 MiB of peak
+RSS growth; they did not include store writes or establish a universal maximum. compose gives
+the api `mem_limit: 4g` with no swap past it, the tmpfs inside it. If an upload passes the limit,
+the kernel stops the api and docker starts it again (`restart: unless-stopped`); the limit
+contains that memory use to the api container.
 
 **Upload-only tokens.** A script that uploads without the session cookie uses an upload-only token
 for one world (`docs/ingest.md`). The operator mints it inside the running `api` container. compose

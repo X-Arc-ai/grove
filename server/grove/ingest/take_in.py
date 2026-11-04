@@ -1,8 +1,9 @@
 """The ingest pipeline (A.4, D10, D14): parse an upload, keep what each chat adds, screen it, cut
 it into episodes and commit it through the writer, then record the connector's coverage.
 
-Order per chat: the delta (the messages whose key is not stored yet), screening in code, the
-episode cut, one write transaction. Screening finishes before the transaction opens (SC1). A
+Order per chat: the delta (the messages whose key is not stored yet), bounded source parts,
+screening in code, the connector's episode cut, one write transaction for the whole delta.
+Screening finishes before the transaction opens (SC1). A
 re-import of the same export finds every key stored, so it writes no source, no receipt and no
 episode: only the connector's coverage times move. docs/ingest.md has the contract.
 """
@@ -12,7 +13,16 @@ from datetime import datetime
 from typing import Any
 
 from grove import clock
-from grove.ingest.connector import ConnectorSpec, ParsedChat, ParsedMessage, Upload, spec_for
+from grove.ingest.connector import (
+    MAX_SENDER_CHARS,
+    MAX_SOURCE_CHARS,
+    ConnectorSpec,
+    ParsedChat,
+    ParsedMessage,
+    Upload,
+    kept_text,
+    spec_for,
+)
 from grove.ingest.connector import chat_locator as _chat_locator
 from grove.screening import Message, ScreenedSource, Screener
 from grove.store.connection import Driver
@@ -80,11 +90,13 @@ class TakeInResult:
 
 
 def _messages(delta: list[ParsedMessage]) -> list[Message]:
+    """The delta as the screener takes it, each text capped before a cut marker: the screener's
+    working copies grow with the text, and one crafted message must not take the API's memory."""
     return [
         Message(
             key=message.key,
-            sender=message.sender,
-            text=message.text,
+            sender=None if message.sender is None else kept_text(message.sender, MAX_SENDER_CHARS),
+            text=kept_text(message.text),
             at=message.at,
             speaker_kind=message.speaker_kind,
             modality=message.modality,
@@ -143,6 +155,26 @@ def cut_episodes(
     return cuts
 
 
+def _size(message: ParsedMessage) -> int:
+    sender = 0 if message.sender is None else len(kept_text(message.sender, MAX_SENDER_CHARS))
+    return len(kept_text(message.text)) + sender
+
+
+def parts_of(delta: list[ParsedMessage]) -> list[list[ParsedMessage]]:
+    """Consecutive parts with at most MAX_SOURCE_CHARS of capped text and sender characters
+    each (one message at least). JSON metadata and screening replacements are not counted."""
+    parts: list[list[ParsedMessage]] = []
+    size = 0
+    for message in delta:
+        length = _size(message)
+        if not parts or size + length > MAX_SOURCE_CHARS:
+            parts.append([])
+            size = 0
+        parts[-1].append(message)
+        size += length
+    return parts
+
+
 def _take_chat(
     driver: Driver,
     world_id: str,
@@ -152,6 +184,8 @@ def _take_chat(
     screener: Screener,
     result: TakeInResult,
 ) -> None:
+    """Screen bounded source parts, cut episodes over the whole delta, then commit atomically.
+    Source storage limits must not inflate the episode count used by evidence thresholds."""
     locator = _chat_locator(spec.key_prefix, chat.chat_id)
     query = WorldQuery(driver, world_id)
     for _ in range(MAX_TRIES):
@@ -159,15 +193,19 @@ def _take_chat(
         delta = [message for message in chat.messages if message.key not in stored]
         if not delta:
             return
-        screened = screener.screen_source(locator, _messages(delta))
-        kept = _kept(screened, locator, delta)
+        screened_parts = []
+        kept = []
+        for part in parts_of(delta):
+            screened = screener.screen_source(locator, _messages(part))
+            kept.extend(_kept(screened, locator, part))
+            screened_parts.append(screened)
         cuts = cut_episodes(spec, chat, kept, clock.now(world_id))
         moments = [message.at for message in delta if message.at is not None]
         try:
             written = write_chat_delta(
                 driver,
                 world_id,
-                screened,
+                screened_parts,
                 connector_id=connector_id,
                 parser_version=spec.parser_version,
                 delta_keys=[message.key for message in delta],
@@ -179,11 +217,11 @@ def _take_chat(
         if written is None:
             return
         result.chats_new += 1
-        result.sources_added += 1
+        result.sources_added += len(written["source_ids"])
         result.episodes_added += len(written["episode_ids"])
         result.messages_read += len(delta)
         result.messages_kept += written["kept_messages"]
-        result.source_ids.append(written["source_id"])
+        result.source_ids.extend(written["source_ids"])
         result.episode_ids.extend(written["episode_ids"])
         for cls, count in written["counts"].items():
             result.screened[cls] = result.screened.get(cls, 0) + count

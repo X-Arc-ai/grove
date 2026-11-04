@@ -783,8 +783,9 @@ def test_unclosed_tags_in_the_person_slot_cost_linear_time():
 
     (message,) = _within_seconds(5, lambda: _only(_jsonl([_user(1, 0, text)])).messages)
 
-    # No closer, so nothing is cut: the text is the person's as written.
-    assert message.text == text
+    # The filter still processes the whole input under the alarm. Retention then drops the
+    # overlong first token, rather than keeping a fragment of an unrecognized secret.
+    assert message.text == "[cut: the message is longer than Grove keeps]"
     assert message.speaker_kind == "person"
 
 
@@ -806,9 +807,10 @@ def test_the_records_of_one_upload_count_against_its_budget():
     def parse_with(budget):
         return list(claude_code.parse(Upload(io.BytesIO(data), len(data), budget=budget)))
 
-    assert len(parse_with(ReadBudget(max_records=10))[0].messages) == 10
+    # Ten records and the empty line after the last newline: every line counts.
+    assert len(parse_with(ReadBudget(max_records=11))[0].messages) == 10
     with pytest.raises(NotAnExport):
-        parse_with(ReadBudget(max_records=9))
+        parse_with(ReadBudget(max_records=10))
 
 
 def test_take_in_stores_when_the_rename_map_holds_the_key_prefix(driver, seeded_world, test_clock):
@@ -832,3 +834,32 @@ def test_take_in_stores_when_the_rename_map_holds_the_key_prefix(driver, seeded_
     ]
     again = take_in(driver, seeded_world, "claude_code", upload_of(upload), screener=screener)
     assert again.state == NOTHING_NEW
+
+
+def test_the_chats_and_messages_of_one_upload_count_against_its_budget():
+    data = _jsonl(
+        [
+            _user(1, 0, "Water the mint."),
+            _user(2, 1, "Seed the basil.", session=OTHER_SESSION),
+        ]
+    )
+
+    def parse_with(budget):
+        return list(claude_code.parse(Upload(io.BytesIO(data), len(data), budget=budget)))
+
+    assert len(parse_with(ReadBudget(max_chats=2, max_messages=2))) == 2
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_chats=1))
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_messages=1))
+
+
+def test_the_text_of_one_upload_counts_against_its_budget():
+    data = _jsonl([_user(1, 0, "Water the mint."), _user(2, 1, "Seed the basil.")])
+
+    def parse_with(budget):
+        return list(claude_code.parse(Upload(io.BytesIO(data), len(data), budget=budget)))
+
+    assert parse_with(ReadBudget(max_text=len("Water the mint.Seed the basil.")))
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_text=len("Water the mint.Seed the basil.") - 1))

@@ -14,7 +14,15 @@ from typing import Any
 
 import pytest
 
-from grove.ingest import NotAnExport, archive, chat_locator, message_key, spec_for
+from grove.ingest import (
+    NotAnExport,
+    ReadBudget,
+    Upload,
+    archive,
+    chat_locator,
+    message_key,
+    spec_for,
+)
 from grove.ingest.parsers import claude_ai
 from grove.ingest.take_in import take_in
 from grove.screening import Message, Screener, ScreeningConfig
@@ -719,3 +727,52 @@ def test_take_in_stores_when_the_rename_map_holds_the_key_prefix(driver, seeded_
     assert [row["speaker_kind"] for row in rows] == ["person", "ai_host"]
     again = take_in(driver, seeded_world, "claude_ai", upload_of(data), screener=screener)
     assert again.state == "nothing_new"
+
+
+def test_one_chat_in_two_files_reads_in_its_own_time_order():
+    """The later file in the archive holds the earlier part of the chat (D10)."""
+    later = conversation(
+        TEA,
+        [
+            record("n-03", "human", seconds=300, text="Buy the sencha."),
+            record("n-04", "assistant", seconds=400, text="The sencha is in the cart."),
+        ],
+    )
+    earlier = conversation(
+        TEA,
+        [
+            record("n-01", "human", seconds=100, text="Which tea is mild?"),
+            record("n-02", "assistant", seconds=200, text="A sencha is mild."),
+        ],
+    )
+    data = as_zip(
+        [("a/conversations.json", as_json(later)), ("b/conversations.json", as_json(earlier))]
+    )
+
+    (chat,) = parse(data)
+
+    assert [m.text for m in chat.messages] == [
+        "Which tea is mild?",
+        "A sencha is mild.",
+        "Buy the sencha.",
+        "The sencha is in the cart.",
+    ]
+
+
+def test_the_chats_and_messages_of_one_upload_count_against_its_budget():
+    data = as_json(
+        conversation(TEA, [record("p-01", "human", seconds=1, text="Brew it for three minutes.")]),
+        conversation(
+            "5d2c1a4e-0000-4000-8000-00000000b301",
+            [record("p-02", "human", seconds=2, text="Warm the pot first.")],
+        ),
+    )
+
+    def parse_with(budget):
+        return list(claude_ai.parse(Upload(io.BytesIO(data), len(data), budget=budget)))
+
+    assert len(parse_with(ReadBudget(max_chats=2, max_messages=2))) == 2
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_chats=1))
+    with pytest.raises(NotAnExport):
+        parse_with(ReadBudget(max_messages=1))

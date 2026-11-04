@@ -92,9 +92,9 @@ services:
     # An upload past 8 MiB spools to /tmp, one at a time, up to 256 MiB. The size holds it, and
     # keeps a runaway write from taking half the box's memory, the tmpfs default.
     tmpfs: ["/tmp:size=320m"]
-    # One upload at its caps holds about 2.5 GiB (grove.api.uploads). The limit, with the tmpfs in
-    # it, keeps the worst case inside this container: the kernel stops the api, docker starts it
-    # again, and neo4j and the box keep their memory. No swap past the limit.
+    # Readers cap expansion, lines, chats, messages and text (docs/ingest.md). The limit includes
+    # the tmpfs and contains memory use to this container. No swap past the limit; docker
+    # restarts the api if the kernel stops it. Probe measurements are not a universal maximum.
     mem_limit: 4g
     memswap_limit: 4g
     cap_drop: [ALL]

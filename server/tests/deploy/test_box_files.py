@@ -504,6 +504,8 @@ def test_the_api_tmp_holds_every_upload_spool_at_the_cap():
     assert len(sizes) == 1
     size = _size_bytes(sizes[0])
     assert size > MAX_PARALLEL_UPLOADS * DEFAULT_MAX_BYTES
+    # No room for one more: the tmpfs is inside the api's memory limit.
+    assert size < (MAX_PARALLEL_UPLOADS + 1) * DEFAULT_MAX_BYTES
     # A tmpfs is memory: with no size it may take half of the box's 8 GB.
     assert size <= 1024**3
     # tempfile writes to /tmp only while no TMPDIR points elsewhere.

@@ -7,6 +7,7 @@ import random
 import re
 import string
 import zipfile
+import zlib
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -23,6 +24,7 @@ from grove.ingest import (
     chat_locator,
     clean_text,
     in_time_order,
+    kept_text,
     message_key,
     one_episode,
     providers,
@@ -315,14 +317,21 @@ def test_zstd_output_counts_against_the_upload_budget():
 
 
 def test_the_default_budget_holds_the_caps_of_one_upload():
+    mib = 1024 * 1024
     budget = ReadBudget()
-    assert budget.bytes_left == archive.MAX_TOTAL_BYTES == 768 * 1024 * 1024
+    assert budget.bytes_left == archive.MAX_TOTAL_BYTES == 768 * mib
     assert budget.records_left == 1_000_000
-    assert Upload(io.BytesIO(b""), 0).budget.bytes_left == archive.MAX_TOTAL_BYTES
+    assert budget.text_left == 50_000_000
+    # An upload may read 64 times its size out of archives: 64 MiB at least, 768 MiB at most.
+    assert Upload(io.BytesIO(b""), 0).budget.bytes_left == 64 * mib
+    assert Upload(io.BytesIO(b""), 2 * mib).budget.bytes_left == 128 * mib
+    assert Upload(io.BytesIO(b""), 100 * mib).budget.bytes_left == 768 * mib
     # Each upload has its own budget.
     assert Upload(io.BytesIO(b""), 0).budget is not Upload(io.BytesIO(b""), 0).budget
-    # A parsed value takes about 64 bytes: the document cap keeps them under a GiB.
-    assert archive.MAX_DOCUMENT_VALUES * 64 < 1024**3
+    # A parsed value of an export-shaped row takes about 140 bytes (measured), so the document
+    # cap keeps one parsed document near 1.1 GiB, inside the api's 4 GiB with the rest.
+    assert archive.MAX_DOCUMENT_VALUES == 8_000_000
+    assert archive.MAX_DOCUMENT_VALUES * 140 < 1.1 * 1024**3
 
 
 def test_zstd_reads_frames_and_caps_the_output():
@@ -343,10 +352,20 @@ def test_json_lines_number_every_line_and_skip_a_cut_one():
 
 
 def test_json_lines_count_against_the_record_budget():
-    data = b"{}\n" * 10
+    data = b"\n".join([b"{}"] * 10)
     assert len(list(archive.json_lines(data, budget=ReadBudget(max_records=10)))) == 10
     with pytest.raises(NotAnExport):
         list(archive.json_lines(data, budget=ReadBudget(max_records=9)))
+
+
+def test_blank_lines_count_against_the_record_budget():
+    """A zip of zstd newlines once cost 74 s of work for no record: every line counts."""
+    data = b"\n" * 10 + b'{"a": 1}'
+    assert list(archive.json_lines(data, budget=ReadBudget(max_records=11))) == [(11, {"a": 1})]
+    with pytest.raises(NotAnExport):
+        list(archive.json_lines(data, budget=ReadBudget(max_records=10)))
+    with pytest.raises(NotAnExport):
+        list(archive.json_lines(b"  \n\t\n \n", budget=ReadBudget(max_records=2)))
 
 
 def test_a_line_of_too_many_values_is_skipped_unparsed():
@@ -386,3 +405,74 @@ def test_a_member_that_reads_past_its_cap_is_refused():
     assert archive._read_capped(io.BytesIO(b"x" * 4000), 4000, archive._Budget(10**6)) == (
         b"x" * 4000
     )
+
+
+def _bad_deflate_block_zip() -> bytes:
+    """A zip whose deflate member starts with block type 3, which deflate reserves: zlib raises
+    zlib.error before any CRC check."""
+    data = bytearray(_zip({"s.jsonl": b"one line of a session\n" * 500}))
+    name_length = int.from_bytes(data[26:28], "little")
+    extra_length = int.from_bytes(data[28:30], "little")
+    data[30 + name_length + extra_length] = 0x07  # BFINAL 1, BTYPE 11
+    return bytes(data)
+
+
+def test_a_deflate_error_is_no_export():
+    data = _bad_deflate_block_zip()
+    with zipfile.ZipFile(io.BytesIO(data)) as raw, pytest.raises(zlib.error):
+        raw.read("s.jsonl")
+    with pytest.raises(NotAnExport):
+        list(archive.zip_members(upload_of(data), suffixes=(".jsonl",)))
+
+
+def test_a_long_text_is_cut_at_a_space_with_a_mark():
+    assert kept_text("short text") == "short text"
+    exact = "a" * 100_000
+    assert kept_text(exact) == exact
+    long = "word " * 30_000
+    kept = kept_text(long)
+    body, mark = kept.rsplit("\n", 1)
+    assert mark == "[cut: the message is longer than Grove keeps]"
+    assert len(body) <= 100_000 and set(body.split()) == {"word"}
+    assert kept_text(long) == kept
+    # A text of one token: no half of it is kept, so no half of a secret is stored.
+    token = "sk-" + "Q7" * 60_000
+    assert kept_text(token) == "[cut: the message is longer than Grove keeps]"
+    assert kept_text("a b " + token) == "a b\n[cut: the message is longer than Grove keeps]"
+    assert kept_text("abc def", 5) == "abc\n[cut: the message is longer than Grove keeps]"
+
+
+def test_the_budget_caps_chats_and_messages():
+    budget = ReadBudget(max_chats=1, max_messages=2)
+    budget.take_chat()
+    budget.take_message(1)
+    budget.take_message(1)
+    with pytest.raises(NotAnExport):
+        budget.take_chat()
+    with pytest.raises(NotAnExport):
+        budget.take_message(1)
+    default = ReadBudget()
+    assert (default.chats_left, default.messages_left) == (10_000, 1_000_000)
+
+
+def test_the_text_of_one_upload_counts_against_its_budget():
+    budget = ReadBudget(max_text=10)
+    budget.take_message(4)
+    budget.take_message(6)
+    with pytest.raises(NotAnExport):
+        budget.take_message(1)
+    # The screener reads at most MAX_MESSAGE_CHARS of one message, so that is what it costs.
+    budget = ReadBudget(max_text=100_000)
+    budget.take_message(10**9)
+    with pytest.raises(NotAnExport):
+        budget.take_message(1)
+
+
+def test_a_small_zip_cannot_expand_past_64_times_its_size():
+    """A zip of one repeated byte compresses about 1000 to 1: its expansion is refused."""
+    data = _zip({"a.json": b"0" * (65 * 1024 * 1024)})
+    assert len(data) < 1024 * 1024
+    with pytest.raises(NotAnExport):
+        list(archive.zip_members(upload_of(data), suffixes=(".json",)))
+    roomy = Upload(io.BytesIO(data), len(data), budget=ReadBudget())
+    assert len(list(archive.zip_members(roomy, suffixes=(".json",)))) == 1

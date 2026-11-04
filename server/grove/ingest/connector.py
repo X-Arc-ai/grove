@@ -12,7 +12,9 @@ Rules every parser keeps:
   or a denylist term, which matches whole words only, cannot match a part of it; register()
   refuses a prefix whose key or locator screening would change.
 - Read through the upload's budget (Upload.budget, grove.ingest.archive): one upload expands to
-  at most MAX_READ_BYTES and MAX_RECORDS, whatever the file holds.
+  at most MAX_EXPANSION times its size (MAX_READ_BYTES at most), MAX_RECORDS lines, MAX_CHATS
+  chats, MAX_MESSAGES messages and MAX_TEXT_CHARS characters of text, whatever the file holds.
+  A parser charges a chat or a message, with its text, before it keeps one.
 - Text goes through clean_text() first: the store and the model layer refuse lone surrogates.
 - A message is dated by its own time, never by the upload's (D10, "Order and time").
 - Speaker and modality come from the source's metadata (D5). Machine text is never filed under
@@ -43,12 +45,31 @@ _SURROGATE = re.compile("[\ud800-\udfff]")
 _EARLIEST = datetime.min.replace(tzinfo=UTC)
 
 # What one upload may expand to, whatever its size on the wire: the bytes read out of archives
-# and compressed streams, and the JSON lines parsed. Past either, the upload is refused, so a
-# small crafted file cannot take the API's memory. An export larger than this goes in parts:
-# a re-import is idempotent.
+# and compressed streams, the JSON lines read (blank ones too), and the chats and messages a
+# parser makes. Past any, the upload is refused, so a small crafted file cannot take the API's
+# memory without a bound. An export larger than this goes in parts: a re-import
+# is idempotent.
 MAX_READ_BYTES = 768 * 1024 * 1024
+# A real export compresses well under this ratio; a crafted one (a zip of zeros, of newlines,
+# of one word again and again) is far past it. Every upload may read at least MIN_READ_BYTES.
+MAX_EXPANSION = 64
+MIN_READ_BYTES = 64 * 1024 * 1024
 MAX_RECORDS = 1_000_000
+MAX_CHATS = 10_000
+MAX_MESSAGES = 1_000_000
+# The text charged per upload. Synthetic screening probes measured about 0.3 million
+# characters a second; total request time also includes parsing and store writes.
+MAX_TEXT_CHARS = 50_000_000
 _TOO_LARGE = "the export holds more than one upload takes: upload it in parts"
+# The screener's working copies of a text take many times its size (a non-ASCII text keeps two
+# offsets a character in each of two copies), so the pipeline screens at most this much of one
+# message, and of one sender.
+MAX_MESSAGE_CHARS = 100_000
+MAX_SENDER_CHARS = 200
+# A chat's new messages are stored in parts of at most this many capped text and sender
+# characters, one source each. JSON metadata and screening replacements add to the property.
+MAX_SOURCE_CHARS = 4_000_000
+_CUT_MARK = "[cut: the message is longer than Grove keeps]"
 
 
 class NotAnExport(ValueError):
@@ -103,6 +124,21 @@ def clean_text(value: object) -> str:
         return ""
     text = _SURROGATE.sub("\ufffd", value)
     return text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+
+
+def kept_text(text: str, limit: int = MAX_MESSAGE_CHARS) -> str:
+    """At most `limit` characters of a text, for the screener. A longer text is cut at its last
+    whitespace before the limit, so no word, and so no secret, is cut in half and stored as a part
+    the detectors cannot know; a mark says that the rest is gone. Deterministic, so a re-import
+    keeps the same text."""
+    if len(text) <= limit:
+        return text
+    head = text[:limit]
+    end = len(head)
+    while end > 0 and not head[end - 1].isspace():
+        end -= 1
+    kept = head[:end].rstrip()
+    return f"{kept}\n{_CUT_MARK}" if kept else _CUT_MARK
 
 
 def clip(value: str, limit: int) -> str:
@@ -163,6 +199,11 @@ class ParsedMessage:
             raise ValueError("ParsedMessage.modality must be a modality code")
         if self.sender is not None and not isinstance(self.sender, str):
             raise TypeError("ParsedMessage.sender must be a str or None")
+        # The parser retains these objects until every member is read. Bound retained text
+        # here as well as at screening, so earlier members cannot retain huge Unicode strings.
+        object.__setattr__(self, "text", kept_text(self.text))
+        if self.sender is not None:
+            object.__setattr__(self, "sender", kept_text(self.sender, MAX_SENDER_CHARS))
 
     def __repr__(self) -> str:
         return (
@@ -195,11 +236,28 @@ class ReadBudget:
     """What one upload may still expand to. The archive readers charge it; past a limit the
     upload is NotAnExport, and nothing has been written yet."""
 
-    __slots__ = ("bytes_left", "records_left")
+    __slots__ = ("bytes_left", "records_left", "chats_left", "messages_left", "text_left")
 
-    def __init__(self, *, max_bytes: int = MAX_READ_BYTES, max_records: int = MAX_RECORDS) -> None:
+    def __init__(
+        self,
+        *,
+        max_bytes: int = MAX_READ_BYTES,
+        max_records: int = MAX_RECORDS,
+        max_chats: int = MAX_CHATS,
+        max_messages: int = MAX_MESSAGES,
+        max_text: int = MAX_TEXT_CHARS,
+    ) -> None:
         self.bytes_left = max_bytes
         self.records_left = max_records
+        self.chats_left = max_chats
+        self.messages_left = max_messages
+        self.text_left = max_text
+
+    @classmethod
+    def for_size(cls, size: int) -> "ReadBudget":
+        """The budget of an upload of `size` bytes: it may read MAX_EXPANSION times its size out
+        of archives and compressed streams, MIN_READ_BYTES at least and MAX_READ_BYTES at most."""
+        return cls(max_bytes=min(MAX_READ_BYTES, max(MIN_READ_BYTES, MAX_EXPANSION * size)))
 
     def take_bytes(self, count: int) -> None:
         self.bytes_left -= count
@@ -211,8 +269,26 @@ class ReadBudget:
         if self.records_left < 0:
             raise NotAnExport(_TOO_LARGE)
 
+    def take_chat(self) -> None:
+        """Before a parser makes a new chat."""
+        self.chats_left -= 1
+        if self.chats_left < 0:
+            raise NotAnExport(_TOO_LARGE)
+
+    def take_message(self, chars: int) -> None:
+        """Before a parser keeps a new message of `chars` characters (the screener reads at most
+        MAX_MESSAGE_CHARS of it)."""
+        self.messages_left -= 1
+        self.text_left -= min(chars, MAX_MESSAGE_CHARS)
+        if self.messages_left < 0 or self.text_left < 0:
+            raise NotAnExport(_TOO_LARGE)
+
     def __repr__(self) -> str:
-        return f"ReadBudget(bytes_left={self.bytes_left}, records_left={self.records_left})"
+        return (
+            f"ReadBudget(bytes_left={self.bytes_left}, records_left={self.records_left}, "
+            f"chats_left={self.chats_left}, messages_left={self.messages_left}, "
+            f"text_left={self.text_left})"
+        )
 
 
 @dataclass
@@ -223,7 +299,11 @@ class Upload:
 
     stream: BinaryIO
     size: int
-    budget: ReadBudget = field(default_factory=ReadBudget, repr=False)
+    budget: ReadBudget | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.budget is None:
+            self.budget = ReadBudget.for_size(self.size)
 
     def head(self, count: int = 8) -> bytes:
         self.stream.seek(0)
@@ -242,9 +322,9 @@ class Upload:
 
 
 def in_time_order(messages: Sequence[ParsedMessage]) -> list[ParsedMessage]:
-    """The messages in their own time order (D10), for a chat that a parser merged from more
-    than one file: the archive's file order says nothing about time. The sort is stable, and a
-    message with no time keeps its place after the message it follows."""
+    """The messages in their own time order (D10). Every parser sorts each chat: a chat merged
+    from more than one file comes in archive order, and a file's own stamps need not rise. The
+    sort is stable, and a message with no time keeps its place after the message it follows."""
     keyed = []
     last = _EARLIEST
     for index, message in enumerate(messages):

@@ -30,20 +30,20 @@ ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 MAX_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_TOTAL_BYTES = MAX_READ_BYTES
 MAX_MEMBERS = 20_000
-# The values one JSON document or one JSON line may hold. A real export of MAX_MEMBER_BYTES
-# holds fewer; at the cap the parsed values take well under a GiB.
-MAX_DOCUMENT_VALUES = 12_000_000
+# The values one JSON document or one JSON line may hold. A parsed value takes about 140 bytes
+# (measured on export-shaped rows), so a document at the cap takes about 1.1 GiB once parsed.
+MAX_DOCUMENT_VALUES = 8_000_000
 MAX_LINE_VALUES = 1_000_000
 _CHUNK = 1024 * 1024
-# What a zip member's decompressor raises on bad data, besides OSError and EOFError: deflate,
-# LZMA, and a method this Python does not have.
+# What a zip member's decompressor raises on bad data, besides OSError and EOFError: deflate
+# and LZMA errors. RuntimeError covers an encrypted member and NotImplementedError, a method
+# this Python does not have.
 _MEMBER_ERRORS = (
     zipfile.BadZipFile,
     OSError,
     ValueError,
     RuntimeError,
     EOFError,
-    NotImplementedError,
     zlib.error,
     lzma.LZMAError,
 )
@@ -141,8 +141,8 @@ def zip_members(
             except NotAnExport:
                 raise
             except _MEMBER_ERRORS as error:
-                # RuntimeError: an encrypted member. EOFError: a cut archive. zlib and LZMA:
-                # bad compressed data. NotImplementedError: a method Python lacks.
+                # RuntimeError: an encrypted member, or a method Python lacks. EOFError: a cut
+                # archive. zlib and LZMA: bad compressed data.
                 raise NotAnExport("a file in the archive cannot be read") from _no_context(error)
             yield Member(path=info.filename, data=data)
             # Drop this member's bytes before the next is read: one member in memory at a time.
@@ -195,15 +195,16 @@ def json_lines(
     time. A blank line is skipped; a line that does not parse is skipped too, because a session
     file that is still being written ends in a cut line, and so is a line of more than
     `max_line_values` values (MAX_LINE_VALUES). Line numbers count every line, kept or not. Each
-    line that is not blank counts against the upload's `budget`."""
+    line counts against the upload's `budget`, a blank one too: a file of newlines would
+    otherwise cost minutes of work and count nothing."""
     limit = MAX_LINE_VALUES if max_line_values is None else max_line_values
     text = data.removeprefix(b"\xef\xbb\xbf")
     for number, raw in enumerate(_lines(text), start=1):
+        if budget is not None:
+            budget.take_record()
         line = raw.strip()
         if not line:
             continue
-        if budget is not None:
-            budget.take_record()
         if value_bound(line) > limit:
             continue
         try:

@@ -1,13 +1,14 @@
 """The writes of an upload (A.4, D10, D13): the connector row, one chat's new messages as a
-screened source with its episodes, and the connector's coverage.
+screened source parts with their logical episodes, and the connector's coverage.
 
 Screening is code only and finishes before a transaction opens (SC1). One chat's delta commits
-whole: its source, its screening receipt, its episodes and the connector's watermark move in one
+whole: its sources, their screening receipts, its episodes and the connector's watermark move in one
 transaction, under the connector row's lock, so two uploads of one export cannot both store the
 same messages. The pipeline is grove.ingest.take_in; docs/ingest.md has the contract.
 """
 
 import json
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -158,7 +159,7 @@ def stored_keys(tx_or_query: Any, connector_id: str, locator: str) -> tuple[set[
 def write_chat_delta(
     driver: Driver,
     world_id: str,
-    screened: ScreenedSource,
+    screened: ScreenedSource | Sequence[ScreenedSource],
     *,
     connector_id: str,
     parser_version: str,
@@ -166,20 +167,48 @@ def write_chat_delta(
     episodes: Sequence[EpisodeCut],
     newest_at: datetime | None,
 ) -> dict[str, Any] | None:
-    """One chat's new messages, in one transaction: the source and its receipt, its episodes and
-    the connector's watermark and coverage. Raises DeltaMoved when another upload stored any of
+    """One chat's new messages, in one transaction: its source parts and receipts, its episodes
+    and the connector's watermark and coverage. Raises DeltaMoved when another upload stored any of
     `delta_keys` first. A delta that screening dropped whole writes its empty source only for a
     chat with no source yet, so a re-import stays idempotent; then it returns None."""
-    if type(screened) is not ScreenedSource:
-        raise TypeError("write_chat_delta takes a ScreenedSource from the Screener")
+    if type(screened) is ScreenedSource:
+        parts = [screened]
+    elif isinstance(screened, (list, tuple)) and screened:
+        parts = list(screened)
+    else:
+        raise TypeError("write_chat_delta takes screened source parts from the Screener")
+    if any(type(part) is not ScreenedSource for part in parts):
+        raise TypeError("write_chat_delta takes screened source parts from the Screener")
+    locator = parts[0].locator
+    if any(part.locator != locator for part in parts):
+        raise InvalidRecord("invalid_arguments", "sources", "source parts need one locator")
     keys = frozenset(delta_keys)
     if not keys:
         raise InvalidRecord("invalid_arguments", "type", "a delta holds at least one key")
-    if bool(screened.messages) != bool(episodes):
+    messages = [
+        (message.key, index) for index, part in enumerate(parts) for message in part.messages
+    ]
+    if bool(messages) != bool(episodes):
         raise InvalidRecord(
             "invalid_arguments", "episodes", "kept messages need episodes, and no messages none"
         )
     cuts = [_checked_cut(cut) for cut in episodes]
+    positions = {key: index for index, (key, _) in enumerate(messages)}
+    if len(positions) != len(messages) or not positions.keys() <= keys:
+        raise InvalidRecord("invalid_arguments", "sources", "source keys need a unique delta")
+    cut_parts = []
+    next_position = 0
+    for cut in cuts:
+        first = positions.get(cut.first_message_key)
+        last = positions.get(cut.last_message_key)
+        if first != next_position or last is None or last < first:
+            raise InvalidRecord(
+                "invalid_arguments", "episodes", "episode ranges must cover the delta"
+            )
+        cut_parts.append(list(dict.fromkeys(index for _, index in messages[first : last + 1])))
+        next_position = last + 1
+    if next_position != len(messages):
+        raise InvalidRecord("invalid_arguments", "episodes", "episode ranges must cover the delta")
     if newest_at is not None:
         _aware(newest_at, "newest_at")
 
@@ -187,23 +216,37 @@ def write_chat_delta(
         locked = tx.run(_LOCK_CONNECTOR, id=connector_id)
         if not locked:
             raise InvalidRecord("not_found", "connector_not_found", "no such connector here")
-        stored, sources = stored_keys(tx, connector_id, screened.locator)
+        stored, sources = stored_keys(tx, connector_id, locator)
         if stored & keys:
             raise DeltaMoved()
-        if not screened.messages and sources:
+        if not messages and sources:
             return None
-        source_id = new_id(tx.world_id)
-        written = write_screened_source(
-            tx,
-            screened,
-            source_id=source_id,
-            connector_id=connector_id,
-            parser_version=parser_version,
-        )
+        source_ids = []
+        counts: Counter[str] = Counter()
+        for part in parts:
+            source_id = new_id(tx.world_id)
+            written = write_screened_source(
+                tx,
+                part,
+                source_id=source_id,
+                connector_id=connector_id,
+                parser_version=parser_version,
+            )
+            source_ids.append(source_id)
+            counts.update(written["counts"])
         at = clock.now(tx.world_id)
-        episode_ids = [_write_episode(tx, connector_id, source_id, cut, at) for cut in cuts]
+        episode_ids = [
+            _write_episode(tx, connector_id, [source_ids[index] for index in indices], cut, at)
+            for cut, indices in zip(cuts, cut_parts, strict=True)
+        ]
         _move_connector(tx, connector_id, locked[0], cuts, newest_at, at, len(episode_ids))
-        return {**written, "episode_ids": episode_ids}
+        return {
+            "source_id": source_ids[0],
+            "source_ids": source_ids,
+            "counts": dict(counts),
+            "kept_messages": len(messages),
+            "episode_ids": episode_ids,
+        }
 
     return WorldWriter(driver, world_id).transaction(work)
 
@@ -220,7 +263,7 @@ def _checked_cut(cut: object) -> EpisodeCut:
 
 
 def _write_episode(
-    tx: WorldTx, connector_id: str, source_id: str, cut: EpisodeCut, at: datetime
+    tx: WorldTx, connector_id: str, source_ids: list[str], cut: EpisodeCut, at: datetime
 ) -> str:
     """Keyed on (connector, first message key): an episode that exists stays as it is."""
     found = tx.run(_FIND_EPISODE, connector=connector_id, key=cut.first_message_key)
@@ -230,7 +273,7 @@ def _write_episode(
         {
             "id": new_id(tx.world_id),
             "connector_id": connector_id,
-            "source_ids": [source_id],
+            "source_ids": source_ids,
             "first_message_key": cut.first_message_key,
             "last_message_key": cut.last_message_key,
             "start_time": cut.start_time,
