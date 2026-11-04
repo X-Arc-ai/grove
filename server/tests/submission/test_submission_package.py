@@ -26,9 +26,7 @@ DOCUMENTS = (
 )
 RELEASE_DOCUMENTS = tuple(
     name for name in DOCUMENTS if name not in ("README.md", "CONTRIBUTING.md")
-) + (
-    "docs/drafts/submission-writeup.txt",
-)
+) + ("docs/drafts/submission-writeup.txt",)
 
 
 @pytest.mark.parametrize("name", RELEASE_DOCUMENTS)
@@ -106,7 +104,12 @@ def test_release_record_separates_source_and_each_deployed_revision():
     for name in ("docs/submission-status.md", "docs/architecture.md"):
         text = (ROOT / name).read_text()
         for expected in (
-            RECORDING_SOURCE, RECORDING_API, WORKERS, "2026-11-04", "20:06:46 UTC", "NOT RUN"
+            RECORDING_SOURCE,
+            RECORDING_API,
+            WORKERS,
+            "2026-11-04",
+            "20:06:46 UTC",
+            "NOT RUN",
         ):
             assert expected in text, (name, expected)
         assert "Request18 remains FAILED" in text, name
@@ -121,7 +124,13 @@ def test_published_ui_keeps_deployment_and_materials_boundaries():
     for name in ("docs/submission-status.md", "docs/architecture.md"):
         text = (ROOT / name).read_text()
         for expected in (
-            RECORDING_SOURCE, RECORDING_API, API, "PR #66", "PR #61", MATERIALS, MATERIAL_SOURCE
+            RECORDING_SOURCE,
+            RECORDING_API,
+            API,
+            "PR #66",
+            "PR #61",
+            MATERIALS,
+            MATERIAL_SOURCE,
         ):
             assert expected in text, (name, expected)
         assert "published source" in text.lower(), name

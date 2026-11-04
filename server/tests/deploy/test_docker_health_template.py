@@ -14,7 +14,7 @@ spec = importlib.util.spec_from_file_location("health_template_cutover", MODULE)
 cutover = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cutover)
 
-EVALUATOR = r'''
+EVALUATOR = r"""
 package main
 
 import (
@@ -37,7 +37,7 @@ func main() {
     if err != nil { panic(err) }
     if err := t.Execute(os.Stdout, input.Data); err != nil { panic(err) }
 }
-'''
+"""
 
 
 @pytest.fixture(scope="module")
@@ -122,7 +122,7 @@ def test_inspect_optional_health_preserves_safe_projection(evaluate_template, he
 
 
 def test_strict_evaluator_rejects_original_missing_health_traversal(evaluate_template):
-    original = '{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}'
+    original = "{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}"
     with pytest.raises(subprocess.CalledProcessError) as failure:
         evaluate_template(original, {"State": {"Running": True, "Status": "running"}})
     assert 'map has no entry for key "Health"' in failure.value.stderr
