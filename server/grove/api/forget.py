@@ -15,8 +15,10 @@ from grove.api.views import read_json_body
 from grove.oauth.secrets import token_hash
 from grove.oauth.store import find_access_token
 from grove.privacy import flow_statement
+from grove.store.replay import ReplayRefused
 from grove.writer.errors import HTTP_STATUS, InvalidRecord
 from grove.writer.forget_approvals import mint_approval, validate_target
+from grove.writer.forget_ledger import LedgerUnavailable
 
 PREFIX = "/v1/forget"
 MAX_BODY_BYTES = 16 * 1024
@@ -137,3 +139,9 @@ async def forget(request: Request) -> dict[str, Any]:
         )
     except InvalidRecord as error:
         raise _safe_error(error) from None
+    except LedgerUnavailable:
+        raise ApiError(503, "unavailable", "forget is not available", retryable=False) from None
+    except ReplayRefused as error:
+        if error.rule == "row_value":
+            raise invalid_arguments("select one content field for this value", "target") from None
+        raise ApiError(409, "conflict", "the forget request was refused", retryable=False) from None
