@@ -993,9 +993,9 @@ def _message_key(run: Any, example: Any) -> str:
         return run.observation(_text(example["ev_id"], "worked_example.ev_id"))["message_key"]
     from grove.writer.apply import _existing_evidence
 
-    return _existing_evidence(
-        run, _text(example["evidence_id"], "worked_example.evidence_id")
-    )["message_key"]
+    return _existing_evidence(run, _text(example["evidence_id"], "worked_example.evidence_id"))[
+        "message_key"
+    ]
 
 
 def _change(

@@ -59,12 +59,12 @@ def select_input(source: dict, connector: dict, request: dict) -> SelectedInput:
             continue
         if not text.strip():
             continue
-        meta = speakers.get(key) or {}
+        meta = speakers.get(key, {})
         if not isinstance(meta, dict):
             held += 1
             reasons.add("speaker_unknown")
             continue
-        speaker = meta.get("kind") or message.get("speaker_kind")
+        speaker = meta["kind"] if "kind" in meta else message.get("speaker_kind")
         if kind == "person_in_views":
             speaker = "person"
         elif kind == "ai_host":

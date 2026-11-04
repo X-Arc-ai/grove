@@ -45,14 +45,24 @@ def guard(run, op):
 
 
 def _sources(run, op):
+    from grove.writer.message_binding import retained_messages
+
     sources = op.get("checked_source_ids") or []
     if not sources:
         refuse(
             "cascade_review_sources", "a disposition cites retained sources checked by this pass"
         )
     for source in sources:
-        if not run.tx.run("MATCH (s:Source {id: $id}) RETURN s.id AS id", id=source):
+        rows = run.tx.run("MATCH (s:Source {id: $id}) RETURN s", id=source)
+        if not rows:
             refuse("cascade_review_sources", "a disposition cites only sources of this world")
+        stored = rows[0]["s"]
+        connectors = run.tx.run(
+            "MATCH (c:Connector {id: $id}) RETURN c", id=stored.get("connector_id")
+        )
+        if not connectors or stored.get("forget_state") == "forgotten":
+            refuse("cascade_review_sources", "the source is no longer available")
+        retained_messages(stored, connectors[0]["c"])
     return sources
 
 
