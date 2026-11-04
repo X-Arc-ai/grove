@@ -134,6 +134,76 @@ def test_unrelated_world_or_caller_verdict_makes_no_provider_call(driver, seeded
     assert provider.requests == []
 
 
+def test_unavailable_second_provider_records_a_distinct_correlated_call(driver, seeded):  # noqa: F811
+    w = seeded["world_id"]
+    target = belief(driver, w)
+    source = make_source(driver, w, "web_pages", ["The ferry did not depart."])
+    provider = Provider(spark(verdict("contradicts")), spark(verdict("contradicts")))
+    with ModelLayer(
+        driver,
+        settings=settings(glimmer_base_url=None, glimmer_key=None),
+        transport=httpx.MockTransport(provider),
+        sleep=lambda _: None,
+    ) as models:
+        answer = judge_belief(
+            models,
+            driver,
+            w,
+            {
+                "mode": "evidence",
+                "belief_id": target,
+                "source_id": source["source_id"],
+                "locator": "whole",
+            },
+            run_id="fallback-test",
+        )
+    rows = [row["j"] for row in WorldQuery(driver, w).read("MATCH (j:Judgment) RETURN j")]
+    assert len(set(answer["model_call_ids"])) == 2
+    assert answer["correlated"] is True
+    assert {row["role"] for row in rows if row.get("correlated")} == {"second_judge"}
+    assert provider.bodies()[0]["instructions"] != provider.bodies()[1]["instructions"]
+
+
+@pytest.mark.parametrize("mode", ["same_belief", "field_fit"])
+def test_pairwise_modes_bind_the_stored_subject(driver, seeded, mode):  # noqa: F811
+    w = seeded["world_id"]
+    first, second = belief(driver, w), belief(driver, w)
+    if mode == "same_belief":
+        body = {"mode": mode, "survivor": second, "absorbed": first}
+        expected = "|".join(sorted([f"belief:{first}", f"belief:{second}"]))
+        value = "same"
+    else:
+        body = {
+            "mode": mode,
+            "title": "The Kestrel ferry departs reliably",
+            "subject_refs": [second, first],
+            "externally_testable": True,
+            "retest_how": {
+                "connector": "registered-connector",
+                "locator": "https://status.example.test",
+            },
+        }
+        value = "fits"
+    provider = Provider(spark(verdict(value)), glimmer(verdict(value)))
+    with layer(driver, provider) as models:
+        answer = judge_belief(models, driver, w, body, run_id="pair-test")
+    query = WorldQuery(driver, w)
+    if mode == "field_fit":
+        expected = answer["field_subject"]
+        stored = query.read(
+            "MATCH (v:HistoryValue {id: $id}) RETURN v.value AS value",
+            id=expected.removeprefix("value:"),
+        )[0]["value"]
+        assert json.loads(stored) == {k: v for k, v in body.items() if k != "mode"} | {
+            "subject_refs": sorted([first, second])
+        }
+    rows = [row["j"] for row in query.read("MATCH (j:Judgment) RETURN j")]
+    assert len(rows) == 2
+    assert {(row["role"], row["subject"], row["verdict"]) for row in rows} == {
+        (mode, expected, value)
+    }
+
+
 def test_retest_reads_only_registered_scope_and_screens_before_storage(driver, seeded, frozen):  # noqa: F811
     w = seeded["world_id"]
     target = belief(driver, w)
