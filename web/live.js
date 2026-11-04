@@ -14,6 +14,7 @@
     node: '/v1/views/node/',
     schema: '/v1/views/schema',
     health: '/v1/views/health',
+    workers: '/v1/views/workers',
     positions: '/v1/views/positions',
     upload: '/v1/sources/upload',
     pendingExports: '/v1/sources/pending-exports',
@@ -189,6 +190,13 @@
     getJSON: getJSON,
     postJSON: postJSON,
     uploadExport: uploadExport,
+    workers: function () {
+      var sentIn = sessionsBegun;
+      return request('GET', ENDPOINTS.workers).then(function (res) {
+        if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
+        return watchSession(sentIn, res);
+      });
+    },
     pendingExports: function () { return getJSON(ENDPOINTS.pendingExports); },
     requestExport: function (provider) {
       var codes = { chatgpt: 'chatgpt', claude: 'claude_ai', chats: 'whatsapp', muse: 'muse', grok: 'grok' };

@@ -25,12 +25,18 @@
       <div class="brand-name wm" aria-label="grove"><span>grove</span><span class="wm-dot" aria-hidden="true"></span></div>
       <div class="brand-stats" id="stats">0 nodes · 0 connections</div>
       <div id="learning-slot"></div>
+      <div id="graph-status" class="graph-status" role="status" aria-live="polite"></div>
     </div>
 
     <div class="topbar-actions">
       <label class="toggle" title="Watch Grove learn, organise and connect">
         <input type="checkbox" id="agents-toggle" />
         <span>Your Grove workers</span>
+      </label>
+
+      <label class="toggle" title="Hide completed and historical nodes">
+        <input type="checkbox" id="active-only" />
+        <span>active only</span>
       </label>
 
       <a id="health-link" class="icon-btn health-btn" href="#health" title="Grove health" aria-label="Grove health">
@@ -53,7 +59,7 @@
       <button id="requests-button" class="icon-btn gp-requests-button" aria-label="Grove needs your input" aria-expanded="false">
         <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
       </button>
-      <button id="profile-button" class="icon-btn gp-profile-button" aria-label="Profile and settings" aria-expanded="false">A</button>
+      <button id="profile-button" class="icon-btn gp-profile-button" aria-label="Profile and settings" aria-expanded="false"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="12" cy="8" r="3.5"/><path d="M5 21v-2a7 7 0 0 1 14 0v2"/></svg></button>
     </div>
   </header>
 

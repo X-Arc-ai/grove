@@ -243,6 +243,7 @@
     return ns.length+es.length>0;
   }
   function getChanges(provider) {
+    if(LIVE)return provider?{new_nodes:[],new_edges:[]}:{new_nodes:clone(live.nodes.filter(function(n){return liveDelta.nodes.has(n.data.id);}).map(function(n){return n.data;})),new_edges:clone(live.edges.filter(function(e){return liveDelta.edges.has(liveEdgeId(e.data));}).map(function(e){return e.data;})),removed_nodes:liveDelta.removedNodes,removed_edges:liveDelta.removedEdges};
     if(!fixture)return {new_nodes:[],new_edges:[]};
     var graph=visibleElements(fixture),ids,edges;
     if(provider){var a=state.accountImports[provider];ids=a?(a.nodeIds||[]).slice(0,a.loadedCount||0):[];edges=graph.edges.filter(function(e){return ids.includes(e.data.source)&&ids.includes(e.data.target);}).map(function(e){return e.data.id;});}
@@ -254,7 +255,23 @@
   // Live mode: the last graph payload, with the self item renamed to the identity node's id.
   var live = { selfId: null, nodes: [], edges: [] };
   // Grows when the session ends: a graph read still out at that moment keeps nothing here.
-  var liveSession = 0;
+  var liveSession = 0, liveGraphRequest = 0;
+  function emptyLiveDelta(){return {nodes:new Set(),edges:new Set(),removedNodes:0,removedEdges:0,checkedAt:null,baselineAt:null};}
+  var liveDelta=emptyLiveDelta(), liveSnapshot=null;
+  function liveEdgeId(e){return e.id || JSON.stringify([e.source,e.verb||e.label||'',e.target]);}
+  function clearLiveSnapshot(){liveGraphRequest++;liveSnapshot=null;liveDelta=emptyLiveDelta();}
+  function compareLiveGraph(nodes,edges){
+    var next={nodes:new Set(nodes.map(function(w){return w.data.id;})),edges:new Set(edges.map(function(w){return liveEdgeId(w.data);})),at:new Date().toISOString()};
+    var before=liveSnapshot;liveDelta=emptyLiveDelta();liveDelta.checkedAt=next.at;
+    if(before){
+      liveDelta.baselineAt=before.at;
+      next.nodes.forEach(function(id){if(!before.nodes.has(id))liveDelta.nodes.add(id);});
+      next.edges.forEach(function(id){if(!before.edges.has(id))liveDelta.edges.add(id);});
+      before.nodes.forEach(function(id){if(!next.nodes.has(id))liveDelta.removedNodes++;});
+      before.edges.forEach(function(id){if(!next.edges.has(id))liveDelta.removedEdges++;});
+    }
+    liveSnapshot=next;
+  }
   function isHubKind(type) { var style = ((window.GroveLive && window.GroveLive.KIND_STYLE) || {})[type] || type; return style === 'company' || style === 'project'; }
   // The views show the payload; when it names no self item, the sim's identity node joins it, as in the sim.
   function liveElements() {
@@ -297,7 +314,8 @@
       requests: clone(state.requests), growth: clone(state.growth), files: clone(state.files), pendingExports: clone(state.pendingExports), accountImports: Object.fromEntries(Object.entries(state.accountImports).map(function(entry){return [entry[0],Object.assign({},entry[1],{contribution:sourceStats(entry[1])})];})), googleConnected: state.googleConnected,
       importedCount: imported, hasImports: sources.some(function (s) { return s.status !== 'idle' || s.loadedCount > 0; }),
       currentNodeCount: counts.nodes, currentEdgeCount: counts.edges, currentNodeTypes: counts.types,
-      growthHistory: clone(state.growthHistory), nodeDelta: state.nodeDelta, edgeDelta: state.edgeDelta,
+      growthHistory: clone(state.growthHistory), nodeDelta: LIVE?liveDelta.nodes.size:state.nodeDelta, edgeDelta: LIVE?liveDelta.edges.size:state.edgeDelta,
+      removedNodes:LIVE?liveDelta.removedNodes:0,removedEdges:LIVE?liveDelta.removedEdges:0,graphCheckedAt:LIVE?liveDelta.checkedAt:null,graphBaselineAt:LIVE?liveDelta.baselineAt:null,
       totalNodeCount: all.nodes.length, totalEdgeCount: all.edges.length,
       updatedAt: state.updatedAt, sources: sources,
     };
@@ -417,7 +435,7 @@
       saveOnboardingPreference();verifiedAccount=null;
       reminderEpoch++;reminderRevision=-1;importEpoch++;
       Object.keys(jobs).forEach(stopJob);state=freshState();
-      liveSession++;live={selfId:null,nodes:[],edges:[]};
+      liveSession++;clearLiveSnapshot();live={selfId:null,nodes:[],edges:[]};
     }else state.auth=null;
     save();return getState();
   }
@@ -462,6 +480,7 @@
   function resetOnboarding() {
     var before = currentCounts();
     verifiedAccount = null;
+    if(LIVE){liveSession++;clearLiveSnapshot();live={selfId:null,nodes:[],edges:[]};}
     reminderEpoch++; reminderRevision = -1;
     importEpoch += 1; Object.keys(jobs).forEach(stopJob); state = freshState();
     state.nodeDelta = 0; state.edgeDelta = 0;
@@ -551,7 +570,9 @@
   // Live mode: the same reads, answered by the server. Other paths answer a 404-shaped error.
   function liveAnswer(status, payload) { return { ok: status >= 200 && status < 300 && !payload.error, status: status, json: function () { return Promise.resolve(payload); } }; }
   function acceptGraph(body) {
-    var el = (body && body.elements) || {}, nodes = el.nodes || [], edges = el.edges || [];
+    var el = body && body.elements;
+    if(!el||!Array.isArray(el.nodes)||!Array.isArray(el.edges)||el.nodes.some(function(w){return !w||!w.data||typeof w.data.id!=='string';})||el.edges.some(function(w){return !w||!w.data||typeof w.data.source!=='string'||typeof w.data.target!=='string';}))throw new Error('Invalid graph response');
+    var nodes=el.nodes,edges=el.edges;
     var selfId = body && body.self_item_id != null ? String(body.self_item_id) : null;
     if (selfId && !nodes.some(function (w) { return w && w.data && w.data.id === selfId; })) selfId = null;
     function alias(id) { return selfId && id === selfId ? 'grove-self' : id; }
@@ -560,6 +581,7 @@
       nodes: nodes.map(function (w) { var d = Object.assign({}, w.data); d.id = alias(d.id); return { data: d }; }),
       edges: edges.map(function (w) { var d = Object.assign({}, w.data); d.source = alias(d.source); d.target = alias(d.target); return { data: d }; }),
     };
+    compareLiveGraph(live.nodes,live.edges);
     return Object.assign({}, body, { elements: clone(liveElements()) });
   }
   function aliasDetail(body) {
@@ -581,11 +603,11 @@
     else if (path === '/api/schema') target = G.ENDPOINTS.schema;
     else if (path === '/api/health' || path === '/health') target = G.ENDPOINTS.health;
     else return Promise.resolve(liveAnswer(404, { error: 'No live endpoint for ' + path }));
-    var session = liveSession;
+    var session = liveSession,request=kind==='graph'?++liveGraphRequest:0;
     return G.getJSON(target).then(function (res) {
       var body = res.body || {};
       if (!res.ok) return liveAnswer(res.status || 500, { error: G.errorText(body), code: (body.error && body.error.code) || null });
-      if (kind === 'graph') { if (session === liveSession) body = acceptGraph(body); }   // native-app drops a late answer
+      if (kind === 'graph') { if(session!==liveSession||request!==liveGraphRequest)return liveAnswer(409,{error:'Graph request superseded',code:'superseded'});body = acceptGraph(body); }   // native-app drops a late answer
       else if (kind === 'node') body = aliasDetail(body);
       return liveAnswer(res.status, body);
     });
