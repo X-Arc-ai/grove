@@ -104,6 +104,7 @@ PLAIN_TYPES = {
     "locator",
     "code",
     "config",
+    "digest",
 }
 
 # Words per form, after the first word. Python strings here must stay clear of the writer lint.
@@ -190,7 +191,12 @@ def test_restore_groups_match_lines_806_to_808():
         "capabilities",
         "beliefs",
     }
-    assert {t.name for t in TABLES if t.group == "ledger"} == {"forget_ledger"}
+    assert {t.name for t in TABLES if t.group == "ledger"} == {
+        "forget_ledger",
+        "authority_projections",
+        "authority_operations",
+        "authority_approval_uses",
+    }
     assert len([t for t in TABLES[:42] if t.group == "snapshot"]) == 32
 
 
