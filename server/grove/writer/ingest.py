@@ -42,10 +42,9 @@ _FIND_CONNECTOR = (
     "MATCH (c:Connector {type: $type, provider: $provider}) RETURN c.id AS id ORDER BY c.id LIMIT 1"
 )
 _ADD_CONNECTOR = "CREATE (c:Connector) SET c += $row"
-# A marker set and removed in one statement takes the row's write lock and changes nothing, as
-# WorldTx.lock_world does for the world (S41).
+# The mandatory World lock serializes connector updates before this read.
 _LOCK_CONNECTOR = (
-    "MATCH (c:Connector {id: $id}) SET c.lock_marker = true REMOVE c.lock_marker "
+    "MATCH (c:Connector {id: $id}) "
     "RETURN c.watermark AS watermark, c.oldest_unprocessed_item AS oldest, "
     "c.read_count AS read_count, c.provider AS provider"
 )
@@ -393,7 +392,7 @@ def record_read(
             "last_outcome": outcome,
             "touched_at": at,
         }
-        if outcome != "failed":
+        if outcome in {"took_in", "nothing_new"}:
             columns["last_successful_read"] = at
         if not tx.run(_READ_OUTCOME, id=connector_id, columns=columns, failed=failed):
             raise InvalidRecord("not_found", "connector_not_found", "no such connector here")

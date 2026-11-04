@@ -227,6 +227,18 @@ def millis(at: datetime) -> int:
 
 
 @pytest.fixture
+def make_world(driver, make_world):
+    """These low-level writer tests need a World row before the mandatory writer lock."""
+
+    def initialized():
+        world = make_world()
+        plant_node(driver, world, "World", next_sequence=0)
+        return world
+
+    return initialized
+
+
+@pytest.fixture
 def test_clock():
     installed = TestClock()
     installed.set(STORE_TIME)
