@@ -8,6 +8,7 @@ same messages. The pipeline is grove.ingest.take_in; docs/ingest.md has the cont
 """
 
 import json
+import re
 from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -17,6 +18,12 @@ from typing import Any
 from neo4j import Driver
 
 from grove import clock
+from grove.demo_policy import (
+    DemoDenied,
+    designation_in_tx,
+    has_designation,
+    require_designation_in_tx,
+)
 from grove.ids import new_id
 from grove.screening import ScreenedSource
 from grove.store.enums import ENUMS
@@ -110,6 +117,15 @@ def ensure_connector(
 
     def work(tx: WorldTx) -> str:
         tx.lock_world()
+        if has_designation(designation_in_tx(tx) or {}):
+            require_designation_in_tx(tx)
+            if not (
+                connector_type == "ai_host"
+                and re.fullmatch(r"host:[0-9a-f]{64}", provider)
+                and batch_rule == "host_request"
+                and auth_reference == "oauth"
+            ):
+                raise DemoDenied()
         found = tx.run(_FIND_CONNECTOR, type=connector_type, provider=provider)
         if found:
             return found[0]["id"]
@@ -224,6 +240,8 @@ def write_chat_delta(
         _aware(newest_at, "newest_at")
 
     def work(tx: WorldTx) -> dict[str, Any] | None:
+        if has_designation(designation_in_tx(tx) or {}):
+            raise DemoDenied()
         if sync_owner is not None:
             require_sync(tx, connector_id, sync_owner)
         locked = tx.run(_LOCK_CONNECTOR, id=connector_id)
