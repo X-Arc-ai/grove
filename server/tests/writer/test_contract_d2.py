@@ -127,7 +127,7 @@ def git_observation(src, ev_id: str, **extra) -> dict[str, Any]:
         1,
         locator=f"key:{GIT_TOKEN}",
         message_key=GIT_TOKEN,
-        statement_class="report_happened",
+        statement_class="artifact",
         **extra,
     )
 
@@ -288,7 +288,8 @@ def test_a_caller_source_type_is_refused(driver, seeded, chat, place, key):
     [
         pytest.param("whatsapp", "report_happened", "person", "reported_done", id="chat_report"),
         pytest.param("whatsapp", "decision", "person", "said", id="chat_decision"),
-        pytest.param("git", "report_happened", "person", "confirmed", id="git_commit"),
+        pytest.param("git", "artifact", "person", "confirmed", id="git_commit"),
+        pytest.param("git", "report_happened", "person", "reported_done", id="git_message"),
         # The caller's speaker kind never raises the type (D2: derived from the connector and
         # the statement class, never accepted from a caller).
         pytest.param("whatsapp", "report_happened", "automated", "reported_done", id="automated"),

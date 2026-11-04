@@ -166,6 +166,8 @@ def write_chat_delta(
     delta_keys: Sequence[str],
     episodes: Sequence[EpisodeCut],
     newest_at: datetime | None,
+    calendar_events: dict[str, dict] | None = None,
+    speakers: dict[str, dict] | None = None,
 ) -> dict[str, Any] | None:
     """One chat's new messages, in one transaction: its source parts and receipts, its episodes
     and the connector's watermark and coverage. Raises DeltaMoved when another upload stored any of
@@ -196,6 +198,13 @@ def write_chat_delta(
     positions = {key: index for index, (key, _) in enumerate(messages)}
     if len(positions) != len(messages) or not positions.keys() <= keys:
         raise InvalidRecord("invalid_arguments", "sources", "source keys need a unique delta")
+    for facts in (calendar_events, speakers):
+        if facts is not None and (
+            not isinstance(facts, dict) or not facts.keys() <= positions.keys()
+        ):
+            raise InvalidRecord(
+                "invalid_arguments", "message_facts", "facts need retained message keys"
+            )
     cut_parts = []
     next_position = 0
     for cut in cuts:
@@ -224,6 +233,7 @@ def write_chat_delta(
         source_ids = []
         counts: Counter[str] = Counter()
         for part in parts:
+            part_keys = {message.key for message in part.messages}
             source_id = new_id(tx.world_id)
             written = write_screened_source(
                 tx,
@@ -231,6 +241,16 @@ def write_chat_delta(
                 source_id=source_id,
                 connector_id=connector_id,
                 parser_version=parser_version,
+                calendar_events=(
+                    {key: value for key, value in calendar_events.items() if key in part_keys}
+                    if calendar_events is not None
+                    else None
+                ),
+                speakers=(
+                    {key: value for key, value in speakers.items() if key in part_keys}
+                    if speakers is not None
+                    else None
+                ),
             )
             source_ids.append(source_id)
             counts.update(written["counts"])

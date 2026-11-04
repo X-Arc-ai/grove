@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import httpx
 
 from grove.ingest import (
+    CalendarEvent,
     ConnectorSpec,
     NotAnExport,
     ParsedChat,
@@ -96,7 +97,7 @@ def _json(http: httpx.Client, url: str, access_token: str, params: dict) -> dict
     return body
 
 
-def _event_time(start: object, zone: str) -> datetime | None:
+def _event_time(start: object, zone: str | None) -> datetime | None:
     if not isinstance(start, dict):
         return None
     if "dateTime" in start:
@@ -116,7 +117,7 @@ def _event_time(start: object, zone: str) -> datetime | None:
         return None
     try:
         return datetime.fromisoformat(value).replace(tzinfo=ZoneInfo(zone))
-    except (ValueError, ZoneInfoNotFoundError):
+    except (TypeError, ValueError, ZoneInfoNotFoundError):
         return None
 
 
@@ -135,7 +136,7 @@ def _revision(event: dict, previous: dict) -> tuple[str, bool]:
 def event_chat(
     calendar_id: str,
     event: dict,
-    zone: str,
+    zone: str | None,
     budget: ReadBudget,
     changed_fields: list[str] | None = None,
     revision: str | None = None,
@@ -175,7 +176,18 @@ def event_chat(
         sender = clean_text(organizer.get("displayName") or organizer.get("email")) or None
     budget.take_chat()
     budget.take_message(len(text))
-    messages = in_time_order([ParsedMessage(key, text, at, "third_party", sender=sender)])
+    facts = None
+    if zone is not None:
+        updated = utc_from_iso(event.get("updated"))
+        if event.get("updated") is not None and updated is None:
+            raise CalendarRefused("invalid_response")
+        try:
+            facts = CalendarEvent(at, zone, status, updated)
+        except ValueError:
+            raise CalendarRefused("invalid_response") from None
+    messages = in_time_order(
+        [ParsedMessage(key, text, at, "third_party", sender=sender, calendar_event=facts)]
+    )
     return ParsedChat(chat_id, tuple(messages))
 
 
@@ -217,11 +229,12 @@ def read_calendar(
                     params,
                 )
                 events = body.get("items")
-                zone = body.get("timeZone", "UTC")
-                if not isinstance(events, list) or not isinstance(zone, str):
+                zone = body.get("timeZone")
+                if not isinstance(events, list) or (zone is not None and not isinstance(zone, str)):
                     raise CalendarRefused("invalid_response")
                 try:
-                    ZoneInfo(zone)
+                    if zone is not None:
+                        ZoneInfo(zone)
                 except (ValueError, ZoneInfoNotFoundError):
                     raise CalendarRefused("invalid_response") from None
                 for event in events:

@@ -33,6 +33,18 @@ field names without a model call. The Calendar status `confirmed` describes the 
 it does not prove that the event occurred. An event's scheduled time and its update time
 remain separate. A cancellation without a start has an unknown event time.
 
+The reader attaches a typed `CalendarEvent` to each parsed message only when the provider
+supplies a valid Calendar timezone. The atomic source writer stores these fields in
+`Source.calendar_events`, separate from speaker metadata and screened text. The map contains
+only retained message keys. Uploads and other readers cannot supply these authoritative facts.
+Missing timezone does not become trusted UTC; an all-day event without its timezone refuses.
+
+The writer confirms a past occurrence only for a confirmed schedule status and an explicitly
+logged day (`log_from` or `logged_days`) in that stored timezone. The observation must cite
+the exact key and schedule time. An explicit observation timezone must match; it may be omitted.
+Future entries, tentative/cancelled entries, absent bindings and mismatches stay planned.
+Confirmation and reuse never use the event's update time as its occurrence time.
+
 Limits per read: 100 pages, 4 MiB per page, and 10,000 event identities. A read beyond a limit
 fails explicitly and keeps the previous cursor. It never reports an incomplete calendar as
 an empty successful read.
@@ -53,6 +65,10 @@ or call a model. One commit or merge is one episode. The source keeps its author
 parents and message. A changed history replays reachable commits with the same identity
 keys. A clone proves that a commit exists; it does not prove a feature is deployed. Full pull
 request metadata requires a separate API connector and is not inferred from commit subjects.
+Only an observation of the commit/merge artifact has confirmed source type. A report in its
+message remains reported done; a title or other statement remains said. Such reports cannot
+complete work or verify a live-feature claim. Extraction still classifies each statement;
+calling a report an artifact is not an independent proof that the report is true.
 
 ## Connection operations and polling
 
@@ -86,12 +102,10 @@ Calendar remains `Planned` in the public data-flow table until those steps run.
 
 ## Verification
 
-The D5 writer integration remains open until the truth-clock controls merge and consume the
-connector's exact event facts. Parser provenance alone does not establish that a logged event
-can confirm an occurrence or that a Git artifact cannot confirm deployment. The lane must pass
-those writer tests before it declares acceptance.
-
 `GROVE_SLICE_ID=ingest-a3 uv run --project server python -m pytest server/tests/connectors`
 uses a real loopback fake Google server and synthetic Git repositories. It covers pagination,
 incremental reads, 410 reset, replay, partial commit recovery, denial, refresh, consent state,
-world isolation, credential binding and automatic polling. No test reads a person's data.
+world isolation, credential binding and automatic polling. D5 tests use actual connector-created
+source and episode rows through the writer, including logged-past positives, time/zone/key
+substitution negatives, cancellations, evidence reuse, and Git artifact/report distinctions.
+No test reads a person's data.

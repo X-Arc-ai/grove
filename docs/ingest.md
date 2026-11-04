@@ -162,6 +162,15 @@ An episode with no `run_id` is unprocessed: that is the handoff to the update ag
 
 ## The upload route
 
+The dedicated Calendar reader can attach a typed `CalendarEvent` through
+`ParsedMessage.calendar_event`. This is code-held provider data, not an `Upload` option.
+`take_in` refuses these facts from any upload parser. `take_parsed` permits them only for
+the dedicated Calendar provider/type/parser tuple. After screening, `write_chat_delta`
+passes each source part's retained `calendar_events` map to `write_screened_source` in
+the same transaction. Dropped messages leave no event facts. Calendar and Git readers
+also pass exact-key speaker kinds separately. `docs/source-connectors.md` defines the
+provider APIs and the D5 contract.
+
 `POST /v1/sources/upload?provider=<code>`, the raw file as the body.
 
 - Auth: the session cookie, or `Authorization: Bearer gut_...`, an upload-only token for one
