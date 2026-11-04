@@ -61,8 +61,10 @@ See [sign-in](signin.md) and [hosts](hosts.md).
 
 The general registry still has `DEFAULT_TOOLS = ()`. A separate authority-checked pair exposes
 restricted Cedar `store` and `recall` for prepared synthetic data. The rehearsal uses recall
-only. General store/read acceptance does not follow from this pair. Current owner login and
-Muse acceptance remain **NOT RUN**. The source refuses mixed read/write MCP batches.
+only. General store/read acceptance does not follow from this pair. At the dated snapshot, owner
+login and Muse acceptance were **NOT RUN**. The
+[later Muse update](submission-status.md#prepared-account-muse-update) records the Muse run.
+The source refuses mixed read/write MCP batches.
 
 The browser contains the approved pre-event presentation assets and subsequent API integration.
 Worker status has a [recorded API contract](worker-activity.md). A toggle or status record does
@@ -82,8 +84,8 @@ Items or links. The prepared graph is a separate dataset. See [ingest](ingest.md
 
 A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC:
 one source, one episode, and two kept messages; the exact repeat added zero new records.
-The upload did not change the graph. Real prepared-account Muse use remains **NOT RUN**;
-the manual account/Muse flow remains stopped.
+The upload did not change the graph. At that time, real prepared-account Muse use was **NOT RUN**.
+The [later Muse update](submission-status.md#prepared-account-muse-update) records the run.
 
 Calendar and Git have read-only connector source and revocation rules. Actual configured
 provider consent remains separate acceptance. [Pipedream](pipedream.md) imports no content.
