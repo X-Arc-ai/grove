@@ -172,3 +172,14 @@ def test_material_flow_distinguishes_retention_and_graph_admission():
     assert "Original binaries are not retained" in row["terms"]
     assert "pending typed graph admission" in row["terms"]
     assert "ordinary Learner queue" in row["terms"]
+
+
+def test_import_disclosure_separates_screening_extraction_and_deployment():
+    rows = {row["id"]: row for row in flow_statement({}, runtime=False)["rows"]}
+    assert "without a model call" in rows["uploads"]["terms"]
+    assert "Claude and ChatGPT messages enter the Learner queue" in rows["uploads"]["terms"]
+    assert "sends that screened text to Meta" in rows["uploads"]["terms"]
+    assert "different states" in rows["spark"]["terms"]
+    assert "synthetic data only" not in rows["spark"]["terms"]
+    assert "synthetic data only" in rows["glimmer"]["terms"]
+    assert rows["uploads"]["status"] == rows["spark"]["status"] == STATIC

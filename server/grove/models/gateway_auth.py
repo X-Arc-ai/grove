@@ -19,6 +19,7 @@ from grove.store.scope import check_world_id
 
 PREFIX = "g1"
 MAX_TTL_SECONDS = 6 * 3600
+IMPORT_PROFILE = "import_progress.v1"
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class RunClaims:
     job: str
     expires: int
     token_cap: int | None = None
+    profile: str | None = None
 
 
 def _b64(data: bytes) -> str:
@@ -59,6 +61,7 @@ def mint(
     job: str,
     ttl_seconds: int = 3600,
     token_cap: int | None = None,
+    profile: str | None = None,
 ) -> str:
     check_world_id(world_id)
     catalog.job(job)
@@ -68,9 +71,13 @@ def mint(
         raise ModelRefused(f"ttl_seconds must be between 1 and {MAX_TTL_SECONDS}")
     if token_cap is not None and not _positive_int(token_cap):
         raise ModelRefused("token_cap must be a positive integer")
+    if profile is not None and (profile != IMPORT_PROFILE or job != "update_pass"):
+        raise ModelRefused("unknown gateway profile")
     claims = {"w": world_id, "r": run_id, "j": job, "exp": _epoch() + ttl_seconds}
     if token_cap is not None:
         claims["cap"] = token_cap
+    if profile is not None:
+        claims["profile"] = profile
     payload = _b64(json.dumps(claims, separators=(",", ":"), sort_keys=True).encode("utf-8"))
     return f"{PREFIX}.{payload}.{_sign(secret, payload)}"
 
@@ -90,6 +97,7 @@ def verify(secret: bytes, catalog: Catalog, token: str) -> RunClaims:
         world_id = check_world_id(claims["w"])
         run_id, job, expires = claims["r"], claims["j"], claims["exp"]
         cap = claims.get("cap")
+        profile = claims.get("profile")
     except (ValueError, KeyError, TypeError, ScopeError) as exc:
         raise Unauthenticated("the run token's claims are malformed") from exc
     if not isinstance(expires, int) or expires <= _epoch():
@@ -98,4 +106,6 @@ def verify(secret: bytes, catalog: Catalog, token: str) -> RunClaims:
         raise Unauthenticated("the run token names no known job")
     if cap is not None and not _positive_int(cap):
         raise Unauthenticated("the run token's cap is malformed")
-    return RunClaims(world_id=world_id, run_id=run_id, job=job, expires=expires, token_cap=cap)
+    if "profile" in claims and (profile != IMPORT_PROFILE or job != "update_pass"):
+        raise Unauthenticated("the run token's profile is malformed")
+    return RunClaims(world_id=world_id, run_id=run_id, job=job, expires=expires, token_cap=cap, profile=profile)
