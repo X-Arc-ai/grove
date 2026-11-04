@@ -25,6 +25,8 @@ from grove.api.internal import router as internal_router
 from grove.api.mail import Mailer
 from grove.api.oauth import OAUTH_PATHS, OAuthDeps
 from grove.api.views import PREFIX, router
+from grove.demo_guard import ReleaseFile, configuration
+from grove.mcp.demo import DemoReleaseMiddleware
 from grove.mcp.tools import DEFAULT_TOOLS, Tool
 from grove.runner.passes import PassSettings, RunnerAuth
 from grove.store.connection import Driver, open_driver
@@ -92,6 +94,9 @@ def create_app(
     With no runner_auth, the internal routes read GROVE_GATEWAY_SECRET and
     GROVE_RUNNER_TOKEN_SHA256 at first use."""
     settings = settings or load_api_settings()
+    demo_config = configuration()
+    if demo_config is not None:
+        ReleaseFile(demo_config).close()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -118,6 +123,11 @@ def create_app(
     app.state.auth = AuthDeps(mailer=mailer, google_http=google_http, world_id_for=world_id_for)
     app.state.oauth = oauth_deps or OAuthDeps()
     app.state.mcp_tools = tuple(DEFAULT_TOOLS if mcp_tools is None else mcp_tools)
+    app.state.demo_config = demo_config
+    if demo_config is not None:
+        from grove.mcp.tools import demo_tools
+
+        app.state.demo_tools = demo_tools()
     app.state.runner_auth = runner_auth
     app.state.pass_settings = pass_settings
     if driver is not None:
@@ -134,6 +144,7 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    app.add_middleware(DemoReleaseMiddleware, config=demo_config)
     app.include_router(health.router)
     app.include_router(wellknown.router)
     app.include_router(oauth.router)
