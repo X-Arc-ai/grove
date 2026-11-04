@@ -13,6 +13,7 @@ from grove.cascade_jobs import (
     load_explanation,
     packet_fingerprint,
     read_explanation,
+    worlds_with_pending_explanations,
 )
 from grove.clock import TestClock
 from grove.ids import new_id
@@ -22,7 +23,13 @@ from grove.screening import Screener, ScreeningConfig
 from grove.store.d3_fingerprint import live_fingerprint, read_once
 from grove.store.primitives import MEANING_AFFECTED_BY
 from grove.store.query import WorldQuery
-from grove.writer.cascade_explanations import cache_explanation, request_explanation
+from grove.writer.cascade_explanations import (
+    cache_explanation,
+    claim_explanation_job,
+    renew_explanation_job,
+    request_explanation,
+)
+from grove.writer.runs import claim_job, end_job, enqueue_job
 from grove.writer.testing import plant_link, plant_node
 
 NOW = datetime(2027, 2, 10, 12, tzinfo=UTC)
@@ -429,3 +436,86 @@ def test_limited_job_progresses_past_already_cached_references(driver, graph):
     assert explain_pending(layer, driver, world, limit=1, screener=SCREEN).saved == 1
     assert explain_pending(layer, driver, world, limit=1, screener=SCREEN).selected == 0
     assert layer.calls == 2
+
+
+def test_expired_job_recovers_and_late_holder_cannot_finish_replacement(driver, graph, frozen):
+    world = graph["world"]
+    job_id = request_explanation(driver, world, graph["mark"])
+    first = claim_explanation_job(driver, world, worker="dispatcher")
+    assert first["id"] == job_id
+    assert claim_explanation_job(driver, world, worker="dispatcher") is None
+    frozen.advance(minutes=31)
+    replacement = claim_explanation_job(driver, world, worker="dispatcher")
+    assert replacement["id"] == job_id and replacement["attempts"] == 2
+    assert replacement["claimed_by"] != first["claimed_by"]
+    assert not renew_explanation_job(driver, world, job_id, worker=first["claimed_by"])
+    assert end_job(driver, world, job_id, worker=first["claimed_by"], done=True) == "claimed"
+    assert renew_explanation_job(driver, world, job_id, worker=replacement["claimed_by"])
+    frozen.advance(minutes=29)
+    assert claim_explanation_job(driver, world, worker="dispatcher") is None
+    frozen.advance(minutes=2)
+    assert explain_pending(Layer(graph), driver, world, screener=SCREEN).saved == 1
+    row = WorldQuery(driver, world).read("MATCH (j:Job {id: $id}) RETURN j", id=job_id)[0]["j"]
+    assert row["state"] == "done" and row["attempts"] == 3
+
+
+def test_recovery_only_changes_expired_explanation_jobs_in_the_world(
+    driver, graph, make_world, frozen
+):
+    world, other = graph["world"], make_world()
+    plant_node(driver, other, "World", next_sequence=0)
+    for scoped, agent in [(world, "learner"), (other, "explain_break")]:
+        enqueue_job(driver, scoped, agent=agent, trigger="test", input_references=[], priority=0)
+        claim_job(driver, scoped, agent=agent, worker="other-worker")
+    before = WorldQuery(driver, world).read("MATCH (j:Job) RETURN j ORDER BY j.id")
+    other_before = live_fingerprint(driver, other)
+    exhausted = plant_node(
+        driver,
+        world,
+        "Job",
+        agent_or_job_type="explain_break",
+        state="claimed",
+        attempts=3,
+        claimed_at=NOW,
+        claimed_by="dead-worker",
+        version=1,
+        touched_at=NOW,
+    )
+    frozen.advance(minutes=31)
+    assert claim_explanation_job(driver, world, worker="dispatcher") is None
+    after = WorldQuery(driver, world).read("MATCH (j:Job) RETURN j ORDER BY j.id")
+    assert [row for row in after if row["j"]["id"] != exhausted["id"]] == before
+    failed = next(row["j"] for row in after if row["j"]["id"] == exhausted["id"])
+    assert failed["state"] == "failed" and failed["version"] == 2
+    assert failed.get("claimed_by") is None and failed["touched_at"] == clock.now(world)
+    assert live_fingerprint(driver, other) == other_before
+
+
+def test_recovered_job_merges_into_existing_queue(driver, graph, frozen):
+    world = graph["world"]
+    old_id = request_explanation(driver, world, graph["mark"])
+    claim_explanation_job(driver, world, worker="dispatcher")
+    queued_id = request_explanation(driver, world, graph["mark"])
+    assert old_id != queued_id
+    frozen.advance(minutes=31)
+    report = explain_pending(Layer(graph), driver, world, screener=SCREEN)
+    assert report.requested_job_id == queued_id and report.saved == 1
+    rows = WorldQuery(driver, world).read("MATCH (j:Job) RETURN j")
+    assert len(rows) == 2 and all(row["j"]["state"] == "done" for row in rows)
+
+
+@pytest.mark.parametrize("graph", [False, True], indirect=True)
+def test_dispatcher_inventory_is_read_only_and_filters_pending_work(
+    driver, graph, make_world, request
+):
+    world, empty = graph["world"], make_world()
+    plant_node(driver, empty, "World", next_sequence=0)
+    enqueue_job(driver, empty, agent="learner", trigger="test", input_references=[], priority=0)
+    if not loaded(driver, graph).mark.get("proposal_id"):
+        request_explanation(driver, world, graph["mark"])
+    before = {scope: live_fingerprint(driver, scope) for scope in (world, empty)}
+    pending = worlds_with_pending_explanations(driver)
+    assert isinstance(pending, tuple) and world in pending and empty not in pending
+    assert {scope: live_fingerprint(driver, scope) for scope in (world, empty)} == before
+    assert explain_pending(Layer(graph), driver, world, screener=SCREEN).saved == 1
+    assert world not in worlds_with_pending_explanations(driver)
