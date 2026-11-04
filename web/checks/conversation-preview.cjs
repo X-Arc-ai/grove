@@ -14,7 +14,7 @@ const c = {
   addEventListener:(name,fn)=>(events[name] ||= []).push(fn),
   dispatchEvent:event=>(events[event.type]||[]).forEach(fn=>fn(event)),
   CustomEvent:class{constructor(type,init){this.type=type;this.detail=init?.detail;}},
-  GroveDeferred:{load:async name=>{assert(['claude-preview','claude-preview-edges'].includes(name));if(defer)await defer;}},
+  GroveDeferred:{load:async name=>{assert.equal(name,'claude-preview');if(defer)await defer;}},
   GroveClaudePreviewData:JSON.parse(read('checks/fixture.synthetic.json')),
   GroveLive:{ENDPOINTS:{graph:'/graph'},getJSON:async target=>{requests.push(target);return {ok:true,status:200,body:{elements:{nodes:[],edges:[]}}};}},
 };
