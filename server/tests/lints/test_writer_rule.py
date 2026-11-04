@@ -400,3 +400,143 @@ def test_a_registry_label_inside_a_label_expression_fails_too(repo):
         module("MATCH (n:Item|Meaning {id: $id}) SE~T n.status = 'canonical'"),
     )
     assert_red(repo.lint("writer"), "server/grove/writer/sneaky.py:1: writer/registry")
+
+
+# The captured source shape of the approved ReadRuntime.transaction boundary. These snippets use
+# the existing plant() fixture convention; the production call has no alternate spelling.
+READ_RUNTIME_PATH = "server/grove/reads/runtime.py"
+READ_TRANSACTION = """class ReadRuntime:
+    @asynccontextmanager
+    async def transaction(self) -> AsyncIterator[Any]:
+        budget = deadline()
+        if self._closed:
+            raise snapshot_busy()
+        session = self.driver.session(
+            database=DATABASE,
+            default_access_mode="READ",
+            connection_acquisition_timeout=budget.remaining(),
+            max_transaction_retry_time=0,
+        )
+        closed = False
+        try:
+            tx = await session.begin~_transaction(timeout=budget.remaining())
+            yield tx
+            budget.remaining()
+            await tx.rollback()
+            await session.close()
+            closed = True
+        finally:
+            if not closed:
+                session.cancel()
+"""
+
+
+def test_approved_native_read_transaction_source_passes(repo):
+    repo.plant(READ_RUNTIME_PATH, READ_TRANSACTION)
+    assert_clean(repo.lint("writer"))
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ('default_access_mode="READ"', 'default_access_mode="WRITE"'),
+        ('            default_access_mode="READ",\n', ""),
+        ("connection_acquisition_timeout=budget.remaining()", "connection_acquisition_timeout=0"),
+        ("            connection_acquisition_timeout=budget.remaining(),\n", ""),
+        ("timeout=budget.remaining()", "timeout=0"),
+        ("timeout=budget.remaining()", ""),
+        ("max_transaction_retry_time=0", "max_transaction_retry_time=30"),
+        ("max_transaction_retry_time=0", "max_transaction_retry_time=False"),
+        ("            max_transaction_retry_time=0,\n", ""),
+        ("self.driver.session(", "other.session("),
+        ("await session.begin~_transaction(", "await other.begin~_transaction("),
+        (
+            "            yield tx\n",
+            "            await session.begin~_transaction(timeout=1)\n            yield tx\n",
+        ),
+        ("            yield tx\n", "            session = other\n            yield tx\n"),
+        ("        closed = False\n", "        session = other\n        closed = False\n"),
+        ("async def transaction(", "async def other("),
+        ("class ReadRuntime:", "class OtherRuntime:"),
+        ("class ReadRuntime:", "class ReadRuntime(OtherRuntime):"),
+        ("await session.begin~_transaction(", "await session.exe~cute_write("),
+        ("await session.begin~_transaction(", "await session.exe~cute_query("),
+        ("@asynccontextmanager", "@other"),
+        ("async def transaction(", "def transaction("),
+        ("        budget = deadline()\n", "        budget = other()\n"),
+        ("            await tx.rollback()\n", "            await tx.commit()\n"),
+        ("                session.cancel()\n", "                pass\n"),
+    ],
+)
+def test_native_read_near_matches_stay_refused(repo, old, new):
+    assert old in READ_TRANSACTION
+    source = READ_TRANSACTION.replace(old, new, 1)
+    repo.plant(READ_RUNTIME_PATH, source)
+    assert_red(repo.lint("writer"), f"{READ_RUNTIME_PATH}:")
+
+
+@pytest.mark.parametrize(
+    "rel",
+    [
+        "server/grove/reads/other.py",
+        "server/grove/store/runtime.py",
+        "other/server/grove/reads/runtime.py",
+    ],
+)
+def test_native_read_exception_cannot_move_to_another_file(repo, rel):
+    repo.plant(rel, READ_TRANSACTION)
+    assert_red(repo.lint("writer"), f"{rel}:")
+
+
+@pytest.mark.parametrize("name", ENTRY_POINTS)
+def test_native_read_exception_does_not_allow_a_second_entry_point(repo, name):
+    repo.plant(READ_RUNTIME_PATH, READ_TRANSACTION + f"\nsession.{name}(work)\n")
+    assert_red(repo.lint("writer"), f"{READ_RUNTIME_PATH}:")
+
+
+@pytest.mark.parametrize(
+    ("addition", "rule"),
+    [
+        ("\nimport neo4j\n", "writer/neo4j-import"),
+        ("\nfrom tests.writer.helper import write\n", "writer/tests-import"),
+        ('\nquery = "MATCH (n:Item) SE~T n.value = 1"\n', "writer/cypher"),
+        ('\nentry = "begin~_transaction"\n', "writer/entry-point"),
+        ("\nfrom module import begin~_transaction\n", "writer/entry-point"),
+    ],
+)
+def test_native_read_exception_preserves_other_module_findings(repo, addition, rule):
+    repo.plant(READ_RUNTIME_PATH, READ_TRANSACTION + addition)
+    result = repo.lint("writer")
+    assert_red(result, f"{READ_RUNTIME_PATH}:")
+    assert rule in result.stdout
+
+
+def test_duplicate_runtime_class_does_not_gain_two_exceptions(repo):
+    repo.plant(READ_RUNTIME_PATH, READ_TRANSACTION + "\n" + READ_TRANSACTION)
+    result = repo.lint("writer")
+    assert_red(result, f"{READ_RUNTIME_PATH}:")
+    assert result.stdout.count("writer/entry-point") == 2
+
+
+def test_native_read_comment_and_format_changes_keep_the_same_structure(repo):
+    source = READ_TRANSACTION.replace(
+        "        closed = False", "        # harmless comment\n        closed = False"
+    )
+    repo.plant(READ_RUNTIME_PATH, source)
+    assert_clean(repo.lint("writer"))
+
+
+def test_native_read_exception_does_not_change_clock_or_registry_controls(repo):
+    repo.plant(READ_RUNTIME_PATH, READ_TRANSACTION + "\nimport time\nvalue = time.monot~onic()\n")
+    assert_clean(repo.lint("writer"))
+    assert_red(repo.lint("clock"), f"{READ_RUNTIME_PATH}:")
+    rel = "server/grove/writer/other.py"
+    repo.plant(rel, module(REGISTRY_WRITES["Kind"]))
+    assert_red(repo.lint("writer"), f"{rel}:1: writer/registry")
+
+
+def test_malformed_native_read_source_stays_a_parse_finding(repo):
+    repo.plant(
+        READ_RUNTIME_PATH, READ_TRANSACTION.replace("async def transaction(self)", "async def (")
+    )
+    assert_red(repo.lint("writer"), f"{READ_RUNTIME_PATH}:1: writer/unparsable")
