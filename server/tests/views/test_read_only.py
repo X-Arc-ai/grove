@@ -7,6 +7,7 @@ nothing else, so a write path of any kind fails the request.
 import ast
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from grove.api.app import create_app
@@ -112,7 +113,7 @@ def test_the_views_package_never_imports_the_writer():
         assert not any(name.startswith("grove.writer") for name in imports_of(path)), path.name
 
 
-def test_the_api_reaches_only_explicit_writer_operations():
+def assert_api_writer_boundary(files):
     allowed = {
         "views.py": {"grove.writer.positions"},
         "auth.py": {"grove.writer.accounts", "grove.writer.errors"},
@@ -124,12 +125,32 @@ def test_the_api_reaches_only_explicit_writer_operations():
             "grove.writer.forget_ledger",
             "grove.writer.errors",
         },
+        # Authenticated connector consent/settings/sync use only their connection writer.
+        "connectors.py": {"grove.writer.connectors", "grove.writer.errors"},
         # brain propose and brain finish of a live pass (runner): the writer's public API, the
         # run record's account of a proposal, a receipt for the agent, the request id check.
         "internal.py": {"grove.writer", "grove.writer.receipts", "grove.writer.requests"},
     }
-    files = sorted((SERVER / "grove" / "api").glob("*.py"))
     assert files
     for path in files:
         writer = {name for name in imports_of(path) if name.startswith("grove.writer")}
         assert writer <= allowed.get(path.name, set()), path.name
+
+
+def test_api_writer_imports_stay_within_the_explicit_route_boundary():
+    assert_api_writer_boundary(sorted((SERVER / "grove" / "api").glob("*.py")))
+
+
+@pytest.mark.parametrize(
+    ("route", "source"),
+    [
+        ("unapproved.py", "from grove.writer.connectors import connection"),
+        ("connectors.py", "from grove.writer.accounts import create_account"),
+        ("views.py", "import grove.writer.connectors"),
+    ],
+)
+def test_api_writer_boundary_rejects_unapproved_routes_and_imports(tmp_path, route, source):
+    planted = tmp_path / route
+    planted.write_text(source)
+    with pytest.raises(AssertionError, match=route):
+        assert_api_writer_boundary([planted])

@@ -53,13 +53,14 @@
             <table class="pairs">
               <thead><tr><th scope="col">Scope</th><th scope="col">Why Grove asks</th></tr></thead>
               <tbody>
-                <tr><td><code>openid</code></td><td>At sign-in, to know it is you.</td></tr>
+                <tr><td><code>openid</code></td><td>At sign-in, to know it is you. At calendar consent, to identify the Google account you connect.</td></tr>
                 <tr><td><code>email</code></td><td>At sign-in, for your address, which finds your world.</td></tr>
                 <tr><td><code>profile</code></td><td>At sign-in, for your name, which goes on your own item.</td></tr>
                 <tr><td><code>calendar.readonly</code></td><td>Only when you connect the calendar, in its own consent. Read-only, to learn your events.</td></tr>
               </tbody>
             </table>
           </div>
+          <p>Grove follows the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including its Limited Use requirements, for Google API data.</p>
         </section>
         <section id="where-your-data-goes">
           <h2>Where your data goes</h2>
@@ -95,13 +96,14 @@
         </section>
         <section id="cookies">
           <h2>Cookies</h2>
-          <p>Grove sets two cookies. It has no tracking and no analytics.</p>
+          <p>Grove uses three cookies. It has no tracking and no analytics.</p>
           <div class="card">
             <table class="pairs">
               <thead><tr><th scope="col">Cookie</th><th scope="col">What it does</th></tr></thead>
               <tbody>
                 <tr><td><code>grove_session</code></td><td>Keeps you signed in, for up to 30 days. Grove stores only a hash of its value.</td></tr>
                 <tr><td><code>__Host-grove_google</code></td><td>The short Google state cookie. It lives for 10 minutes while you sign in with Google, to check that Google's answer belongs to your request.</td></tr>
+                <tr><td><code>__Host-grove_calendar</code></td><td>The encrypted calendar consent state. It lives for 10 minutes and binds Google's answer to your current Grove session.</td></tr>
               </tbody>
             </table>
           </div>
