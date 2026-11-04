@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from tests.writer.physical_backup import (
+    DATA_LIMIT,
     DATA_SETTING,
     IMAGE,
     TX_SETTING,
@@ -147,6 +148,71 @@ def test_copy_ceiling_refuses(tmp_path):
     (folder / "data").write_bytes(b"1234")
     with pytest.raises(Refused, match="copy_size_limit"):
         tree_size(tmp_path, folder, 3)
+
+
+@pytest.mark.parametrize("size", [0, DATA_LIMIT])
+def test_remote_size_receipt_contains_counts_without_raw_output(tmp_path, monkeypatch, size):
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    monkeypatch.setattr(drill, "docker", lambda *args: f"{size}\tprivate-source-name\n")
+    assert drill._remote_size("/data", DATA_LIMIT) == size
+    assert drill.source_sizes == [
+        {"stage": "preflight", "kind": "data", "bytes": size, "limit": DATA_LIMIT}
+    ]
+    assert "private-source-name" not in json.dumps(drill.source_sizes)
+
+
+@pytest.mark.parametrize(
+    "output", ["", "unexpected /data", "-1 /data", "1.5 /data", "٢ /data", "9" * 40]
+)
+def test_remote_size_invalid_output_has_a_distinct_safe_refusal(tmp_path, monkeypatch, output):
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    monkeypatch.setattr(drill, "docker", lambda *args: output)
+    with pytest.raises(Refused, match="^invalid_copy_size_output$"):
+        drill._remote_size("/data", DATA_LIMIT)
+    assert drill.source_sizes == []
+
+
+def test_remote_size_refusal_records_bytes_and_prevents_the_first_stop(tmp_path, monkeypatch):
+    drill = Drill(Identity.from_env(environment(tmp_path)), tmp_path, object())
+    order = []
+
+    class Scenario:
+        def seed(self):
+            order.append("seed")
+
+    monkeypatch.setattr(drill, "preflight", lambda: None)
+    monkeypatch.setattr(drill, "docker", lambda *args: f"{DATA_LIMIT + 1}\t/data\n")
+    monkeypatch.setattr(drill, "stop", lambda: order.append("stop"))
+    with pytest.raises(Refused, match="^copy_size_limit$"):
+        drill.execute(Scenario())
+    assert order == ["seed"]
+    assert drill.dumps == []
+    assert drill.source_sizes == [
+        {"stage": "seed", "kind": "data", "bytes": DATA_LIMIT + 1, "limit": DATA_LIMIT}
+    ]
+
+
+def test_cli_keeps_numeric_size_evidence_on_refusal(tmp_path, monkeypatch, capsys):
+    for key, value in environment(tmp_path).items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setattr("tests.writer.physical_scenario.make_scenario", lambda root: object())
+    monkeypatch.setattr(Drill, "docker", lambda *args: f"{DATA_LIMIT + 1}\tprivate-source-name\n")
+
+    def refused(self, scenario):
+        self.stage = "seed"
+        self._remote_size("/data", DATA_LIMIT)
+
+    monkeypatch.setattr(Drill, "execute", refused)
+    assert main() == 1
+    output = capsys.readouterr().out
+    receipt = json.loads(output)
+    assert receipt["refusal"] == "copy_size_limit"
+    assert receipt["source_sizes"] == [
+        {"stage": "seed", "kind": "data", "bytes": DATA_LIMIT + 1, "limit": DATA_LIMIT}
+    ]
+    assert receipt["private_files_removed"] is True
+    assert receipt["physical_acceptance"] is False
+    assert "private-source-name" not in output
 
 
 def test_inbound_archive_has_only_private_numeric_owned_members(tmp_path):
