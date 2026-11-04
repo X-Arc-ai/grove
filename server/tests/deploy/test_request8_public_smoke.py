@@ -60,7 +60,9 @@ def smoke(monkeypatch, capsys):
             raise value
         status, headers, body = value
         if status >= 400:
-            raise urllib.error.HTTPError(request.full_url, status, "refusal", headers, io.BytesIO(body))
+            raise urllib.error.HTTPError(
+                request.full_url, status, "refusal", headers, io.BytesIO(body)
+            )
         return Response(status, headers, body)
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
@@ -111,15 +113,22 @@ def test_public_smoke_checks_exact_build_pages_assets_and_anonymous_refusals(smo
     assert result["target"] == SHA
     assert result["asset_count"] == 1
     assert calls == ["/healthz", *PAGES, ASSET_PATH, *REFUSALS]
-    assert result["checks"] == [
-        {"path": path, "status": REFUSALS.get(path, 200)} for path in calls
-    ]
+    assert result["checks"] == [{"path": path, "status": REFUSALS.get(path, 200)} for path in calls]
 
 
 @pytest.mark.parametrize(
     "fault",
-    ["build", "page_cache", "page_type", "asset_absent", "asset_hash", "asset_cache",
-     "anonymous", "body_cap", "transport"],
+    [
+        "build",
+        "page_cache",
+        "page_type",
+        "asset_absent",
+        "asset_hash",
+        "asset_cache",
+        "anonymous",
+        "body_cap",
+        "transport",
+    ],
 )
 def test_smoke_fails_on_contract_violation_without_response_disclosure(smoke, fault):
     run, responses, calls = smoke
@@ -147,7 +156,11 @@ def test_smoke_fails_on_contract_violation_without_response_disclosure(smoke, fa
         responses["/healthz"] = urllib.error.URLError("private transport detail")
     code, result = run()
     assert code == 1
-    assert result == {"state": "fail", "target": SHA, "completed_checks": result["completed_checks"]}
+    assert result == {
+        "state": "fail",
+        "target": SHA,
+        "completed_checks": result["completed_checks"],
+    }
     assert all(set(check) == {"path", "status"} for check in result["completed_checks"])
     assert calls
 

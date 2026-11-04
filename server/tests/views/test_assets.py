@@ -32,10 +32,13 @@ def client_for(folder):
     return TestClient(app)
 
 
-@pytest.mark.parametrize("suffix,media,data", [
-    ("js", "text/javascript", b"window.example = true;"),
-    ("woff2", "font/woff2", b"synthetic-font-bytes"),
-])
+@pytest.mark.parametrize(
+    "suffix,media,data",
+    [
+        ("js", "text/javascript", b"window.example = true;"),
+        ("woff2", "font/woff2", b"synthetic-font-bytes"),
+    ],
+)
 def test_exact_public_asset_bytes_cache_and_no_store(tmp_path, suffix, media, data):
     _, name, _ = asset_tree(tmp_path, data, suffix, media)
     client = client_for(tmp_path)
@@ -48,11 +51,22 @@ def test_exact_public_asset_bytes_cache_and_no_store(tmp_path, suffix, media, da
     assert response.headers["x-content-type-options"] == "nosniff"
 
 
-@pytest.mark.parametrize("request_path", [
-    "manifest.json", "fixture.json", "fixture.js", "unknown.js", "../private.env",
-    "%2e%2e%2fprivate.env", "%252e%252e%252fprivate.env", "a" * 64 + ".js",
-    "a" * 64 + ".env", "a" * 65 + ".js", "a" * 64 + ".js/extra",
-])
+@pytest.mark.parametrize(
+    "request_path",
+    [
+        "manifest.json",
+        "fixture.json",
+        "fixture.js",
+        "unknown.js",
+        "../private.env",
+        "%2e%2e%2fprivate.env",
+        "%252e%252e%252fprivate.env",
+        "a" * 64 + ".js",
+        "a" * 64 + ".env",
+        "a" * 65 + ".js",
+        "a" * 64 + ".js/extra",
+    ],
+)
 def test_unknown_and_traversal_paths_never_expose_files(tmp_path, request_path):
     asset_tree(tmp_path)
     (tmp_path / "private.env").write_text("synthetic private sentinel")
