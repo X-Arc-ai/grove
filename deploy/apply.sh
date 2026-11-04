@@ -13,6 +13,10 @@ ref=$2
 [ "${GROVE_LOCK_HELD:-}" = 1 ] || die "run deploy.sh, which takes the box lock"
 [ "$(git -C "$GROVE_SRC" rev-parse HEAD)" = "$sha" ] || die "the checkout is not at $sha"
 
+# Gateway construction refuses absent configuration before it can answer health checks.
+# Validate the files this deploy will consume, before any host-file or service mutation.
+GROVE_ETC_DIR="$GROVE_ETC" "$here/runner-secrets.sh" --check
+
 for file in neo4j.env api.env runner.env google-oauth.json; do
     [ -f "$GROVE_ETC/$file" ] || die "missing $GROVE_ETC/$file (docs/deploy.md, secret files)"
 done
