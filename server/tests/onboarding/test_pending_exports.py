@@ -234,14 +234,8 @@ def test_session_and_size_guards(store):
 
 
 def setup_import(monkeypatch, *, state="taken_in", failed=0, callback=None, lumen=False):
-    if lumen:
-
-        def missing():
-            raise uploads._not_configured("screening is not configured")
-
-        monkeypatch.setattr(uploads, "_screener", missing)
-    else:
-        monkeypatch.setattr(uploads, "_screener", lambda: object())
+    # Lumen and ordinary bytes now share the same authenticated policy path.
+    monkeypatch.setattr(uploads, "_screener", lambda _world_id: object())
     calls = []
 
     def take_in(*args, **kwargs):
@@ -258,7 +252,7 @@ def setup_import(monkeypatch, *, state="taken_in", failed=0, callback=None, lume
 
 @pytest.mark.parametrize("lumen", [False, True])
 @pytest.mark.parametrize("state", ["taken_in", "nothing_new"])
-def test_both_upload_paths_clear_only_after_success(store, monkeypatch, lumen, state):
+def test_both_upload_inputs_clear_only_after_success(store, monkeypatch, lumen, state):
     request(store, "claude_ai")
     calls = setup_import(monkeypatch, lumen=lumen, state=state)
     response = client(store).post(

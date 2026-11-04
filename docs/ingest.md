@@ -180,12 +180,26 @@ provider APIs and the D5 contract.
   so a cross-site form cannot post here.
 - Limit: `GROVE_UPLOAD_MAX_BYTES`, 256 MiB by default; nginx has a location with the same limit
   and no request buffering (`docs/deploy.md`).
-- A screening configuration that does not load (production with `GROVE_RENAME_MAP` or
-  `GROVE_DENYLIST` unset, or a file missing) answers 503 `unavailable` and nothing is read.
+- After identity resolves the World, the route refuses designated demo Worlds and creates
+  the code-supplied `ordinary_upload_v1` screening policy for each ordinary upload. It runs
+  all mandatory credential, card, code, reset-link and third-party contact detectors.
+  No identifier is exempt, including the account owner's. Personal rename/deny rules and
+  opt-in pay classes are not configured by this route. It never reads another account's
+  global film policy files. Those strict file settings remain required by the existing
+  operator and connector paths that use `ScreeningConfig.from_environment`.
+- A genuine upload policy construction fault answers 503 `unavailable` before any body
+  read. Missing global `GROVE_RENAME_MAP` or `GROVE_DENYLIST` files do not cause that error
+  for this ordinary upload policy. There is no exact-fixture fallback or public policy selector.
 - The answer: `{state, provider, connector_id, chats, chats_new, sources_added, episodes_added,
   messages_read, messages_kept, failed_chats, screened: {class: count}}`.
 
 `GET /v1/sources/connectors` (session only) lists the world's connector rows with their coverage.
+
+Successful retention creates screened Sources, Episodes, ScreeningReceipts and connector
+coverage through the same `take_in` pipeline. Re-imports remain idempotent. It does not itself
+create graph Items, links or Requests, or call a model. Graph extraction and worker runtime
+acceptance are separate. A future personal-policy interface must bind explicit rules to the
+same World and refuse invalid rules, rather than silently fall back to this baseline.
 
 ## Upload-only tokens
 
