@@ -67,6 +67,17 @@ def test_real_zip_pass_does_not_become_graph_or_muse_acceptance(name):
         assert stale not in text, (name, stale)
 
 
+def test_readme_keeps_no_stale_rehearsal_claims():
+    text = " ".join((ROOT / "README.md").read_text().split())
+    for stale in (
+        "owner login/upload/Muse rehearsal remains **NOT RUN**",
+        "owner login, upload, and Muse rehearsal remain NOT RUN",
+        "Current owner login, upload, logout, provider consent, and Muse rehearsal: **NOT RUN**",
+        "login/upload/Muse flow is paused and remains **NOT RUN** for this release",
+    ):
+        assert stale not in text, stale
+
+
 def test_readme_has_complete_local_start_sequence():
     text = (ROOT / "README.md").read_text()
     commands = (

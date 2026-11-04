@@ -74,6 +74,9 @@ def test_current_release_docs_distinguish_general_tools_from_restricted_demo():
     assert "Cedar" in readme
     assert "Runs on the prepared account" in readme
     assert "the merged snapshot has no upload endpoint" not in readme
+    assert "[Pipedream](pipedream.md) imports no content." in (
+        ROOT / "docs/architecture.md"
+    ).read_text()
 
 
 def test_readme_states_the_event_dates_not_the_commit_dates():
@@ -94,7 +97,11 @@ def test_readme_build_heading_images_draw_the_event_dates():
         assert description.startswith("October 27 to November 4, 2026:")
         assert "November 1 to 4" not in svg
         subtitle = re.findall(r'<g fill="[^"]+">(.*?)</g>', svg, re.DOTALL)[1]
-        assert subtitle.count("<use ") == len(description.replace(" ", ""))
+        drawn = re.findall(r'<use href="#(g\d+)"', subtitle)
+        letters = description.replace(" ", "")
+        assert len(drawn) == len(letters)
+        pairs = set(zip(letters, drawn, strict=True))
+        assert len(pairs) == len(set(letters)) == len(set(drawn)), "glyphs must match the text"
 
 
 def test_submission_document_links_resolve():
