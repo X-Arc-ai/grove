@@ -313,6 +313,8 @@ def _rich_source(evidence: dict, bundle: dict, indexed: dict) -> tuple[dict, dic
         or episode.get("first_message_key") != expected_keys[0]
         or episode.get("last_message_key") != expected_keys[-1]
         or episode.get("cut_rule") != "fixed_corpus_v1"
+        or episode.get("version") != 1
+        or episode.get("read_at") != source.get("received_at")
         or _plain(episode.get("start_time")) != SOURCE_TIME
         or _plain(episode.get("end_time")) != SOURCE_TIME
     ):
@@ -379,7 +381,7 @@ def _validate(bundle: dict, world_id: str, now: datetime) -> list[dict]:
             if original != _plain(row):
                 raise _refused()
             source, request, receipt = _source(row, bundle, indexed)
-            from grove.demo.corpus import VERSION, stories
+            from grove.demo.corpus import ACTOR, VERSION, stories
 
             if source.get("demo_version") == VERSION:
                 expected = next(
@@ -397,6 +399,9 @@ def _validate(bundle: dict, world_id: str, now: datetime) -> list[dict]:
                     or item.get("summary") != expected.summary
                     or indexed["kinds"].get(item.get("kind"), {}).get("name") != expected.kind
                     or item.get("status") != expected.status
+                    or any(item.get(field) for field in ("body", "properties", "search_terms"))
+                    or item_entry.get("actor") != ACTOR
+                    or entry.get("actor") != ACTOR
                 ):
                     raise _refused()
             if any(

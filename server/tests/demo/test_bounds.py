@@ -148,6 +148,8 @@ def source_bundle():
         "first_message_key": story.items[0].key,
         "last_message_key": story.items[-1].key,
         "cut_rule": "fixed_corpus_v1",
+        "version": 1,
+        "read_at": at,
         "start_time": at,
         "end_time": at,
     }
@@ -193,6 +195,7 @@ def test_exact_source_provenance_is_accepted():
         "request",
         "receipt",
         "episode",
+        "episode_version",
         "message",
         "time",
         "screening",
@@ -212,6 +215,8 @@ def test_modified_rich_provenance_refuses(fault):
         indexed["requests"][evidence["request_id"]]["receipt"] = "{}"
     elif fault == "episode":
         indexed["episodes"]["e"]["source_ids"].append("private")
+    elif fault == "episode_version":
+        indexed["episodes"]["e"]["version"] = 2
     elif fault == "message":
         evidence["message_key"] = "private"
     elif fault == "time":
