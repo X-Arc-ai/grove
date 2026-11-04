@@ -20,7 +20,7 @@ from grove.config import ConfigError
 from grove.ids import new_id
 from grove.mcp.tools import ToolContext
 from grove.screening import Message, Screener, ScreeningConfig
-from grove.store.errors import STORE_UNAVAILABLE
+from grove.store.errors import STORE_UNAVAILABLE, Neo4jError
 from grove.store.query import WorldQuery
 from grove.writer import Caller, enqueue_request, request_state
 from grove.writer.clocks import ClockError, parse_instant
@@ -41,6 +41,7 @@ MAX_KEY = 1_024
 MAX_ABOUT = 50
 _ITEM_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
 _CLIENT_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,48}")
+_RETRY_MESSAGE = "the request could not be confirmed; retry with the same arguments and key"
 _FIELDS = frozenset(
     {"mode", "text", "verbatim", "host_message_id", "said_at", "about", "idempotency_key"}
 )
@@ -199,9 +200,11 @@ class StoreHandler:
                 details={"rule": error.rule},
             ) from None
         except (WriteFailed, ReceiptUnavailable, *STORE_UNAVAILABLE):
-            raise unavailable(
-                "the request could not be confirmed; retry with the same arguments and key"
-            ) from None
+            raise unavailable(_RETRY_MESSAGE) from None
+        except Neo4jError as error:
+            if error.is_retryable():
+                raise unavailable(_RETRY_MESSAGE) from None
+            raise ApiError(500, "internal", "the store request failed") from None
 
     def _enqueue(
         self,
