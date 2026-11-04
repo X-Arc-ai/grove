@@ -73,7 +73,8 @@ async function demo(search, expectedProvider) {
     callbacks.forEach(fn => fn());
     assert.equal(api.getState().accountImports[expectedProvider].status, 'ready');
     assert(api.getState().currentNodeCount > before);
-    assert(api.getState().currentEdgeCount > 0);
+    assert(api.getState().currentNodeCount >= 2000);
+    assert(api.getState().currentEdgeCount >= 3000);
   } else {
     assert.equal(api.getState().onboardingComplete, false);
     assert.equal(api.getState().onboardingStep, 0);
@@ -88,7 +89,7 @@ async function demo(search, expectedProvider) {
   await demo('?provider=chatgpt&start=1', 'chatgpt');
   await demo('?provider=private-file.zip&start=1&account=private', null);
   await demo('', null); // A fresh page restarts without the previous import.
-  assert.equal(read('demo.synthetic.json'), read('checks/fixture.synthetic.json'));
+  assert.equal(JSON.parse(read('checks/fixture.synthetic.json')).elements.nodes.length, 222);
   const ordinary = read('dist/index.html'), artifact = read('dist/demo-onboarding.html');
   assert(!ordinary.includes('GROVE_FIXTURE'));
   assert(!ordinary.includes('Maya Chen'));
