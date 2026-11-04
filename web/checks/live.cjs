@@ -154,7 +154,7 @@ function legendRows(elements){
   // 1. live.js: one endpoint map, same-origin fetch helpers, positions in batches of 5000.
   {
     const server=makeServer(liveWorld()),pg=page(server,{},['live.js']),G=pg.sandbox.GroveLive;
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',positions:'/v1/views/positions',upload:'/v1/sources/upload',pendingExports:'/v1/sources/pending-exports',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',positions:'/v1/views/positions',upload:'/v1/sources/upload',pendingExports:'/v1/sources/pending-exports',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',materials:'/v1/materials',materialFiles:'/v1/materials/files',materialNotes:'/v1/materials/notes',materialDetail:'/v1/materials/{id}',materialEdit:'/v1/materials/notes/{id}',materialPreview:'/v1/materials/{id}/delete-preview',materialConfirmation:'/v1/materials/{id}/delete-confirmations',materialDelete:'/v1/materials/{id}/delete',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
     const res=await G.getJSON('/v1/views/health');assert(res.ok&&res.body.overall.state==='healthy');
     assert.equal(server.calls[0].method,'GET');assert.equal(server.calls[0].init.credentials,'same-origin');
     const many=[];for(let i=0;i<12000;i++)many.push({id:i<11990?synthetic.elements.nodes[i%222].data.id:'x'+i,x:i,y:-i});
@@ -312,7 +312,7 @@ function legendRows(elements){
       p.modalRoot.querySelectorAll=selector=>selector==='[data-host-inline]'?[host]:[];
       p.bind();host.onclick();
       assert(p.html().includes('Muse Desktop'),'Muse directions are visible');
-      assert(p.html().includes('consent'),'the real consent step is explicit');
+      assert(p.html().includes('Muse opens the Grove authorization page.')&&p.html().includes('Review access in Grove before approval.'),'the real authorization and access review steps are explicit');
       assert(p.html().includes('http://grove.test/mcp'));
       assert(!/data-action="host-connect"|Grove is with you/.test(p.html()));
       assert.equal(snapshot(),before,'selecting Muse changes no connection state');
@@ -323,7 +323,7 @@ function legendRows(elements){
       const before=snapshot(),entry=makeElement('button');entry.dataset.guide='muse';
       p.modalRoot.querySelectorAll=selector=>selector==='[data-guide]'?[entry]:[];
       p.bind();entry.onclick();
-      assert(p.html().includes('Muse Desktop')&&p.html().includes('consent'));
+      assert(p.html().includes('Muse Desktop')&&p.html().includes('Muse opens the Grove authorization page.')&&p.html().includes('Review access in Grove before approval.'));
       assert(!p.html().includes('data-import="muse"'),'the source shortcut offers no simulated Muse import');
       assert.equal(snapshot(),before,'the shortcut creates no import or connection');
       p.handle('host-back');

@@ -211,3 +211,28 @@ body.gp-logout-open #canvas,body.gp-logout-open #gp-motion { visibility:hidden }
   #grove-product .gp-guide-reader h2 { margin:9px 0;font:500 18px/1.4 var(--gp-font);color:var(--text);letter-spacing:-.02em;overflow-wrap:anywhere }
   #grove-product .gp-guide-reader p { margin:0;font:400 14px/1.7 var(--gp-font);color:var(--text-secondary);overflow-wrap:anywhere }
 }
+
+/* Material controls share the accepted surfaces and theme tokens. */
+#grove-product .gp-materials { min-width:0; font:400 12px/1.7 var(--gp-font); overflow-wrap:anywhere }
+#grove-product .gp-materials h2 { font:500 16px/1.5 var(--gp-font); color:var(--text) }
+#grove-product .gp-materials p { color:var(--text-secondary); margin:10px 0 }
+#grove-product .gp-materials button { white-space:normal; text-align:left; max-width:100%; min-height:36px }
+#grove-product .gp-materials [role="alert"] { color:var(--gp-danger,var(--text)) }
+#grove-product .gp-material-tools { display:flex; flex-wrap:wrap; gap:10px; margin:12px 0 }
+#grove-product .gp-material-list { list-style:none; padding:0; margin:0 }
+#grove-product .gp-material-list li { border-top:1px solid var(--border); padding:14px 0 }
+#grove-product .gp-material-list li>button { border:0; padding:0; font-size:13px; color:var(--text) }
+#grove-product .gp-materials input:not([type="file"]),#grove-product .gp-materials textarea { display:block; width:100%; min-width:0; margin:6px 0 16px; padding:10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font:400 14px/1.6 var(--gp-font) }
+#grove-product .gp-materials textarea { resize:vertical }
+#grove-product .gp-material-file { display:grid; gap:12px; padding:16px; border:1px dashed var(--border); border-radius:6px }
+#grove-product .gp-material-file input { width:100%; min-width:0; color:var(--text) }
+#grove-product .gp-material-parts { max-height:300px; overflow:auto; padding:12px; border:1px solid var(--border); border-radius:6px }
+#grove-product .gp-material-parts p { white-space:pre-wrap; color:var(--text) }
+#grove-product .gp-material-delete { border:1px solid var(--border); border-radius:6px; padding:16px }
+#grove-product .gp-material-delete button { margin:8px 10px 0 0 }
+@media(max-width:600px) {
+  #grove-product .gp-materials { font-size:14px }
+  #grove-product .gp-materials button { min-height:44px; font-size:12px }
+  #grove-product .gp-materials .gp-material-section>header { flex-wrap:wrap; gap:12px }
+  #grove-product .gp-materials input:not([type="file"]),#grove-product .gp-materials textarea { font-size:16px }
+}
