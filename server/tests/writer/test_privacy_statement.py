@@ -8,7 +8,15 @@ from fastapi.testclient import TestClient
 
 from grove.api.app import create_app
 from grove.api.config import ApiSettings
-from grove.privacy import ABSENT, PENDING, PRESENT, STATIC, flow_statement, markdown_statement
+from grove.privacy import (
+    ABSENT,
+    CODE_POLICY,
+    PENDING,
+    PRESENT,
+    STATIC,
+    flow_statement,
+    markdown_statement,
+)
 
 
 def statuses(statement):
@@ -38,7 +46,7 @@ def test_runtime_status_follows_configuration_without_returning_values():
     assert value not in json.dumps(statement)
     found = statuses(statement)
     assert found["spark"] == found["email"] == found["forget"] == PRESENT
-    assert found["uploads"] == ABSENT
+    assert found["uploads"] == CODE_POLICY
     assert found["backups"] == STATIC
     assert found["calendar"] == ABSENT
     assert "does not prove" in statement["notice"]
@@ -50,7 +58,6 @@ def test_missing_settings_are_not_reported_as_present():
         "email",
         "google",
         "store",
-        "uploads",
         "spark",
         "voice",
         "glimmer",
@@ -60,6 +67,18 @@ def test_missing_settings_are_not_reported_as_present():
         "pipedream",
     ):
         assert found[key] == ABSENT
+
+
+def test_upload_status_describes_code_without_global_film_config_or_import_claim():
+    statement = flow_statement({"GROVE_ENV": "production"}, runtime=True)
+    rows = {row["id"]: row for row in statement["rows"]}
+    assert rows["uploads"]["status"] == CODE_POLICY
+    assert rows["calendar"]["status"] == ABSENT
+    assert rows["git"]["status"] == ABSENT
+    assert "code-supplied account policy" in rows["uploads"]["terms"]
+    assert "operator and connector policies are separate" in rows["uploads"]["terms"]
+    assert "not that an import completed" in statement["notice"]
+    assert "owner consent" in statement["notice"]
 
 
 def test_published_connector_paths_are_implemented_without_claiming_deployment():

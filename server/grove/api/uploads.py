@@ -31,12 +31,12 @@ from grove.api.errors import (
 from grove.api.session import current_session
 from grove.api.views import check_json_type, read_json_body
 from grove.config import ConfigError
-from grove.demo.screening import lumen_fixture, new_demo_screener
 from grove.demo_policy import is_demo_world
 from grove.ingest.connector import NotAnExport, Upload, providers
 from grove.ingest.take_in import take_in
 from grove.ingest.tokens import find_upload_grant
-from grove.screening import Screener, ScreeningConfig
+from grove.ingest.upload_policy import screener_for_upload
+from grove.screening import Screener
 from grove.store.query import PlatformQuery, WorldQuery
 from grove.views.onboarding import (
     InvalidPendingExports,
@@ -233,11 +233,14 @@ def _provider(request: Request) -> str:
     return provider
 
 
-def _screener() -> Screener:
+def _screener(world_id: str) -> Screener:
     try:
-        return Screener(ScreeningConfig.from_environment())
-    except ConfigError:
-        # The ConfigError text names only the variable, but the answer stays generic anyway.
+        result = screener_for_upload(world_id)
+        if not isinstance(result, Screener):
+            raise TypeError("upload policy must provide a Screener")
+        return result
+    except (ConfigError, TypeError, ValueError):
+        # Never expose policy values or a malformed internal World id in the answer.
         raise _not_configured("screening is not configured") from None
 
 
@@ -281,10 +284,7 @@ async def post_upload(request: Request) -> dict[str, Any]:
         raise ApiError(403, "scope_denied", "source imports are unavailable for this demo")
     _check_upload_type(request)
     provider = _provider(request)
-    try:
-        screener = await run_in_threadpool(_screener)
-    except ApiError as missing_policy:
-        return await _invented_upload(request, world_id, provider, missing_policy)
+    screener = await run_in_threadpool(_screener, world_id)
     cap = _cap()
     _check_declared_length(request, cap)
     if not UPLOAD_SLOTS.acquire(blocking=False):
@@ -312,50 +312,6 @@ async def post_upload(request: Request) -> dict[str, Any]:
             spool.close()
         UPLOAD_SLOTS.release()
     return await _finish_upload(request, result, captured)
-
-
-async def _invented_upload(
-    request: Request, world_id: str, provider: str, missing_policy: ApiError
-) -> dict[str, Any]:
-    """The sole fixed-byte exception when ordinary screening is unavailable.
-
-    The route already resolved a real owner session and refused designated Cedar worlds.
-    An upload token, another provider, or any different bytes retain the ordinary refusal.
-    """
-    if (
-        "authorization" in request.headers
-        or provider != "claude_ai"
-        or request.headers.get("content-type", "").split(";", 1)[0].strip() != "application/json"
-        or "content-encoding" in request.headers
-    ):
-        raise missing_policy
-    fixture = lumen_fixture()
-    if not UPLOAD_SLOTS.acquire(blocking=False):
-        raise _busy()
-    spool = None
-    try:
-        captured = await _capture_reminder(request, world_id, provider)
-        try:
-            _check_declared_length(request, len(fixture))
-            spool, size = await _spool_body(request, len(fixture))
-        except ApiError:
-            raise missing_policy from None
-        if size != len(fixture) or spool.read() != fixture:
-            raise missing_policy
-        spool.seek(0)
-        result = await run_in_threadpool(
-            take_in,
-            request.app.state.driver,
-            world_id,
-            provider,
-            Upload(spool, size),
-            screener=new_demo_screener(),
-        )
-        return await _finish_upload(request, result, captured)
-    finally:
-        if spool is not None:
-            spool.close()
-        UPLOAD_SLOTS.release()
 
 
 def _iso(value: object) -> object:
