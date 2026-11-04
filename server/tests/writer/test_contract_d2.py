@@ -1634,19 +1634,31 @@ def test_a_scripted_connector_stands_in_for_the_type_it_imitates(driver, seeded)
     assert item_row(driver, w, item)["derived_source_type"] == "confirmed"
 
 
-# A value the writer cannot store is refused, never dropped ---------------------------------
+# A late end time is kept in the history, never dropped (writer-b closed the open point) -----
 
 
 @pytest.mark.parametrize("status", ["done", "cancelled"])
-def test_an_end_time_on_a_change_that_goes_to_history_only_is_refused(driver, seeded, chat, status):
+def test_an_end_time_on_a_change_that_goes_to_history_only_is_kept_in_history(
+    driver, seeded, chat, status
+):
     w = seeded["world_id"]
     task = task_in_progress_since_minute_30(driver, w, chat)
     said = observation(chat, "e1", 15, statement_class="report_happened")
     commit = git_observation(make_source(driver, w, "git", GIT_LINES), "g1")
     op = change_status(task, status, "e1", "g1", stopped_being_true=clock_at(at_minute(16)))
-    refusal = one(refused(driver, w, [op], [said, commit]), "invalid_arguments")
-    assert refusal.rule == "stopped_on_history_only"
-    assert refusal.op_id == op["op_id"]
-    assert refusal.details["field"] == "stopped_being_true"
-    assert item_row(driver, w, task)["status"] == "in progress"
-    assert item_as_of(WorldQuery(driver, w), task, at_minute(17))["status"] != status
+    apply(driver, w, [op], [said, commit])
+    head = item_row(driver, w, task)
+    assert head["status"] == "in progress"
+    assert head.get("stopped_being_true_precision") is None
+    [stop] = read(
+        driver,
+        w,
+        "MATCH (e:ChangeEntry {entity_id: $id, field: 'stopped_being_true'}) RETURN e",
+        id=task,
+    )
+    assert stop["e"]["history_only"] is True
+    then = item_as_of(WorldQuery(driver, w), task, at_minute(17))
+    assert then["status"] == status
+    assert then["stopped_being_true_latest"] == iso(at_minute(16))
+    # Once the later live status holds, the late end time no longer reads as the item's end.
+    assert item_as_of(WorldQuery(driver, w), task, at_minute(31))["status"] == "in progress"

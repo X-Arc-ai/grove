@@ -220,6 +220,7 @@ def apply_batch(
             observations=observations,
             pre_refused=pre,
             before_commit=False,
+            caller_kind=caller.kind,
         )
         mark_saved(tx, row, stamp, fingerprint, run_id)
         apply_module._before_commit()
