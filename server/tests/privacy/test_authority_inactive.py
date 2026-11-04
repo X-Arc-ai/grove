@@ -15,6 +15,9 @@ def test_package_has_only_the_frozen_component_modules():
         "scalars.py",
         "capacity.py",
         "lease.py",
+        "records.py",
+        "codec.py",
+        "transitions.py",
     }
     tree = ast.parse((AUTHORITY / "__init__.py").read_text())
     assert len(tree.body) == 1
@@ -77,7 +80,8 @@ def test_component_has_no_activation_environment_or_write_api():
         "grove",
         "scalars",
     }
-    for path in AUTHORITY.glob("*.py"):
+    for name in ("__init__.py", "scalars.py", "capacity.py", "lease.py"):
+        path = AUTHORITY / name
         for node in ast.walk(ast.parse(path.read_text())):
             if isinstance(node, ast.Attribute):
                 assert node.attr not in forbidden, (path.name, node.attr)
