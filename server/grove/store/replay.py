@@ -42,7 +42,12 @@ from grove.store.current import (
 from grove.store.d3_fingerprint import PROJECTION_TABLES, key_column
 from grove.store.enums import ENUMS
 from grove.store.normalise import reads_blank
-from grove.store.primitives import KIND_BELIEF, PRIMITIVE_KIND_BELIEF, PRIMITIVE_MEANINGS
+from grove.store.primitives import (
+    KIND_BELIEF,
+    MEANING_DESCRIBES,
+    PRIMITIVE_KIND_BELIEF,
+    PRIMITIVE_MEANINGS,
+)
 from grove.writer.apply import CLAIM_FIELDS, _fits, _property_values
 from grove.writer.clocks import ClockError, clock_from_row, ends_before_start, parse_clock
 from grove.writer.registry import Registry
@@ -633,6 +638,10 @@ class _Replay:
                 if table == "items" and row.get("kind") == KIND_BELIEF:
                     fields["derivation"] = "inferred"
                     fields["speaker"] = "automated"
+                elif table == "links" and row.get("meaning") == MEANING_DESCRIBES:
+                    # A belief's subject anchor is itself inferred, even without separate
+                    # evidence rows on the anchor (D9). Keep the writer's code-held value.
+                    fields["derivation"] = "inferred"
                 for name in names:
                     if fields[name] is None:
                         row.pop(name, None)
