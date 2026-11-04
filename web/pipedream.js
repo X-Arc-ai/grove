@@ -2,7 +2,7 @@
  * A connection never implies a content import or a completed provider consent. */
 (function () {
   'use strict';
-  var labels={connected:'Connected',not_connected:'Not connected',attention:'Reconnect required',unavailable:'Status unavailable',checking:'Check in progress'};
+  var labels={connected:'Connected',not_connected:'Not connected',attention:'Reconnect required',unavailable:'Status needs a check',checking:'Check in progress'};
   var instances=new Set();
   function account(){var s=window.GroveSimulation.getState();return s.auth?s.account:null;}
   function esc(v){return String(v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}
@@ -26,7 +26,7 @@
     function paint(){
       var focused=root.contains(document.activeElement)&&document.activeElement.hasAttribute('data-pipedream-search');
       var pos=focused?document.activeElement.selectionStart:null;
-      root.innerHTML='<label class="gp-integration-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" maxlength="128" placeholder="Search integrations" aria-label="Search integrations" data-pipedream-search value="'+esc(query)+'" '+(busy?'disabled':'')+'></label>'+details()+'<div class="gp-integrations" data-pipedream-results>'+cards()+'</div>'+(loading?'<p role="status">Loading apps…</p>':'')+(catalogError?'<p role="status">'+esc(catalogError)+'</p><button class="gp-small" data-pipedream-retry>Try again</button>':'')+(!loading&&!catalogError&&!apps.length?'<p>No matching apps. Try another name.</p>':'')+(next?'<button class="gp-small" data-pipedream-more '+(loading||busy?'disabled':'')+'>More apps</button>':'')+(total!==null?'<p class="gp-footnote">'+total.toLocaleString()+' apps in the catalog</p>':'')+'<p class="gp-section-copy">Connect an account with Pipedream. Emails, events and pages are not imported.</p><p class="gp-section-copy" role="status" aria-live="polite">'+esc(note)+'</p><button type="button" class="gp-small" data-pipedream-refresh '+(busy?'disabled':'')+'>Check connections</button>';
+      root.innerHTML='<label class="gp-integration-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" maxlength="128" placeholder="Search integrations" aria-label="Search integrations" data-pipedream-search value="'+esc(query)+'" '+(busy?'disabled':'')+'></label>'+details()+'<div class="gp-integrations" data-pipedream-results>'+cards()+'</div>'+(loading?'<p role="status">Loading apps…</p>':'')+(catalogError?'<p role="status">'+esc(catalogError)+'</p><button class="gp-small" data-pipedream-retry>Try again</button>':'')+(!loading&&!catalogError&&!apps.length?'<p>No matching apps. Try another name.</p>':'')+(next?'<button class="gp-small" data-pipedream-more '+(loading||busy?'disabled':'')+'>More apps</button>':'')+(total!==null?'<p class="gp-footnote">'+total.toLocaleString()+' apps in the catalog</p>':'')+'<p class="gp-section-copy">Connect your accounts with Pipedream.</p><p class="gp-section-copy" role="status" aria-live="polite">'+esc(note)+'</p><button type="button" class="gp-small" data-pipedream-refresh '+(busy?'disabled':'')+'>Check connections</button>';
       var input=root.querySelector('[data-pipedream-search]');
       input.oninput=function(e){query=e.target.value;selected=null;confirm=false;catalogRequest++;clearTimeout(timer);timer=setTimeout(function(){loadCatalog(false);},200);};
       if(focused){input.focus();try{input.setSelectionRange(pos,pos);}catch(_) {}}
@@ -69,7 +69,7 @@
         if(!res.body||res.body.account!==owner||!Array.isArray(res.body.providers))throw new Error('Connection status could not be checked. Try again.');
         if(app&&!res.body.providers.some(function(row){return row.provider===app.provider;}))throw new Error('Connection status could not be checked. Try again.');
         res.body.providers.forEach(function(row){if(slug(row.provider)&&['connected','not_connected','attention','unavailable'].includes(row.status))states[row.provider]=row.status;});
-        configured=res.body.configured===true;note=configured?'Status checked with Pipedream. No content was imported.':'Connections are not available yet. Server setup is incomplete.';
+        configured=res.body.configured===true;note=configured?'Status checked with Pipedream.':'';
       }catch(err){if(current(ticket)&&request===statusRequest){if(app)states[app.provider]='unavailable';note=err.message||'Connection status could not be checked. Try again.';}}
       finally{if(current(ticket)&&request===statusRequest)paint();}
     }
