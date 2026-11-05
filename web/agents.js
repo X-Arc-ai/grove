@@ -144,7 +144,6 @@
   var RING_W = [0, 5.0, 3.5, 2.5, 2.0, 1.4, 1.2];
   var HUB = { company: 1, project: 1 };
   var LOW_SIGNAL = { event: 1, observation: 1, status_change: 1, task: 1, decision: 1 };
-  var HUB_TEXT = '#1a1a1a';
   // Grove's starter kinds borrow the sim's styles here too, as in native-app.js (map in web/live.js).
   var KIND_STYLE = (window.GroveLive && window.GroveLive.KIND_STYLE) || {};
   Object.keys(KIND_STYLE).forEach(function (kind) {
@@ -893,6 +892,7 @@
   // focus ring), in the agents' palette: its ring shaded by when its section was last cleaned, or
   // in the color of the agent that just wrote it.
   function drawThing(node, ctx, scale) {
+    if (node.__born > performance.now()) return;   // a paced arrival, still on its way
     var i = node.__hi;
     if (i === undefined) i = node.__hi = idIndex[node.id] === undefined ? -1 : idIndex[node.id];
     if (i >= 0 && hiddenUntil[i] > simT) return;
@@ -924,14 +924,10 @@
       ctx.globalAlpha = alpha * 0.78;
       robotGlyph(ctx, node.x, node.y, sz, ring);
     }
-    if (HUB[node.type] && scale >= 0.4) {
-      ctx.globalAlpha = alpha;
-      hubLabel(ctx, node, sz);
-    }
     ctx.globalAlpha = 1;
   }
 
-  // The page's own glyphs and hub names (app.js drawPersonGlyph, drawRobotGlyph, drawHubLabel).
+  // The page's own glyphs (native-app.js drawPersonGlyph, drawRobotGlyph). No text inside a node.
   function personGlyph(ctx, cx, cy, sz, color) {
     ctx.fillStyle = color;
     var headR = sz * 0.28, headY = cy - sz * 0.18;
@@ -984,21 +980,6 @@
     ctx.arcTo(x, y, x + w, y, r);
     ctx.closePath();
   }
-  function hubLabel(ctx, node, sz) {
-    var title = (node.title || node.id).replace(/\s*\(.*?\)\s*/g, '').trim().toUpperCase();
-    var words = title.split(/\s+/);
-    var lines = words.length <= 1 ? [title] : words.length === 2 ? words : words.length === 3
-      ? [words[0], words.slice(1).join(' ')] : [words.slice(0, 2).join(' '), words.slice(2).join(' ')];
-    var longest = Math.max.apply(null, lines.map(function (l) { return l.length; }));
-    var size = Math.max(8, Math.min(sz * 1.7 / (longest * 0.6), sz * 1.5 / lines.length / 1.2, sz * 0.32));
-    ctx.font = '700 ' + size.toFixed(1) + 'px "JetBrains Mono", ui-monospace, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = HUB_TEXT;
-    var lh = size * 1.18, y0 = node.y - lh * lines.length / 2 + lh / 2;
-    lines.forEach(function (line, k) { ctx.fillText(line, node.x, y0 + k * lh); });
-  }
-
   // Under everything: CCCl's zones. Each section it cleaned is tinted in its color, strongest the
   // cycle it was cleaned and gone after about a week of cycles; while CCCl goes through one, its
   // zone fills in as it goes.

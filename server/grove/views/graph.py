@@ -29,8 +29,8 @@ HEALTHY = "healthy"
 ATTENTION = "attention"
 SUMMARY_READY = "Your Grove is ready"
 SUMMARY_EMPTY = "Your Grove is empty"
-MAX_GRAPH_ITEMS = 2500
-MAX_GRAPH_LINKS = 10000
+MAX_GRAPH_ITEMS = 6000
+MAX_GRAPH_LINKS = 20000
 GROWTH_DAYS = 30
 ADDITIONS_WINDOW = timedelta(hours=24)
 
@@ -263,6 +263,7 @@ def edge_data(link: dict, registry: Registry) -> dict[str, Any]:
         "canonical_of": None,
         "valid_at": _valid_at(link),
         "invalid_at": iso_z(_stopped(link)),
+        "created_at": iso_z(link.get("recorded")),
         "note": "",
         "source_field": SOURCE_FIELD,
     }

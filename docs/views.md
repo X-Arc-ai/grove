@@ -118,6 +118,7 @@ Times are UTC in the form of JavaScript's `toISOString`, `2026-11-02T09:30:00.00
 | `cardinality` | The meaning's cardinality, `many` if absent. |
 | `canonical`, `canonical_of` | Always `false` and `null`. |
 | `valid_at`, `invalid_at` | As for a node, from the link's own clock. |
+| `created_at` | `recorded`. The record time, as for a node: `valid_at` can be years older. |
 | `note` | Always `''`. |
 | `source_field` | Always `store`. |
 

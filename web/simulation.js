@@ -263,13 +263,22 @@
   var liveDelta=emptyLiveDelta(), liveSnapshot=null;
   function liveEdgeId(e){return e.id || JSON.stringify([e.source,e.verb||e.label||'',e.target]);}
   function clearLiveSnapshot(){liveGraphRequest++;liveSnapshot=null;liveDelta=emptyLiveDelta();}
-  function compareLiveGraph(nodes,edges){
+  // +X counts what the store recorded in the day before this read, from each row's own record time.
+  // So it survives a later read, a page reload and a new device. A row with no record time, or a read
+  // with no read time, counts for nothing: no number comes from any other source.
+  var DELTA_WINDOW_MS=86400000;
+  function recordedAfter(row,from){var at=Date.parse(row.created_at||'');return isFinite(at)&&at>from;}
+  function compareLiveGraph(nodes,edges,readAt){
     var next={nodes:new Set(nodes.map(function(w){return w.data.id;})),edges:new Set(edges.map(function(w){return liveEdgeId(w.data);})),at:new Date().toISOString()};
     var before=liveSnapshot;liveDelta=emptyLiveDelta();liveDelta.checkedAt=next.at;
+    var read=Date.parse(readAt||'');
+    if(isFinite(read)){
+      var from=read-DELTA_WINDOW_MS;
+      liveDelta.baselineAt=new Date(from).toISOString();
+      nodes.forEach(function(w){if(w.data.id!=='grove-self'&&recordedAfter(w.data,from))liveDelta.nodes.add(w.data.id);});
+      edges.forEach(function(w){if(recordedAfter(w.data,from))liveDelta.edges.add(liveEdgeId(w.data));});
+    }
     if(before){
-      liveDelta.baselineAt=before.at;
-      next.nodes.forEach(function(id){if(!before.nodes.has(id))liveDelta.nodes.add(id);});
-      next.edges.forEach(function(id){if(!before.edges.has(id))liveDelta.edges.add(id);});
       before.nodes.forEach(function(id){if(!next.nodes.has(id))liveDelta.removedNodes++;});
       before.edges.forEach(function(id){if(!next.edges.has(id))liveDelta.removedEdges++;});
     }
@@ -587,7 +596,7 @@
       nodes: nodes.map(function (w) { var d = Object.assign({}, w.data); d.id = alias(d.id); return { data: d }; }),
       edges: edges.map(function (w) { var d = Object.assign({}, w.data); d.source = alias(d.source); d.target = alias(d.target); return { data: d }; }),
     };
-    compareLiveGraph(live.nodes,live.edges);
+    compareLiveGraph(live.nodes,live.edges,body.generated_at);
     return Object.assign({}, body, { elements: clone(liveElements()) });
   }
   function aliasDetail(body) {
