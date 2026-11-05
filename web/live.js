@@ -252,7 +252,8 @@
     // D14's two steps, for one target the person confirmed in this page.
     forget: function (target) {
       return postJSON(ENDPOINTS.forgetApprove, { target: target, confirm: true }).then(function (res) {
-        if (!res.ok || !res.body || !res.body.approval_token) return res;
+        if (!res.ok) return res;
+        if (!res.body || !res.body.approval_token) return { ok: false, status: res.status, body: null };
         return postJSON(ENDPOINTS.forget, { target: target, approval_token: res.body.approval_token });
       });
     },
