@@ -284,7 +284,6 @@
       edgeFaded: v('--edge-faded'),
       edgeLabel: v('--edge-label'),
       labelHalo: v('--label-halo'),
-      hubText: '#1a1a1a',   // dark ink reads on the cream hub disk in both themes
       ownerText: v('--text'),
       ring: ring,
       ringInactive: ringInactive,
@@ -395,7 +394,7 @@
   function renderStats() {
     var state=window.GroveSimulation.getState(),live=window.GroveSimulation.isLive();
     function delta(kind,count,removed){return count?' <button class="stats-delta gp-count-delta'+(removed?' is-removed':'')+'" data-kind="'+kind+'" aria-label="Show '+count+' '+(removed?'removed ':'new ')+(kind.includes('nodes')?'nodes':'connections')+'">('+(removed?'−':'+')+count+')</button>':'';}
-    statsEl.innerHTML='<span>'+(live?state.currentNodeCount:rawNodes.length)+' nodes</span>'+delta('nodes',state.nodeDelta)+delta('removed-nodes',state.removedNodes,true)+' <span class="gp-stat-divider">·</span> <span>'+(live?state.currentEdgeCount:rawEdges.length)+' connections</span>'+delta('edges',state.edgeDelta)+delta('removed-edges',state.removedEdges,true)+(live?'<span class="stats-baseline"> · '+(state.graphBaselineAt?'Since previous graph check':'First graph check is the baseline')+'</span>':'');
+    statsEl.innerHTML='<span>'+(live?state.currentNodeCount:rawNodes.length)+' nodes</span>'+delta('nodes',state.nodeDelta)+delta('removed-nodes',state.removedNodes,true)+' <span class="gp-stat-divider">·</span> <span>'+(live?state.currentEdgeCount:rawEdges.length)+' connections</span>'+delta('edges',state.edgeDelta)+delta('removed-edges',state.removedEdges,true);
     statsEl.querySelectorAll('[data-kind]').forEach(function(el){el.onclick=function(){selectChangesOnCanvas(el.dataset.kind);};});
     lastNodeCount=rawNodes.length;lastEdgeCount=rawEdges.length;
   }
@@ -436,6 +435,8 @@
   // Live layout is a projection of current adjacency, separate from the stored map.
   // Never send these display coordinates to the positions endpoint.
   var livePlaced = {}, liveSaving = {};
+  // Where this page has drawn each node: a later read adds to the map and moves nothing.
+  var liveDrawn = {};
   var SELF_R_FAR = 90;
   function prepareLiveLayout(payload) {
     keepStoredLayout(payload);
@@ -443,10 +444,12 @@
     adoptKinds(all);
     var es=el.edges.map(function(w){return w.data;});
     var metadata=simLayout(all.filter(function(n){return n.id!=='grove-self';}),es);
-    var view=window.GroveLayoutKeep.organicView(all,es);
+    var Keep=window.GroveLayoutKeep,view=Keep.organicView(all,es,window.innerWidth/Math.max(1,window.innerHeight));
+    var items=all.map(function(n){return {id:n.id,_primaryHubId:view.primary[n.id]===n.id?null:view.primary[n.id]};});
+    liveDrawn=Keep.placeNew(liveDrawn,items,es,view.positions,function(n){return (view.radii[n.id]||6)+5;}).positions;
     layoutCache={};
     var x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
-    all.forEach(function(n){var p=view.positions[n.id];layoutCache[n.id]=Object.assign({},metadata.cache[n.id]||{},p,{_primaryHubId:view.primary[n.id]===n.id?null:view.primary[n.id],_hubR:view.radii[n.id],_demoted:false});x0=Math.min(x0,p.x);x1=Math.max(x1,p.x);y0=Math.min(y0,p.y);y1=Math.max(y1,p.y);});
+    all.forEach(function(n){var p=liveDrawn[n.id];layoutCache[n.id]=Object.assign({},metadata.cache[n.id]||{},p,{_primaryHubId:view.primary[n.id]===n.id?null:view.primary[n.id],_hubR:view.radii[n.id],_demoted:false});x0=Math.min(x0,p.x);x1=Math.max(x1,p.x);y0=Math.min(y0,p.y);y1=Math.max(y1,p.y);});
     stableFrame=all.length?{x0:x0-65,x1:x1+65,y0:y0-65,y1:y1+65}:metadata.frame;
   }
   // Retain the original insert-only map independently of the visual projection.
@@ -552,7 +555,7 @@
     rawNodes = []; rawEdges = []; byId = {};
     fgNodes = []; fgLinks = []; fgNodeById = {}; neighborsOf = {};
     focusedNode = null; hoverNode = null; hoverLink = null; hopDist = {};
-    livePlaced = {}; liveSaving = {}; layoutCache = null; stableFrame = null; _evoSig = null;
+    livePlaced = {}; liveSaving = {}; liveDrawn = {}; mapDrawn = false; layoutCache = null; stableFrame = null; _evoSig = null;
     schemaByType = {}; schemaAsked = false;
     hiddenTypes = {}; storage.removeItem('grove-minimal-codex-hidden-types');
     manualCamera = false;activeOnly=false;document.getElementById('active-only').checked=false;
@@ -577,6 +580,20 @@
   function placeToolbarControls(){var bar=document.querySelector('.topbar');if(bar)document.documentElement.style.setProperty('--grove-toolbar-bottom',bar.getBoundingClientRect().bottom+'px');}
   window.addEventListener('resize',placeToolbarControls);
   function setGraphStatus(state,text){var el=document.getElementById('graph-status');if(el){el.dataset.state=state;el.textContent=text;}var button=document.getElementById('refresh-data');if(button)button.setAttribute('aria-busy',String(state==='pending'));requestAnimationFrame(placeToolbarControls);}
+  // R4: a read that brings many nodes shows them in small steps, hubs first, at the sim's pace of
+  // about 140 ms a node. The whole arrival takes at most 54 seconds, and the data is real.
+  var ARRIVAL_MS = 54000, ARRIVAL_STEP_MS = 140, ARRIVAL_FIRST_MS = 120;
+  var mapDrawn = false;   // the first read of a session draws at once: it is the map, not growth
+  var LARGE_MAP = 1500;
+  function paceArrivals(arrivals) {
+    if (prefersReducedMotion.matches || !arrivals.length) return;
+    var degree = function (n) { return (neighborsOf[n.id] && neighborsOf[n.id].size) || 0; };
+    arrivals.sort(function (a, b) { return (isHub(b) - isHub(a)) || degree(b) - degree(a) || (a.id < b.id ? -1 : 1); });
+    var step = Math.min(ARRIVAL_STEP_MS, ARRIVAL_MS / arrivals.length), start = performance.now() + ARRIVAL_FIRST_MS;
+    arrivals.forEach(function (n, i) { n.__born = start + i * step; });
+  }
+  function unborn(n) { return !!n && n.__born > performance.now(); }
+
   function loadGraph(refresh) {
     var epoch = viewEpoch,request=++graphRequest;
     setGraphStatus('pending',refresh?'Refresh in progress':'Load in progress');
@@ -595,11 +612,13 @@
       byId={}; rawNodes.forEach(function(n){byId[n.id]=n;});
       if (!rawNodes.length) { hiddenTypes={}; try { storage.setItem('grove-minimal-codex-hidden-types','{}'); } catch (_) {} }
       buildAdjacency(); renderStats(); buildFgPayload();
+      var arrivals=[],grown=mapDrawn;mapDrawn=true;
       fgNodes=fgNodes.map(function(n){
         var old=previous[n.id];
-        if(old) { var x=old.x,y=old.y,fx=old.fx,fy=old.fy;Object.assign(old,n);old.x=x;old.y=y;old.fx=fx;old.fy=fy;return old; }
-        n.__home=[n.x,n.y]; n.__born=performance.now(); return n;
+        if(old) { var x=old.x,y=old.y,fx=old.fx,fy=old.fy,born=old.__born;Object.assign(old,n);old.x=x;old.y=y;old.fx=fx;old.fy=fy;old.__born=born;return old; }
+        n.__home=[n.x,n.y]; n.__born=performance.now(); arrivals.push(n); return n;
       });
+      if(grown&&!window.GROVE_FIXTURE)paceArrivals(arrivals);
       fgNodeById={}; fgNodes.forEach(function(n){fgNodeById[n.id]=n;});
       fgNodes.forEach(function(n){n._primaryHub=n._primaryHubId?fgNodeById[n._primaryHubId]||null:null;});
       if (!Graph) initGraph();
@@ -608,11 +627,14 @@
         var ids={};visible.forEach(function(n){ids[n.id]=1;});
         Graph.graphData({nodes:visible,links:fgLinks.filter(function(l){return ids[l.source]&&ids[l.target];})});
       }
+      // A large live map holds each dot at its place, so these forces would only take frame time.
+      if(!window.GROVE_FIXTURE&&fgNodes.length>LARGE_MAP)['charge','collide','link','hubX','hubY'].forEach(function(name){Graph.d3Force(name,null);});
       applyVisibility();
       if(focusedNode&&!fgNodeById[focusedNode.id]){focusedNode=null;closePanel();}
       clearSelection({silent:true});
       renderLegend();
       if (!focusedNode && !manualCamera && (!refresh || !previous["grove-self"])) frameGrove(0);
+      else if (!focusedNode && !manualCamera && arrivals.length) frameGrove(prefersReducedMotion.matches?0:900);
       if (!rawNodes.length) { focusedNode=null; manualCamera=false; detailEl.classList.remove('open'); }
       loadingEl.classList.add('hidden');
       setGraphStatus('ready','Graph updated · '+new Date().toLocaleTimeString());
@@ -1211,8 +1233,9 @@
       .nodeCanvasObject(drawNode)
       .nodePointerAreaPaint(paintNodeHitArea)
       .linkCanvasObjectMode(function (l) {
-        if (ALWAYS_LABELED_VERBS[l.verb]) return 'after';
-        if (Graph && Graph.zoom() >= 1.4 && ZOOMED_LABELED_VERBS[l.verb]) return 'after';
+        // Live maps carry no text at rest: a verb shows only on the link under the pointer.
+        if (window.GROVE_FIXTURE && ALWAYS_LABELED_VERBS[l.verb]) return 'after';
+        if (window.GROVE_FIXTURE && Graph && Graph.zoom() >= 1.4 && ZOOMED_LABELED_VERBS[l.verb]) return 'after';
         var hovered = hoverNode && (
           (typeof l.source === 'object' ? l.source.id : l.source) === hoverNode.id ||
           (typeof l.target === 'object' ? l.target.id : l.target) === hoverNode.id
@@ -1256,7 +1279,7 @@
       .d3Force('collide', d3.forceCollide()
         // Dense: pad shrinks with the tighter area so packing headroom holds
         // (~45% padded-disk coverage; no-overlap guarantee intact).
-        .radius(function (d) { return nodeRadius(d) * (DENSE ? 1.45 : 1.6) + (DENSE ? 6 : 8); })
+        .radius(function (d) { return window.GROVE_FIXTURE ? nodeRadius(d) * (DENSE ? 1.45 : 1.6) + (DENSE ? 6 : 8) : nodeRadius(d) + 3; })
         .strength(1.0).iterations(3))
       .d3Force('hubX', d3.forceX(function (d) {
         if (isHub(d)) return d.fx != null ? d.fx : d.x;
@@ -1610,6 +1633,7 @@
   // ---------------- canvas drawing ----------------
 
   function drawNode(node, ctx, scale) {
+    if(unborn(node))return;
     if(node.id==='grove-self'){
       var r=Math.max(14,Math.min(27,90*scale))/scale;
       ctx.globalAlpha=1;ctx.fillStyle=THEME.cream;ctx.beginPath();ctx.arc(node.x,node.y,r,0,Math.PI*2);ctx.fill();
@@ -1691,7 +1715,7 @@
     else if (tier === 4) ringW = 2.0;
     else if (tier === 5) ringW = 1.4;
     else ringW = 1.2; // tier 6 — event/observation/status_change
-    ctx.lineWidth = (window.GROVE_FIXTURE ? ringW : ringW*.48) / Math.max(scale, 0.85);
+    ctx.lineWidth = window.GROVE_FIXTURE ? ringW / Math.max(scale, 0.85) : Math.max(ringW*.48 / Math.max(scale, 0.85), 0.8 / scale);
     ctx.strokeStyle = ringColor;
     ctx.stroke();
 
@@ -1735,41 +1759,7 @@
       drawRobotGlyph(ctx, node.x, node.y, sz, ringColor);
     }
 
-    // Hub label (UPPERCASE inside the disk) — tier 1 always shows name when scale allows
-    if (isHub && scale >= 0.4) {
-      ctx.globalAlpha = alpha;
-      drawHubLabel(ctx, node, sz, scale);
-    }
-
-    // Tier-2 (person/instance) — show single initial letter inside the disk on
-    // hover OR when this node is the focus / its 1-hop neighbor. Adds a layer
-    // of identity without cluttering the default view.
-    var showInitial = (tier === 2) && scale >= 0.6 && (
-      hoverNode === node ||
-      (focusedNode && (focusedNode.id === node.id || hopDist[node.id] === 1))
-    );
-    if (showInitial && node.type !== 'instance') {
-      // Instance keeps its robot glyph even on hover/focus — letter would
-      // overwrite the body. Person uses early-return guard already.
-      ctx.globalAlpha = alpha;
-      drawInitialLetter(ctx, node, sz, ringColor);
-    }
-
     ctx.globalAlpha = 1;
-  }
-
-  function drawInitialLetter(ctx, node, sz, color) {
-    var title = (node.title || node.id || '').trim();
-    if (!title) return;
-    var letter = title.charAt(0).toUpperCase();
-    var fontSize = sz * 0.95;
-    ctx.font = '700 ' + fontSize.toFixed(1) + 'px "JetBrains Mono", ui-monospace, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = THEME.hubText;
-    // Person nodes already render a glyph — don't overwrite it.
-    if (node.type === 'person') return;
-    ctx.fillText(letter, node.x, node.y);
   }
 
   function drawPersonGlyph(ctx, cx, cy, sz, color) {
@@ -1851,36 +1841,6 @@
     ctx.closePath();
   }
 
-  function drawHubLabel(ctx, node, sz, scale) {
-    // Strip parenthetical aliases like "BPOP (3ed)" -> "BPOP"
-    var title = (node.title || node.id).replace(/\s*\(.*?\)\s*/g, '').trim().toUpperCase();
-    var words = title.split(/\s+/);
-    var lines;
-    if (words.length <= 1) lines = [title];
-    else if (words.length === 2) lines = words;
-    else if (words.length === 3) lines = [words[0], words.slice(1).join(' ')];
-    else lines = [words.slice(0, 2).join(' '), words.slice(2).join(' ')];
-
-    // Font sized so longest line fits inside disk diameter (sz * 2 minus ring/padding)
-    var maxLineLen = Math.max.apply(null, lines.map(function (l) { return l.length; }));
-    var availableWidth = sz * 1.7; // disk diameter minus padding
-    // Approx: char width in JBM ~ 0.55x font size at 700 weight
-    var fontByWidth = availableWidth / (maxLineLen * 0.6);
-    var fontByHeight = (sz * 1.5) / lines.length / 1.2;
-    var fontSize = Math.max(8, Math.min(fontByWidth, fontByHeight, sz * 0.32));
-
-    ctx.font = '700 ' + fontSize.toFixed(1) + 'px "JetBrains Mono", ui-monospace, monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = THEME.hubText;
-    var lineH = fontSize * 1.18;
-    var totalH = lineH * lines.length;
-    var startY = node.y - totalH / 2 + lineH / 2;
-    lines.forEach(function (line, i) {
-      ctx.fillText(line, node.x, startY + i * lineH);
-    });
-  }
-
   function drawLinkLabel(link, ctx, scale) {
     if (scale < 0.55) return;
     var s = typeof link.source === 'object' ? link.source : fgNodeById[link.source];
@@ -1916,11 +1876,12 @@
   }
 
   function paintNodeHitArea(node, color, ctx) {
-    var baseSz = node.id==='grove-self' ? Math.max(14,Math.min(27,90*Graph.zoom()))/Graph.zoom() : (SIZES[node.type] || 16);
+    if(unborn(node))return;
+    var baseSz = node.id==='grove-self' ? Math.max(14,Math.min(27,90*Graph.zoom()))/Graph.zoom() : nodeRadius(node);
     // Highlighted nodes draw at 2x size; the hit area must match so clicks
     // on the visible disk actually register (otherwise clicks on the scaled
     // edge fall outside the original-size hit zone and silently no-op).
-    var sz = (highlightedIds[node.id] ? Math.max(baseSz * 2, 22) : baseSz) + 4;
+    var sz = Math.max((highlightedIds[node.id] ? Math.max(baseSz * 2, 22) : baseSz) + 4, 5 / Graph.zoom());
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(node.x, node.y, sz, 0, 2 * Math.PI);
@@ -1941,6 +1902,7 @@
   }
 
   function getLinkColor(l) {
+    if (unborn(l.source) || unborn(l.target)) return 'transparent';
     if (l.ended) return THEME.edgeFaded;
 
     if (hasSelection()) {
@@ -1980,9 +1942,20 @@
     // density. Dense lever 2: edgeRest sits above edgeFaded so the connective
     // tissue is visible at rest (edgeRest == edgeFaded when the flag is off;
     // interaction dimming states above keep edgeFaded either way).
-    if (!window.GROVE_FIXTURE) return THEME.liveEdge;
+    if (!window.GROVE_FIXTURE) return liveEdgeShade();
     if (l.inactive) return THEME.edgeRest;
     return THEME.edge;
+  }
+
+  // A hairline at any size: the more connections a map holds, the fainter each one draws.
+  var edgeShade = { base: '', count: -1, value: '' };
+  function liveEdgeShade() {
+    var base = THEME.liveEdge || '', count = fgLinks.length;
+    if (edgeShade.base === base && edgeShade.count === count) return edgeShade.value;
+    var parts = /^rgba\((\d+),\s*(\d+),\s*(\d+),\s*([\d.]+)\)$/.exec(base.trim());
+    var fade = Math.max(0.42, Math.min(1, Math.sqrt(1600 / Math.max(1, count))));
+    edgeShade = { base: base, count: count, value: parts ? 'rgba(' + parts[1] + ',' + parts[2] + ',' + parts[3] + ',' + (parts[4] * fade).toFixed(3) + ')' : base };
+    return edgeShade.value;
   }
 
   function getLinkWidth(l) {
@@ -1998,7 +1971,7 @@
     }
 
     if (hoverNode && (hoverNode.id === s || hoverNode.id === t)) return 1.4;
-    return window.GROVE_FIXTURE ? (ALWAYS_LABELED_VERBS[l.verb] ? 0.9 : 0.5) : 0.55;
+    return window.GROVE_FIXTURE ? (ALWAYS_LABELED_VERBS[l.verb] ? 0.9 : 0.5) : 0.5;
   }
 
   // ---------------- interaction ----------------
@@ -2534,6 +2507,11 @@
   // selection stands out. Esc, background-click, or the floating "clear" pill
   // all dismiss the selection.
 
+  function sinceWords(otherwise) {
+    var at = window.GroveSimulation.getState().graphBaselineAt;
+    return at ? ' since ' + String(at).slice(0, 10) : otherwise;
+  }
+
   function selectChangesOnCanvas(kind, provider) {
     Promise.resolve(window.GroveSimulation.getChanges(provider)).then(function(data){
       if (!data || data.error) return;
@@ -2554,7 +2532,7 @@
             highlightedNodeCount++;
           }
         });
-        label = newNodes.length + ' '+(provider?'':'new ')+'node'+(newNodes.length===1?'':'s')+(provider?' from this source':' added to your Grove');
+        label = newNodes.length + ' '+(provider?'':'new ')+'node'+(newNodes.length===1?'':'s')+(provider?' from this source':sinceWords(' added to your Grove'));
       } else {
         newEdges.forEach(function (e) {
           var key = e.source + '||' + (e.verb || '') + '||' + e.target;
@@ -2572,7 +2550,7 @@
             highlightedNodeCount++;
           }
         });
-        label = newEdges.length+' new connection'+(newEdges.length===1?'':'s')+' added to your Grove';
+        label = newEdges.length+' new connection'+(newEdges.length===1?'':'s')+sinceWords(' added to your Grove');
       }
 
       // Frame the highlighted nodes. We don't use Graph.zoomToFit() — it picks
@@ -2596,7 +2574,7 @@
           var vw = window.innerWidth * 0.65;
           var vh = window.innerHeight * 0.65;
           var z = Math.min(vw / w, vh / h, 2.5);
-          z = Math.max(z, 0.7);
+          z = Math.max(z, Math.min(0.7, Graph.zoom()));   // a wide selection keeps the whole map in view
           Graph.centerAt(cx, cy, 600);
           Graph.zoom(z, 600);
         }
