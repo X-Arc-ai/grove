@@ -18,12 +18,12 @@ What OpenCode 1.18.32 does under the runner's flags (tests/runner/test_opencode.
   compilerOptions.paths to a person's file and runs it when OpenCode starts, before any permission.
   jsconfig.json is the same setting. bunfig.toml, package.json, node_modules and the bun lock files
   are Bun's other startup names. Bun's .env files and .bunfig.toml fall under the hidden name rule.
+- HEAD and commondir together: the embedded libgit2 takes the folder for a repository and reads
+  the one that commondir names, outside the world's folder. No code ran in the test of this.
 
 The API never makes a hidden name, so any other one is out of place too: .claude, .agents, .git.
 The one exception is the temporary file of an upload that is running.
 """
-
-import unicodedata
 
 TEMP_PREFIX = ".upload-"
 NAMES = frozenset(
@@ -33,7 +33,9 @@ NAMES = frozenset(
         "bun.lockb",
         "bunfig.toml",
         "claude.md",
+        "commondir",
         "context.md",
+        "head",
         "jsconfig.json",
         "node_modules",
         "opencode.json",
@@ -48,7 +50,7 @@ NAMES = frozenset(
 
 def is_instruction_name(name: str) -> bool:
     """True when OpenCode could act on a file or a folder of this name, in any case."""
-    folded = unicodedata.normalize("NFC", name).casefold()
+    folded = name.casefold()
     if folded.startswith("."):
         return not folded.startswith(TEMP_PREFIX)
     return folded in NAMES

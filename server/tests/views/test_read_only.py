@@ -109,8 +109,8 @@ def imports_of(path: Path) -> set[str]:
 def test_the_views_package_never_imports_the_writer():
     files = sorted((SERVER / "grove" / "views").glob("*.py"))
     assert files
-    for path in files:
-        assert not any(name.startswith("grove.writer") for name in imports_of(path)), path.name
+    broken = [p.name for p in files if any(n.startswith("grove.writer") for n in imports_of(p))]
+    assert not broken, broken
 
 
 def assert_api_writer_boundary(files):
@@ -125,7 +125,6 @@ def assert_api_writer_boundary(files):
         "forget.py": {
             "grove.writer.forget",
             "grove.writer.forget_approvals",
-            "grove.writer.forget_ledger",
             "grove.writer.errors",
         },
         # D6's explicit explanation POST uses only its explanation writer.
@@ -134,12 +133,68 @@ def assert_api_writer_boundary(files):
         "connectors.py": {"grove.writer.connectors", "grove.writer.errors"},
         # brain propose and brain finish of a live pass (runner): the writer's public API, the
         # run record's account of a proposal, a receipt for the agent, the request id check.
-        "internal.py": {"grove.writer", "grove.writer.receipts", "grove.writer.requests"},
+        # The ledger's refusal is the shared type: this route takes no ledger operation.
+        "internal.py": {
+            "grove.writer",
+            "grove.writer.errors",
+            "grove.writer.receipts",
+            "grove.writer.requests",
+        },
+        # A person's material: the route saves it through the writer and forgets it through D14.
+        "materials.py": {
+            "grove.writer",
+            "grove.writer.errors",
+            "grove.writer.forget",
+            "grove.writer.forget_approvals",
+        },
+        # Reads under the D14 ledger lock. MATERIAL_READ_NAMES bounds this row by name.
+        "material_reads.py": {
+            "grove.writer.forget_ledger",
+            "grove.writer.materials",
+            "grove.writer.requests",
+        },
     }
     assert files
+    broken = {}
     for path in files:
         writer = {name for name in imports_of(path) if name.startswith("grove.writer")}
-        assert writer <= allowed.get(path.name, set()), path.name
+        if extra := writer - allowed.get(path.name, set()):
+            broken[path.name] = sorted(extra)
+    # Every route at once: stopping at the first one hid three more imports of materials.py.
+    assert not broken, broken
+
+
+MATERIAL_READ_NAMES = {
+    "MaterialSessionEnded",
+    "checked_under_lock",
+    "latest",
+    "locked_ledger",
+    "receipt_of",
+}
+
+
+def test_material_reads_take_only_read_helpers_from_the_writer():
+    tree = ast.parse((SERVER / "grove/api/material_reads.py").read_text(encoding="utf-8"))
+    taken = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("grove.writer")
+        for alias in node.names
+    }
+    assert taken == MATERIAL_READ_NAMES
+
+
+def test_the_material_list_runs_in_read_mode_only(driver, world, tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_FORGET_LEDGER_DIR", str(tmp_path / "ledger"))
+    plant_node(driver, world, "World", next_sequence=0, read_generation=0)
+    token = plant_session(driver, world)
+    guarded = ReadOnlyDriver(driver)
+    client = TestClient(
+        create_app(driver=guarded), raise_server_exceptions=False, cookies={SESSION_COOKIE: token}
+    )
+    response = client.get("/v1/materials")
+    assert response.status_code == 200, response.text
+    assert guarded.calls and set(guarded.calls) == {_READ_ENTRY}
 
 
 def test_api_writer_imports_stay_within_the_explicit_route_boundary():
@@ -162,6 +217,11 @@ def test_api_app_can_import_the_shared_writer_error_type(tmp_path):
         ("views.py", "import grove.writer.connectors"),
         ("app.py", "from grove.writer.accounts import create_account"),
         ("forget.py", "from grove.writer.connectors import connection"),
+        ("forget.py", "from grove.writer.forget_ledger import append_intent"),
+        ("internal.py", "from grove.writer.forget_ledger import locked_ledger"),
+        ("materials.py", "from grove.writer.accounts import create_account"),
+        ("materials.py", "from grove.writer.forget_ledger import append_intent"),
+        ("material_reads.py", "from grove.writer.tx import WorldWriter"),
     ],
 )
 def test_api_writer_boundary_rejects_unapproved_routes_and_imports(tmp_path, route, source):

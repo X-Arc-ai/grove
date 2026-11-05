@@ -1,4 +1,8 @@
-"""Session-bound material reads with an exact external-intent check before disclosure."""
+"""Session-bound material reads with an exact external-intent check before disclosure.
+
+These reads write nothing, but no text leaves while an approved forget is pending, so they hold the
+D14 ledger lock. D14 stays an explicit API, so this module is here and not in grove.views.
+"""
 
 import base64
 import json
