@@ -2,8 +2,8 @@
 
 import pytest
 
+from grove.api.material_reads import detail
 from grove.store.query import WorldQuery
-from grove.views.materials import detail
 from grove.views.session import token_hash
 from grove.writer.forget import forget
 from grove.writer.forget_approvals import mint_approval

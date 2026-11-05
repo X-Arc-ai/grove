@@ -19,6 +19,14 @@ from grove.writer.tx import WorldWriter
 PREFIX = "import:"
 HOLD_PREFIX = "import_hold:"
 READ_PAGE = 128
+# Only a part that can still run holds the parts after it. A held part, a part that used its
+# attempts, a declined part and a forgotten source never run, so a wait for them never ends.
+# They stay visible in the progress read as held, failed or unavailable.
+_CAN_STILL_RUN = (
+    "(r.status IN ['queued', 'applying'] OR (r.status = 'failed' AND r.retry_at IS NOT NULL)) "
+    "AND EXISTS { MATCH (ps:Source {id: r.source_id}) "
+    "WHERE NOT coalesce(ps.forget_state, 'kept') IN ['forgotten', 'span_forgotten'] } "
+)
 
 
 def request_id_for(source_id: str) -> str:
@@ -100,8 +108,9 @@ def readiness_reason(reader, request) -> str | None:
             "MATCH (current:Request {id: $request_id}) "
             "MATCH (s:Source {connector_id: $connector, external_locator: $locator}) "
             "MATCH (r:Request {source_id: s.id, caller: $caller}) "
-            "WHERE r.id STARTS WITH $prefix AND r.protocol IS NULL AND r.status <> 'saved' "
-            "AND r.id <> current.id "
+            "WHERE r.id STARTS WITH $prefix AND r.protocol IS NULL AND "
+            + _CAN_STILL_RUN
+            + "AND r.id <> current.id "
             "AND (r.said_at.epochSeconds < current.said_at.epochSeconds "
             "OR (r.said_at.epochSeconds = current.said_at.epochSeconds "
             "AND r.said_at.nanosecond < current.said_at.nanosecond)) "
@@ -142,8 +151,9 @@ def readiness_reason(reader, request) -> str | None:
                 unresolved = _read(
                     reader,
                     "MATCH (current:Request {id: $request_id}) "
-                    "MATCH (r:Request) WHERE r.id IN $ids AND r.status <> 'saved' "
-                    "AND (current.said_at IS NULL OR r.said_at IS NULL "
+                    "MATCH (r:Request) WHERE r.id IN $ids AND "
+                    + _CAN_STILL_RUN
+                    + "AND (current.said_at IS NULL OR r.said_at IS NULL "
                     "OR r.said_at.epochSeconds < current.said_at.epochSeconds "
                     "OR (r.said_at.epochSeconds = current.said_at.epochSeconds "
                     "AND r.said_at.nanosecond <= current.said_at.nanosecond)) "

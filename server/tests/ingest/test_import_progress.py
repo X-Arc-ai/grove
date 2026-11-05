@@ -10,6 +10,7 @@ from itertools import islice
 
 import pytest
 
+from grove import clock
 from grove.ingest.import_parts import (
     MAX_IMPORT_PARTS,
     MAX_PART_BYTES,
@@ -23,10 +24,10 @@ from grove.models.gateway_auth import IMPORT_PROFILE, verify
 from grove.runner.brain import pass_input
 from grove.runner.passes import PassSettings, caller_for, end_pass, run_record, start_pass
 from grove.store.query import WorldQuery
-from grove.writer import apply_request, finish_request, request_state
+from grove.writer import apply_request, finish_request, import_queue, request_state
 from grove.writer.errors import InvalidRecord
 from grove.writer.import_queue import request_id_for
-from grove.writer.testing import plant_node
+from grove.writer.testing import plant_node, set_import_part_state
 from tests.hosts import conftest as host_fixtures
 from tests.ingest.conftest import STORE_TIME, counts, make_screener, upload_of
 from tests.ingest.test_chatgpt import Conversation, message
@@ -134,7 +135,7 @@ def test_ineligible_input_is_retained_and_never_claimed(
 
 def test_over_limit_export_has_no_partial_source_or_request_write(driver, seeded_world, test_clock):
     docs = [json.loads(export(chat=f"orchard-{n}"))[0] for n in range(MAX_IMPORT_PARTS + 1)]
-    with pytest.raises(ImportLimit):
+    with pytest.raises(ImportLimit, match="too large for one upload"):
         take_in(
             driver,
             seeded_world,
@@ -148,8 +149,6 @@ def test_over_limit_export_has_no_partial_source_or_request_write(driver, seeded
 
 
 def test_queue_failure_rolls_back_only_its_chat(driver, seeded_world, test_clock, monkeypatch):
-    from grove.writer import import_queue
-
     original = import_queue.enqueue_import_parts_in_tx
     calls = []
 
@@ -180,8 +179,6 @@ def test_queue_failure_rolls_back_only_its_chat(driver, seeded_world, test_clock
 def test_partial_upload_receipt_stays_separate_from_complete_provider_history(
     driver, seeded_world, client_for, test_clock, monkeypatch, record_property, provider
 ):
-    from grove.writer import import_queue
-
     owner = client_for(seeded_world)
     reminders = "/v1/sources/pending-exports"
     requested = owner.post(f"{reminders}/{provider}", json={})
@@ -334,8 +331,6 @@ def test_interactive_requests_and_other_provider_are_not_starved(driver, seeded_
 
 
 def test_later_uploads_older_part_precedes_later_pending_parts(driver, seeded_world, test_clock):
-    from grove.writer import import_queue
-
     initial = ingest(driver, seeded_world, count=130)
     added = conversation(
         "orchard",
@@ -370,8 +365,6 @@ def test_later_uploads_older_part_precedes_later_pending_parts(driver, seeded_wo
 
 @pytest.mark.parametrize("provider", ["claude_ai", "chatgpt"])
 def test_equal_time_parts_keep_episode_order(driver, seeded_world, test_clock, provider):
-    from grove.writer import import_queue
-
     if provider == "claude_ai":
         doc = conversation(
             "equal-time",
@@ -411,8 +404,6 @@ def test_equal_time_parts_keep_episode_order(driver, seeded_world, test_clock, p
 def test_equal_time_candidate_pages_return_each_request_once(
     driver, seeded_world, test_clock, monkeypatch, provider
 ):
-    from grove.writer import import_queue
-
     monkeypatch.setattr(import_queue, "READ_PAGE", 2)
     docs = [json.loads(export(provider, chat=f"page-{n}"))[0] for n in range(5)]
     result = take_in(
@@ -465,10 +456,110 @@ def test_progress_requires_a_real_noop_receipt_or_attributed_commit(
     assert read_import_progress(driver, seeded_world, "claude_ai")["graph"] == progress["graph"]
 
 
+def end_part(driver, world, request_id, source_id, ending):
+    """Leave one part in the state that its real path leaves it in."""
+    if ending in ("forgotten", "span_forgotten"):
+        set_import_part_state(driver, world, request_id, source_id, forget_state=ending)
+    elif ending == "retrying":
+        later = clock.now(world) + timedelta(hours=1)
+        set_import_part_state(
+            driver,
+            world,
+            request_id,
+            source_id,
+            status="failed",
+            code="pass_failed",
+            retry_at=later,
+        )
+    else:
+        status = "declined" if ending == "declined" else "failed"
+        set_import_part_state(driver, world, request_id, source_id, status=status, code=ending)
+
+
+@pytest.mark.parametrize(
+    "ending,holds",
+    [
+        ("attempts_exhausted", False),
+        ("declined", False),
+        ("forgotten", False),
+        ("span_forgotten", False),
+        ("retrying", True),
+    ],
+)
+def test_only_a_part_that_can_still_run_holds_the_parts_after_it(
+    driver, seeded_world, test_clock, ending, holds
+):
+    result = ingest(driver, seeded_world, count=2 * MAX_PART_MESSAGES + 1)
+    ids = [request_id_for(key) for key in result.source_ids]
+    assert len(ids) == 3
+    end_part(driver, seeded_world, ids[0], result.source_ids[0], ending)
+    query = WorldQuery(driver, seeded_world)
+    rows = {row["id"]: row for row in request_rows(driver, seeded_world)}
+    reason = import_queue.readiness_reason(query, rows[ids[1]])
+    if holds:
+        assert reason in ("earlier_pending_time", "earlier_pending_episode")
+        return
+    assert reason is None
+    # The next part runs, and the part after it still waits for that one.
+    assert import_queue.readiness_reason(query, rows[ids[2]]) in (
+        "earlier_pending_time",
+        "earlier_pending_episode",
+    )
+    _, grant = grant_for(driver, seeded_world)
+    assert grant is not None and grant.input_ids == [ids[1]]
+
+
+def test_every_conversation_of_a_large_export_is_taken_in(driver, seeded_world, test_clock):
+    """Each conversation is at least one part, so a small limit refuses a real account."""
+    docs = [json.loads(export(chat=f"orchard-{n}"))[0] for n in range(513)]
+    result = take_in(
+        driver,
+        seeded_world,
+        "claude_ai",
+        upload_of(json.dumps(docs).encode()),
+        screener=make_screener(),
+    )
+    assert result.sources_added == result.requests_added == 513
+    assert result.failed_chats == 0
+
+
+def test_a_held_message_does_not_stop_the_rest_of_its_conversation(
+    driver, seeded_world, test_clock
+):
+    long_text = "Mira Vale tends the invented pear orchard. " * 900
+    doc = conversation(
+        "orchard",
+        [
+            record("m0", "human", seconds=0, text=long_text),
+            record("m1", "human", seconds=1, text="Mira Vale picks the pears."),
+        ],
+    )
+    result = take_in(
+        driver,
+        seeded_world,
+        "claude_ai",
+        upload_of(json.dumps([doc]).encode()),
+        screener=make_screener(),
+    )
+    assert result.requests_added == 2 and result.held_sources == 1
+    later = request_id_for(result.source_ids[1])
+    assert (
+        import_queue.readiness_reason(
+            WorldQuery(driver, seeded_world),
+            next(row for row in request_rows(driver, seeded_world) if row["id"] == later),
+        )
+        is None
+    )
+    _, grant = grant_for(driver, seeded_world)
+    assert grant is not None and grant.input_ids == [later]
+    progress = read_import_progress(driver, seeded_world, "claude_ai")
+    assert progress["state"] == "partial" and progress["held_count"] == 1
+
+
 def test_lease_recovery_and_retry_do_not_duplicate_work(driver, seeded_world, test_clock):
     result = ingest(driver, seeded_world)
     auth, first = grant_for(driver, seeded_world)
-    test_clock.advance(seconds=241)
+    test_clock.advance(seconds=PassSettings().lease_seconds + 1)
     second = start_pass(driver, auth, seeded_world, agent="learner")
     assert second.input_ids == first.input_ids == [request_id_for(result.source_ids[0])]
     end_pass(driver, seeded_world, second.run_id, outcome="killed")

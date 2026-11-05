@@ -104,7 +104,7 @@ The rows in `model_calls` do not hold the true cost of this route. A short sessi
 | `GROVE_META_BASE_URL` | Default `https://api.meta.ai/v1`. Only the host `api.meta.ai` loads: the allowlist comes from this URL, and the key goes to it. |
 | `GROVE_GLIMMER_BASE_URL` | The Modal server's URL followed by `/v1`. Only a host under `.modal.direct` or `.modal.run` loads. |
 | `GROVE_GLIMMER_KEY` | The Modal proxy token as `<id>.<secret>`. |
-| `GROVE_DAILY_BUDGET_USD` | The ceiling of a new day's budget row; default 5.0; `unlimited` for none. |
+| `GROVE_DAILY_BUDGET_USD` | The ceiling of a new day's budget row; default 10.0; `unlimited` for none. |
 | `GROVE_GATEWAY_SECRET` | At least 32 bytes; signs the run tokens. |
 | `GROVE_GATEWAY_HOST`, `GROVE_GATEWAY_PORT` | Default `127.0.0.1` and `18300`. |
 

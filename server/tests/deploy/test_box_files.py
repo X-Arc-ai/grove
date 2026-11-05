@@ -5,6 +5,7 @@ import re
 import yaml
 
 from grove.api.agent_files import MAX_FILE_BYTES
+from grove.api.app import create_app
 from grove.api.uploads import (
     DEFAULT_MAX_BYTES,
     MAX_BYTES_VAR,
@@ -128,7 +129,7 @@ def test_nginx_passes_everything_to_the_api_and_reads_no_user_agent():
         assert "$http_user_agent" not in text
         assert "deny " not in text
     assert "location / {" in https
-    assert https.count("proxy_pass http://127.0.0.1:8000;") == 12
+    assert https.count("proxy_pass http://127.0.0.1:8000;") == 13
     assert "root /var/www/grove-acme;" in http
     assert "return 301 https://$host$request_uri;" in http
 
@@ -262,6 +263,7 @@ def test_only_explicit_upload_routes_take_large_bodies():
         "70k",
         "70k",
         "4k",
+        "4k",
         "32m",
         "256m",
     ]
@@ -373,6 +375,7 @@ def test_nginx_has_exact_locations_and_no_rule_that_can_answer_for_the_api():
         "    location = /v1/materials/files {",
         "    location = /v1/materials/notes {",
         "    location ^~ /v1/materials/notes/ {",
+        "    location = /v1/materials {",
         "    location /v1/materials/ {",
         "    location = /v1/agent-files {",
         "    location = /v1/sources/upload {",
@@ -472,6 +475,27 @@ def _location_blocks(https: str) -> dict[str, str]:
     return dict(re.findall(pattern, _without_comments(https), re.MULTILINE))
 
 
+def test_every_api_route_at_a_prefix_location_has_its_exact_location():
+    """nginx answers a path with no slash itself, with a 301 to the slash form, when only the
+    prefix location proxies it. So the route never reaches the API: the person sees the 404 of the
+    slash form. GET /v1/materials failed like this on the first deploy."""
+    blocks = _location_blocks(_https())
+    routes = set(create_app(driver=None).openapi()["paths"])
+    prefixes = [
+        match for match, body in blocks.items() if match.endswith("/") and "proxy_pass" in body
+    ]
+    assert "/v1/materials/" in prefixes
+    for prefix in prefixes:
+        path = prefix.split()[-1].rstrip("/")
+        if path in routes:
+            assert f"= {path}" in blocks, path
+
+
+def test_the_exact_materials_route_keeps_the_limits_of_its_prefix():
+    blocks = _location_blocks(_https())
+    assert blocks["= /v1/materials"] == blocks["/v1/materials/"]
+
+
 def _screening_mount() -> dict:
     (mount,) = [m for m in SERVICES["api"]["volumes"] if m["target"] == SCREENING_MOUNT]
     return mount
@@ -557,11 +581,12 @@ def test_the_upload_location_is_the_route_the_api_serves():
 def test_every_other_path_keeps_the_10m_limit_and_request_buffering():
     https = _https()
     blocks = _location_blocks(https)
-    assert len(blocks) == 13
+    assert len(blocks) == 14
     materials = {
         "= /v1/materials/files": "16m",
         "= /v1/materials/notes": "70k",
         "^~ /v1/materials/notes/": "70k",
+        "= /v1/materials": "4k",
         "/v1/materials/": "4k",
     }
     for match, limit in materials.items():

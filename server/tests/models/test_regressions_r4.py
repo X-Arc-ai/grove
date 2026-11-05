@@ -148,7 +148,12 @@ def test_a_client_that_leaves_through_asgi_is_metered_with_the_real_usage(
     claims = verify(
         SECRET, CATALOG, mint(SECRET, CATALOG, world_id=world, run_id="r1", job="cleanup_pass")
     )
-    body = Gated(ROLE, (TEXT, FINISH, DONE))
+    # The pump reads from the moment the relay exists, so a chunk the provider has already sent
+    # can reach the ASGI send. "Before any" must mean the provider has sent nothing yet.
+    if after_first:
+        body = Gated(ROLE, (TEXT, FINISH, DONE))
+    else:
+        body = Gated(None, (ROLE, TEXT, FINISH, DONE))
     response = httpx.Response(200, stream=body)
 
     async def drive() -> list[bytes]:
@@ -170,6 +175,26 @@ def test_a_client_that_leaves_through_asgi_is_metered_with_the_real_usage(
             "cost": pytest.approx(USAGE_COST, abs=1e-12),
         }
     ]
+
+
+def test_a_stream_no_client_ever_reads_still_closes_and_is_metered(driver, world, test_clock):
+    gateway = Gateway(driver, settings=settings(), catalog=CATALOG)
+    claims = verify(
+        SECRET, CATALOG, mint(SECRET, CATALOG, world_id=world, run_id="r1", job="cleanup_pass")
+    )
+    body = Gated(ROLE, (TEXT, FINISH, DONE))
+    response = httpx.Response(200, stream=body)
+
+    async def drive() -> None:
+        relay = gateway._relay(response, claims, SPARK, "low", clock.monotonic())
+        await relay.aclose()
+        body.gate.set()
+        await gateway.aclose()
+
+    asyncio.run(drive())
+    assert body.closed
+    [row] = rows(driver, world)
+    assert (row["input_tokens"], row["output_tokens"]) == (5000, 80)
 
 
 def test_a_stream_that_never_finishes_after_the_client_left_is_cut_and_estimated(
