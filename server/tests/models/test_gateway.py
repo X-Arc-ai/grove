@@ -25,7 +25,6 @@ from grove.models.gateway_auth import mint, verify
 from grove.models.http import MAX_WAIT, MODAL_ATTEMPTS
 from grove.store.query import WorldQuery
 from grove.writer.model_calls import set_budget_ceiling
-from tests.runner.helpers import seeded_world
 
 NOW = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)
 DAY = date(2026, 11, 2)
@@ -316,12 +315,6 @@ class Rig:
         return self.client.post(
             "/v1/chat/completions", json=body, headers={"Authorization": f"Bearer {run_token}"}
         )
-
-
-@pytest.fixture
-def world(driver, make_world):
-    """The meter records through the writer, and the writer locks a real World row."""
-    return seeded_world(driver, make_world())
 
 
 @pytest.fixture
