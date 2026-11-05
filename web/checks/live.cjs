@@ -445,7 +445,7 @@ function legendRows(elements){
     assert.equal(t.V.nodes().length,0,label+': no node in memory');assert.equal(t.V.graph()?t.V.graph().graphData().nodes.length:0,0,label+': no node on the map');
     assert.deepStrictEqual(JSON.parse(JSON.stringify(t.pg.sandbox.__mapState())),MAP_EMPTY,label+': the map keeps nothing in memory');
     assert.equal(t.pg.elements['legend-list'].innerHTML,'',label+': the legend is empty');
-    assert.equal(t.pg.elements.stats.innerHTML,'<span>0 nodes</span> <span class="gp-stat-divider">·</span> <span>0 connections</span><span class="stats-baseline"> · First graph check is the baseline</span>',label+': the counts are zero and no earlier graph check stays');
+    assert.equal(t.pg.elements.stats.innerHTML,'<span>0 nodes</span> <span class="gp-stat-divider">·</span> <span>0 connections</span>',label+': the counts are zero and no earlier count stays');
     assert.equal(t.pg.elements['detail-body'].innerHTML,'',label+': the node panel is empty');assert(!t.pg.elements.detail.classList.contains('open'),label+': the node panel is closed');assert.equal(t.pg.elements.detail.getAttribute('aria-hidden'),'true',label+': the node panel is out of reach');
     assert.equal(t.S.getState().currentNodeCount,0,label+': the last payload is gone');assert.equal(t.S.getState().currentEdgeCount,0,label+': the last payload holds no link');
     const E=t.pg.elements;
@@ -682,7 +682,7 @@ function legendRows(elements){
   {
     const w=liveWorld(),t=await sessionPage(w,null,el=>{el['selection-pill'].querySelector=()=>makeElement('button');});
     t.V.showChanges('nodes');await settle();
-    const pill=t.pg.elements['selection-pill'];assert(!pill.hasAttribute('hidden')&&pill.innerHTML.includes('added to your Grove'),'The selection pill is open');
+    const pill=t.pg.elements['selection-pill'];assert(!pill.hasAttribute('hidden')&&/new nodes? since \d{4}-\d{2}-\d{2}/.test(pill.innerHTML),'The selection pill is open');
     goneNow(w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'selection pill open at the 401');
   }
   // 6l. Kind names are store text: the hidden kinds leave the page and local storage with the
