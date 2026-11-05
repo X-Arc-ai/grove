@@ -102,6 +102,11 @@ server {
     }
 
     # Remaining material mutations are deletion confirmation/deletion: 4096 bytes.
+    location = /v1/materials {
+        client_max_body_size 4k;
+        proxy_request_buffering off;
+        proxy_pass http://127.0.0.1:8000;
+    }
     location /v1/materials/ {
         client_max_body_size 4k;
         proxy_request_buffering off;
