@@ -118,6 +118,7 @@ Times are UTC in the form of JavaScript's `toISOString`, `2026-11-02T09:30:00.00
 | `cardinality` | The meaning's cardinality, `many` if absent. |
 | `canonical`, `canonical_of` | Always `false` and `null`. |
 | `valid_at`, `invalid_at` | As for a node, from the link's own clock. |
+| `created_at` | `recorded`. The record time, as for a node: `valid_at` can be years older. |
 | `note` | Always `''`. |
 | `source_field` | Always `store`. |
 
@@ -195,11 +196,26 @@ A year shows only when it is not the current year. `today` and `yesterday` are a
   "nodes": 0,
   "edges": 0,
   "by_type": {"<kind>": 0},
-  "overall": {"state": "healthy"}
+  "overall": {"state": "healthy"},
+  "growth": [{"at": "YYYY-MM-DD", "nodes": 0, "edges": 0}],
+  "additions": {"nodes": 0, "edges": 0, "since": "<instant>"}
 }
 ```
 
-`summary` is `Your Grove is empty` when the world has no item. `edges` counts the active links. The person view of the health checks (D13) belongs to `views-b`.
+Every number comes from stored rows of the caller's world.
+
+- `nodes` and `by_type` count the active items: an item with no `end_class`. A done task stays active; a refuted, retired, superseded, spent or ended one does not. `edges` counts the active links: a link with an `active_key`.
+- `summary` is `Your Grove is empty` when the world has no active item.
+- `growth` holds the cumulative counts at the end of each UTC day, oldest first, for at most the last 30 days on which an active item or an active link was recorded. Each row sits on the day of its `recorded` column, the record time, and not on its world time. The last point equals `nodes` and `edges`. A row older than the first point counts in that point. A row that ended later counts on no day, so a point says how many of today's active rows existed then, and not how many were active then. A world with no dated row answers one point: today, with its totals.
+- `additions` counts the active items and active links with `since < recorded <= now`, and `since` is 24 hours before `now`.
+- `checks.graph` is `ready` when the reads worked. A failed read refuses the whole answer with a 503 `unavailable`, so the answer never holds a guessed number.
+- `checks.sources` is `attention` when a connector of the world has `last_outcome` `failed`, and `ready` otherwise. It does not change `status` or `overall`.
+
+The person view of the health checks (D13) belongs to `views-b`.
+
+### `GET /v1/views/workers` and `GET /v1/views/workers/record`
+
+Neither takes a query parameter. `docs/worker-activity.md` has both shapes: the bounded worker status feed, and the recorded items a person can follow with the freshness of the world.
 
 ### `POST /v1/views/positions`
 

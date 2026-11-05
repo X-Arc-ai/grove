@@ -15,6 +15,7 @@
     schema: '/v1/views/schema',
     health: '/v1/views/health',
     workers: '/v1/views/workers',
+    workerRecord: '/v1/views/workers/record',
     positions: '/v1/views/positions',
     upload: '/v1/sources/upload',
     agentFiles: '/v1/agent-files',
@@ -24,6 +25,9 @@
     approvedConnections: '/v1/views/connections',
     sourceCoverage: '/v1/sources/connectors',
     sourceConnections: '/v1/connectors',
+    pipedreamAccounts: '/v1/views/pipedream/accounts',
+    forgetApprove: '/v1/forget/approve',
+    forget: '/v1/forget',
     materials: '/v1/materials',
     materialFiles: '/v1/materials/files',
     materialNotes: '/v1/materials/notes',
@@ -146,6 +150,15 @@
   function postJSON(path, body) { return request('POST', path, body === undefined ? {} : body).then(watchSession.bind(null, sessionsBegun)); }
   function postAuth(path, body) { return request('POST', path, body === undefined ? {} : body); }
 
+  // A worker read speaks only for the session that sent it: a later answer is stale, and its 401 ends nothing.
+  function workerRead(path) {
+    var sentIn = sessionsBegun;
+    return request('GET', path).then(function (res) {
+      if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
+      return watchSession(sentIn, res);
+    });
+  }
+
   function materialRequest(action, id, body, key, signal) {
     var routes = {list: ['GET', 'materials'], detail: ['GET', 'materialDetail'],
       file: ['POST', 'materialFiles'], note: ['POST', 'materialNotes'], edit: ['PUT', 'materialEdit'],
@@ -240,11 +253,15 @@
     postJSON: postJSON,
     materialRequest: materialRequest,
     uploadExport: uploadExport,
-    workers: function () {
-      var sentIn = sessionsBegun;
-      return request('GET', ENDPOINTS.workers).then(function (res) {
-        if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
-        return watchSession(sentIn, res);
+    workers: function () { return workerRead(ENDPOINTS.workers); },
+    workerRecord: function () { return workerRead(ENDPOINTS.workerRecord); },
+    pendingExports: function () { return getJSON(ENDPOINTS.pendingExports); },
+    // D14's two steps, for one target the person confirmed in this page.
+    forget: function (target) {
+      return postJSON(ENDPOINTS.forgetApprove, { target: target, confirm: true }).then(function (res) {
+        if (!res.ok) return res;
+        if (!res.body || !res.body.approval_token) return { ok: false, status: res.status, body: null };
+        return postJSON(ENDPOINTS.forget, { target: target, approval_token: res.body.approval_token });
       });
     },
     approvedConnections: function () {
@@ -270,6 +287,7 @@
       });
     },
     pendingExports: function () { return getJSON(ENDPOINTS.pendingExports); },
+    disconnectConnection: function (id) { return postJSON(ENDPOINTS.sourceConnections + '/' + encodeURIComponent(id) + '/disconnect', {}); },
     errorText: errorText,
     agentFiles: function () {
       var sentIn = sessionsBegun;

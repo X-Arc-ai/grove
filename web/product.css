@@ -252,3 +252,14 @@ body.gp-logout-open #canvas,body.gp-logout-open #gp-motion { visibility:hidden }
 .gp-pipedream-confirm .gp-small{grid-row:1 / span 2}
 .gp-file-remove{flex:none;width:20px;height:20px;padding:0;border:0;background:none;color:var(--text-muted);font:400 14px/1 var(--gp-font);cursor:pointer}
 .gp-file-remove:hover,.gp-file-remove:focus-visible{color:var(--text)}
+
+/* Refresh: the icon turns while the reads run, and one line reports what they found. */
+#refresh-data.is-refreshing svg { animation:gp-refresh-turn .8s linear infinite }
+@keyframes gp-refresh-turn { to { transform:rotate(360deg) } }
+@media (prefers-reduced-motion: reduce) { #refresh-data.is-refreshing svg { animation:none; opacity:.45 } }
+#gp-refresh-note { position:fixed; top:64px; right:24px; z-index:39; margin:0; padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font:400 11px/1.5 var(--gp-font) }
+#gp-refresh-note[hidden] { display:none }
+#gp-refresh-note[data-state=error] { color:var(--gp-danger) }
+@media (max-width:600px) { #gp-refresh-note { top:calc(var(--grove-toolbar-bottom,130px) + 8px); left:16px; right:16px } }
+
+.gp-agent-list:empty { display:none }

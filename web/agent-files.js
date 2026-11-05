@@ -16,11 +16,13 @@
   }
   function section(kind, empty) {
     var rows = state.items.concat(state.adding).filter(function (item) { return item.kind === kind; });
-    return rows.length ? '<div class="gp-file-added">' + rows.map(row).join('') + '</div>' : '<p class="gp-material-empty">' + empty + '</p>';
+    if (!rows.length) return empty ? '<p class="gp-material-empty">' + empty + '</p>' : '';
+    return '<div class="gp-file-added">' + rows.map(row).join('') + '</div>';
   }
   function paint() {
     document.querySelectorAll('[data-agent-files]').forEach(function (root) {
-      root.innerHTML = root.dataset.agentFiles === 'note' ? section('note', 'An idea, a preference, or something worth knowing') : section('file', 'Bring the things you return to');
+      var quiet = root.hasAttribute('data-agent-quiet');
+      root.innerHTML = root.dataset.agentFiles === 'note' ? section('note', quiet ? '' : 'An idea, a preference, or something worth knowing') : section('file', quiet ? '' : 'Bring the things you return to');
       root.querySelectorAll('[data-agent-remove]').forEach(function (button) {
         button.onclick = function () { remove(button.dataset.agentKind, button.dataset.agentRemove); };
       });
