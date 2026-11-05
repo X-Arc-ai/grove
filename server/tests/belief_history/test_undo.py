@@ -125,7 +125,7 @@ def test_forgotten_belief_value_refuses_undo_atomically(driver, held):
     assert belief_row(driver, w, item_id) == before
 
 
-def test_belief_inverse_survives_rebuild_and_snapshot_restore(driver, held):
+def test_belief_inverse_survives_rebuild_and_snapshot_restore(driver, held, tmp_path):
     w, item_id, _ = held
     change = move(driver, w, item_id, {"state": "established", "state_since": at_minute(3)})
     apply(driver, w, [undo(change)], [])
@@ -138,6 +138,6 @@ def test_belief_inverse_survives_rebuild_and_snapshot_restore(driver, held):
     assert live_fingerprint(driver, w) == fingerprint
     snapshot = take_snapshot(driver, w)
     purge_world_rows(driver, w)
-    restore(driver, w, snapshot, [])
+    restore(driver, w, snapshot, [], ledger_dir=tmp_path)
     assert belief_row(driver, w, item_id) == before
     assert live_fingerprint(driver, w) == fingerprint

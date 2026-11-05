@@ -36,6 +36,12 @@ from tests.writer.test_contract_d3 import entries_of_set, undo
 from tests.writer.test_restore import change_entries, purge_world_rows
 
 
+@pytest.fixture(autouse=True)
+def erasure_ledger(monkeypatch, tmp_path):
+    """check_restore runs a restore, and a restore always reads the world erasures."""
+    monkeypatch.setenv("GROVE_FORGET_LEDGER_DIR", str(tmp_path))
+
+
 def content(row):
     return {
         key: value

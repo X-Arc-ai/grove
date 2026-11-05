@@ -23,6 +23,54 @@ Both POST routes require `Content-Type: application/json` and cap bodies at 16 K
 Responses use `Cache-Control: no-store`. A network failure can leave the outcome unknown;
 the browser does not retry automatically.
 
+## Delete my Grove
+
+`POST /v1/world/delete` removes the signed-in person's whole world and leaves them signed in to a
+new empty one. It acts on the world of the session and takes no world id. The body is exactly
+`{"confirm":"DELETE"}` as `application/json`, at most 1 KiB, and the route accepts no query field.
+The answer sets a new `grove_session` cookie, uses `Cache-Control: no-store`, and reads:
+
+```json
+{"deleted": true, "backups_clear_after": "YYYY-MM-DD", "signed_in": true}
+```
+
+| Status | Code | When | What was removed |
+|---|---|---|---|
+| 400 | `invalid_arguments` | Any other body, content type or a query field | Nothing |
+| 401 | `unauthenticated` | No valid session | Nothing |
+| 403 | `scope_denied` | Any Authorization header, or a demo world | Nothing |
+| 403 | `forbidden_origin` | A foreign `Origin`, or `Sec-Fetch-Site: cross-site` | Nothing |
+| 502 | `unavailable`, retryable | A Pipedream call failed | Nothing of the world |
+| 503 | `unavailable`, not retryable | `GROVE_FORGET_LEDGER_DIR` is unset or unsafe | Nothing |
+| 503 | `unavailable`, retryable | The files or the store failed | Perhaps a part: send it again |
+
+The steps run in this order, and each one can run again, so a retry finishes the job:
+
+1. **Ledger.** An fsynced `started` row goes to the forget ledger, with ids and times only.
+2. **Pipedream.** Every account of this person goes, for any app, with the calls of disconnect,
+   and the list is read again. With no Pipedream settings this step makes no call.
+3. **Files.** `GROVE_AGENT_FILES_DIR/<world id>` goes. A link inside it is unlinked and its target
+   stays. With the variable unset this step is skipped. A root that is set and absent is a 503.
+4. **Store.** The world's lock is held from the first batch to the commit, so no pass writes
+   between two batches. Every node with this `world_id` goes, in batches, also the platform rows
+   `OAuthGrant`, `OAuthToken`, `AuthCode` and `UploadToken`. A `finished` row goes to the ledger.
+   One commit then removes the `:World` row and every `:Session` of the user, so other devices
+   sign out. Until that commit the person's cookie still works for a retry.
+5. **New world.** `ensure_account` makes the empty world and its own item, and a new session
+   starts. The `:User` row, its `EmailCode` rows and the login stay. `:OAuthClient` stays too: it
+   belongs to the host, not to a person (S45). The own item reads the neutral title.
+
+After step 4 a failed step 5 answers 503 and the old cookie reads 401. The next sign-in makes the
+same empty world, so a page that gets a 401 sends the person to sign in. The ledger lock is held
+for all of step 4, as material work takes it before any World lock, so a forget waits for a delete.
+
+The rows sit in the world's own `<sha256 of the world id>.json`, as `target_type: "world"` with
+`state`, `user_id`, `erased_at` and `backups_clear_after`, because the deploy preflight refuses
+any other entry in that folder. The file stays append-only. A `finished` row ends every forget row
+before it: the world they name is gone and the new world has the same id, so `read_ledger` and the
+material checks read only the rows after it. A `started` row ends nothing, because that attempt
+can fail with the world still in place.
+
 ## Exact target shapes
 
 | Target | JSON shape |
@@ -63,3 +111,21 @@ If restore discovers an affected source that the original plan did not know, it 
 unrelated stored messages and blocks future import of that whole source. An affected historical
 Source image without a matching live Source locator refuses safely before erasure or replay.
 The latest external ledger is never rewritten to remove or change an earlier approved intent.
+
+`default_world_id` is deterministic, so a new world has the id of the deleted one, and only the
+ledger tells them apart. `take_snapshot` records `taken_at`. `restore` and `restore_loaded` call
+`replay_world_erasures` for their world before anything else, and refuse with no ledger folder:
+pass `ledger_dir`, or set `GROVE_FORGET_LEDGER_DIR`. If the newest erasure row of a world is later
+than the snapshot, the restored rows of that world, its `:World` row and the user's sessions go,
+nothing is made, and the answer is `{"erased": true, "forgotten": []}`. The person's next sign-in
+makes the new world. A snapshot newer than the row restores as usual. A snapshot with no
+`taken_at` counts as older than every row.
+
+A `started` row with no `finished` row counts as well, as a D14 intent does: the person asked for
+the erasure, so a restore from before the attempt does not bring the world back, even if the
+attempt failed and the person went on using the world. The `finished` row covers a dump taken
+during the delete: it is newer than that dump, so what the dump caught goes.
+
+A dump holds every world, so a physical restore also runs the store-wide step in
+[deploy.md](deploy.md#restore-a-dump). A logical restore names one world, because the rest of the
+store is live and a live world with a newer erasure holds the person's new data.

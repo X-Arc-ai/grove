@@ -317,7 +317,11 @@ class PhysicalScenario:
         with self._driver() as driver:
             for world in (self.world, self.control_world):
                 result = restore_loaded(
-                    driver, world, snapshots[world], latest if world == self.world else []
+                    driver,
+                    world,
+                    snapshots[world],
+                    latest if world == self.world else [],
+                    ledger_dir=self.ledger_dir,
                 )
                 self.results.setdefault("restored_fingerprints", {})[stage + ":" + world] = result[
                     "fingerprint"
@@ -443,7 +447,11 @@ class PhysicalScenario:
             )
             for world in (self.world, self.control_world):
                 restore(
-                    driver, world, self.clean[world], self.ledger if world == self.world else []
+                    driver,
+                    world,
+                    self.clean[world],
+                    self.ledger if world == self.world else [],
+                    ledger_dir=self.ledger_dir,
                 )
 
     def summary(self) -> dict[str, Any]:
