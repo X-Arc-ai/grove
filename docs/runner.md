@@ -165,7 +165,12 @@ A person's file is data, so no file in that folder may act on OpenCode. `grove.i
 | `.opencode` in the working folder or a parent | It runs the folder's plugins as code. No flag stops this. A plain file of that name stops OpenCode when it starts. |
 | `CLAUDE.md`, `AGENTS.md` and `CONTEXT.md` at the top of the working folder, `opencode.json`, `opencode.jsonc` | Nothing, but only `OPENCODE_FLAGS` keeps them out. |
 | `tui.json`, `tui.jsonc` | Nothing: only its terminal interface reads them. |
+| `tsconfig.json` at the top of the working folder | OpenCode is a Bun binary. Bun maps a bare import through `compilerOptions.paths` to a person's file and runs it when OpenCode starts, before any permission. |
+| `jsconfig.json`, `bunfig.toml`, `package.json`, `node_modules`, `bun.lock`, `bun.lockb` | Bun's other startup names. They showed no effect in the tests, and the rule keeps them out. |
+| `HEAD` with `commondir` | The embedded libgit2 reads the repository that `commondir` names, outside the folder. No code ran in the test of this. |
 | Any other hidden name, such as `.claude`, `.agents`, `.git` | The API never makes one, so it is out of place. The temporary file of a running upload (`.upload-*`) is the one exception. |
+
+Only the Learner has the read tool, so only a Learner pass can start in the world's folder. Every other pass starts in its own pass folder. That folder holds no person file, but it is not empty: OpenCode's own folders and logs are there.
 
 The rule has two layers. The API answers 400 for such a file name or note title (the stored note name is the title and `.md`). `pass_folder` does not use a folder that holds such a name at any depth, or a link, and the pass then runs in its own empty folder, without the world's files. That also covers a name from an earlier build. Until that file is gone, the Learner reads none of the world's files. The person can remove a listed name with DELETE. A hidden name is not listed, so an operator removes it. A step that copies a person's material into a world's folder must use the same function.
 

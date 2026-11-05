@@ -208,6 +208,24 @@ check('canUpload holds ChatGPT and Claude, and one entry adds a provider', () =>
   test.evaluate("IMPORT_CODES.chats='whatsapp'");
   assert.equal(test.evaluate("canUpload('chats')"), true);
 });
+check('Older sources with no Request neither fill the ring nor raise a failure', () => {
+  const test = harness();
+  const older = {contract:'import_progress.v1',provider:'claude_ai',state:'partial',sources_total:23,requests_total:3,queued_count:3,processing_count:0,retry_wait_count:0,extracted_count:0,held_nothing_count:0,held_count:20,failed_count:0,graph:{items_created:0,items_changed:0,links_created:0,links_changed:0}};
+  const moving = test.evaluate('parsedImportProgress(' + JSON.stringify(older) + ",'claude')");
+  assert.equal(moving.held_count, 0);
+  assert.equal(moving.state, 'processing');
+  assert.equal(test.evaluate('importShare(' + JSON.stringify(moving) + ')'), 0);
+  assert.equal(test.evaluate('progressFailure(' + JSON.stringify(moving) + ')'), '');
+  const idle = Object.assign({}, older, {state:'held',sources_total:20,requests_total:0,queued_count:0});
+  const quiet = test.evaluate('parsedImportProgress(' + JSON.stringify(idle) + ",'claude')");
+  assert.equal(quiet.state, 'idle');
+  assert.equal(test.evaluate('progressFailure(' + JSON.stringify(quiet) + ')'), '');
+  const real = Object.assign({}, older, {state:'partial',requests_total:4,queued_count:0,extracted_count:3,held_count:21});
+  const stuck = test.evaluate('parsedImportProgress(' + JSON.stringify(real) + ",'claude')");
+  assert.equal(stuck.held_count, 1);
+  assert.equal(stuck.state, 'partial');
+  assert.match(test.evaluate('progressFailure(' + JSON.stringify(stuck) + ')'), /1 part held/);
+});
 check('WhatsApp says plainly that it is off, and stops before any export steps', () => {
   const source = require('fs').readFileSync(require('path').join(__dirname, '..', 'product.js'), 'utf8');
   assert.match(source, /whatsappOff=live&&id==='chats'/);
@@ -250,9 +268,10 @@ check('Page load on moving work tells the pacer, and idle work does not', async 
   test.responses.claude = Promise.resolve({ ok: true, body: progressBody('claude_ai', { state: 'retry_wait', sources_total: 1, requests_total: 1, retry_wait_count: 1 }) });
   await test.refresh();
   assert.deepEqual(test.calls.observed, [true]);
+  assert.equal(test.calls.timers.at(-1), 4000);
   const idle = harness(); await idle.refresh();
   assert.deepEqual(idle.calls.observed, [false]);
-  assert.equal(idle.calls.timers.at(-1), 15000);
+  assert.equal(idle.calls.timers.length, 0, 'An idle page reads no more');
 });
 check('An old account progress response cannot enter current state', async () => {
   const test = harness(); let resolve;

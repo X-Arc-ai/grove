@@ -217,3 +217,7 @@ class InvalidRecord(ValueError):
         super().__init__(f"{code} ({rule}): {message}")
         self.code = code
         self.rule = rule
+
+
+class LedgerUnavailable(RuntimeError):
+    """No private and durable ledger is available; the caller must not erase anything."""

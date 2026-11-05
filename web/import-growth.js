@@ -106,7 +106,8 @@
       reveal(target, atOnce() ? count : nextVisibleCount(done, done + count) - done);
       reload();
     }
-    if (!target.settled && !target.fetching && Date.now() - target.fetchedAt >= REFRESH_MS) refresh(target);
+    // The server stays the truth until the last tick: a removal must leave the view at once.
+    if (!target.fetching && Date.now() - target.fetchedAt >= REFRESH_MS) refresh(target);
     if (target.settled && !target.fetching && !target.waiting.length) { finish(); return; }
     target.timer = window.setTimeout(function () { tick(target); }, TICK_MS);
   }

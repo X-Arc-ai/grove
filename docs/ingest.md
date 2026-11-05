@@ -207,7 +207,7 @@ same World and refuse invalid rules, rather than silently fall back to this base
 New Claude and ChatGPT input uses whole-message parts of at most 32768 UTF-8 bytes and 64
 messages after screening. A single oversized message remains intact and held. Unknown times
 or speakers remain held; the upload time never replaces a missing message time. More than
-512 new parts refuses the upload before any Source write. Logical episode ranges remain independent
+4096 new parts refuses the upload before any Source write. Logical episode ranges remain independent
 of these storage parts. Existing historical sources are not backfilled.
 
 Each nonempty part has one deterministic `import:<source_id>` Request. Source, screening receipt,

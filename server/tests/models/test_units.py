@@ -293,7 +293,7 @@ def test_settings_defaults_with_an_empty_env():
         meta_key=None,
         glimmer_base_url=None,
         glimmer_key=None,
-        daily_budget=5.0,
+        daily_budget=10.0,
         gateway_secret=None,
         gateway_host="127.0.0.1",
         gateway_port=18300,
@@ -302,13 +302,13 @@ def test_settings_defaults_with_an_empty_env():
     assert (DEFAULT_GATEWAY_HOST, DEFAULT_GATEWAY_PORT, DEFAULT_DAILY_BUDGET) == (
         "127.0.0.1",
         18300,
-        5.0,
+        10.0,
     )
 
 
 @pytest.mark.parametrize(
     ("value", "budget"),
-    [("unlimited", None), ("2.5", 2.5), ("0", 0.0), ("12", 12.0), ("", 5.0)],
+    [("unlimited", None), ("2.5", 2.5), ("0", 0.0), ("12", 12.0), ("", 10.0)],
 )
 def test_settings_daily_budget(value, budget):
     assert load_model_settings({"GROVE_DAILY_BUDGET_USD": value}).daily_budget == budget

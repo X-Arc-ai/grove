@@ -19,7 +19,7 @@ from grove.store.enums import ENUMS
 DEFAULT_META_BASE_URL = "https://api.meta.ai/v1"
 DEFAULT_GATEWAY_HOST = "127.0.0.1"
 DEFAULT_GATEWAY_PORT = 18300
-DEFAULT_DAILY_BUDGET = 5.0
+DEFAULT_DAILY_BUDGET = 10.0
 UNLIMITED = "unlimited"
 # Meta counts reasoning tokens against the output limit, and a one-word answer used up to 340 of
 # them in our probes, so no call may ask for fewer than this.

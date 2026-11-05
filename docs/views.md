@@ -152,6 +152,8 @@ The page asks this once at load, and only a 401 ends its local sign-in. After an
 
 `embedded` equals `total_nodes`. `edge_verbs` is the sorted set of verbs in the edge list. `time.min` is the first `valid_at` day of the nodes and edges, and `time.max` the last `valid_at` or `invalid_at` day. `self_item_id` is set only when the own item is in the node list.
 
+`selection` says whether the read holds the whole world. Past 6,000 items or 20,000 links, `scope` is `bounded graph sample`, `truncated` is `true`, and the read keeps the newest rows, because ids sort by time.
+
 ### `GET /v1/views/node/{id}[?as_of=T&known_as_of=T]`
 
 ```json

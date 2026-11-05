@@ -38,7 +38,7 @@ from grove.store.query import WorldQuery
 from grove.store.scope import check_world_id
 from grove.writer import BatchDeclined, apply_batch, apply_request, finish_request
 from grove.writer import runs as run_rows
-from grove.writer.forget_ledger import LedgerUnavailable
+from grove.writer.errors import LedgerUnavailable
 from grove.writer.receipts import Receipt, render_receipt
 from grove.writer.requests import check_request_id
 
