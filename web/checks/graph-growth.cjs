@@ -1,7 +1,7 @@
 // Growth (ruling R4): a later read adds to the map in small steps and moves nothing that is drawn.
 // The first read of a session is the map itself, so it draws at once.
 const assert=require('assert');
-const {signedIn,settle,drawn,item,link}=require('./lib/graph-sandbox.cjs');
+const {signedIn,settle,drawn,item,link,forceRuns}=require('./lib/graph-sandbox.cjs');
 
 const READ='2026-11-04T12:00:00Z';
 function world(leaves){
@@ -53,6 +53,31 @@ function grow(data,count,tag){
   const calm=await signedIn(calmData,{},{reducedMotion:true});
   grow(calmData,40,'c');await calm.box.reloadGrove();await settle();
   for(const n of calm.box.GroveView.nodes())assert(!(n.__born>calm.clock.now),'Reduced motion shows new nodes at once');
+
+  // A large arrival on a small map stays fast: the page must not freeze before the paced arrival.
+  const bigData=world(1);
+  const big=await signedIn(bigData,{});
+  for(let h=0;h<12;h++)grow(bigData,125,'b'+h+'-');
+  bigData.nodes.slice(4).forEach((row,i)=>{if(i%3===0)bigData.edges.push(link('cross'+i,row.data.id,bigData.nodes[4+(i*7)%(bigData.nodes.length-4)].data.id));});
+  const placed=Date.now();
+  await big.box.reloadGrove();await settle();
+  const spent=Date.now()-placed;
+  assert.equal(big.box.GroveView.nodes().length,bigData.nodes.length,'All nodes of a large arrival join the map');
+  assert(spent<30000,'A read of 1,500 new nodes takes '+spent+' ms');
+  const spots=big.box.GroveView.nodes().map(n=>n.x+','+n.y);
+  assert.equal(new Set(spots).size,spots.length,'No two nodes of a large arrival share a spot');
+
+  // A large map skips the forces. A small account in the same tab gets them back.
+  const tick=g=>['charge','collide','link','hubX','hubY'].forEach(name=>g.d3Force(name)(.5));
+  const before2=forceRuns.count;tick(big.box.GroveView.graph());
+  assert.equal(forceRuns.count,before2,'A map above 1,500 nodes runs no structural force');
+  const smallData=world(20);
+  big.box.GroveView.clear();
+  Object.assign(bigData,smallData);
+  await big.box.reloadGrove();await settle();
+  assert.equal(big.box.GroveView.nodes().length,22,'The small account reads its own map');
+  const before3=forceRuns.count;tick(big.box.GroveView.graph());
+  assert.equal(forceRuns.count,before3+5,'A small map in the same tab runs the forces again');
 
   // A new session on the same page draws its first read at once.
   box.GroveView.clear();

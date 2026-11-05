@@ -195,6 +195,51 @@ def assert_no_text_in_nodes(page, label):
     print(f"  {label}: {len(ZOOMS)} zooms, the owner name is the only text", flush=True)
 
 
+def assert_paced_growth(browser, base, shots):
+    """R4 in a real page: 300 new nodes arrive in small steps, and nothing drawn moves."""
+    data = brain(400)
+    context, page, errors = open_map(browser, base, data, 1440, "light")
+    # __home is the place the map holds a node at: the gentle drift moves x and y around it.
+    home = page.evaluate("Object.fromEntries(GroveView.nodes().map(n => [n.id, n.__home]))")
+    hubs = [row["data"]["id"] for row in data["elements"]["nodes"][:6]]
+    grown = json.loads(json.dumps(data))
+    for index in range(300):
+        node = dict(grown["elements"]["nodes"][50]["data"], id=f"g{index:04d}", label="Added")
+        grown["elements"]["nodes"].append({"data": node})
+        link = dict(
+            grown["elements"]["edges"][0]["data"],
+            id=f"ge{index:04d}",
+            source=node["id"],
+            target=hubs[index % len(hubs)],
+        )
+        grown["elements"]["edges"].append({"data": link})
+    use_graph(page, base, grown)
+    page.click("#refresh-data")
+    arrived = "GroveView.nodes().filter(n => !(n.__born > performance.now())).length"
+    for _ in range(40):
+        if page.evaluate("GroveView.nodes().length") > len(home):
+            break
+        page.wait_for_timeout(250)
+    counts = []
+    for moment in (1, 5, 15):
+        page.wait_for_timeout(1000 if moment == 1 else (moment - counts[-1][0]) * 1000)
+        counts.append((moment, page.evaluate(arrived)))
+        page.screenshot(path=str(shots / f"growth-{moment:02d}s.png"))
+    total = page.evaluate("GroveView.nodes().length")
+    print(f"  growth: {counts} of {total}", flush=True)
+    steps = [count for _, count in counts]
+    assert steps[0] < steps[1] < steps[2] < total, "nodes arrive in small steps"
+    moved = page.evaluate(
+        """home => GroveView.nodes().filter(n => home[n.id] &&
+            (n.__home[0] !== home[n.id][0] || n.__home[1] !== home[n.id][1])).length""",
+        home,
+    )
+    assert moved == 0, f"{moved} drawn nodes moved"
+    assert not errors, errors[:3]
+    context.close()
+    print("PASS growth: small steps, nothing drawn moved", flush=True)
+
+
 def main(shots):
     from playwright.sync_api import sync_playwright
 
@@ -222,6 +267,8 @@ def main(shots):
                         assert not errors, (label, errors[:3])
                         print(f"PASS {label}: {stats}", flush=True)
                         context.close()
+
+            assert_paced_growth(browser, base, shots)
 
             # +X: on the first read, after a later read, after a reload, and its click.
             data = brain(5000, new_share=0.03)

@@ -338,8 +338,8 @@ class Chain:
         )
         links = self.query.read(
             "MATCH (a:Item)-[l:LINK]->(b:Item) WHERE l.id IN $ids "
-            "RETURN l.id AS id, a.title AS from_title, l.meaning AS meaning, b.title AS to_title "
-            "ORDER BY l.id",
+            "RETURN l.id AS id, a.title AS from_title, l.meaning AS meaning, b.title AS to_title, "
+            "l.active_key IS NOT NULL AS active, l.end_class AS end_class ORDER BY l.id",
             ids=link_ids,
         )
         evidence = self.query.read(
@@ -600,7 +600,9 @@ def _walk(chain: Chain, loop, evidence, world, decoy, home) -> None:
     nodes = {node["data"]["id"] for node in graph["elements"]["nodes"]}
     edges = {edge["data"]["id"] for edge in graph["elements"]["edges"]}
     assert {item["id"] for item in written["items"]} <= nodes
-    assert {link["id"] for link in written["links"]} <= edges
+    # A meaning with one target keeps the later link, and the writer ends the earlier one.
+    assert {link["id"] for link in written["links"] if link["active"]} <= edges
+    assert all(link["end_class"] == "superseded" for link in written["links"] if not link["active"])
     evidence.save("e-nodes", [chain.node(item["id"]) for item in written["items"]])
     sources = {row["source_id"] for row in import_requests}
     cited = {row["target_id"] for row in written["evidence"] if row["source_id"] in sources}

@@ -81,15 +81,18 @@ def _projection(variable: str, fields: tuple[str, ...]) -> str:
 
 
 _ITEMS = (
-    "MATCH (i:Item) RETURN " + _projection("i", _ITEM_FIELDS) + " ORDER BY i.id LIMIT $item_cap"
+    "MATCH (i:Item) RETURN "
+    + _projection("i", _ITEM_FIELDS)
+    + " ORDER BY i.id DESC LIMIT $item_cap"
 )
 _ITEM = "MATCH (i:Item {id: $id}) RETURN i"
 _ITEM_ID = "MATCH (i:Item {id: $id}) RETURN i.id AS id"
 _ANOTHER_ITEM = "MATCH (i:Item) WHERE i.id <> $own RETURN i.id AS id LIMIT 1"
 _LINK_MATCH = "MATCH (a:Item)-[l:LINK]->(b:Item) "
 _LINKS_RETURN = "RETURN " + _projection("l", _LINK_FIELDS)
-# Without as_of only active links show, so the ended ones stay in the store.
-_LINK_BOUND = " ORDER BY l.id LIMIT $link_cap"
+# Without as_of only active links show, so the ended ones stay in the store. Ids sort by time, so
+# DESC keeps the newest rows when a world passes a cap: new work must reach the map and its +X.
+_LINK_BOUND = " ORDER BY l.id DESC LIMIT $link_cap"
 _ENDPOINTS = "l.from_item IN $item_ids AND l.to_item IN $item_ids "
 _ACTIVE_LINKS = (
     _LINK_MATCH + "WHERE l.active_key IS NOT NULL AND " + _ENDPOINTS + _LINKS_RETURN + _LINK_BOUND

@@ -22,6 +22,7 @@ from typing import Any
 
 from grove.store.errors import ScopeError
 from grove.store.scope import check_world_id
+from grove.writer.errors import LedgerUnavailable
 
 FORMAT = "grove.forget-ledger.v1"
 ENV = "GROVE_FORGET_LEDGER_DIR"
@@ -29,10 +30,6 @@ WORLD_TARGET = "world"
 ERASURE_STARTED = "started"
 ERASURE_FINISHED = "finished"
 _FILE_NAME = re.compile(r"[0-9a-f]{64}\.json")
-
-
-class LedgerUnavailable(RuntimeError):
-    """No private and durable ledger is available; the caller must not erase anything."""
 
 
 def _json(value: Any) -> str:

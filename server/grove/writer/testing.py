@@ -112,6 +112,40 @@ def advance_version(driver: Driver, world_id: str, entity: str, entity_id: str) 
         raise ValueError("no planted entity in this test world")
 
 
+def set_import_part_state(
+    driver: Driver,
+    world_id: str,
+    request_id: str,
+    source_id: str,
+    *,
+    status: str | None = None,
+    code: str | None = None,
+    retry_at: datetime | None = None,
+    forget_state: str | None = None,
+) -> None:
+    """Leave one import part of a t_ world in a state that a real path ends in."""
+    refuse_real_world(world_id)
+    with driver.session(database=DATABASE) as session:
+        if forget_state is not None:
+            session.run(
+                "CYPHER 25 MATCH (s:Source {world_id: $world, id: $id}) "
+                "SET s.forget_state = $state, s.content = '[]'",
+                world=world_id,
+                id=source_id,
+                state=forget_state,
+            ).consume()
+        if status is not None:
+            session.run(
+                "CYPHER 25 MATCH (r:Request {world_id: $world, id: $id}) "
+                "SET r.status = $status, r.last_error_code = $code, r.retry_at = $retry_at",
+                world=world_id,
+                id=request_id,
+                status=status,
+                code=code,
+                retry_at=retry_at,
+            ).consume()
+
+
 _SESSION_LIFETIME = timedelta(hours=1)
 # The :World row of a test world: made on first use, its owner set on every call. The id is the
 # key of the uniqueness constraint, so two calls for one world find one row.

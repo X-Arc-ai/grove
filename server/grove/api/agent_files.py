@@ -68,7 +68,7 @@ def clean_name(raw: str, room: int = 0) -> str:
     name = "".join(char for char in raw if char.isprintable())
     name = unicodedata.normalize("NFC", name).replace("\\", "/").rsplit("/", 1)[-1]
     name = name.lstrip(". ").rstrip(" ")
-    if not name or name == NOTES:
+    if not name:
         raise invalid_arguments("The file needs a name.", "name")
     while len(name.encode("utf-8")) > MAX_NAME_BYTES - room:
         stem, dot, suffix = name.rpartition(".")
@@ -78,7 +78,7 @@ def clean_name(raw: str, room: int = 0) -> str:
 
 def _allowed(name: str) -> str:
     """The name, unless OpenCode would act on a file of that name in the world's folder."""
-    if is_instruction_name(name):
+    if name == NOTES or is_instruction_name(name):
         raise invalid_arguments("This name is kept for the agent. Choose another name.", "name")
     return name
 

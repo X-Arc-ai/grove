@@ -15,7 +15,7 @@
  * - A new node goes to its seed position re-anchored on its primary hub's position; with no
  *   placed hub, at the centre of its placed neighbours; with neither, at its seed position
  *   moved by the mean offset between the seed frame and the stored frame. From there it takes
- *   the nearest spot where its disc overlaps no placed disc (radius + radius apart).
+ *   a near spot where its disc overlaps no placed disc (radius + radius apart).
  * Hubs and nodes without a hub are placed before the leaves that anchor on them.
  *
  * Used by native-app.js in live mode (window.GroveLayoutKeep) and by web/checks (require).
@@ -23,24 +23,33 @@
 (function (root) {
   'use strict';
 
+  var LARGE_ARRIVAL = 300;   // above this many new nodes, speed comes before the nearest spot
+
   function has(map, id) { return Object.prototype.hasOwnProperty.call(map, id) && !!map[id]; }
   function finite(p) { return !!p && typeof p.x === 'number' && typeof p.y === 'number' && isFinite(p.x) && isFinite(p.y); }
 
-  // A uniform grid of placed discs, so a spot check reads only the nearby cells.
+  // A uniform grid of placed discs, so a spot check reads only the nearby cells. A disc sits in each
+  // cell its box touches, so that one wide disc does not force wide cells on all the small ones.
   function Discs(cell) {
     this.cell = cell;
-    this.cells = {};
+    this.cells = new Map();
   }
-  Discs.prototype.key = function (cx, cy) { return cx + ',' + cy; };
+  Discs.prototype.key = function (cx, cy) { return cx * 4194301 + cy; };
   Discs.prototype.add = function (x, y, r) {
-    var k = this.key(Math.floor(x / this.cell), Math.floor(y / this.cell));
-    (this.cells[k] || (this.cells[k] = [])).push({ x: x, y: y, r: r });
+    var disc = { x: x, y: y, r: r }, c = this.cell;
+    for (var i = Math.floor((x - r) / c); i <= Math.floor((x + r) / c); i++) {
+      for (var j = Math.floor((y - r) / c); j <= Math.floor((y + r) / c); j++) {
+        var k = this.key(i, j), list = this.cells.get(k);
+        if (list) list.push(disc); else this.cells.set(k, [disc]);
+      }
+    }
   };
+  // Two overlapping discs share a point, and so a cell of both boxes: this box scan misses none.
   Discs.prototype.free = function (x, y, r) {
-    var cx = Math.floor(x / this.cell), cy = Math.floor(y / this.cell);
-    for (var i = cx - 1; i <= cx + 1; i++) {
-      for (var j = cy - 1; j <= cy + 1; j++) {
-        var list = this.cells[this.key(i, j)];
+    var c = this.cell;
+    for (var i = Math.floor((x - r) / c); i <= Math.floor((x + r) / c); i++) {
+      for (var j = Math.floor((y - r) / c); j <= Math.floor((y + r) / c); j++) {
+        var list = this.cells.get(this.key(i, j));
         if (!list) continue;
         for (var n = 0; n < list.length; n++) {
           var d = list[n];
@@ -51,16 +60,21 @@
     return true;
   };
 
-  // The nearest free spot: the target itself, else the first free point on rings of growing
-  // radius around it (each ring a little wider than the last, points evenly spaced on it).
-  function freeSpot(discs, target, r) {
+  // A near free spot: the target itself, else the first free point on a spiral around it, at about
+  // two points for each disc width. A large arrival passes `reached`: placed discs never leave, so a
+  // search in the same area resumes near the point where the last one stopped. That costs a node
+  // a little distance from its target, and it keeps the page from freezing.
+  function freeSpot(discs, target, r, reached) {
     if (discs.free(target.x, target.y, r)) return { x: target.x, y: target.y };
-    var step = Math.max(1, r / 2);
-    for (var ring = 1; ring <= 20000; ring++) {
-      var R = ring * step, count = Math.max(8, Math.ceil(2 * Math.PI * R / step));
-      for (var i = 0; i < count; i++) {
-        var a = 2 * Math.PI * i / count, x = target.x + R * Math.cos(a), y = target.y + R * Math.sin(a);
-        if (discs.free(x, y, r)) return { x: x, y: y };
+    var step = Math.max(1, r * 0.5), wide = step * 12;
+    var area = reached ? discs.key(Math.floor(target.x / wide), Math.floor(target.y / wide)) : 0;
+    var first = reached ? Math.max(1, Math.floor((reached.get(area) || 0) * 0.85)) : 1;
+    for (var k = first; k <= 2000000; k++) {
+      var reach = step * Math.sqrt(k), angle = k * 2.399963229728653;
+      var x = target.x + reach * Math.cos(angle), y = target.y + reach * Math.sin(angle);
+      if (discs.free(x, y, r)) {
+        if (reached) reached.set(area, k);
+        return { x: x, y: y };
       }
     }
     return { x: target.x, y: target.y };
@@ -78,11 +92,10 @@
       byId[n.id] = n;
       ids.push(n.id);
     });
-    var room = {}, maxRoom = 1;
+    var room = {};
     ids.forEach(function (id) {
       var r = Number(roomOf(byId[id]));
       room[id] = isFinite(r) && r > 0 ? r : 0;
-      if (room[id] > maxRoom) maxRoom = room[id];
     });
 
     var out = {}, placed = [];
@@ -129,7 +142,8 @@
       (near[b] || (near[b] = [])).push(a);
     });
 
-    var discs = new Discs(2 * maxRoom);
+    var rooms = ids.map(function (id) { return room[id]; }).sort(function (a, b) { return a - b; });
+    var discs = new Discs(Math.max(8, 2 * (rooms[rooms.length >> 1] || 1)));
     kept.forEach(function (id) { discs.add(out[id].x, out[id].y, room[id]); });
 
     // Hubs (anything a node names as its primary hub) first, then nodes without a hub, then leaves.
@@ -140,6 +154,7 @@
     function group(id) { return anchor[id] ? 0 : byId[id]._primaryHubId == null ? 1 : 2; }
     var fresh = ids.filter(function (id) { return !out[id]; });
     fresh.sort(function (a, b) { return group(a) - group(b) || order[a] - order[b]; });
+    var reached = fresh.length > LARGE_ARRIVAL ? new Map() : null;
 
     fresh.forEach(function (id) {
       var s = finite(seed[id]) ? seed[id] : null, hub = byId[id]._primaryHubId, target = null;
@@ -157,7 +172,7 @@
           target = { x: cx, y: cy };
         }
       }
-      var spot = freeSpot(discs, target, room[id]);
+      var spot = freeSpot(discs, target, room[id], reached);
       out[id] = spot;
       discs.add(spot.x, spot.y, room[id]);
       placed.push(id);
@@ -170,7 +185,8 @@
   // fixture-specific name affects it, and the same graph gives the same map in any input order.
   var GOLDEN = 2.399963229728653;
   var SPIRAL = 10.5;      // the step of a lobe's spiral: neighbouring dots sit about 20 apart
-  var LOBE_GAP = 5;       // the space two lobes keep: their edges meet, as in a real brain
+  var LOBE_GAP = 5;       // the space two lobes of one clump keep: their edges meet
+  var CLUMP_GAP = 26;     // the open space between clumps, which the hairline edges cross
   var OWNER_ROOM = 92;    // the clear disc the owner node and its name take at the centre
   var MIN_LOBE = 6;       // a smaller group joins a neighbouring lobe
   var CHUNK = 24;         // the spiral slots that share out by direction, in one pass
@@ -305,7 +321,7 @@
 
   // Lobes pack as touching discs: linked lobes pull together, none overlaps, and the mass takes
   // the shape of the screen (aspect is its width over its height).
-  function packLobes(lobes, bridges, aspect, owner) {
+  function packLobes(lobes, bridges, aspect, owner, gap) {
     var wide = Math.max(0.5, Math.min(1.7, aspect || 1.45)), used = owner ? OWNER_ROOM * OWNER_ROOM : 0;
     var ordered = lobes.slice().sort(function (a, b) { return b.r - a.r || compareIds(a.id, b.id); });
     ordered.forEach(function (lobe, index) {
@@ -319,11 +335,11 @@
       for (var a = 0; a < count; a++) {
         var one = ordered[a];
         if (owner) {
-          var od = Math.max(1, Math.hypot(one.x, one.y)), oroom = OWNER_ROOM + one.r + LOBE_GAP;
+          var od = Math.max(1, Math.hypot(one.x, one.y)), oroom = OWNER_ROOM + one.r + gap;
           if (od < oroom) { one.dx += one.x / od * (oroom - od) * strength * 2; one.dy += one.y / od * (oroom - od) * strength * 2; }
         }
         for (var b = a + 1; b < count; b++) {
-          var two = ordered[b], x = two.x - one.x, y = two.y - one.y, d = Math.max(1, Math.hypot(x, y)), room = one.r + two.r + LOBE_GAP;
+          var two = ordered[b], x = two.x - one.x, y = two.y - one.y, d = Math.max(1, Math.hypot(x, y)), room = one.r + two.r + gap;
           if (d >= room) continue;
           var push = (room - d) * strength;
           one.dx -= x / d * push; one.dy -= y / d * push;
@@ -335,7 +351,7 @@
       ordered.forEach(function (lobe) { lobe.dx = -lobe.x * 0.012 / wide; lobe.dy = -lobe.y * 0.012 * wide; });
       apart(0.35);
       bridges.forEach(function (edge) {
-        var x = edge.b.x - edge.a.x, y = edge.b.y - edge.a.y, d = Math.max(1, Math.hypot(x, y)), target = edge.a.r + edge.b.r + LOBE_GAP;
+        var x = edge.b.x - edge.a.x, y = edge.b.y - edge.a.y, d = Math.max(1, Math.hypot(x, y)), target = edge.a.r + edge.b.r + gap;
         var pull = (d - target) * Math.min(0.012, 0.0025 * Math.sqrt(edge.w));
         edge.a.dx += x / d * pull; edge.a.dy += y / d * pull;
         edge.b.dx -= x / d * pull; edge.b.dy -= y / d * pull;
@@ -369,6 +385,84 @@
       ordered.forEach(function (lobe) { lobe.dx = 0; lobe.dy = 0; });
       apart(0.5);
       ordered.forEach(function (lobe) { lobe.x += lobe.dx; lobe.y += lobe.dy; });
+    }
+  }
+
+  // Lobes gather into a few clumps of uneven size: the most linked pairs join first, and no clump
+  // takes more than a quarter of the map. Linked lobes touch inside a clump, and open space lies
+  // between clumps, as in a real brain of thousands of nodes.
+  function gatherClumps(lobes, bridges, total) {
+    var wanted = Math.max(1, Math.min(14, Math.round(Math.sqrt(total) / 5.5))), most = Math.max(total / 4, 120);
+    var into = new Map(), size = new Map();
+    lobes.forEach(function (lobe) { size.set(lobe, lobe.members.length); });
+    function root(lobe) { while (into.has(lobe)) lobe = into.get(lobe); return lobe; }
+    var strongest = bridges.slice().sort(function (a, b) {
+      var one = a.w / Math.sqrt(a.a.members.length * a.b.members.length), two = b.w / Math.sqrt(b.a.members.length * b.b.members.length);
+      return two - one || compareIds(a.a.id + a.b.id, b.a.id + b.b.id);
+    });
+    var left = lobes.length;
+    strongest.forEach(function (edge) {
+      if (left <= wanted) return;
+      var a = root(edge.a), b = root(edge.b);
+      if (a === b || size.get(a) + size.get(b) > most) return;
+      into.set(b, a);
+      size.set(a, size.get(a) + size.get(b));
+      left--;
+    });
+    var byRoot = new Map();
+    lobes.forEach(function (lobe) {
+      var r = root(lobe);
+      if (!byRoot.has(r)) byRoot.set(r, { id: r.id, lobes: [], x: 0, y: 0, dx: 0, dy: 0, r: 0 });
+      byRoot.get(r).lobes.push(lobe);
+    });
+    return Array.from(byRoot.values()).sort(function (a, b) { return compareIds(a.id, b.id); });
+  }
+
+  // Each clump packs its own lobes, then the clumps pack as wide discs around the owner.
+  function packClumps(lobes, bridges, total, aspect, owner) {
+    var clumps = gatherClumps(lobes, bridges, total), clumpOf = new Map();
+    clumps.forEach(function (clump) {
+      clump.lobes.forEach(function (lobe) { clumpOf.set(lobe, clump); });
+      var inside = bridges.filter(function (edge) { return clumpOf.get(edge.a) === clump && clumpOf.get(edge.b) === clump; });
+      packLobes(clump.lobes, inside, 1, false, LOBE_GAP);
+      var cx = 0, cy = 0, mass = 0;
+      clump.lobes.forEach(function (lobe) { cx += lobe.x * lobe.r; cy += lobe.y * lobe.r; mass += lobe.r; });
+      cx /= mass; cy /= mass;
+      var area = 0;
+      clump.lobes.forEach(function (lobe) { lobe.x -= cx; lobe.y -= cy; area += lobe.r * lobe.r; });
+      clump.r = Math.sqrt(area) * 1.12;   // by area, not reach: a long clump leaves room beside it
+    });
+    var joined = new Map();
+    bridges.forEach(function (edge) {
+      var a = clumpOf.get(edge.a), b = clumpOf.get(edge.b);
+      if (a === b) return;
+      var key = a.id < b.id ? a.id + '\0' + b.id : b.id + '\0' + a.id;
+      if (!joined.has(key)) joined.set(key, { a: a, b: b, w: 0 });
+      joined.get(key).w += edge.w;
+    });
+    var between = Array.from(joined.keys()).sort().map(function (key) { return joined.get(key); });
+    packLobes(clumps, between, aspect, owner, CLUMP_GAP);
+    clumps.forEach(function (clump) {
+      clump.lobes.forEach(function (lobe) { lobe.x += clump.x; lobe.y += clump.y; });
+    });
+    // Clumps packed by area can touch at their ends: the lobes themselves settle apart.
+    var count = lobes.length, rounds = Math.min(40, Math.max(4, Math.floor(800000 / Math.max(1, count * count))));
+    for (var round = 0; round < rounds; round++) {
+      for (var a = 0; a < count; a++) {
+        for (var b = a + 1; b < count; b++) {
+          var one = lobes[a], two = lobes[b], x = two.x - one.x, y = two.y - one.y, d = Math.max(1, Math.hypot(x, y));
+          var push = (one.r + two.r + LOBE_GAP - d) * 0.5;
+          if (push <= 0) continue;
+          one.x -= x / d * push; one.y -= y / d * push;
+          two.x += x / d * push; two.y += y / d * push;
+        }
+      }
+      if (owner) {
+        lobes.forEach(function (lobe) {
+          var d = Math.max(1, Math.hypot(lobe.x, lobe.y)), room = OWNER_ROOM + lobe.r + LOBE_GAP;
+          if (d < room) { lobe.x += lobe.x / d * (room - d); lobe.y += lobe.y / d * (room - d); }
+        });
+      }
     }
   }
 
@@ -449,7 +543,7 @@
     lobes.forEach(function (lobe) {
       lobe.members.forEach(function (id, rank) {
         var n = byId[id], degree = near[id].length, semantic = ['company', 'project', 'organisation', 'plan'].indexOf(n.type) !== -1;
-        var r = semantic ? Math.min(30, 9 + Math.sqrt(degree) * 1.7)
+        var r = semantic ? Math.min(46, 7 + Math.sqrt(degree) * 1.25)
           : ['person', 'instance', 'place'].indexOf(n.type) !== -1 ? 10
           : ['event', 'observation'].indexOf(n.type) !== -1 ? 5 : 6;
         if (rank === 0 && degree >= 20) r = Math.max(r, Math.min(18, 6 + Math.sqrt(degree)));
@@ -470,7 +564,7 @@
       });
     });
     var bridges = Object.keys(joined).sort().map(function (key) { return joined[key]; });
-    packLobes(lobes, bridges, aspect, owner);
+    packClumps(lobes, bridges, content.length, aspect, owner);
     lobes.forEach(function (lobe) {
       var x = 0, y = 0;
       bridges.forEach(function (edge) {

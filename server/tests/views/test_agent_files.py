@@ -93,6 +93,12 @@ def test_an_empty_or_reserved_name_is_refused(client, raw):
     assert response.status_code == 400
 
 
+def test_a_note_titled_notes_is_a_plain_note(client, tmp_path):
+    """Only a file of that name would meet the notes folder. The note is stored as notes.md."""
+    assert add_note(client, "notes").status_code == 200
+    assert on_disk(tmp_path) == ["notes/notes.md"]
+
+
 def test_a_long_name_keeps_its_suffix():
     name = agent_files.clean_name("a" * 400 + ".pdf")
     assert name.endswith(".pdf") and len(name.encode()) <= agent_files.MAX_NAME_BYTES
@@ -162,6 +168,8 @@ def test_no_configured_folder_answers_unavailable(client, monkeypatch):
         "bunfig.toml",
         "package.json",
         "node_modules",
+        "HEAD",
+        "commondir",
         "bun.lock",
         "bun.lockb",
         "AGENTS.md ",
