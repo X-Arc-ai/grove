@@ -431,6 +431,17 @@ INSTRUCTION_NAMES = [
     "opencode.jsonc",
     "tui.json",
     "tui.jsonc",
+    "tsconfig.json",
+    "jsconfig.json",
+    "bunfig.toml",
+    "package.json",
+    "node_modules",
+    "bun.lock",
+    "bun.lockb",
+    ".env.local",
+    ".env.production",
+    ".bunfig.toml",
+    ".npmrc",
     ".opencode",
     ".claude",
     ".agents",
@@ -452,7 +463,16 @@ def _world(tmp_path: Path) -> tuple[LoopSettings, dict, Path, Path]:
     )
     folder = tmp_path / "worlds" / "world-one"
     (folder / "notes").mkdir(parents=True)
-    return settings, {"world_id": "world-one"}, tmp_path / "passes" / "run", folder
+    grant = {"world_id": "world-one", "agent": "learner"}
+    return settings, grant, tmp_path / "passes" / "run", folder
+
+
+@pytest.mark.parametrize("agent", ["connector", "curator", "grove", ""])
+def test_a_pass_with_no_read_tool_runs_in_the_folder_with_no_person_file(tmp_path, agent):
+    settings, grant, work, folder = _world(tmp_path)
+    (folder / "plan.txt").write_text("added file text", encoding="utf-8")
+    assert pass_folder(settings, {**grant, "agent": agent}, work) == work
+    assert pass_folder(settings, grant, work) == folder
 
 
 @pytest.mark.parametrize("name", INSTRUCTION_NAMES)

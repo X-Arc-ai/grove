@@ -14,6 +14,10 @@ What OpenCode 1.18.32 does under the runner's flags (tests/runner/test_opencode.
 - CLAUDE.md, the same two names at the top of the working folder, opencode.json and opencode.jsonc:
   only loop.OPENCODE_FLAGS keeps them out, so one changed flag would let them in.
 - tui.json and tui.jsonc: config of its terminal interface, which `opencode run` does not read.
+- tsconfig.json in the working folder: OpenCode is a Bun binary, and Bun maps a bare import through
+  compilerOptions.paths to a person's file and runs it when OpenCode starts, before any permission.
+  jsconfig.json is the same setting. bunfig.toml, package.json, node_modules and the bun lock files
+  are Bun's other startup names. Bun's .env files and .bunfig.toml fall under the hidden name rule.
 
 The API never makes a hidden name, so any other one is out of place too: .claude, .agents, .git.
 The one exception is the temporary file of an upload that is running.
@@ -25,10 +29,17 @@ TEMP_PREFIX = ".upload-"
 NAMES = frozenset(
     {
         "agents.md",
+        "bun.lock",
+        "bun.lockb",
+        "bunfig.toml",
         "claude.md",
         "context.md",
+        "jsconfig.json",
+        "node_modules",
         "opencode.json",
         "opencode.jsonc",
+        "package.json",
+        "tsconfig.json",
         "tui.json",
         "tui.jsonc",
     }
