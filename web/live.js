@@ -15,6 +15,7 @@
     schema: '/v1/views/schema',
     health: '/v1/views/health',
     workers: '/v1/views/workers',
+    workerRecord: '/v1/views/workers/record',
     positions: '/v1/views/positions',
     upload: '/v1/sources/upload',
     agentFiles: '/v1/agent-files',
@@ -144,6 +145,15 @@
   function postJSON(path, body) { return request('POST', path, body === undefined ? {} : body).then(watchSession.bind(null, sessionsBegun)); }
   function postAuth(path, body) { return request('POST', path, body === undefined ? {} : body); }
 
+  // A worker read speaks only for the session that sent it: a later answer is stale, and its 401 ends nothing.
+  function workerRead(path) {
+    var sentIn = sessionsBegun;
+    return request('GET', path).then(function (res) {
+      if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
+      return watchSession(sentIn, res);
+    });
+  }
+
   function materialRequest(action, id, body, key, signal) {
     var routes = {list: ['GET', 'materials'], detail: ['GET', 'materialDetail'],
       file: ['POST', 'materialFiles'], note: ['POST', 'materialNotes'], edit: ['PUT', 'materialEdit'],
@@ -238,13 +248,8 @@
     postJSON: postJSON,
     materialRequest: materialRequest,
     uploadExport: uploadExport,
-    workers: function () {
-      var sentIn = sessionsBegun;
-      return request('GET', ENDPOINTS.workers).then(function (res) {
-        if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
-        return watchSession(sentIn, res);
-      });
-    },
+    workers: function () { return workerRead(ENDPOINTS.workers); },
+    workerRecord: function () { return workerRead(ENDPOINTS.workerRecord); },
     pendingExports: function () { return getJSON(ENDPOINTS.pendingExports); },
     errorText: errorText,
     agentFiles: function () { return getJSON(ENDPOINTS.agentFiles); },

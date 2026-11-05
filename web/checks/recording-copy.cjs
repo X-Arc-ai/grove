@@ -213,13 +213,15 @@ check('Accepted upload retains exact counts and its actual graph outcome', () =>
   assert(html.includes('Import accepted')); assert(html.includes('Messages read: 8')); assert(html.includes('Messages kept: 6'));
   assert(html.includes('Your graph has not changed from this upload.'));
 });
-check('Worker rows retain actual recorded activity and disabled Follow', async () => {
+check('Worker rows retain actual recorded activity and keep Follow disabled with no record', async () => {
   const h = harness(); h.load('agents.js'); h.live.workers = async () => ({ ok: true, body: workerPayload() });
+  h.live.workerRecord = async () => ({ ok: false, status: 503, body: null });
   await h.box.GroveCare.refresh();
   const panel = h.document.body.children.find(node => node.id === 'grove-worker-panel');
   clean(panel.innerHTML); assert.equal((panel.innerHTML.match(/data-worker="/g) || []).length, 3);
   assert.equal((panel.innerHTML.match(/<button[^>]*disabled[^>]*>Follow<\/button>/g) || []).length, 3);
   assert(panel.innerHTML.includes('Run recorded as active')); assert(panel.innerHTML.includes('Learner · Failed'));
+  assert.equal((panel.innerHTML.match(/Recorded work could not be read\./g) || []).length, 3);
   assert(!panel.innerHTML.includes('hood-live-capability')); assert(!panel.innerHTML.includes('hood-live-policy'));
   assert.equal(h.box.GroveCare.summary().running, false); assert.equal(h.box.__hood.turns().length, 0);
   assert.equal(h.box.GroveCare.summary().workers.learner, 'Run recorded as active');

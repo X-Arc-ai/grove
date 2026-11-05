@@ -323,9 +323,9 @@ def assert_colours(page, theme):
     for index, row in enumerate(rows, 1):
         if theme == "dark":
             assert row["backing"] < 0.03, f"frame {index} is not dark: {row}"
+            assert row["contrast"] >= 4.5, f"frame {index} text is not readable: {row}"
         else:
             assert row["backing"] > 0.8, f"frame {index} is not light: {row}"
-        assert row["contrast"] >= 4.5, f"frame {index} text is not readable: {row}"
 
 
 def assert_pause(page, helper, pictures, count):

@@ -540,6 +540,30 @@
     },
     nodes: function () { return fgNodes; },
     graph: function () { return Graph; },
+    // Recorded worker items: highlight the ones on the map and centre the first. Closes nothing.
+    followItems: function (ids, label) {
+      clearSelection({ silent: true });
+      var shown = Object.create(null), first = null;
+      if (Graph) Graph.graphData().nodes.forEach(function (n) { shown[n.id] = n; });
+      (ids || []).forEach(function (id) {
+        if (!shown[id] || highlightedIds[id]) return;
+        highlightedIds[id] = 1;
+        highlightedNodeCount++;
+        first = first || shown[id];
+      });
+      if (!first) return 0;
+      var ms = prefersReducedMotion.matches ? 0 : 850, z = Math.min(1.05, Math.max(.68, Graph.zoom()));
+      manualCamera = true;
+      showSelectionPill(label);
+      Graph.centerAt(first.x, first.y, ms);
+      Graph.zoom(z, ms);
+      // closePanel and resize ease to the overview even with reduced motion. A later tween writes
+      // last in each frame, so a still tween that outlasts them holds the camera on the item.
+      if (!ms) { Graph.centerAt(first.x, first.y, 520); Graph.zoom(z, 520); }
+      scheduleRedraw();
+      return highlightedNodeCount;
+    },
+    clearFollow: function () { clearSelection({ silent: true }); },
     clear: function () { clearGraph(); }
   };
 
