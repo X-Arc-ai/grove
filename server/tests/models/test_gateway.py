@@ -342,6 +342,11 @@ def make_rig(driver, frozen_clock):
 # Where the gateway listens, and what it needs to start.
 
 
+def test_a_world_gets_ten_dollars_a_day_unless_the_host_says_otherwise():
+    assert load_model_settings({}).daily_budget == 10.0
+    assert load_model_settings({"GROVE_DAILY_BUDGET_USD": "3"}).daily_budget == 3.0
+
+
 def test_gateway_host_defaults_to_loopback():
     assert ModelSettings().gateway_host == "127.0.0.1"
     loaded = load_model_settings({})

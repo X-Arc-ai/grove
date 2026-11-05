@@ -103,6 +103,24 @@ check('An accepted upload plays new real nodes over the baseline, and edges wait
   assert(t.ids().length > before, 'Each tick reveals more');
 });
 
+check('A removal leaves the view while the last nodes still play out', async () => {
+  const t = world(); await t.signIn();
+  t.growth().accept(); await settle();
+  t.server.nodes.push(...many(240));
+  for (let i = 0; i < 5; i++) await t.tick();
+  t.growth().observe(false);
+  for (let i = 0; i < 5; i++) await t.tick();
+  assert(t.growth().active(), 'The work has ended, and nodes still wait');
+  const shown = t.ids().length;
+  assert(shown > 1, 'Some nodes show: ' + shown);
+  t.server.nodes = [node('me')]; t.server.edges = [];
+  await t.c.reloadGrove(); await settle();
+  for (let i = 0; i < 6 && t.growth().active(); i++) await t.tick();
+  await settle();
+  assert.equal(t.growth().active(), false, 'The pacer ends once nothing waits');
+  assert.deepEqual(t.ids(), ['grove-self'], 'No removed node stays');
+});
+
 check('Reads of the server graph stay at least 5 seconds apart while work moves', async () => {
   const t = world(); await t.signIn();
   const start = t.graphReads().length;
