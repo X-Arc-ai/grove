@@ -9,12 +9,15 @@ from grove.screening import Message, ScreenedSource, Screener
 IMPORT_PROVIDERS = frozenset({"chatgpt", "claude_ai"})
 MAX_PART_BYTES = 32_768
 MAX_PART_MESSAGES = 64
-MAX_IMPORT_PARTS = 512
+MAX_IMPORT_PARTS = 4096
 
 
 class ImportLimit(NotAnExport):
     def __init__(self) -> None:
-        super().__init__("the export exceeds 512 new source parts; upload a smaller export")
+        super().__init__(
+            f"This export is too large for one upload. Grove takes at most {MAX_IMPORT_PARTS} "
+            "new parts, and it stored nothing from this file."
+        )
 
 
 def screen_import_parts(

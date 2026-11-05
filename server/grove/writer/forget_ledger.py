@@ -16,13 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from grove.store.scope import check_world_id
+from grove.writer.errors import LedgerUnavailable
 
 FORMAT = "grove.forget-ledger.v1"
 ENV = "GROVE_FORGET_LEDGER_DIR"
-
-
-class LedgerUnavailable(RuntimeError):
-    """No private and durable ledger is available; the caller must not erase anything."""
 
 
 def _json(value: Any) -> str:

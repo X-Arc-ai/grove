@@ -50,14 +50,18 @@ const ids=rows=>rows.map(r=>r.id).sort();
   const {box,elements,clock}=await signedIn(world(),{});
   clock.now+=2000;   // past the entrance of the first draw
   const graph=box.GroveView.graph(),draw=graph.nodeCanvasObject(),map=box.GroveView.nodes(),byId=Object.fromEntries(map.map(n=>[n.id,n]));
-  const restR=drawn(draw,byId['new-a'],1).disc.r;
+  const restR=drawn(draw,byId['new-a'],1).disc.r,hubRest=drawn(draw,byId.hub,1).disc.r;
   graph.zoom(.3);box.GroveView.showChanges('nodes');await settle();
   assert(elements['selection-pill'].innerHTML.includes('3 new nodes since 2026-11-03'),'The chip names the count and the date: '+elements['selection-pill'].innerHTML);
-  assert(drawn(draw,byId['new-a'],1).disc.r>=22&&drawn(draw,byId['new-a'],1).disc.r>restR,'A new node draws large');
+  assert(drawn(draw,byId['new-a'],1).disc.r>=14&&drawn(draw,byId['new-a'],1).disc.r>restR,'A new node draws large');
   assert(drawn(draw,byId.old,1).alpha<=.41,'An old node fades');
   box.GroveView.showChanges('edges');await settle();
   assert(elements['selection-pill'].innerHTML.includes('3 new connections since 2026-11-03'),'The chip counts connections');
-  assert(drawn(draw,byId.hub,1).disc.r>=22,'A new connection highlights its ends');
+  const hubEnd=drawn(draw,byId.hub,1).disc.r;
+  assert(hubEnd>hubRest&&hubEnd<=hubRest*1.3,'The end of a new connection stays near its own size: '+hubEnd);
+  assert(drawn(draw,byId.old,1).alpha<=.1,'In the connection view the rest fades, neighbours too');
+  const paintLink=graph.linkColor();
+  assert.notEqual(paintLink({source:byId.old,target:byId.hub,verb:'relates to'}),paintLink({source:byId['new-a'],target:byId.hub,verb:'relates to'}),'A new connection reads apart from an old one on the same hub');
 
   // New rows across a large map: the camera keeps the whole map in view, as the target does.
   const wide={selfId:'self',generatedAt:READ,nodes:[item('self','person','Mira Vale',OLD)],edges:[]};
@@ -67,8 +71,9 @@ const ids=rows=>rows.map(r=>r.id).sort();
     if(h)wide.edges.push(link('bridge'+h,'hub'+h,'hub'+(h-1),OLD));
   }
   const far=await signedIn(wide,{});
-  far.box.GroveView.graph().zoom(.3);far.box.GroveView.showChanges('nodes');await settle();
+  const fit=far.box.GroveView.graph().zoom();
+  far.box.GroveView.showChanges('nodes');await settle();
   assert.equal(far.box.GroveSimulation.getState().nodeDelta,200,'Every tenth item is new');
-  assert(far.box.GroveView.graph().zoom()<.7,'A wide selection does not crop the map: zoom '+far.box.GroveView.graph().zoom());
+  assert.equal(far.box.GroveView.graph().zoom(),fit,'A wide selection keeps the map at its own scale');
   console.log('graph changes: +X from real record times, kept over a read and a reload, nothing with no time, the click highlights those rows');
 })().catch(e=>{console.error(e);process.exitCode=1;});

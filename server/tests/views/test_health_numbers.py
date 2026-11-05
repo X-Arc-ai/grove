@@ -10,6 +10,7 @@ import pytest
 from grove import clock
 from grove.store.errors import STORE_UNAVAILABLE
 from grove.store.query import WorldQuery
+from grove.views.graph import _growth
 from grove.writer.testing import plant_link, plant_node
 from tests.views.conftest import plant_keyed_link
 
@@ -42,7 +43,7 @@ def plant_item(driver, world, kind, title, recorded, **props):
     return row["id"]
 
 
-def plant_connector(driver, world, provider, outcome):
+def plant_connector(driver, world, provider, outcome, **columns):
     return plant_node(
         driver,
         world,
@@ -51,6 +52,7 @@ def plant_connector(driver, world, provider, outcome):
         provider=provider,
         instance_key=provider,
         last_outcome=outcome,
+        **columns,
     )
 
 
@@ -61,7 +63,7 @@ def health(client):
 
 
 def plant_three_days(driver, world):
-    """Five active items and three active links, on 10, 19 and 20 October, plus ended rows."""
+    """Six items, one refuted, three active links, on 10, 19 and 20 October, and an ended link."""
     task, place = plant_kind(driver, world), plant_kind(driver, world, "place")
     meaning = plant_meaning(driver, world)
     # The world time is a year older than the record time: only the record time places a row.
@@ -97,14 +99,14 @@ def test_growth_additions_and_totals_from_stored_rows(driver, make_world, client
 
     payload = health(client_for(world))
 
-    assert (payload["nodes"], payload["edges"]) == (5, 3)
-    assert payload["by_type"] == {"task": 4, "place": 1}
+    assert (payload["nodes"], payload["edges"]) == (6, 3)
+    assert payload["by_type"] == {"task": 5, "place": 1}
     assert payload["growth"] == [
         {"at": "2026-10-10", "nodes": 2, "edges": 1},
-        {"at": "2026-10-19", "nodes": 4, "edges": 2},
-        {"at": "2026-10-20", "nodes": 5, "edges": 3},
+        {"at": "2026-10-19", "nodes": 5, "edges": 2},
+        {"at": "2026-10-20", "nodes": 6, "edges": 3},
     ]
-    assert payload["additions"] == {"nodes": 2, "edges": 1, "since": SINCE_TEXT}
+    assert payload["additions"] == {"nodes": 3, "edges": 1, "since": SINCE_TEXT}
 
 
 def test_another_world_does_not_leak(driver, make_world, client_for):
@@ -129,13 +131,13 @@ def test_another_world_does_not_leak(driver, make_world, client_for):
 
     payload = health(client_for(world))
 
-    assert (payload["nodes"], payload["edges"]) == (5, 3)
+    assert (payload["nodes"], payload["edges"]) == (6, 3)
     assert [point["at"] for point in payload["growth"]] == [
         "2026-10-10",
         "2026-10-19",
         "2026-10-20",
     ]
-    assert payload["additions"] == {"nodes": 2, "edges": 1, "since": SINCE_TEXT}
+    assert payload["additions"] == {"nodes": 3, "edges": 1, "since": SINCE_TEXT}
     assert payload["checks"] == {"graph": "ready", "sources": "ready"}
 
     theirs = health(client_for(other))
@@ -154,15 +156,28 @@ def test_an_empty_world_answers_one_point_with_its_totals(make_world, client_for
     assert payload["additions"] == {"nodes": 0, "edges": 0, "since": SINCE_TEXT}
 
 
-def test_only_ended_rows_count_as_no_change(driver, make_world, client_for):
+def test_health_counts_what_the_map_draws(driver, make_world, client_for):
+    """The toolbar shows the graph's count, so a refuted item counts in Health too."""
     world = make_world()
     kind = plant_kind(driver, world)
     plant_item(driver, world, kind, "Ruled out berth", OCT_10, end_class="refuted")
+    client = client_for(world)
 
-    payload = health(client_for(world))
+    payload = health(client)
 
-    assert (payload["nodes"], payload["by_type"]) == (0, {})
-    assert payload["growth"] == [{"at": "2026-10-20", "nodes": 0, "edges": 0}]
+    assert (payload["nodes"], payload["by_type"]) == (1, {"task": 1})
+    assert payload["growth"] == [{"at": "2026-10-10", "nodes": 1, "edges": 0}]
+    assert client.get("/v1/views/graph").json()["stats"]["total_nodes"] == payload["nodes"]
+
+
+def test_a_write_between_the_two_reads_never_gives_a_negative_point():
+    day = date(2026, 10, 10)
+    rows = [{"field": "nodes", "day": day, "added": 3, "fresh": 3}]
+    rows += [{"field": "nodes", "day": date(2026, 10, 9), "added": 1, "fresh": 0}]
+
+    points = _growth(rows, 1, 0, datetime(2026, 10, 20, tzinfo=UTC))
+
+    assert [point["nodes"] for point in points] == [0, 1]
 
 
 def test_a_row_with_no_record_time_stays_in_the_totals(driver, make_world, client_for):
@@ -276,6 +291,12 @@ def test_sources_are_ready_with_no_failed_connector(driver, make_world, client_f
     world = make_world()
     plant_connector(driver, world, "chatgpt", outcome)
     assert health(client_for(world))["checks"] == {"graph": "ready", "sources": "ready"}
+
+
+def test_a_disconnected_source_asks_for_nothing(driver, make_world, client_for):
+    world = make_world()
+    plant_connector(driver, world, "chatgpt", "failed", connection_status="disconnected")
+    assert health(client_for(world))["checks"]["sources"] == "ready"
 
 
 def test_one_failed_connector_asks_for_attention(driver, make_world, client_for):
