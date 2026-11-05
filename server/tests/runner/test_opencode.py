@@ -470,6 +470,10 @@ export default async () => ({});
 """
 
 
+TSCONFIG = '{"compilerOptions": {"paths": {"*": ["./a.ts"]}}}'
+STARTUP_CODE = 'require("fs").writeFileSync(process.cwd() + "/startup-code-ran", "x");\n'
+
+
 def _read(path: Path) -> dict[str, Any]:
     return {"tool": "read", "args": {"filePath": str(path)}}
 
@@ -523,6 +527,31 @@ def test_a_world_folder_that_holds_a_plugin_is_not_used(rig):
     run = rig.run([], in_world=True)
     assert run.cwd == rig.cwd
     assert not (rig.world / "plugin-ran").exists() and "plugin-ran" not in run.files
+
+
+def _plant_startup_code(folder: Path) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "tsconfig.json").write_text(TSCONFIG, encoding="utf-8")
+    (folder / "a.ts").write_text(STARTUP_CODE, encoding="utf-8")
+
+
+def test_a_tsconfig_in_the_working_folder_runs_code_when_opencode_starts(rig):
+    """Why tsconfig.json is in the rule: this is Bun, before any permission of OpenCode."""
+    _plant_startup_code(rig.cwd)
+    assert "startup-code-ran" in rig.run([]).files
+
+
+def test_a_world_folder_that_holds_a_tsconfig_is_not_used(rig):
+    _plant_startup_code(rig.world)
+    run = rig.run([], in_world=True)
+    assert run.cwd == rig.cwd
+    assert not (rig.world / "startup-code-ran").exists() and "startup-code-ran" not in run.files
+
+
+def test_a_pass_with_no_read_tool_never_starts_in_the_world_folder(rig):
+    _a_world(rig.world)
+    run = rig.run([], agent="grove", in_world=True)
+    assert run.cwd == rig.cwd
 
 
 def test_a_world_folder_with_only_plain_files_is_the_working_folder(rig, model):
