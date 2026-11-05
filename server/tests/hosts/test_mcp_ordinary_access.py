@@ -325,7 +325,7 @@ def test_a_revoked_or_expired_token_reads_nothing(driver, hosts_plant, web):
 
 
 def test_a_saved_store_comes_back_through_recall_with_its_cited_words(driver, hosts_plant, web):
-    """Real queue, real runner pass and real writer rows, with a set proposal in place of a model."""
+    """Real queue, runner pass and writer rows, with a set proposal in place of a model."""
     person = hosts_plant.person()
     token = issue(driver, person, hosts_plant.client())
     words = "The Quillon key hangs in the north shed."
