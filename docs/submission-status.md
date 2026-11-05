@@ -1,6 +1,6 @@
 # Submission status
 
-Documentation release snapshot: 2026-11-04 at 20:06:46 UTC. Repository: **PRIVATE**.
+Documentation release snapshot: 2026-11-04 at 20:06:46 UTC.
 This package records accepted source and dated release evidence. It does not report a new
 host check, complete product acceptance, or external submission. At this snapshot, the manual
 account/Muse flow was stopped and real prepared-account Muse use was **NOT RUN**. The
@@ -11,6 +11,14 @@ account/Muse flow was stopped and real prepared-account Muse use was **NOT RUN**
 After the snapshot above, the team confirmed on 2026-11-04 that Muse ran against the prepared
 account and answered from Grove. This repository holds no receipt for that run. The dated records
 below stay as written, and each one states what was true at its own time.
+
+## Deployed build update, 2026-11-05
+
+At 2026-11-05 00:37 UTC, `main` and the served build became `494921e5d8bc161202254f61a90c106dc869bba3`.
+`develop` holds the same files at `8e8d347376c8dc71528e3eee615e14494665f407`; the two ids differ
+because `main` is a copy of `develop` with cleaned commit messages. This deploy followed a CI waiver,
+so `Validate` is not a pass for that build. The records below stay as written, and each one states
+what was true at its own time.
 
 ## Source and deployed revisions
 
@@ -59,7 +67,6 @@ At that time, the manual account/Muse flow was stopped and real prepared-account
 Materials and their deployment prerequisites are merged but not deployed. Operation A inventory
 returned **HOLD** with no mutation. Riverlight source is uncommitted and unverified, and it was
 not seeded. The complete 40-story corpus and full product/public acceptance remain open.
-The repository remains private; no public submission is authorized.
 
 ## Preserved Request18 failure
 
@@ -174,13 +181,11 @@ findings. Later repairs do not erase those failures. The original provenance fai
 ## Next release action
 
 Root owns CI observations and merge. Request19 closure and its separate verification are recorded above.
-The release owner must sequence any future materials release and complete the [operator checklist](submission-checklist.md).
-Keep the repository private. Do not resume the paused owner flow or submit externally without authority.
+The release owner must sequence any future materials release.
 
 CI and independent review are **WAIVED as source-publication gates**, not passed.
 This package runs focused document controls only. New browser, Muse, account, provider,
 model, database, and host checks are **NOT RUN**. Final release-candidate name/secret scans,
 video, official rule review, and final submission links remain required preparation.
 
-The [write-up](drafts/submission-writeup.txt) and [X post](drafts/x-post.txt) are unsent drafts.
 No complete forgetting, measured recall accuracy, full runtime acceptance, or final submission is claimed.
