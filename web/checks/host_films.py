@@ -17,7 +17,6 @@ import hashlib
 import subprocess
 import sys
 import threading
-import time
 from http.server import ThreadingHTTPServer
 from itertools import pairwise
 from pathlib import Path
@@ -186,16 +185,21 @@ def picture(page, helper):
     return grid(helper, page.locator(FILM).screenshot())
 
 
+def page_seconds(page):
+    """The page clock, so that this check reads no clock of its own."""
+    return page.evaluate("performance.now()") / 1000
+
+
 def watch(page, helper, seconds):
     """Sample the picture and the reader together. Both reads bracket the shot."""
     rows = []
-    stop = time.monotonic() + seconds
-    while time.monotonic() < stop:
+    stop = page_seconds(page) + seconds
+    while page_seconds(page) < stop:
         before = reader_index(page)
         shot = page.locator(FILM).screenshot()
         rows.append(
             {
-                "at": time.monotonic(),
+                "at": page_seconds(page),
                 "before": before,
                 "after": reader_index(page),
                 "picture": grid(helper, shot),
@@ -343,9 +347,9 @@ def assert_pause(page, helper, pictures, count):
     start = grid(helper, held)
     toggle.click()
     assert toggle.get_attribute("aria-label") == "Pause guide"
-    stop = time.monotonic() + FRAME_SECONDS + 1
+    stop = page_seconds(page) + FRAME_SECONDS + 1
     changed = None
-    while time.monotonic() < stop and changed is None:
+    while page_seconds(page) < stop and changed is None:
         page.wait_for_timeout(100)
         current = picture(page, helper)
         if not same(start, current):

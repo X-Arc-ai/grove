@@ -255,6 +255,9 @@ def follow_part(walk, shots):
 
     walk.at("A wheel gesture ends following")
     page.wait_for_timeout(700)
+    # On a phone the press above can land on a node, and its panel covers the worker panel.
+    page.evaluate("GroveView.close()")
+    page.wait_for_timeout(300)
     walk.follow()
     page.mouse.move(*walk.free_point())
     page.mouse.wheel(0, 40)
@@ -281,9 +284,8 @@ def follow_part(walk, shots):
     page.wait_for_timeout(900)
     before = page.evaluate(CAMERA)
     calls = len(page.evaluate("__followCalls"))
-    page.evaluate(
-        "document.querySelectorAll('[data-worker-follow]').forEach(button => button.click())"
-    )
+    for button in page.locator("[data-worker-follow]").all():
+        button.dispatch_event("click")
     page.wait_for_timeout(900)
     after = page.evaluate(CAMERA)
     assert max(abs(a - b) for a, b in zip(before, after)) < 1, (before, after)
