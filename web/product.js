@@ -292,7 +292,7 @@
     var selected=live?liveUpload(id):{file:ui.uploadFile};
     var primary=upload?'<button class="gp-primary" data-action="upload-export"'+(!canUpload(id)||!selected.file||selected.pending?' disabled':'')+'>'+(selected.pending?'Upload in progress':'Upload '+(id==='notes'?'file':'export'))+'</button>':id==='muse'?'<button class="gp-primary" data-import="muse">Connect Muse</button>':'<button class="gp-primary" data-action="export-requested"'+(live&&ui.reminderRequest?' disabled':'')+'>'+(id==='chats'?'I have my export':'I’ve requested it')+'</button>';
     var devices=id==='chats'&&!upload?'<div class="gp-device-choice" aria-label="WhatsApp device">'+[['iphone','iPhone'],['android','Android']].map(function(d){return '<button data-guide-device="'+d[0]+'" aria-pressed="'+(ui.guideDevice===d[0])+'">'+d[1]+'</button>';}).join('')+'</div>':'';
-    var controls=frames.length>1?'<div class="gp-film-tools"><button class="gp-text" data-action="film-toggle" aria-label="Pause guide">Ⅱ</button></div>':'';
+    var controls=frames.length>1?filmTools():'';
     var content=header+devices+film+readableGuide(frames)+picker+controls+'<footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">'+(upload?(id==='notes'||id==='chats'?'Later':'When the email arrives'):'Back')+'</button>'+primary+'</footer>';
     if(api.getState().onboardingComplete){content=content.replace(header,'<p class="gp-guide-purpose">'+(upload?'Upload your export to bring your context into Grove':'Follow the steps to export your history')+help+'</p>');return settingsFrame('<div class="gp-nested-guide '+(upload?'gp-upload-guide':'')+'">'+content+'</div>','sources',sourceTrail(id,upload));}
     return shell(content,'gp-guide gp-visual-guide'+(upload?' gp-upload-guide':''),false);
@@ -310,9 +310,12 @@
   // real, unscaled text and follow the same elapsed-time clock as its active frame.
   var guideTextTimer=null;
   function readableGuide(frames){
-    if(!frames.length||!frames.every(function(f){return f.title&&f.detail;}))return '';
-    return '<div class="gp-guide-reader" data-guide-reader aria-label="Current guide instruction">'+frames.map(function(f,i){return '<section data-guide-step="'+i+'"'+(i?' hidden':'')+'><small>Step '+(i+1)+' of '+frames.length+'</small><h2>'+esc(f.title)+'</h2><p>'+esc(f.detail)+'</p></section>';}).join('')+'</div>';
+    var stepped=reduceMotion.matches&&frames.length>1;
+    if(!frames.length||!frames.every(function(f){return f.title&&f.detail||stepped&&f.label;}))return '';
+    return '<div class="gp-guide-reader" data-guide-reader aria-label="Current guide instruction">'+frames.map(function(f,i){return '<section data-guide-step="'+i+'"'+(i?' hidden':'')+'><small>Step '+(i+1)+' of '+frames.length+'</small><h2>'+esc(f.title||f.label)+'</h2>'+(f.detail?'<p>'+esc(f.detail)+'</p>':'')+'</section>';}).join('')+'</div>';
   }
+  // Reduced motion keeps every film still, so the control steps the frames by hand.
+  function filmTools(){var stepped=reduceMotion.matches;return '<div class="gp-film-tools"><button class="gp-text" data-action="film-toggle" aria-label="'+(stepped?'Next guide step':'Pause guide')+'">'+(stepped?'Next step':'Ⅱ')+'</button></div>';}
   function syncGuideText(){
     var frame=root.querySelector('.gp-app-frame iframe'),reader=root.querySelector('[data-guide-reader]');
     if(!frame||!reader){clearInterval(guideTextTimer);guideTextTimer=null;return;}
@@ -320,7 +323,7 @@
     var seconds=Number((frame.dataset.base.match(/data-frame-seconds="([\d.]+)"/)||[])[1])||3;
     var elapsed=Number(frame.dataset.elapsed)||0;
     if(frame.dataset.paused!=='true')elapsed+=(performance.now()-Number(frame.dataset.started))/1000;
-    var active=reduceMotion.matches?0:Math.floor(elapsed/seconds)%sections.length;
+    var active=reduceMotion.matches?(Number(frame.dataset.step)||0)%sections.length:Math.floor(elapsed/seconds)%sections.length;
     sections.forEach(function(section,i){section.hidden=i!==active;});
   }
   function fitGuide(){
@@ -442,11 +445,15 @@
       return '<div><div class="gp-health-source-label"><strong>'+rows.length+'</strong><span>'+g[1]+'</span></div><div class="gp-health-source-marks">'+(marks||'<small>None yet</small>')+(rows.length>5&&g[0]!=='files'?'<small>+'+(rows.length-5)+'</small>':'')+'</div></div>';
     }).join('')+'</div>';
   }
+  function liveFreshness(record){
+    var percent=record&&Number.isInteger(record.percent)&&record.percent>=0&&record.percent<=100?record.percent:null;
+    return '<strong data-live-freshness>'+(percent===null?'Not recorded':percent+'%')+'</strong>'+(percent===null?'':'<div class="gp-freshness-track"><i style="width:'+percent+'%"></i></div>')+(record&&record.text?'<small style="width:100%">'+esc(record.text)+'</small>':'');
+  }
   function health(){
     var s=api.getState(),care=careSummary();
     if(live){
       var data=liveData.health;
-      return shell('<header class="gp-popup-top"><h1 id="gp-title" tabindex="-1">Your Grove health</h1>'+close()+'</header><div class="gp-health-scroll"><section class="gp-health-overview"><div class="gp-health-counts">'+[['nodes','Nodes'],['edges','Connections']].map(function(row){return '<div class="gp-health-metric"><div><span class="gp-metric-label">'+row[1]+'</span><strong data-live-count="'+row[0]+'">'+(data?data[row[0]].toLocaleString():'—')+'</strong>'+((row[0]==='nodes'?s.nodeDelta:s.edgeDelta)?'<button class="gp-health-growth" data-growth-kind="'+row[0]+'">+'+(row[0]==='nodes'?s.nodeDelta:s.edgeDelta)+'</button>':'')+'</div><div class="gp-growth-chart"><small>Changes since previous graph check</small></div></div>';}).join('')+'</div></section><section class="gp-health-section"><h2><button class="gp-section-link" data-action="watch-care">Your Grove workers '+exploreArrow()+'</button></h2><div class="gp-health-workers">'+[['learner','Learner'],['curator','Curator'],['connector','Connector']].map(function(w){return '<div>'+workerMark(w[0])+'<span><strong>'+w[1]+'</strong><small>'+esc(care.workers&&care.workers[w[0]]||'No activity loaded')+'</small></span></div>';}).join('')+'</div><div class="gp-health-freshness"><span>Freshness</span><strong>—</strong></div></section><section class="gp-health-section"><h2><button class="gp-section-link" data-action="manage-sources">Your sources '+exploreArrow()+'</button></h2>'+healthSources(s)+'</section><p class="gp-health-observed" role="status">'+(liveData.pending?'Check in progress':data?'Last checked '+esc(liveData.checkedAt||'now'):'Health information could not be read. Try again.')+'</p><button class="gp-text" data-action="refresh-live-data">Check health</button></div>','gp-health-dialog',true);
+      return shell('<header class="gp-popup-top"><h1 id="gp-title" tabindex="-1">Your Grove health</h1>'+close()+'</header><div class="gp-health-scroll"><section class="gp-health-overview"><div class="gp-health-counts">'+[['nodes','Nodes'],['edges','Connections']].map(function(row){return '<div class="gp-health-metric"><div><span class="gp-metric-label">'+row[1]+'</span><strong data-live-count="'+row[0]+'">'+(data?data[row[0]].toLocaleString():'—')+'</strong>'+((row[0]==='nodes'?s.nodeDelta:s.edgeDelta)?'<button class="gp-health-growth" data-growth-kind="'+row[0]+'">+'+(row[0]==='nodes'?s.nodeDelta:s.edgeDelta)+'</button>':'')+'</div><div class="gp-growth-chart"><small>Changes since previous graph check</small></div></div>';}).join('')+'</div></section><section class="gp-health-section"><h2><button class="gp-section-link" data-action="watch-care">Your Grove workers '+exploreArrow()+'</button></h2><div class="gp-health-workers">'+[['learner','Learner'],['curator','Curator'],['connector','Connector']].map(function(w){return '<div>'+workerMark(w[0])+'<span><strong>'+w[1]+'</strong><small>'+esc(care.workers&&care.workers[w[0]]||'No activity loaded')+'</small></span></div>';}).join('')+'</div><div class="gp-health-freshness"><span>Freshness</span>'+liveFreshness(care.freshness)+'</div></section><section class="gp-health-section"><h2><button class="gp-section-link" data-action="manage-sources">Your sources '+exploreArrow()+'</button></h2>'+healthSources(s)+'</section><p class="gp-health-observed" role="status">'+(liveData.pending?'Check in progress':data?'Last checked '+esc(liveData.checkedAt||'now'):'Health information could not be read. Try again.')+'</p><button class="gp-text" data-action="refresh-live-data">Check health</button></div>','gp-health-dialog',true);
     }
     function metric(kind,label,count,delta){return '<div class="gp-health-metric"><div><span class="gp-metric-label">'+label+'</span><strong data-count="'+kind+'">'+count.toLocaleString()+'</strong><button class="gp-health-growth" data-growth-kind="'+kind+'" aria-label="Show new '+label.toLowerCase()+'" '+(!delta?'hidden':'')+'><b data-growth-count="'+kind+'">+'+delta.toLocaleString()+'</b></button></div><div class="gp-growth-chart" data-growth-chart="'+kind+'">'+growthSparkline(kind)+'</div></div>';}
     var workers=[['learner','Learner','updated','Brings in new context'],['curator','Curator','tended','Keeps memories useful'],['connector','Connector','connections','Finds links across your world']];
@@ -466,12 +473,15 @@
   function hostGuide(){
     if(live||demo){
       var name=ui.host==='muse'?'Muse Desktop':PROVIDERS[ui.host].label;
-      var steps=ui.host==='muse'?[['Open a Muse conversation','Ask Muse to add Grove as a remote MCP connector.'],['Add the Grove server','Use the server URL below. Muse opens the Grove authorization page.'],['Review Grove access','Sign in to Grove, review the requested access, then return to Muse.']]:[['Open '+name,'Open the app’s custom connector settings.'],['Add the Grove server','Add a remote MCP connector with the server URL below.'],['Review Grove access','Sign in to Grove and review access. Return to '+name+' after approval.']];
+      var screens=window.GroveAppScreens||{},connect=[['Add the Grove server','Add a remote MCP connector with the server URL below.'],['Review Grove access','Sign in to Grove and review access. Return to '+name+' after approval.']];
+      var steps=ui.host==='muse'?[['Your context, connected','Connect Muse to Grove through a remote MCP connector.',transferFilm('muse')],['Open a Muse conversation','Ask Muse to add Grove as a remote MCP connector.'],['Add the Grove server','Use the server URL below. Muse opens the Grove authorization page.'],['Review Grove access','Sign in to Grove, review the requested access, then return to Muse.']]:ui.host==='grok'?[['Open '+name,'Open the app’s custom connector settings.']].concat(connect):[['Open '+name,'Open '+name+' and click your profile.',screens[ui.host+'-home']],['Open Settings','Open Settings, then the custom connector settings.',screens[ui.host+'-menu']]].concat(connect);
       var visual='';
-      if(ui.host!=='grok'){
-        var frames=steps.map(function(step,i){return '<section class="film-frame" style="animation-delay:-'+(9-i*3).toFixed(2)+'s"><div class="film-instruction"><div class="film-logo">'+icon(ui.host)+'</div><span>0'+(i+1)+' / 03</span><h2>'+esc(step[0])+'</h2><p>'+esc(step[1])+'</p>'+(i===1?'<div class="film-server">'+esc(MCP_URL)+'</div>':'')+'</div></section>';}).join('');
-        var doc='<!doctype html><html><head><meta charset="utf-8"><style>'+filmCSS(3,9)+'</style></head><body><div class="film-stage" data-frame-seconds="3" data-frame-count="3">'+frames+'</div></body></html>';
-        visual='<div class="gp-app-frame" aria-label="Illustrated '+esc(name)+' connection guide"><iframe title="Automatic '+esc(name)+' connection guide" tabindex="-1" aria-hidden="true" inert sandbox srcdoc="'+esc(doc)+'"></iframe></div>'+readableGuide(steps.map(function(step){return {title:step[0],detail:step[1]};}))+'<div class="gp-film-tools"><button class="gp-text" data-action="film-toggle" aria-label="Pause guide">Ⅱ</button></div>';
+      if(ui.host!=='grok'&&!window.GroveAppScreens&&window.GroveDeferred){loadViewAsset('guides');visual=assetNotice('guides');}
+      else if(ui.host!=='grok'){
+        var duration=steps.length*3;
+        var frames=steps.map(function(step,i){return '<section class="film-frame" style="animation-delay:-'+(duration-i*3).toFixed(2)+'s">'+(step[2]||'<div class="film-instruction"><div class="film-logo">'+icon(ui.host)+'</div><span>0'+(i+1)+' / 0'+steps.length+'</span><h2>'+esc(step[0])+'</h2><p>'+esc(step[1])+'</p>'+(step[0]==='Add the Grove server'?'<div class="film-server">'+esc(MCP_URL)+'</div>':'')+'</div>')+'</section>';}).join('');
+        var doc='<!doctype html><html><head><meta charset="utf-8"><style>'+(window.GroveAppScreenCSS||'')+filmCSS(steps.length,duration)+'</style></head><body><div class="film-stage" data-frame-seconds="3" data-frame-count="'+steps.length+'">'+frames+'</div></body></html>';
+        visual='<div class="gp-app-frame" aria-label="Illustrated '+esc(name)+' connection guide"><iframe title="Automatic '+esc(name)+' connection guide" tabindex="-1" aria-hidden="true" inert sandbox srcdoc="'+esc(doc)+'"></iframe></div>'+readableGuide(steps.map(function(step){return {title:step[0],detail:step[1]};}))+filmTools();
       }
       return settingsFrame('<div class="gp-host-guide"><p class="gp-section-copy">'+(demo?'Illustration only. No app is connected here.':'Complete the connection in your AI app')+'</p>'+visual+'<div class="gp-mcp-body"><ol class="gp-section-copy">'+steps.map(function(step){return '<li>'+esc(step[1])+'</li>';}).join('')+'</ol>'+(demo?'<a class="gp-text" href="/">Return to live Grove for actual access</a>':mcpLink())+'<p class="gp-section-copy">Review access in Grove before approval.</p></div></div>','connections',[['Connections','host-back'],['Use Grove in '+name]]);
     }
@@ -632,7 +642,13 @@
     else if(action==='upload-export'){var file=live?liveUpload(ui.guide).file:ui.uploadFile;if(!file)return;var p=PROVIDERS[ui.guide];importSource(p.source,file,ui.guide);if(!live)ui.uploadFile=null;}
     else if(action==='film-toggle'){
       var frame=root.querySelector('.gp-app-frame iframe'),button=root.querySelector('[data-action=film-toggle]'),track=root.querySelector('.gp-film-track i');
-      if(frame){
+      if(frame&&reduceMotion.matches){
+        var total=Number((frame.dataset.base.match(/data-frame-count="(\d+)"/)||[])[1])||1,next=((Number(frame.dataset.step)||0)+1)%total;
+        frame.dataset.step=String(next);
+        frame.setAttribute('srcdoc',frame.dataset.base.replace('</style>','.film-frame{display:none!important}.film-frame:nth-child('+(next+1)+'){display:block!important;opacity:1!important}</style>'));
+        syncGuideText();
+      }
+      else if(frame){
         var paused=frame.dataset.paused!=='true',elapsed=Number(frame.dataset.elapsed)||0;
         if(paused)elapsed+=(performance.now()-Number(frame.dataset.started))/1000;
         frame.dataset.paused=String(paused);frame.dataset.elapsed=String(elapsed);frame.dataset.started=String(performance.now());
@@ -640,7 +656,7 @@
         if(paused){
           var count=Number((frame.dataset.base.match(/data-frame-count="(\d+)"/)||[])[1])||1;
           var seconds=Number((frame.dataset.base.match(/data-frame-seconds="([\d.]+)"/)||[])[1])||3;
-          var selected=reduceMotion.matches?0:Math.floor(elapsed/seconds)%count;
+          var selected=Math.floor(elapsed/seconds)%count;
           doc=doc.replace('</style>','*{animation-play-state:paused!important}.film-frame{animation:none!important;opacity:0!important;visibility:hidden!important}.film-frame:nth-child('+(selected+1)+'){opacity:1!important;visibility:visible!important}</style>');
         }
         frame.setAttribute('srcdoc',doc);if(track)track.style.animationPlayState=paused?'paused':'running';button.textContent=paused?'▷':'Ⅱ';button.setAttribute('aria-label',paused?'Play guide':'Pause guide');syncGuideText();
