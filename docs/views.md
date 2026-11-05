@@ -201,6 +201,10 @@ A year shows only when it is not the current year. `today` and `yesterday` are a
 
 `summary` is `Your Grove is empty` when the world has no item. `edges` counts the active links. The person view of the health checks (D13) belongs to `views-b`.
 
+### `GET /v1/views/workers` and `GET /v1/views/workers/record`
+
+Neither takes a query parameter. `docs/worker-activity.md` has both shapes: the bounded worker status feed, and the recorded items a person can follow with the freshness of the world.
+
 ### `POST /v1/views/positions`
 
 Body, with `Content-Type: application/json`: `{"positions": [{"id": "<item id>", "x": 0.0, "y": 0.0}]}`.
