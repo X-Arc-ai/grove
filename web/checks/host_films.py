@@ -128,9 +128,7 @@ COLOUR_SCRIPT = """() => {
 class FilmHandler(Handler):
     def do_GET(self):
         if urlparse(self.path).path == "/v1/sources/pending-exports":
-            return self.send(
-                {"account": self.server.account, "revision": 0, "pending_exports": {}}
-            )
+            return self.send({"account": self.server.account, "revision": 0, "pending_exports": {}})
         return super().do_GET()
 
 
@@ -253,12 +251,8 @@ def assert_reader_in_step(rows, count):
             continue
         if (row["group"] + start) % count != row["after"]:
             worst = max(worst, row["at"] - changed)
-    assert worst <= READER_LEAD_SECONDS, (
-        f"reader and picture disagreed for {worst:.2f} s"
-    )
-    assert {row["after"] for row in rows} == set(range(count)), (
-        "the reader did not show every step"
-    )
+    assert worst <= READER_LEAD_SECONDS, f"reader and picture disagreed for {worst:.2f} s"
+    assert {row["after"] for row in rows} == set(range(count)), "the reader did not show every step"
 
 
 def assert_film_is_inert(page):
@@ -274,11 +268,7 @@ def assert_film_is_inert(page):
 
 
 def frame_sources(page):
-    return (
-        page.locator(FRAME)
-        .get_attribute("srcdoc")
-        .split('<section class="film-frame"')[1:]
-    )
+    return page.locator(FRAME).get_attribute("srcdoc").split('<section class="film-frame"')[1:]
 
 
 def assert_screen_sources(page, host):
@@ -357,9 +347,7 @@ def assert_pause(page, helper, pictures, count):
     assert changed is not None, "Play must advance the picture again"
     known = [index for index, known in enumerate(pictures) if same(known, start)]
     following = pictures[(known[0] + 1) % count] if known else None
-    assert following is not None and same(following, changed), (
-        "Play must show the next frame"
-    )
+    assert following is not None and same(following, changed), "Play must show the next frame"
     assert reader_index(page) == (step + 1) % count, "Play must advance the reader"
 
 
@@ -372,9 +360,7 @@ def assert_steps_listed(page, host, rows_count):
 
 
 def open_page(browser, base, width, theme, motion):
-    context = browser.new_context(
-        viewport={"width": width, "height": 900}, reduced_motion=motion
-    )
+    context = browser.new_context(viewport={"width": width, "height": 900}, reduced_motion=motion)
     page = context.new_page()
     errors = []
     outside = []
@@ -426,9 +412,7 @@ def assert_clean(page, errors, outside):
 
 
 def motion_run(ledger, browser, base, width, theme, shots):
-    context, page, helper, errors, outside = open_page(
-        browser, base, width, theme, "no-preference"
-    )
+    context, page, helper, errors, outside = open_page(browser, base, width, theme, "no-preference")
     reference_context = browser.new_context(viewport={"width": 760, "height": 475})
     reference_page = reference_context.new_page()
     open_connections(page)
@@ -450,9 +434,7 @@ def motion_run(ledger, browser, base, width, theme, shots):
         )
         if host in SCREENS:
             start = max(rows[0]["before"], 0)
-            ledger.check(
-                f"{label} app screen source", assert_screen_sources, page, host
-            )
+            ledger.check(f"{label} app screen source", assert_screen_sources, page, host)
             ledger.check(
                 f"{label} app screen picture",
                 assert_screen_pictures,
@@ -508,9 +490,7 @@ def deferred_run(ledger, browser, base, width, theme, shots):
         context.close()
 
     def failure_then_retry():
-        context, page, _, errors, outside = open_page(
-            browser, base, width, theme, "no-preference"
-        )
+        context, page, _, errors, outside = open_page(browser, base, width, theme, "no-preference")
         page.route(url, lambda route: route.fulfill(status=503, body=""))
         open_connections(page)
         page.locator('[data-host-inline="chatgpt"]').click()
@@ -539,8 +519,8 @@ def assert_still(page, seconds):
 def assert_control(page):
     toggle = page.locator(TOGGLE)
     assert toggle.text_content() == "Next step", toggle.text_content()
-    assert toggle.get_attribute("aria-label") == "Next guide step", (
-        toggle.get_attribute("aria-label")
+    assert toggle.get_attribute("aria-label") == "Next guide step", toggle.get_attribute(
+        "aria-label"
     )
 
 
@@ -569,9 +549,7 @@ def assert_stepping(page, helper, count, width):
         now = picture(page, helper)
         text = visible_step_text(page, width)
         if press == count:
-            assert same(now, pictures[0]), (
-                "the last press must return to the first frame"
-            )
+            assert same(now, pictures[0]), "the last press must return to the first frame"
             assert text == words[0], "the last press must return to the first step"
         else:
             assert not any(same(now, known) for known in pictures), (
@@ -587,9 +565,7 @@ def assert_stepping(page, helper, count, width):
 
 
 def reduced_film(ledger, page, helper, label, count, width):
-    ledger.check(
-        f"{label} reduced still", lambda: assert_still(page, FRAME_SECONDS + 0.6)
-    )
+    ledger.check(f"{label} reduced still", lambda: assert_still(page, FRAME_SECONDS + 0.6))
     ledger.check(f"{label} reduced control", lambda: assert_control(page))
     ledger.check(
         f"{label} reduced steps",
@@ -598,9 +574,7 @@ def reduced_film(ledger, page, helper, label, count, width):
 
 
 def reduced_run(ledger, browser, base, width, theme, shots):
-    context, page, helper, errors, outside = open_page(
-        browser, base, width, theme, "reduce"
-    )
+    context, page, helper, errors, outside = open_page(browser, base, width, theme, "reduce")
     open_connections(page)
     for host, steps in STEPS.items():
         open_host(page, host)
@@ -613,24 +587,16 @@ def reduced_run(ledger, browser, base, width, theme, shots):
         page.locator(f"[data-guide={provider}]").click()
         page.locator(FRAME).wait_for(state="attached")
         page.wait_for_timeout(800)
-        reduced_film(
-            ledger, page, helper, f"{width} {theme} export {provider}", count, width
-        )
-        page.screenshot(
-            path=str(shots / f"film-reduced-export-{provider}-{width}-{theme}.png")
-        )
+        reduced_film(ledger, page, helper, f"{width} {theme} export {provider}", count, width)
+        page.screenshot(path=str(shots / f"film-reduced-export-{provider}-{width}-{theme}.png"))
         page.locator("[data-action=guide-back]").first.click()
         page.locator(f"[data-guide={provider}]").wait_for(state="visible")
-    ledger.check(
-        f"{width} {theme} reduced page", lambda: assert_clean(page, errors, outside)
-    )
+    ledger.check(f"{width} {theme} reduced page", lambda: assert_clean(page, errors, outside))
     context.close()
 
 
 def health_run(ledger, browser, base, width, theme, shots):
-    context, page, _, errors, outside = open_page(
-        browser, base, width, theme, "no-preference"
-    )
+    context, page, _, errors, outside = open_page(browser, base, width, theme, "no-preference")
     # This wraps GroveCare only to set the value that web/agents.js supplies.
     page.evaluate(
         """() => {
@@ -695,9 +661,7 @@ def health_run(ledger, browser, base, width, theme, shots):
     ledger.check(f"{width} {theme} health fallback", fallback)
     ledger.check(f"{width} {theme} health recorded", recorded)
     ledger.check(f"{width} {theme} health empty", empty)
-    ledger.check(
-        f"{width} {theme} health page", lambda: assert_clean(page, errors, outside)
-    )
+    ledger.check(f"{width} {theme} health page", lambda: assert_clean(page, errors, outside))
     context.close()
 
 

@@ -320,9 +320,7 @@ def follow_part(walk, shots):
     assert max(abs(a - b) for a, b in zip(before, after)) < 1, (before, after)
     assert len(page.evaluate("__followCalls")) == calls, "The same item must not move the camera"
     walk.answer(feed("recorded_running"), record([NEXT, FIRST, SECOND]))
-    page.wait_for_function(
-        "count => __followCalls.length > count", arg=calls, timeout=7000
-    )
+    page.wait_for_function("count => __followCalls.length > count", arg=calls, timeout=7000)
     walk.settled_on(NEXT)
     assert walk.following() == "learner"
 
