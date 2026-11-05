@@ -18,6 +18,7 @@ GRAPH_KEYS = {
     "as_of",
     "known_as_of",
     "self_item_id",
+    "selection",
 }
 NODE_KEYS = {
     "id",
@@ -51,6 +52,7 @@ EDGE_KEYS = {
     "canonical_of",
     "valid_at",
     "invalid_at",
+    "created_at",
     "note",
     "source_field",
 }
@@ -155,6 +157,7 @@ def test_graph_keys_types_and_values(driver, world, client_for):
         "canonical_of": None,
         "valid_at": iso(small.depends["became_true_earliest"]),
         "invalid_at": None,
+        "created_at": iso(small.depends["recorded"]),
         "note": "",
         "source_field": "store",
     }
