@@ -187,7 +187,7 @@ check('Health retains real counts, neutral unknown metrics, and retry errors', (
   const h = harness(); h.p.setData({ health: { nodes: 7, edges: 3 }, sources: [], checkedAt: '12:00' });
   let html = h.p.health(); clean(html);
   assert(html.includes('data-live-count="nodes">7')); assert(html.includes('data-live-count="edges">3'));
-  assert(html.includes('<span>Freshness</span><strong>—</strong>'));
+  assert(html.includes('<span>Freshness</span><strong data-live-freshness>Not recorded</strong>'));
   h.p.setData({ health: null, sources: null, pending: false }); html = h.p.health(); clean(html);
   assert(html.includes('data-live-count="nodes">—')); assert(html.includes('could not be read. Try again.'));
   assert(html.includes('data-action="refresh-live-data"'));
