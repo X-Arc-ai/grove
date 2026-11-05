@@ -13,10 +13,9 @@ runs-on: ${{ vars.XARC_CI_RUNNER || 'ubuntu-latest' }}
 ```
 
 With the repository variable `XARC_CI_RUNNER` unset, the job runs on GitHub's hosted
-`ubuntu-latest`. While the repository is private during the build, the variable names a
-self-hosted runner pool that serves this repository only. Before the repository goes public, the
-variable and the pool are removed, so a public repository never has a self-hosted runner, and
-`Validate` runs on `ubuntu-latest` again with no change to any workflow file.
+`ubuntu-latest`. A public repository must never have a self-hosted runner, so a self-hosted pool
+is only for a private build: with the variable and the pool removed, `Validate` runs on
+`ubuntu-latest` with no change to any workflow file.
 
 ## The runner lint
 

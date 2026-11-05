@@ -1,15 +1,12 @@
 # Hackathon record
 
-GitHub snapshot: 2026-11-04 at 18:36 UTC. Repository visibility: PRIVATE.
-This is a source history record, not a completed submission. Dates are UTC.
+GitHub snapshot: 2026-11-05 at 00:48 UTC. Dates are UTC.
+This is a source history record.
 A merged PR proves source inclusion, not deployment, CI success, or user acceptance.
-The table preserves PR18 and its actual merge. Later candidates require a later snapshot.
-This table remains fixed through PR #59 at the time above. The later published UI source in
-PR #60 belongs to the newer [source snapshot](docs/submission-status.md), not this event-table snapshot.
-The source snapshot at 2026-11-04 19:04 UTC also includes PR #61, merged as
+The table preserves PR18 and its actual merge. PR #61 merged as
 `0682eb201ad0ccfb8a8a9d074d07759ec8eb31a1` from `d17151421e027a4fe19b269a9f06cf6dcd17fe33`,
-and the separate PR #63 source helper, merged as `c145cf8b450f3ae7ab43989cf07969ee5b493057`.
-These later merges do not alter the fixed event table or prove runtime acceptance.
+and the separate PR #63 source helper merged as `c145cf8b450f3ae7ab43989cf07969ee5b493057`.
+The [submission status](docs/submission-status.md) records deployed revisions separately.
 
 ## Event pull requests
 
@@ -77,6 +74,37 @@ these PRs. Titles describe contributions; they do not certify complete feature a
 | [#57](https://github.com/X-Arc-ai/grove/pull/57) | 2026-11-04T17:51:07Z | MERGED | 2026-11-04T17:51:55Z | 1940e4a731c4ba418c85b88a654e9b0cf0a7e495 | Add scoped worker activity metadata read |
 | [#58](https://github.com/X-Arc-ai/grove/pull/58) | 2026-11-04T18:02:00Z | MERGED | 2026-11-04T18:02:11Z | d5038933bf6e585b3e265c89933822c60b483255 | Fix ordinary export upload screening policy |
 | [#59](https://github.com/X-Arc-ai/grove/pull/59) | 2026-11-04T18:04:12Z | MERGED | 2026-11-04T18:04:21Z | 756de68e00a1d69b9ea2448408754d85d7e2cbf8 | Fix Pipedream account protocol and app connections |
+| [#60](https://github.com/X-Arc-ai/grove/pull/60) | 2026-11-04T18:43:36Z | MERGED | 2026-11-04T18:43:53Z | 564cc99b9c8a718f163503cc23227a8f2908fcd1 | Repair graph layout, mobile guides, and provider controls |
+| [#61](https://github.com/X-Arc-ai/grove/pull/61) | 2026-11-04T18:47:07Z | MERGED | 2026-11-04T19:02:07Z | 0682eb201ad0ccfb8a8a9d074d07759ec8eb31a1 | Add durable screened file and note materials |
+| [#62](https://github.com/X-Arc-ai/grove/pull/62) | 2026-11-04T18:47:42Z | MERGED | 2026-11-04T19:09:15Z | fea0e91f1745fe1e3e32c2721a8d524969b76530 | Prepare submission docs with verified Request19 closure and materials limits |
+| [#63](https://github.com/X-Arc-ai/grove/pull/63) | 2026-11-04T19:01:56Z | MERGED | 2026-11-04T19:02:54Z | c145cf8b450f3ae7ab43989cf07969ee5b493057 | fix(deploy): separate checkout and production image manifests |
+| [#64](https://github.com/X-Arc-ai/grove/pull/64) | 2026-11-04T19:07:48Z | MERGED | 2026-11-04T19:31:05Z | 10fef1318874aa5ff0a11f535eab55b2797e36b7 | Enable live file and note controls in onboarding and Settings |
+| [#65](https://github.com/X-Arc-ai/grove/pull/65) | 2026-11-04T19:41:35Z | MERGED | 2026-11-04T19:47:31Z | 5ff358681d6e033cbb142a69425583feff076349 | fix(deploy): enforce durable materials release prerequisites |
+| [#66](https://github.com/X-Arc-ai/grove/pull/66) | 2026-11-04T19:59:10Z | MERGED | 2026-11-04T20:03:59Z | 7d94266e1512ef9c5815d343518131a18bc6cbd8 | Use neutral recording UI copy while preserving action guards |
+| [#67](https://github.com/X-Arc-ai/grove/pull/67) | 2026-11-04T20:09:55Z | MERGED | 2026-11-04T20:10:58Z | 2fdd2641c67ac3d416760a10f181a922988d9076 | docs: record the verified recording release and ZIP import |
+| [#68](https://github.com/X-Arc-ai/grove/pull/68) | 2026-11-04T20:10:21Z | MERGED | 2026-11-04T20:13:48Z | e743bfc3379203f59b654b93205fcb1073464a80 | Keep initial login focused on sign-in controls |
+| [#69](https://github.com/X-Arc-ai/grove/pull/69) | 2026-11-04T20:56:00Z | MERGED | 2026-11-04T21:05:00Z | 1d6c6d8b1bef40c22146f8ec36125735424c837a | Restore the login logo and remove the signup prompt |
+| [#70](https://github.com/X-Arc-ai/grove/pull/70) | 2026-11-04T21:17:34Z | MERGED | 2026-11-04T21:18:28Z | 87629adb6f22ebdab9e6e791deb25bbfe95536b4 | Open the simulated dashboard when export upload starts |
+| [#71](https://github.com/X-Arc-ai/grove/pull/71) | 2026-11-04T21:29:27Z | MERGED | 2026-11-04T21:29:50Z | 1f39053dd31d24e8531e62b9da7873a3a4c135b3 | Remove the demo banner and slow graph import growth |
+| [#72](https://github.com/X-Arc-ai/grove/pull/72) | 2026-11-04T21:43:37Z | OPEN | - | - | Preserve email code flow on anonymous window focus |
+| [#73](https://github.com/X-Arc-ai/grove/pull/73) | 2026-11-04T22:08:51Z | OPEN | - | - | Preserve onboarding around the Claude conversation preview |
+| [#74](https://github.com/X-Arc-ai/grove/pull/74) | 2026-11-04T23:04:49Z | MERGED | 2026-11-04T23:15:29Z | afd68690e56e5b3d22ecacb786e2bb690d98fa64 | Use the submission README with the event dates |
+| [#75](https://github.com/X-Arc-ai/grove/pull/75) | 2026-11-04T23:05:12Z | CLOSED | - | - | Use the submission README on main |
+| [#76](https://github.com/X-Arc-ai/grove/pull/76) | 2026-11-04T23:24:02Z | MERGED | 2026-11-04T23:25:38Z | 0acc53e54357b6ac9847749ecd2b3448896846db | Record the prepared-account Muse run in the status documents |
+| [#77](https://github.com/X-Arc-ai/grove/pull/77) | 2026-11-04T23:40:53Z | OPEN | - | - | Bring the deployed onboarding build onto develop and clear its review defects |
+| [#78](https://github.com/X-Arc-ai/grove/pull/78) | 2026-11-04T23:57:00Z | MERGED | 2026-11-05T00:27:02Z | 5872ceacff2cdbe5164ea7059f86d78eafd7b558 | Keep the email code card when a person leaves and returns |
+| [#79](https://github.com/X-Arc-ai/grove/pull/79) | 2026-11-05T00:17:23Z | MERGED | 2026-11-05T00:27:01Z | b45b92ead9ea49b043b9cb5aaeabd65daf19a9c5 | Match the brain graph to the reference: no text in nodes, real +X, lobed look |
+| [#80](https://github.com/X-Arc-ai/grove/pull/80) | 2026-11-05T00:18:29Z | MERGED | 2026-11-05T00:27:01Z | 7aa0da58ebf63983e1dedf179c2d373d76aac86e | Fix Settings, Health and refresh, and end setup at three steps |
+| [#81](https://github.com/X-Arc-ai/grove/pull/81) | 2026-11-05T00:21:35Z | MERGED | 2026-11-05T00:27:01Z | 293fee3362223ab4eab449eed927e1b3def5c16c | Make Follow, freshness and the connection films work from recorded facts |
+| [#82](https://github.com/X-Arc-ai/grove/pull/82) | 2026-11-05T00:34:42Z | OPEN | - | - | Return to the overview on Escape from a checkbox, and fit the film check to measured values |
+| [#83](https://github.com/X-Arc-ai/grove/pull/83) | 2026-11-05T00:38:24Z | OPEN | - | - | End a held email code card after a sign-in or logout elsewhere |
+| [#84](https://github.com/X-Arc-ai/grove/pull/84) | 2026-11-05T00:40:30Z | OPEN | - | - | Keep the page responsive when many new nodes arrive on a small map |
+| [#85](https://github.com/X-Arc-ai/grove/pull/85) | 2026-11-05T00:43:30Z | OPEN | - | - | Make real uploads reach the graph and remove the Claude preview |
+
+## Third-party material
+
+`web/vendor/` holds third-party code and fonts: d3, force-graph, marked, Inter and JetBrains Mono.
+They are not event work. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) holds their licences.
 
 ## Pre-event material
 
@@ -123,10 +151,7 @@ Request18 remains FAILED. This operational closure was not a new code deployment
 The [receipt facts](docs/submission-status.md#request19-release-evidence-update) preserve
 the completed closure and its limits. Materials and their prerequisites remain merged but not deployed.
 Operation A inventory returned HOLD with no mutation. Riverlight remains uncommitted, unverified,
-and not seeded. These updates do not alter the fixed event table above.
-[The operator checklist](docs/submission-checklist.md) records the remaining owner/Muse
-rehearsal, full corpus, video, final links, and release decisions.
+and not seeded.
 
 CI and independent review were waived as source-publication gates for this run. Failed,
-cancelled, and unrun checks remain separate from passes. The repository remains private.
-No final event eligibility, completed submission, or full product acceptance is claimed.
+cancelled, and unrun checks remain separate from passes. No full product acceptance is claimed.
