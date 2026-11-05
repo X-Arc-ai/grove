@@ -422,7 +422,9 @@ def test_a_read_that_breaks_outside_httpx_is_metered_and_ends(driver, world, tes
         got = [piece async for piece in relay]
         pending = list(gateway._pending)
         await gateway.aclose()
-        return got + [task.exception() for task in pending if task.done()]
+        # The drain cap of a pump that is still recording is cancelled by design.
+        ended = [task for task in pending if task.done() and not task.cancelled()]
+        return got + [task.exception() for task in ended]
 
     got = asyncio.run(drive())
     assert got[0] == TEXT and all(item is None or isinstance(item, bytes) for item in got)
