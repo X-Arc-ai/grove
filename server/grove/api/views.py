@@ -20,7 +20,7 @@ from grove.views.graph import (
 )
 from grove.views.session import ViewSession
 from grove.views.times import InvalidInstant, parse_instant
-from grove.views.workers import worker_activity_payload
+from grove.views.workers import worker_activity_payload, worker_record_payload
 from grove.writer.positions import InvalidPositions, place_items
 
 PREFIX = "/v1/views"
@@ -100,6 +100,13 @@ def get_workers(request: Request, session: Session) -> dict[str, Any]:
         now=clock.now(session.world_id),
         settings=request.app.state.pass_settings,
     )
+
+
+@router.get("/workers/record")
+def get_worker_record(request: Request, session: Session) -> dict[str, Any]:
+    if request.query_params:
+        raise invalid_arguments("the worker record accepts no query parameters", "query")
+    return worker_record_payload(request.app.state.driver, session, now=clock.now(session.world_id))
 
 
 def _refuse_constant(name: str) -> None:
