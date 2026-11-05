@@ -36,6 +36,8 @@ LOGO = re.compile(r"https://assets\.pipedream\.net/[A-Za-z0-9_./-]{1,200}")
 ACCOUNT_PAGE_SIZE = 100
 MAX_ACCOUNT_PAGES = 3
 MAX_DISCONNECT_ACCOUNTS = 20
+REMOVE_ALL_SECONDS = 60
+DISCONNECT_SCOPE = "connect:accounts:read connect:accounts:write connect:apps:*"
 router = APIRouter(prefix=PREFIX)
 Session = Annotated[ViewSession, Depends(current_session)]
 
@@ -280,19 +282,21 @@ async def _accounts(
     client: httpx.AsyncClient,
     settings: Settings,
     session: ViewSession,
-    provider: str,
+    provider: str | None,
     headers: dict[str, str],
 ) -> list[dict[str, Any]]:
+    """The person's accounts of one app. With no provider, of every app."""
     found: list[dict[str, Any]] = []
     cursors: set[str] = set()
     after = None
     for _ in range(MAX_ACCOUNT_PAGES):
         params = {
             "external_user_id": external_user_id(session),
-            "app": provider,
             "include_credentials": "false",
             "limit": str(ACCOUNT_PAGE_SIZE),
         }
+        if provider is not None:
+            params["app"] = provider
         if after is not None:
             params["after"] = after
         result = await _json(
@@ -303,7 +307,7 @@ async def _accounts(
             params=params,
         )
         rows, after, total = _page(result, ACCOUNT_PAGE_SIZE)
-        if any(
+        if provider is not None and any(
             not isinstance(row.get("app"), dict) or row["app"].get("name_slug") != provider
             for row in rows
         ):
@@ -442,6 +446,38 @@ async def connect(
         raise unavailable("The connection service timed out. Try again.") from None
 
 
+async def _remove_accounts(
+    client: httpx.AsyncClient,
+    settings: Settings,
+    session: ViewSession,
+    provider: str | None,
+    headers: dict[str, str],
+    limit: int,
+) -> int:
+    found = await _accounts(client, settings, session, provider, headers)
+    ids = [row.get("id") for row in found]
+    if (
+        len(ids) > limit
+        or any(
+            not isinstance(value, str) or not re.fullmatch(r"apn_[a-zA-Z0-9]{1,120}", value)
+            for value in ids
+        )
+        or len(set(ids)) != len(ids)
+    ):
+        raise unavailable("The accounts could not be disconnected safely.")
+    for account_id in ids:
+        await _json(
+            client,
+            "DELETE",
+            f"/connect/{settings.project_id}/accounts/{account_id}",
+            headers=headers,
+            empty=True,
+        )
+    if await _accounts(client, settings, session, provider, headers):
+        raise unavailable("Some accounts are still connected. Check connections again.")
+    return len(ids)
+
+
 @router.post("/{provider}/disconnect")
 async def disconnect(
     provider: str, request: Request, session: Session, client: Http
@@ -454,36 +490,37 @@ async def disconnect(
         raise unavailable("Connections are not configured yet.")
     try:
         async with asyncio.timeout(25):
-            headers = await _headers(
-                client, settings, "connect:accounts:read connect:accounts:write connect:apps:*"
-            )
+            headers = await _headers(client, settings, DISCONNECT_SCOPE)
             await _app(client, provider, headers)
-            found = await _accounts(client, settings, session, provider, headers)
-            ids = [row.get("id") for row in found]
-            if (
-                len(ids) > MAX_DISCONNECT_ACCOUNTS
-                or any(
-                    not isinstance(value, str) or not re.fullmatch(r"apn_[a-zA-Z0-9]{1,120}", value)
-                    for value in ids
-                )
-                or len(set(ids)) != len(ids)
-            ):
-                raise unavailable("The accounts could not be disconnected safely.")
-            for account_id in ids:
-                await _json(
-                    client,
-                    "DELETE",
-                    f"/connect/{settings.project_id}/accounts/{account_id}",
-                    headers=headers,
-                    empty=True,
-                )
-            if await _accounts(client, settings, session, provider, headers):
-                raise unavailable("Some accounts are still connected. Check connections again.")
+            removed = await _remove_accounts(
+                client, settings, session, provider, headers, MAX_DISCONNECT_ACCOUNTS
+            )
             return {
                 "account": session.user_id,
                 "provider": provider,
                 "status": "not_connected",
-                "disconnected": len(ids),
+                "disconnected": removed,
             }
     except TimeoutError:
         raise unavailable("The connection service timed out. Check connections again.") from None
+
+
+async def remove_all_accounts(client: httpx.AsyncClient, session: ViewSession) -> int:
+    """Delete my Grove: every account of this person, whatever the app, because the catalog search
+    connects apps outside PROVIDERS. With no settings Grove can reach no account: 0, and no call."""
+    settings = load_settings()
+    if settings is None:
+        return 0
+    try:
+        async with asyncio.timeout(REMOVE_ALL_SECONDS):
+            headers = await _headers(client, settings, DISCONNECT_SCOPE)
+            return await _remove_accounts(
+                client,
+                settings,
+                session,
+                None,
+                headers,
+                MAX_ACCOUNT_PAGES * ACCOUNT_PAGE_SIZE,
+            )
+    except TimeoutError:
+        raise unavailable("The connection service timed out. Try again.") from None

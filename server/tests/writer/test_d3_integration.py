@@ -655,7 +655,7 @@ def earned_word(driver, w: str, chat) -> dict[str, Any]:
     return {"mint": mint.change_set_id, "meaning": meaning_row(driver, w, GODPARENT)}
 
 
-def test_rebuild_and_restore_keep_a_word_minted_and_earned(driver, seeded, chat):
+def test_rebuild_and_restore_keep_a_word_minted_and_earned(driver, seeded, chat, tmp_path):
     """D3's rebuild and full restore over D8's mint and promotion: the fingerprints match (the
     worked example's entry is one operation with its mint, S47), and the restore keeps the
     word's measures, which no entry holds, from the snapshot."""
@@ -676,7 +676,7 @@ def test_rebuild_and_restore_keep_a_word_minted_and_earned(driver, seeded, chat)
 
     snapshot = json.loads(json.dumps(take_snapshot(driver, w)))
     purge_world_rows(driver, w)
-    restore(driver, w, snapshot, [])
+    restore(driver, w, snapshot, [], ledger_dir=tmp_path)
 
     after = meaning_row(driver, w, GODPARENT)
     assert {key: after.get(key) for key in MEASURES} == {key: word.get(key) for key in MEASURES}
@@ -855,7 +855,7 @@ def test_a_second_correction_with_no_head_update_rebuilds_to_the_live_fingerprin
     assert fingerprint(projection.rows, projection.history, live["tables"]) == live
 
 
-def test_full_restore_after_every_d3_operation(driver, every_operation, chat):
+def test_full_restore_after_every_d3_operation(driver, every_operation, chat, tmp_path):
     """D3 How to test it, the full restore: the snapshot restored, rebuilt and with the ledger
     replayed matches its fingerprint minus the ids forgotten since; every snapshot-only table's
     count matches; a value forgotten after the snapshot is absent; no last-confirmed time moves."""
@@ -873,7 +873,7 @@ def test_full_restore_after_every_d3_operation(driver, every_operation, chat):
     plant_ledger(driver, w, "field_value", [head["reason"]])
     ledger = [row["f"] for row in WorldQuery(driver, w).read("MATCH (f:ForgetLedger) RETURN f")]
     purge_world_rows(driver, w)
-    result = restore(driver, w, snapshot, ledger)
+    result = restore(driver, w, snapshot, ledger, ledger_dir=tmp_path)
     assert result["tables"] == recorded["tables"]
     assert (result["last_sequence"], result["entries"]) == (
         recorded["last_sequence"],

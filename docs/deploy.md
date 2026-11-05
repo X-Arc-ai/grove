@@ -173,6 +173,8 @@ The standalone helper uses the same host variable. It requires:
 - Bounded JSON envelopes with the existing format, exact count, unique row IDs, matching
   filename, and canonical row checksum. Duplicate JSON keys and non-finite values refuse.
 - At most 256 journal files, 16,000,000 bytes per file, 32,000,000 total bytes, and 32,768 rows.
+- A whole-world delete writes its rows into the same per-world file, with `target_type: "world"`,
+  so these checks cover it and no new entry appears in the directory.
   File identity and metadata must remain unchanged during the check.
 
 An existing lock-only directory is structurally valid, but does not prove that historical
@@ -560,6 +562,27 @@ It prints only the digest and counts per label and type, never a row. It is not 
 which covers the projections and leaves text out so that a forget keeps it; `writer-b` builds that
 one and the restore procedure of D3 (load, rebuild the projections from history, replay the forget
 ledger, compare).
+
+### Restore a dump
+
+`deploy/restore-check.sh` proves that a dump loads. It does not make a dump safe to serve: a dump
+can hold a world that its owner deleted later, and a deleted world's new row has the same id. No
+script on the box runs a real restore, so an operator does these steps by hand, in this order:
+
+1. Stop the API, the gateway and the runner, and keep them stopped until the last step.
+2. Load the dump into the store with `neo4j-admin database load`.
+3. Keep the newest forget ledger. It lives outside the dump, in the directory of
+   `GROVE_FORGET_LEDGER_HOST_DIR`, and it must never be taken from an older copy.
+4. Start only Neo4j. In a one-off API container that has the ledger bind, run
+   `python -m grove.writer.restore erasures --taken-at <stamp>`, where `<stamp>` is the UTC stamp
+   in the dump's name, for example `20261105T033000Z`. It removes every world deleted after that
+   time, and prints `{"erased": N}`. It removes rows: never run it on a store that serves.
+5. For each world with a snapshot manifest, run `restore_loaded` with the newest ledger rows.
+6. Start the services.
+
+A world deleted after the dump comes back as nothing. Its owner's next sign-in makes the new empty
+world. Added files are outside the dump: `/var/lib/grove-runner/worlds` is not in the nightly
+backup, so a restore brings no file back.
 
 ## First setup of a box
 

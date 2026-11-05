@@ -454,7 +454,7 @@
     save();return getState();
   }
   function saveGrowth(value){['focus','reading','avoid'].forEach(function(k){state.growth[k]=String(value[k]||'').trim().slice(0,1500);});state.growth.confirm=!!value.confirm;save();return getState();}
-  function clearGrove(){var auth=state.auth,account=state.account,name=state.name,growth=state.growth;resetOnboarding();state.auth=auth;state.account=account;state.name=name;state.growth=growth;state.onboardingStep=1;save({reload:true});return getState();}
+  function clearGrove(){var auth=state.auth,account=state.account,name=state.name,growth=state.growth;if(LIVE){try{localStorage.setItem(ONBOARDING_KEY,JSON.stringify(onboardingPreferences().filter(function(row){return row.account!==account;})));}catch(_){/* page memory goes on */}}resetOnboarding();state.auth=auth;state.account=account;state.name=name;state.growth=growth;state.onboardingStep=1;save({reload:true});return getState();}
 
   function requestExport(id) {
     if (LIVE) {

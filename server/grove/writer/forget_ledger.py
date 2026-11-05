@@ -3,23 +3,33 @@
 An approved intent is fsynced before the database transaction commits. A database failure
 can leave an extra approved intent, never a committed erasure with no restore instruction.
 Recovery applies such an intent too. The file contains no target text or source content.
+
+A whole-world erasure (grove.writer.world_delete) adds its rows to the same file, because the
+deploy preflight refuses any other entry in this folder. The file stays append-only: a finished
+erasure ends the rows before it, since the world they name is gone and the new world keeps the id.
 """
 
 import fcntl
 import hashlib
 import json
 import os
+import re
 import tempfile
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from grove.store.errors import ScopeError
 from grove.store.scope import check_world_id
 from grove.writer.errors import LedgerUnavailable
 
 FORMAT = "grove.forget-ledger.v1"
 ENV = "GROVE_FORGET_LEDGER_DIR"
+WORLD_TARGET = "world"
+ERASURE_STARTED = "started"
+ERASURE_FINISHED = "finished"
+_FILE_NAME = re.compile(r"[0-9a-f]{64}\.json")
 
 
 def _json(value: Any) -> str:
@@ -67,14 +77,12 @@ def locked_ledger(path: Path | str | None):
         raise LedgerUnavailable("forget ledger lock is unavailable") from None
 
 
-def _read(root: Path, world_id: str, *, missing: bool = False) -> list[dict]:
-    path = root / _name(world_id)
+def _load(path: Path) -> Any:
+    """The parsed file. Raises FileNotFoundError, or LedgerUnavailable for an unsafe file."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
-        if missing:
-            return []
-        raise LedgerUnavailable("latest forget ledger is absent") from None
+        raise
     except OSError:
         raise LedgerUnavailable("latest forget ledger is unavailable") from None
     try:
@@ -82,7 +90,19 @@ def _read(root: Path, world_id: str, *, missing: bool = False) -> list[dict]:
             info = os.fstat(handle.fileno())
             if info.st_uid != os.getuid() or info.st_mode & 0o077 or info.st_size > 16_000_000:
                 raise ValueError
-            data = json.load(handle)
+            return json.load(handle)
+    except (ValueError, TypeError):
+        raise LedgerUnavailable("latest forget ledger failed validation") from None
+
+
+def _read(root: Path, world_id: str, *, missing: bool = False) -> list[dict]:
+    try:
+        data = _load(root / _name(world_id))
+    except FileNotFoundError:
+        if missing:
+            return []
+        raise LedgerUnavailable("latest forget ledger is absent") from None
+    try:
         rows = data["rows"]
         if (
             data["format"] != FORMAT
@@ -98,9 +118,45 @@ def _read(root: Path, world_id: str, *, missing: bool = False) -> list[dict]:
         raise LedgerUnavailable("latest forget ledger failed validation") from None
 
 
+def _standing(rows: list[dict]) -> list[dict]:
+    """The forget rows of the world that stands now. A started erasure ends nothing: its attempt
+    can fail with the world and its rows still in place."""
+    kept: list[dict] = []
+    for row in rows:
+        if row.get("target_type") != WORLD_TARGET:
+            kept.append(row)
+        elif row.get("state") == ERASURE_FINISHED:
+            kept = []
+    return kept
+
+
+def check_ledger(path: Path | str | None, world_id: str) -> None:
+    """Refuses a ledger that a later append would refuse: unsafe, unset or damaged."""
+    with locked_ledger(path) as root:
+        _read(root, world_id, missing=True)
+
+
 def read_ledger(path: Path | str, world_id: str) -> list[dict]:
     with locked_ledger(path) as root:
-        return _read(root, world_id)
+        return _standing(_read(root, world_id))
+
+
+def world_erasures(root: Path) -> dict[str, list[dict]]:
+    """Caller holds locked_ledger. Every world with an erasure row, and those rows, in order."""
+    found: dict[str, list[dict]] = {}
+    for name in sorted(entry.name for entry in os.scandir(root)):
+        if _FILE_NAME.fullmatch(name) is None:
+            continue
+        try:
+            world_id = _load(root / name)["world_id"]
+            if _name(world_id) != name:
+                raise ValueError
+        except (ValueError, TypeError, KeyError, ScopeError):
+            raise LedgerUnavailable("latest forget ledger failed validation") from None
+        rows = [row for row in _read(root, world_id) if row.get("target_type") == WORLD_TARGET]
+        if rows:
+            found[world_id] = rows
+    return found
 
 
 def append_intent(root: Path, world_id: str, row: dict, database_rows: list[dict]) -> None:
@@ -149,7 +205,9 @@ def checked_under_lock(root: Path, world_id: str, database_rows: list[dict]) -> 
     from grove.writer.forget import validate_ledger_rows
 
     try:
-        external = validate_ledger_rows(world_id, _read(root, world_id, missing=not database_rows))
+        external = validate_ledger_rows(
+            world_id, _standing(_read(root, world_id, missing=not database_rows))
+        )
         committed = validate_ledger_rows(world_id, database_rows)
         if {r["id"]: _json(r) for r in external} != {r["id"]: _json(r) for r in committed}:
             raise ValueError

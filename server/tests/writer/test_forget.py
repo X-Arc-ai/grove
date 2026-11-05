@@ -117,9 +117,9 @@ def test_old_snapshot_with_latest_ledger_cannot_restore_forgotten_value(
     purge_world_rows(driver, world)
     if preloaded:
         load_snapshot(driver, world, snapshot)
-        result = restore_loaded(driver, world, snapshot, ledger)
+        result = restore_loaded(driver, world, snapshot, ledger, ledger_dir=tmp_path)
     else:
-        result = restore(driver, world, snapshot, ledger)
+        result = restore(driver, world, snapshot, ledger, ledger_dir=tmp_path)
     after = inventory(driver, world)
     assert "Cobalt orchard" not in json.dumps(after, default=str)
     assert (
@@ -213,7 +213,7 @@ def test_loaded_restore_refuses_missing_or_changed_stored_intent_before_write(
         ledger = []
     before = inventory(driver, world)
     with pytest.raises(ValueError, match="omits or changes"):
-        restore_loaded(driver, world, snapshot, ledger)
+        restore_loaded(driver, world, snapshot, ledger, ledger_dir=tmp_path)
     assert inventory(driver, world) == before
 
 
@@ -235,7 +235,7 @@ def test_latest_ledger_can_mix_legacy_and_planned_erasure(driver, subject, tmp_p
         *read_ledger(tmp_path, world),
     ]
     purge_world_rows(driver, world)
-    restore(driver, world, snapshot, ledger)
+    restore(driver, world, snapshot, ledger, ledger_dir=tmp_path)
     after = inventory(driver, world)
     assert "Legacy removable text" not in json.dumps(after, default=str)
     assert "Cobalt orchard" not in json.dumps(after, default=str)
@@ -270,5 +270,5 @@ def test_failed_database_write_retains_approved_intent_for_restore(
     ledger = read_ledger(tmp_path, world)
     assert len(ledger) == 1
     purge_world_rows(driver, world)
-    restore(driver, world, snapshot, ledger)
+    restore(driver, world, snapshot, ledger, ledger_dir=tmp_path)
     assert "Cobalt orchard" not in json.dumps(inventory(driver, world), default=str)

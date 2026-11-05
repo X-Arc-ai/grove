@@ -28,6 +28,7 @@
     pipedreamAccounts: '/v1/views/pipedream/accounts',
     forgetApprove: '/v1/forget/approve',
     forget: '/v1/forget',
+    worldDelete: '/v1/world/delete',
     materials: '/v1/materials',
     materialFiles: '/v1/materials/files',
     materialNotes: '/v1/materials/notes',
@@ -122,8 +123,14 @@
     // No identity, token, or account data crosses this browser signal.
     try { localStorage.setItem(AUTH_CHANGE_KEY, JSON.stringify({nonce: window.crypto.randomUUID()})); } catch (_) {}
   }
+  // A deleted Grove: another tab of this browser must drop the old world, not save it back.
+  var WORLD_RESET_KEY = 'grove-world-reset';
+  function notifyWorldReset() {
+    try { localStorage.setItem(WORLD_RESET_KEY, JSON.stringify({nonce: window.crypto.randomUUID()})); } catch (_) {}
+  }
   function invalidateSession() { sessionsBegun++; sessionAccount = null; }
   if (window.addEventListener) window.addEventListener('storage', function (event) {
+    if (event.key === WORLD_RESET_KEY && event.newValue) { window.dispatchEvent(new CustomEvent('grove:world-reset')); return; }
     if (event.key !== AUTH_CHANGE_KEY || !event.newValue) return;
     invalidateSession();
     window.dispatchEvent(new CustomEvent('grove:session-changed'));
@@ -248,6 +255,7 @@
     authPagePath: authPagePath,
     invalidateSession: invalidateSession,
     notifySessionChange: notifySessionChange,
+    notifyWorldReset: notifyWorldReset,
     KIND_STYLE: KIND_STYLE,
     getJSON: getJSON,
     postJSON: postJSON,
@@ -264,6 +272,7 @@
         return postJSON(ENDPOINTS.forget, { target: target, approval_token: res.body.approval_token });
       });
     },
+    deleteWorld: function () { return postJSON(ENDPOINTS.worldDelete, { confirm: 'DELETE' }); },
     approvedConnections: function () {
       var sentIn = sessionsBegun;
       return request('GET', ENDPOINTS.approvedConnections).then(function (res) {

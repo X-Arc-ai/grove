@@ -29,6 +29,7 @@ from grove.api import (
     pipedream,
     uploads,
     wellknown,
+    world_delete,
 )
 from grove.api.assets import add_public_assets
 from grove.api.auth import AUTH_PREFIX, AuthDeps
@@ -59,6 +60,7 @@ NO_STORE_PATHS = (
     INTERNAL_PREFIX,
     uploads.PREFIX,
     forget.PREFIX,
+    world_delete.PREFIX,
     "/v1/privacy",
     cascade.PREFIX,
     connectors.PREFIX,
@@ -251,6 +253,7 @@ def create_app(
     app.include_router(uploads.router)
     app.include_router(forget.router)
     app.include_router(forget.public_router)
+    app.include_router(world_delete.router)
     app.include_router(connectors.router)
     app.include_router(pipedream.router)
     app.include_router(agent_files.router)

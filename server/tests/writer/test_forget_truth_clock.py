@@ -61,7 +61,7 @@ def test_forget_restore_preserves_verification_and_marker_only_undo(
     expected_fingerprint = inventory_fingerprint(expected_inventory)
     expected_claim = item_row(driver, w, claim)
     purge_world_rows(driver, w)
-    restore(driver, w, snapshot, ledger)
+    restore(driver, w, snapshot, ledger, ledger_dir=tmp_path)
     restored = inventory(driver, w)
     assert restored["forget_approvals"] == []
     assert sorted(restored["change_entries"], key=lambda row: row["sequence"]) == sorted(

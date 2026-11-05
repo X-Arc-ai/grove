@@ -175,11 +175,11 @@ check('Muse directions and the account icon remain present', () => {
   assert(h.document.getElementById('profile-button').innerHTML.includes('<circle cx="12" cy="8" r="3.5"/>'));
   assert.deepEqual(h.calls, []);
 });
-check('Delete brain keeps its disabled confirmation and cannot mutate', () => {
+check('Delete my Grove stays disabled until the word is typed, and cannot mutate', () => {
   const h = harness(); h.p.ui.confirm = { type: 'brain' };
   const html = h.p.confirmation(); clean(html);
-  assert(html.includes('Delete your brain?')); assert(html.includes('data-action="cancel-confirm"'));
-  assert(/<button[^>]*disabled[^>]*>Delete brain<\/button>/.test(html));
+  assert(html.includes('Delete your Grove?')); assert(html.includes('data-action="cancel-confirm"'));
+  assert(/<button[^>]*disabled[^>]*>Delete my Grove<\/button>/.test(html));
   const before = JSON.stringify(h.state); h.p.handle('confirm-delete');
   assert.equal(JSON.stringify(h.state), before); assert.deepEqual(h.calls, []);
 });

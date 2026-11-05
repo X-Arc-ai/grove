@@ -262,4 +262,8 @@ body.gp-logout-open #canvas,body.gp-logout-open #gp-motion { visibility:hidden }
 #gp-refresh-note[data-state=error] { color:var(--gp-danger) }
 @media (max-width:600px) { #gp-refresh-note { top:calc(var(--grove-toolbar-bottom,130px) + 8px); left:16px; right:16px } }
 
+/* Delete my Grove: the person types the word, so a stray click removes nothing. */
+.gp-delete-dialog form { display:grid; gap:8px }
+.gp-delete-dialog label { font:400 11px/1.5 var(--gp-font); color:var(--text-secondary) }
+.gp-delete-dialog input { width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid var(--border); border-radius:6px; background:var(--bg); color:var(--text); font:400 12px/1.4 var(--gp-font) }
 .gp-agent-list:empty { display:none }
