@@ -22,11 +22,10 @@ DOCUMENTS = (
     "CONTRIBUTING.md",
     "docs/architecture.md",
     "docs/submission-status.md",
-    "docs/submission-checklist.md",
 )
 RELEASE_DOCUMENTS = tuple(
     name for name in DOCUMENTS if name not in ("README.md", "CONTRIBUTING.md")
-) + ("docs/drafts/submission-writeup.txt",)
+)
 
 
 @pytest.mark.parametrize("name", RELEASE_DOCUMENTS)
@@ -140,25 +139,17 @@ def test_published_ui_keeps_deployment_and_materials_boundaries():
         assert "0019_material_revisions.cypher" in text, name
         assert "canonical external ledger" in text, name
         assert "API/runner source" in text, name
-    draft = (ROOT / "docs/drafts/submission-writeup.txt").read_text()
-    assert RECORDING_SOURCE in draft and RECORDING_API in draft and MATERIALS in draft
-    assert "recording API serves PR #66" in draft
-    assert "not full deployed acceptance" in draft
-    assert "held_provenance with no file Request" in draft
-    assert "Notes use ordinary Requests" in draft
-    assert "future materials release" in draft
 
 
-def test_source_update_preserves_the_dated_event_table():
+def test_event_table_keeps_its_first_rows_and_continues_in_order():
     record = (ROOT / "HACKATHON.md").read_text()
-    assert "GitHub snapshot: 2026-11-04 at 18:36 UTC" in record
     rows = [line for line in record.splitlines() if line.startswith("| [#")]
-    assert len(rows) == 59
-    assert rows[-1].startswith("| [#59]")
-    assert hashlib.sha256("\n".join(rows).encode()).hexdigest() == (
+    assert rows[58].startswith("| [#59]")
+    assert hashlib.sha256("\n".join(rows[:59]).encode()).hexdigest() == (
         "03fb0e9449af189763e9dc5e5cad51d46702044f1761616af69e4747bcd1e389"
     )
-    assert "PR #60 belongs to the newer [source snapshot]" in record
+    numbers = [int(re.match(r"\| \[#(\d+)\]", row)[1]) for row in rows]
+    assert numbers == list(range(1, len(rows) + 1))
     assert SOURCE in record and MATERIALS in record and MATERIAL_SOURCE in record
 
 
@@ -191,11 +182,7 @@ def test_material_contract_retains_security_erasure_and_f4_boundaries():
 
 
 def test_source_proofs_do_not_become_runtime_or_full_review_acceptance():
-    for name in (
-        "docs/architecture.md",
-        "docs/submission-status.md",
-        "docs/drafts/submission-writeup.txt",
-    ):
+    for name in ("docs/architecture.md", "docs/submission-status.md"):
         text = " ".join((ROOT / name).read_text().split())
         for expected in ("225 tests", "70 tests", "seven source checks", "not full R4"):
             assert expected in text, (name, expected)
@@ -209,7 +196,7 @@ def test_source_proofs_do_not_become_runtime_or_full_review_acceptance():
 
 
 def test_current_package_removes_stale_material_and_api_claims():
-    for name in (*DOCUMENTS, "docs/drafts/submission-writeup.txt"):
+    for name in DOCUMENTS:
         text = " ".join((ROOT / name).read_text().split())
         for stale in (
             "next API deployment is not yet executed",
@@ -227,20 +214,10 @@ def test_current_package_removes_stale_material_and_api_claims():
             "Obtain the Request19 closure",
         ):
             assert stale not in text, (name, stale)
-    checklist = (ROOT / "docs/submission-checklist.md").read_text()
-    assert "Request19 closure and separate verification receipts" in checklist
-    assert "preserve Request18 as FAILED" in checklist
-    assert "coordinated API/runner source" in checklist
 
 
 def test_request19_dated_update_preserves_failure_and_deployment_boundary():
-    for name in (
-        "HACKATHON.md",
-        "docs/architecture.md",
-        "docs/submission-status.md",
-        "docs/submission-checklist.md",
-        "docs/drafts/submission-writeup.txt",
-    ):
+    for name in ("HACKATHON.md", "docs/architecture.md", "docs/submission-status.md"):
         text = " ".join((ROOT / name).read_text().split())
         for expected in (
             "19:04:34 UTC",
@@ -249,15 +226,6 @@ def test_request19_dated_update_preserves_failure_and_deployment_boundary():
             "not a new code deployment",
         ):
             assert expected in text, (name, expected)
-    checklist = (ROOT / "docs/submission-checklist.md").read_text()
-    assert "- [x] Record the Request19 closure and separate verification receipts" in checklist
-    for pending in (
-        "Verify material ledger equality",
-        "Finish the complete 40-story corpus",
-        "Follow the README from a fresh browser context",
-        "Connect Muse to the prepared account",
-    ):
-        assert f"- [ ] {pending}" in checklist, pending
 
 
 def test_request19_receipt_records_verified_markers_without_new_runtime_actions():
@@ -323,30 +291,35 @@ def test_demo_sets_memory_once_and_uses_natural_questions():
     assert "Use Grove. What" not in text
 
 
-def test_drafts_do_not_require_a_public_repository_or_use_stale_counts():
-    for name in ("submission-writeup.txt", "x-post.txt"):
-        text = (ROOT / "docs/drafts" / name).read_text()
-        assert not re.search(r"\b\d+ (?:PRs|pull requests) merged", text)
-        assert "DRAFT FOR " not in text
-        assert "public repository links" not in text
-    post = (ROOT / "docs/drafts/x-post.txt").read_text().strip()
-    assert len(post) <= 280
-    assert "private" in post.lower()
+def test_documents_make_no_repository_visibility_claim():
+    """Visibility is a GitHub setting, so a public reader must not find a stale claim here."""
+    for name in DOCUMENTS:
+        text = " ".join((ROOT / name).read_text().split())
+        for stale in (
+            "PRIVATE",
+            "repository remains private",
+            "Keep the repository private",
+            "while the repository remains private",
+            "not a completed submission",
+        ):
+            assert stale not in text, (name, stale)
+    for removed in ("docs/drafts", "docs/submission-checklist.md"):
+        assert not (ROOT / removed).exists(), removed
 
 
-def test_checklist_keeps_submission_and_runtime_gaps_explicit():
-    text = (ROOT / "docs/submission-checklist.md").read_text()
-    for requirement in (
-        "PRIVATE",
-        "Final video: not supplied",
-        "Submission receipt: not supplied",
-        "NOT RUN",
-        "official event rules",
-        "typed-file graph admission",
-        "complete 40-story corpus",
-    ):
-        assert requirement in text
-    assert "https://example" not in text
+def test_third_party_notices_cover_every_vendored_file_and_font():
+    notices = (ROOT / "THIRD_PARTY_NOTICES.md").read_text()
+    for path in (ROOT / "web/vendor").iterdir():
+        if path.is_file():
+            assert f"web/vendor/{path.name}" in notices, path.name
+    css = (ROOT / "web/vendor/fonts.css").read_text()
+    families = set(re.findall(r"font-family:\s*'([^']+)'", css))
+    assert families
+    for family in families:
+        assert f"## {family}" in notices, family
+    assert notices.count("SIL OPEN FONT LICENSE Version 1.1") >= 2
+    for name in ("README.md", "HACKATHON.md"):
+        assert "(THIRD_PARTY_NOTICES.md)" in (ROOT / name).read_text(), name
 
 
 def test_all_submission_links_and_local_anchors_resolve():
