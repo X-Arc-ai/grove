@@ -25,6 +25,7 @@ from grove.writer.accounts import email_hash, ensure_demo_account
 from grove.writer.testing import plant_node, purge_test_account
 from tests.hosts.conftest import SECOND_TITLE, Person
 from tests.hosts.test_mcp_transport import BASE, READ, READ_WRITE, RESOURCE, bearer, issue
+from tests.hosts.test_store_component import complete
 
 OWN = "Quillon harbour lease"
 OTHER = "Vesperine orchard contract"
@@ -321,6 +322,34 @@ def test_a_revoked_or_expired_token_reads_nothing(driver, hosts_plant, web):
 
 
 # What recall returns ------------------------------------------------------------------------
+
+
+def test_a_saved_store_comes_back_through_recall_with_its_cited_words(driver, hosts_plant, web):
+    """Real queue, real runner pass and real writer rows, with a set proposal in place of a model."""
+    person = hosts_plant.person()
+    token = issue(driver, person, hosts_plant.client())
+    words = "The Quillon key hangs in the north shed."
+    arguments = {"text": words, "verbatim": False, "idempotency_key": "save-1"}
+
+    queued = web.post("/mcp", json=call("store", arguments), headers=bearer(token.access))
+
+    state = queued.json()["result"]["structuredContent"]
+    assert state["state"] == "saving"
+    context = ToolContext(
+        driver,
+        person.world_id,
+        person.user_id,
+        token.client_id,
+        frozenset(READ_WRITE),
+        token.grant_id,
+    )
+    complete(context, state["request_id"], title="Quillon key location")
+    answer = recall(web, token.access, {"about": "Quillon", "include": ["evidence"]})
+
+    assert titles(answer) == ["Quillon key location"]
+    card = answer["structuredContent"]["items"][0]
+    assert card["standing"] == "current"
+    assert [proof["excerpt"] for proof in card["evidence"]] == [words]
 
 
 def test_recall_leaves_out_forgotten_rows(driver, hosts_plant, web):
