@@ -1,12 +1,13 @@
 """Bounded observations of saved run metadata, never process liveness or work admission."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from grove.api.errors import unavailable
 from grove.runner.passes import PassSettings
 from grove.store.errors import Neo4jError
+from grove.store.probe import DriverError
 from grove.store.query import PlatformQuery, WorldQuery
 from grove.views.session import ViewSession
 
@@ -18,6 +19,10 @@ RECENT_LIMIT = 20
 MAX_COUNT = 2_147_483_647
 MAX_BYTES = 32 * 1024
 READ_TIMEOUT = 5.0
+TRAIL_RUNS = 20
+TRAIL_ITEMS = 50
+FRESH_DAYS = 30
+MAX_ID = 128
 
 # Equivalent to demo_policy.has_designation, with only booleans returned. In particular,
 # neither private account fields nor arbitrary stored marker values enter this read's result.
@@ -52,6 +57,58 @@ _RECENT = (
     "CASE WHEN r.outcome IN $outcomes THEN r.outcome ELSE 'unknown' END AS outcome, "
     "r.started AS started, r.finished AS finished "
     "ORDER BY r.started DESC, r.id DESC LIMIT $limit"
+)
+
+_AGENT_RUNS = (
+    "MATCH (r:RunRecord {agent: $agent}) "
+    "RETURN r.id AS id, CASE WHEN r.outcome IN $outcomes THEN r.outcome ELSE 'unknown' END "
+    "AS outcome, r.started AS started, r.finished AS finished "
+    "ORDER BY r.started DESC, r.id DESC LIMIT $limit"
+)
+# The WITH in each branch is what makes the planner seek an Item or a LINK by its id for each
+# entity. With the entry bound directly it scans every link of the store once per entry. The
+# scalars these reads return pass the WorldLeak guard, so the stamped patterns are the only wall.
+_CHANGED_RUNS = (
+    "UNWIND $run_ids AS run_id "
+    "CALL (run_id) { "
+    "MATCH (c:ChangeEntry {run_id: run_id, entity_type: 'item'}) "
+    "WITH DISTINCT c.entity_id AS entity_id "
+    "MATCH (:Item {id: entity_id}) "
+    "RETURN 1 AS hit LIMIT 1 "
+    "UNION "
+    "MATCH (c:ChangeEntry {run_id: run_id, entity_type: 'link'}) "
+    "WITH DISTINCT c.entity_id AS entity_id "
+    "MATCH (:Item)-[:LINK {id: entity_id}]->(:Item) "
+    "RETURN 1 AS hit LIMIT 1 "
+    "} "
+    "RETURN DISTINCT run_id"
+)
+_TRAIL_ROWS = (
+    "CALL () { "
+    "MATCH (c:ChangeEntry {run_id: $run_id, entity_type: 'item'}) "
+    "WITH c.entity_id AS entity_id, max(c.sequence) AS sequence "
+    "MATCH (i:Item {id: entity_id}) "
+    "RETURN i.id AS item_id, sequence "
+    "UNION ALL "
+    "MATCH (c:ChangeEntry {run_id: $run_id, entity_type: 'link'}) "
+    "WITH c.entity_id AS entity_id, max(c.sequence) AS sequence "
+    "MATCH (a:Item)-[:LINK {id: entity_id}]->(b:Item) "
+    "UNWIND [a.id, b.id] AS item_id "
+    "RETURN item_id, sequence "
+    "} "
+)
+_TRAIL_IDS = (
+    _TRAIL_ROWS + "WITH item_id, max(sequence) AS newest "
+    "RETURN item_id ORDER BY newest DESC, item_id LIMIT $limit"
+)
+_TRAIL_COUNT = _TRAIL_ROWS + "RETURN count(DISTINCT item_id) AS changed_items"
+# One aggregate row: the store counts the items, so no item row reaches this process.
+_FRESHNESS = (
+    "MATCH (i:Item) "
+    "WITH CASE WHEN i.touched_at IS :: ZONED DATETIME NOT NULL THEN i.touched_at END AS touched "
+    "RETURN count(*) AS total_items, count(touched) AS dated_items, "
+    "sum(CASE WHEN touched >= $cutoff AND touched <= $now THEN 1 ELSE 0 END) AS fresh_items, "
+    "max(touched) AS newest_change_at, min(touched) AS oldest_change_at"
 )
 
 
@@ -215,6 +272,123 @@ def worker_activity_payload(
         "recent_runs": recent,
         "recent_limit": RECENT_LIMIT,
         "recent_has_more": has_more,
+    }
+    if len(json.dumps(payload, separators=(",", ":"), allow_nan=False).encode()) > MAX_BYTES:
+        _refuse()
+    return payload
+
+
+def _valid_id(value: object) -> bool:
+    return type(value) is str and 0 < len(value) <= MAX_ID
+
+
+def _agent_runs(world: WorldQuery, agent: str) -> list[dict]:
+    rows = world.read(_AGENT_RUNS, agent=agent, limit=TRAIL_RUNS, outcomes=sorted(OUTCOMES))
+    if len(rows) > TRAIL_RUNS or any(
+        set(row) != {"id", "outcome", "started", "finished"} or not _valid_id(row["id"])
+        for row in rows
+    ):
+        _refuse()
+    return rows
+
+
+def _changed_runs(world: WorldQuery, run_ids: list[str]) -> list[str]:
+    if not run_ids:
+        return []
+    rows = world.read(_CHANGED_RUNS, run_ids=run_ids)
+    if len(rows) > len(run_ids) or any(
+        set(row) != {"run_id"} or row["run_id"] not in run_ids for row in rows
+    ):
+        _refuse()
+    return [row["run_id"] for row in rows]
+
+
+def _trail_items(world: WorldQuery, run_id: str) -> dict[str, Any]:
+    # The page goes first: a run that writes between the two reads can only raise the total.
+    rows = world.read(_TRAIL_IDS, run_id=run_id, limit=TRAIL_ITEMS)
+    counted = world.read(_TRAIL_COUNT, run_id=run_id)
+    if (
+        not 0 < len(rows) <= TRAIL_ITEMS
+        or any(set(row) != {"item_id"} or not _valid_id(row["item_id"]) for row in rows)
+        or len(counted) != 1
+        or set(counted[0]) != {"changed_items"}
+    ):
+        _refuse()
+    ids = [row["item_id"] for row in rows]
+    total = counted[0]["changed_items"]
+    if len(set(ids)) != len(ids) or type(total) is not int or not len(ids) <= total <= MAX_COUNT:
+        _refuse()
+    return {"changed_items": total, "item_ids": ids, "has_more": total > len(ids)}
+
+
+def _recorded_run(agent: str, row: dict) -> dict[str, Any]:
+    public = _public_run({**row, "agent": agent})
+    return {key: public[key] for key in ("outcome", "started_at", "finished_at")}
+
+
+def _agent_record(world: WorldQuery, agent: str) -> dict[str, Any]:
+    runs = _agent_runs(world, agent)
+    changed = _changed_runs(world, [row["id"] for row in runs])
+    newest_changed = next((row for row in runs if row["id"] in changed), None)
+    trail = None
+    if newest_changed is not None:
+        trail = _recorded_run(agent, newest_changed) | _trail_items(world, newest_changed["id"])
+    return {
+        "agent": agent,
+        "last_run": _recorded_run(agent, runs[0]) if runs else None,
+        "trail": trail,
+    }
+
+
+def _freshness(world: WorldQuery, moment: datetime) -> dict[str, Any]:
+    rows = world.read(_FRESHNESS, now=moment, cutoff=moment - timedelta(days=FRESH_DAYS))
+    if len(rows) != 1 or set(rows[0]) != {
+        "total_items",
+        "dated_items",
+        "fresh_items",
+        "newest_change_at",
+        "oldest_change_at",
+    }:
+        _refuse()
+    row = rows[0]
+    total, dated, fresh = row["total_items"], row["dated_items"], row["fresh_items"]
+    if any(type(value) is not int for value in (total, dated, fresh)):
+        _refuse()
+    if not 0 <= fresh <= dated <= total <= MAX_COUNT:
+        _refuse()
+    newest, oldest = _moment(row["newest_change_at"]), _moment(row["oldest_change_at"])
+    if dated and (newest is None or oldest is None or oldest > newest):
+        _refuse()
+    if not dated and (row["newest_change_at"] is not None or row["oldest_change_at"] is not None):
+        _refuse()
+    return {
+        "total_items": total,
+        "dated_items": dated,
+        "window_days": FRESH_DAYS,
+        "fresh_items": fresh,
+        "newest_change_at": _stamp(newest),
+        "oldest_change_at": _stamp(oldest),
+    }
+
+
+def worker_record_payload(driver: Any, session: ViewSession, *, now: datetime) -> dict[str, Any]:
+    """Separate bounded reads, not a common snapshot. It gives ids and counts, never item text."""
+    moment = _moment(now)
+    if moment is None:
+        _refuse()
+    world = WorldQuery(driver, session.world_id, timeout=READ_TIMEOUT)
+    try:
+        agents = [_agent_record(world, agent) for agent in AGENTS]
+        freshness = _freshness(world, moment)
+    except (Neo4jError, DriverError):
+        # DriverError holds a stored time the driver cannot read. Neither failure may look empty.
+        raise unavailable("worker activity is unavailable") from None
+    payload = {
+        "schema": "grove.worker-record.v1",
+        "observed_at": _stamp(moment),
+        "observation_kind": "stored_change_entries",
+        "agents": agents,
+        "freshness": freshness,
     }
     if len(json.dumps(payload, separators=(",", ":"), allow_nan=False).encode()) > MAX_BYTES:
         _refuse()
