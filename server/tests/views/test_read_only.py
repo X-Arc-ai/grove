@@ -100,8 +100,9 @@ def test_the_guard_sees_a_write(driver, world):
 
 
 def imports_of(path: Path) -> set[str]:
-    """Every module in each import form: `from grove.writer import x` is grove.writer.x, so a row
-    can name one submodule, and `from grove import writer` is grove.writer."""
+    """Each absolute import form: `from grove.writer import x` is grove.writer.x, so a row can name
+    one submodule, and `from grove import writer` is grove.writer. A relative import or a dynamic
+    import is not seen."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = set()
     for node in ast.walk(tree):

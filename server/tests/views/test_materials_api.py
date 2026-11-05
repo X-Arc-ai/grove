@@ -66,7 +66,8 @@ def test_note_create_reload_edit_and_delete(driver, material_world, material_cli
 
 
 def test_the_reads_of_a_real_note_run_in_read_mode_only(driver, material_world, material_client):
-    """An empty list never reaches summary or receipt_of, so this one holds a note."""
+    """An empty list never reaches summary, so this one holds a note. The note stays queued, so
+    the saved branch and receipt_of stay outside this test."""
     created = material_client.post(
         "/v1/materials/notes", json={"title": "Plan", "body": "Mira plans the launch."}
     )
