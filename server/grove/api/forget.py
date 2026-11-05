@@ -16,9 +16,8 @@ from grove.oauth.secrets import token_hash
 from grove.oauth.store import find_access_token
 from grove.privacy import flow_statement
 from grove.store.replay import ReplayRefused
-from grove.writer.errors import HTTP_STATUS, InvalidRecord
+from grove.writer.errors import HTTP_STATUS, InvalidRecord, LedgerUnavailable
 from grove.writer.forget_approvals import mint_approval, validate_target
-from grove.writer.forget_ledger import LedgerUnavailable
 
 PREFIX = "/v1/forget"
 MAX_BODY_BYTES = 16 * 1024
