@@ -36,7 +36,9 @@ SAME_PICTURE_CELLS = 60
 # The reader clock starts when the iframe is placed, before its first paint.
 READER_LEAD_SECONDS = 0.4
 # Rescaling a reference screen to the film width moves some cells on text edges.
-REFERENCE_CELLS = 60
+# The reference draws at full size and the film at its fitted scale, so text smoothing alone moves
+# 82 to 124 cells on the right screen. A wrong screen moved 301 to 330 in the recorded red.
+REFERENCE_CELLS = 200
 STEPS = {
     "muse": [
         "Connect Muse to Grove through a remote MCP connector.",
@@ -348,6 +350,7 @@ def assert_pause(page, helper, pictures, count):
     known = [index for index, known in enumerate(pictures) if same(known, start)]
     following = pictures[(known[0] + 1) % count] if known else None
     assert following is not None and same(following, changed), "Play must show the next frame"
+    page.wait_for_timeout(250)  # The reader follows the film on a 100 ms timer.
     assert reader_index(page) == (step + 1) % count, "Play must advance the reader"
 
 
