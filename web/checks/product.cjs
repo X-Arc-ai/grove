@@ -45,7 +45,7 @@ for(const provider of ['muse','chats','chatgpt','claude','grok']){
 p.ui.guide='claude';p.ui.guideStage=1;p.render(true);assert(p.html().includes('data-action="source-picker"'));p.handle('source-picker');frame();assert.equal(p.ui.guide,null);p.ui.guide='chatgpt';p.handle('sources-back');frame();assert.equal(p.ui.guide,null);assert.equal(p.ui.panel,'profile');
 p.handle('connections');assert.equal(p.ui.panel,'profile');assert.equal(p.ui.settingsTab,'connections');
 assert(p.html().includes('data-settings-tab="connections" class="is-current"'));assert(p.html().includes('Custom MCP'));assert(p.html().includes('mcp.grove.example/mcp'));
-p.ui.step=4;assert(p.stepContent().includes('Custom MCP'));p.ui.step=3;assert(p.stepContent().includes('Your files'));assert(p.stepContent().includes('Your notes'));
+p.ui.step=3;assert(!p.stepContent().includes('Custom MCP'));assert(p.stepContent().includes('Your files'));assert(p.stepContent().includes('Your notes'));
 assert(!p.transferFilm('chats').includes('<i>'));assert(p.transferFilm('chats').includes('→'));
 p.ui.guide='chats';p.ui.guideStage=0;p.ui.guideDevice='desktop';p.render(true);assert(!p.html().includes('data-guide-device="desktop"'));assert(p.html().includes('Save to iCloud Drive'));assert.equal(c.GroveWhatsAppGuide.frames('android').length,6);p.ui.guide=null;
 api.addMcpClient('My AI');assert.equal(api.getState().mcpClients.length,1);api.addMcpClient('my ai');assert.equal(api.getState().mcpClients.length,1);api.removeMcpClient(api.getState().mcpClients[0].id);assert.equal(api.getState().mcpClients.length,0);

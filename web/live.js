@@ -22,6 +22,9 @@
     pendingExports: '/v1/sources/pending-exports',
     sourceCoverage: '/v1/sources/connectors',
     sourceConnections: '/v1/connectors',
+    pipedreamAccounts: '/v1/views/pipedream/accounts',
+    forgetApprove: '/v1/forget/approve',
+    forget: '/v1/forget',
     materials: '/v1/materials',
     materialFiles: '/v1/materials/files',
     materialNotes: '/v1/materials/notes',
@@ -246,6 +249,15 @@
       });
     },
     pendingExports: function () { return getJSON(ENDPOINTS.pendingExports); },
+    // D14's two steps, for one target the person confirmed in this page.
+    forget: function (target) {
+      return postJSON(ENDPOINTS.forgetApprove, { target: target, confirm: true }).then(function (res) {
+        if (!res.ok) return res;
+        if (!res.body || !res.body.approval_token) return { ok: false, status: res.status, body: null };
+        return postJSON(ENDPOINTS.forget, { target: target, approval_token: res.body.approval_token });
+      });
+    },
+    disconnectConnection: function (id) { return postJSON(ENDPOINTS.sourceConnections + '/' + encodeURIComponent(id) + '/disconnect', {}); },
     errorText: errorText,
     agentFiles: function () {
       var sentIn = sessionsBegun;
