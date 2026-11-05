@@ -206,14 +206,18 @@ def test_preflight_is_pure_repeatable_and_immutable(tools, context, monkeypatch,
     assert_no_handlers(tools, respond)
 
 
-def test_default_registry_and_unknown_recall_remain_unavailable(context):
-    assert DEFAULT_TOOLS == ()
+def test_an_unregistered_recall_is_not_executable(context):
     payload = call("recall")
-    assert transport.preflight(payload, DEFAULT_TOOLS, context).has_executable_recall is False
-    assert (
-        transport.answer(payload, DEFAULT_TOOLS, context).body["error"]["code"]
-        == transport.INVALID_PARAMS
-    )
+    assert transport.preflight(payload, (), context).has_executable_recall is False
+    assert transport.answer(payload, (), context).body["error"]["code"] == transport.INVALID_PARAMS
+
+
+def test_the_default_registry_has_an_executable_recall_and_refuses_a_mixed_batch(context):
+    assert transport.preflight(call("recall"), DEFAULT_TOOLS, context).has_executable_recall is True
+    batch = [call("store", message_id=1), call("recall", message_id=2)]
+    with pytest.raises(ApiError) as refused:
+        transport.preflight(batch, DEFAULT_TOOLS, context)
+    assert refused.value.details["rule"] == "mixed_read_write_batch"
 
 
 def test_single_call_keeps_arguments_context_and_tool_error(tools, context):

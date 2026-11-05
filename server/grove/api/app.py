@@ -39,6 +39,7 @@ from grove.api.internal import PREFIX as INTERNAL_PREFIX
 from grove.api.internal import router as internal_router
 from grove.api.mail import Mailer
 from grove.api.oauth import OAUTH_PATHS, OAuthDeps
+from grove.api.packet_release import PacketReleaseMiddleware
 from grove.api.views import PREFIX, router
 from grove.demo_guard import ReleaseFile, configuration
 from grove.mcp.demo import DemoReleaseMiddleware
@@ -233,6 +234,13 @@ def create_app(
             response.headers["Cache-Control"] = "no-store"
         return response
 
+    # Outside no_store, which chunks a body again, and inside the demo guard, whose shield would
+    # let a worker outlive this response scope. An ordinary token leaves the guard before it.
+    app.add_middleware(
+        PacketReleaseMiddleware,
+        paths=frozenset({mcp.MCP_PATH, f"{mcp.MCP_PATH}/"}),
+        require_activation=True,
+    )
     app.add_middleware(DemoReleaseMiddleware, config=demo_config)
     app.include_router(health.router)
     app.include_router(wellknown.router)

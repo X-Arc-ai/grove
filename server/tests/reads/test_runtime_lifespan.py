@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from grove.api.app import create_app
 from grove.api.config import ApiSettings
 from grove.config import Settings
-from grove.mcp.tools import DEFAULT_TOOLS
 from grove.oauth.store import TokenRow
 from grove.reads.runtime import ReadRuntime
 from grove.store.connection import open_driver, open_read_driver
@@ -172,9 +171,9 @@ def test_capture_runtime_does_not_activate_general_public_reads(monkeypatch):
     )
     monkeypatch.setattr("grove.api.mcp._live_token", lambda *_: token)
     monkeypatch.setattr("grove.api.app.configuration", lambda: None)
+    monkeypatch.setattr("grove.mcp.demo.require_general_access", lambda *_, **__: None)
     runtime = ReadRuntime(AsyncMock())
-    app = create_app(SETTINGS, driver=object(), read_runtime=runtime)
-    assert DEFAULT_TOOLS == ()
+    app = create_app(SETTINGS, driver=object(), read_runtime=runtime, mcp_tools=())
     with TestClient(app) as client:
         headers = {"Authorization": "Bearer synthetic-test-token"}
         listed = client.post(
