@@ -50,6 +50,7 @@ function makeServer(world){
     }
     if(u.pathname==='/v1/views/schema'){if(world.schemaThrows)return Promise.reject(new TypeError('Failed to fetch'));if(world.schemaStatus)return typed(world.schemaStatus,world.schemaStatus===401?'unauthenticated':'unavailable','Sign in to continue');return held(world.holdSchema,reply(200,world.schema||{}));}
     if(u.pathname==='/v1/views/health')return reply(200,{status:'healthy',summary:'Your Grove is ready',checks:{graph:'ready',sources:'ready'},nodes:world.nodes.length,edges:world.edges.length,by_type:{},overall:{state:'healthy'}});
+    if(u.pathname==='/v1/sources/pending-exports'&&method==='GET')return reply(200,{account:world.account||null,revision:0,pending_exports:{}});
     if(u.pathname==='/v1/views/positions'&&method==='POST'){
       assert.equal(init.headers['Content-Type'],'application/json');
       assert(Array.isArray(body.positions)&&body.positions.length>=1&&body.positions.length<=5000,'1 to 5000 positions per request');
@@ -103,8 +104,11 @@ function page(server,store,files,hook,size,prepare){
   // As index.html starts them: the search and the selection pill are closed, and the box is empty.
   for(const id of ['search-overlay','selection-pill']){elements[id]=makeElement('div');elements[id].setAttribute('hidden','');}
   elements['search-input']=Object.assign(makeElement('input'),{value:''});
+  const toggleLabel=makeElement('label');elements['agents-toggle']=Object.assign(makeElement('input'),{closest:()=>toggleLabel});
   if(prepare)prepare(elements,env);
-  const document={hidden:false,body:makeElement('body'),documentElement:makeElement('html'),createElement:makeElement,getElementById:id=>elements[id]||(elements[id]=makeElement('div')),querySelector:()=>null,querySelectorAll:()=>[],addEventListener(){},removeEventListener(){}};
+  // The panel agents.js builds finds its own parts in its markup, which this page double does not parse.
+  const createElement=tag=>{const el=makeElement(tag);if(tag==='aside')el.querySelector=()=>makeElement('span');return el;};
+  const document={hidden:false,body:makeElement('body'),documentElement:makeElement('html'),createElement,getElementById:id=>elements[id]||(elements[id]=makeElement('div')),querySelector:()=>null,querySelectorAll:()=>[],addEventListener(){},removeEventListener(){}};
   const sandbox={URL,URLSearchParams,Math,JSON,Date,Promise,MutationObserver:class{observe(){}},
     console:{log(){},info(){},warn:(...a)=>warnings.push(a),error:(...a)=>errors.push(a)},
     setTimeout:(fn,ms)=>{timeouts.push({fn,ms});return 0;},clearTimeout(){},setInterval:(fn,ms)=>intervals.push({fn,ms}),clearInterval(){},requestAnimationFrame:()=>0,cancelAnimationFrame(){},
@@ -154,7 +158,7 @@ function legendRows(elements){
   // 1. live.js: one endpoint map, same-origin fetch helpers, positions in batches of 5000.
   {
     const server=makeServer(liveWorld()),pg=page(server,{},['live.js']),G=pg.sandbox.GroveLive;
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',workerRecord:'/v1/views/workers/record',positions:'/v1/views/positions',upload:'/v1/sources/upload',pendingExports:'/v1/sources/pending-exports',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',materials:'/v1/materials',materialFiles:'/v1/materials/files',materialNotes:'/v1/materials/notes',materialDetail:'/v1/materials/{id}',materialEdit:'/v1/materials/notes/{id}',materialPreview:'/v1/materials/{id}/delete-preview',materialConfirmation:'/v1/materials/{id}/delete-confirmations',materialDelete:'/v1/materials/{id}/delete',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',workerRecord:'/v1/views/workers/record',positions:'/v1/views/positions',upload:'/v1/sources/upload',pendingExports:'/v1/sources/pending-exports',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',materials:'/v1/materials',materialFiles:'/v1/materials/files',materialNotes:'/v1/materials/notes',materialDetail:'/v1/materials/{id}',materialEdit:'/v1/materials/notes/{id}',materialPreview:'/v1/materials/{id}/delete-preview',materialConfirmation:'/v1/materials/{id}/delete-confirmations',materialDelete:'/v1/materials/{id}/delete',agentFiles:'/v1/agent-files',agentNotes:'/v1/agent-files/notes',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
     const res=await G.getJSON('/v1/views/health');assert(res.ok&&res.body.overall.state==='healthy');
     assert.equal(server.calls[0].method,'GET');assert.equal(server.calls[0].init.credentials,'same-origin');
     const many=[];for(let i=0;i<12000;i++)many.push({id:i<11990?synthetic.elements.nodes[i%222].data.id:'x'+i,x:i,y:-i});
@@ -364,7 +368,7 @@ function legendRows(elements){
     bp.ui.panel='profile';bp.ui.settingsTab='account';bp.render(true);
     assert(!/anas@example\.com|Anas/.test(bp.html()),'Account shows no example identity');
     assert(bp.html().includes('Signed in with Google')&&bp.html().includes('<small>You</small>'),'Account shows the sign-in method and a neutral name');
-    assert.equal(back.elements['profile-button'].textContent,'Y');
+    assert(back.elements['profile-button'].innerHTML.includes('<circle cx="12" cy="8" r="3.5"/>'),'The account button shows the person icon');assert.equal(back.elements['profile-button'].textContent,'','No initial comes from a name that nobody gave');
     // An email sign-in shows the typed address.
     const typed=page(sv,done(),AUTH_FILES,HOOK);await settle();const tp=typed.sandbox.productTest;w.session=false;
     typed.sandbox.GroveSimulation.signOut();tp.ui.authStage='signin';await tp.startEmail('sam.reyes@example.org');await tp.verifyEmail('246810');
@@ -441,7 +445,7 @@ function legendRows(elements){
     assert.equal(t.V.nodes().length,0,label+': no node in memory');assert.equal(t.V.graph()?t.V.graph().graphData().nodes.length:0,0,label+': no node on the map');
     assert.deepStrictEqual(JSON.parse(JSON.stringify(t.pg.sandbox.__mapState())),MAP_EMPTY,label+': the map keeps nothing in memory');
     assert.equal(t.pg.elements['legend-list'].innerHTML,'',label+': the legend is empty');
-    assert.equal(t.pg.elements.stats.innerHTML,'<span>0 nodes</span> <span class="gp-stat-divider">·</span> <span>0 connections</span>',label+': the counts are zero');
+    assert.equal(t.pg.elements.stats.innerHTML,'<span>0 nodes</span> <span class="gp-stat-divider">·</span> <span>0 connections</span><span class="stats-baseline"> · First graph check is the baseline</span>',label+': the counts are zero and no earlier graph check stays');
     assert.equal(t.pg.elements['detail-body'].innerHTML,'',label+': the node panel is empty');assert(!t.pg.elements.detail.classList.contains('open'),label+': the node panel is closed');assert.equal(t.pg.elements.detail.getAttribute('aria-hidden'),'true',label+': the node panel is out of reach');
     assert.equal(t.S.getState().currentNodeCount,0,label+': the last payload is gone');assert.equal(t.S.getState().currentEdgeCount,0,label+': the last payload holds no link');
     const E=t.pg.elements;
@@ -637,6 +641,14 @@ function legendRows(elements){
     assert.deepStrictEqual(t.pg.errors,[],'late kinds: no error');
   }
 
+  // 6i-a. The node read answers: the panel shows its content, not the summary the graph gave.
+  {
+    const t=await sessionPage(liveWorld()),full='The whole text of this item, from the node read';
+    t.w.nodes.find(n=>n.id==='t001').summary=full;t.V.openNode('t001');await settle();
+    assert(t.pg.elements['detail-body'].innerHTML.includes(full),'The node panel shows the content of the node read');
+    t.V.close();await settle();
+  }
+
   for(const fail of [{schemaStatus:503},{schemaThrows:true}]){
     const w=liveWorld();Object.assign(w,fail);
     const t=await sessionPage(w);assertSignedIn(t,'kinds, a failed read');
@@ -699,8 +711,10 @@ function legendRows(elements){
     const saved=Object.fromEntries(retry[1].body.positions.map(q=>[q.id,q]));
     assert.equal(Object.keys(saved).length,w.nodes.length,'The retry saves every item');
     for(const [id,at] of Object.entries(drawn)){const q=saved[id==='grove-self'?'p001':id];assert(q&&q.x===at.x&&q.y===at.y,'The retry saves the original stored place of '+id);}
-    const seen=fgPositions(pg),later=page(sv,st,GRAPH_FILES);await settle();
-    assert.deepStrictEqual(fgPositions(later),seen,'A later page load moves nothing');
+    // The display is a projection of the current graph, so a refresh keeps old places and a fresh page may not.
+    const seen=placedPositions(pg),later=page(sv,st,GRAPH_FILES);await settle();const again=page(sv,st,GRAPH_FILES);await settle();
+    assert.deepStrictEqual(placedPositions(later),seen,'A later page load keeps the stored map');
+    assert.deepStrictEqual(fgPositions(again),fgPositions(later),'A later page load moves nothing');
     assert.equal(positionsCalls(sv).length,2,'A later page load saves nothing');
     assert.deepStrictEqual(later.errors,[],'failed save: no error');
   }
@@ -780,7 +794,7 @@ function legendRows(elements){
       }
       assert.equal(swatch('recipe'),tokens['--ring-task'],'An unknown kind takes the legend colour of a task');
       const task=look('t001'),unknown=look('k001');
-      assert.equal(task.radius,10,'A task draws at the task size');assert.equal(unknown.radius,10,'An unknown kind takes the task size');
+      assert.equal(task.radius,6,'A task draws at the task size');assert.equal(unknown.radius,6,'An unknown kind takes the task size');
       assert.equal(unknown.ring,tokens['--ring-task'],'An unknown kind takes the ring colour of a task');assert.equal(unknown.width,task.width,'An unknown kind takes the ring weight of a task');
     }
   }
@@ -820,7 +834,7 @@ function legendRows(elements){
     const addLeaf=(id,type,targets)=>{w.nodes.push(Object.assign({},w.nodes[1],{id,label:'New '+id,type,status:'',summary:''}));targets.forEach((target,i)=>w.edges.push({id:id+'-e'+i,source:id,target,verb:'related to',label:'related to'}));};
     addLeaf('aimed-at-hub','observation',pair);addLeaf('aimed-at-self','observation',['p001']);
     const arrived=await capture();
-    const insideAny=(snapshot,ids)=>{const out=[];for(const id of ids){const q=snapshot.out.positions[id];for(const h of snapshot.items){if(!/organisation|plan/.test(h.type))continue;const at=snapshot.out.positions[h.id],r=snapshot.room(h),d=Math.hypot(q.x-at.x,q.y-at.y);if(d<r)out.push(id+' in '+h.id+' ('+d.toFixed(1)+' < '+r+')');}}return out;};
+    const insideAny=(snapshot,ids,roomOf=snapshot.room)=>{const out=[];for(const id of ids){const q=snapshot.out.positions[id];for(const h of snapshot.items){if(!/organisation|plan/.test(h.type))continue;const at=snapshot.out.positions[h.id],r=roomOf(h),d=Math.hypot(q.x-at.x,q.y-at.y);if(d<r)out.push(id+' in '+h.id+' ('+d.toFixed(1)+' < '+r+')');}}return out;};
     assert.deepStrictEqual(insideAny(arrived,['aimed-at-hub','aimed-at-self']),[],'No new stored home enters a reserved hub disc');
     const self=arrived.out.positions['grove-self'],q=arrived.out.positions['aimed-at-self'];
     assert(Math.hypot(q.x-self.x,q.y-self.y)>=90,'A stored home stays out of the reserved identity disc');
@@ -828,31 +842,36 @@ function legendRows(elements){
     for(let i=0;i<300;i++)addLeaf('mass-'+i,'observation',[ended.id]);
     const grownBig=await capture(),back=grownBig.items.find(n=>n.id===ended.id);
     assert.equal(back._hubR,62,'The original stored seed grows to its largest hub size');
-    assert.deepStrictEqual(grownBig.out.positions[ended.id],base[ended.id],'The hub keeps its stored place');
-    assert.deepStrictEqual(insideAny(grownBig,['aimed-at-hub','aimed-at-self']),[],'A stored item stays out of the reserved disc after growth');
+    assert.deepStrictEqual({...grownBig.out.positions[ended.id]},{...base[ended.id]},'The hub keeps its stored place');
+    // A placed item never moves, so the reservation is the largest drawn disc, without the padding a new item gets.
+    assert.deepStrictEqual(insideAny(grownBig,['aimed-at-hub','aimed-at-self'],()=>back._hubR),[],'A stored item stays out of the largest drawn disc after growth');
     assert.deepStrictEqual(insideAny(grownBig,w.nodes.filter(n=>n.id.startsWith('mass-')).map(n=>n.id)),[],'New stored homes stay out of reserved hub discs');
     assertFiniteMap(fgPositions(grownBig.pg),grownBig.items.map(n=>n.id),'The grown display remains finite and complete');
   }
 
-  // 6v. The workers panel on the real page: it counts from the graph, the end of a session empties
-  //     it (native-app tells agents.js), and the next session's first graph starts its own loop.
+  // 6v. The workers panel on the real page: a live account shows stored run records, so no loop runs
+  //     and a stored view choice opens nothing. The end of a session empties the panel (native-app
+  //     tells agents.js), and the next session reads its own records.
   {
     const st=signedInStore();st['grove-minimal-codex-agents']='1';
     const w=liveWorld(),sv=makeServer(w),pg=page(sv,st,[...ALL_FILES,'agents.js'],HOOK);
-    // The panel agents.js builds finds its own parts in its markup, which this page double does not parse.
-    const made=pg.sandbox.document.createElement;pg.sandbox.document.createElement=tag=>{const el=made(tag);el.querySelector=()=>makeElement('span');return el;};
     await settle();
     const t={w,sv,st,pg,p:pg.sandbox.productTest,S:pg.sandbox.GroveSimulation,V:pg.sandbox.GroveView};
-    const care=()=>pg.sandbox.GroveCare.summary();
-    assert.equal(care().enabled,true,'The workers view is on');
-    await pg.sandbox.reloadGrove();await settle();
-    assert(care().areas>0,'The workers loop reads the graph');
+    const agents=['learner','curator','connector'].map((agent,i)=>({agent,policy:{state:i?'disabled':'limited',reason:i?'demo_autonomous_disabled':'demo_learner_only'},capability:{state:i===1?'unavailable':'limited',reason:['legacy_learner_only','curator_authority_unavailable','legacy_connector_only'][i]},activity:{state:i?'idle':'recorded_running',running_records:i?0:1,stale_records:0}}));
+    pg.sandbox.GroveLive.workers=async()=>({ok:true,status:200,body:{schema:'grove.worker-activity.v1',observed_at:'2026-11-04T12:00:00Z',observation_kind:'stored_run_records',service_state:'unknown',service_reason:'no_process_heartbeat',recent_limit:20,recent_has_more:false,agents,recent_runs:[]}});
+    const care=()=>pg.sandbox.GroveCare.summary(),learner=()=>care().workers.learner;
+    assert.equal(care().enabled,false,'A stored choice opens no workers view');assert.equal(care().running,false,'The display starts no work');
+    assert.equal(learner(),'No activity loaded','Nothing shows before a read');
+    await pg.sandbox.GroveCare.refresh();
+    assert.equal(learner(),'Run recorded as active','The panel shows the stored run record');
     goneNow(w);await pg.sandbox.reloadGrove();await settle();
     assertCleared(t,'workers on');
-    assert.equal(care().areas,0,'The workers loop drops the ended session');
+    assert.equal(learner(),'No activity loaded','The panel drops the ended session');
     assert.deepStrictEqual([...pg.sandbox.__hood.turns()],[],'No turn of the ended session stays');
     w.graphStatus=0;await t.p.startEmail('robin.vale@example.org');await t.p.verifyEmail('246810');await settle();
-    assert(care().areas>0,'The next session starts its own workers loop');
+    assert.equal(learner(),'No activity loaded','The next session starts with no record of the last one');
+    await pg.sandbox.GroveCare.refresh();
+    assert.equal(learner(),'Run recorded as active','The next session reads its own records');
     assert.deepStrictEqual(pg.errors,[],'workers on: no error');
   }
 
@@ -925,7 +944,7 @@ function legendRows(elements){
     const cover=t.pg.elements.loading;
     assert(cover.classList.contains('hidden'),'The loading cover steps aside for the card');assert(!/Unable to open/.test(cover.textContent),'No map failure text over the card');
     assert.deepStrictEqual(cardAlerts(t.form),[OFFLINE],'The card shows the offline text');assert.equal(t.p.ui.authStage,'signin');
-    assert.equal(t.pg.errors.length,1,'The failed graph read is reported');
+    assert.deepStrictEqual(t.pg.errors,[],'A failed read of a view that was cleared changes and reports nothing');
     // Signed in here: the map cannot draw, so its own failure text shows, with the note over it.
     const w2=liveWorld();Object.assign(w2,{sessionStatus:503,graphStatus:503});
     const t2=await sessionPage(w2);const cover2=t2.pg.elements.loading;
@@ -1023,9 +1042,9 @@ function legendRows(elements){
     const xs=t.V.nodes().map(n=>n.x);assert(Math.abs(G.center.x-(Math.min(...xs)+Math.max(...xs))/2)<1,'The frame is centred on the next map');
   }
   {
-    // A poll ran before the end: its graph signature leaves with the session.
-    const t=await sessionPage(liveWorld()),poll=t.pg.intervals.find(i=>i.ms===180000);
-    poll.fn();await settle();assert(t.pg.sandbox.__mapState()._evoSig,'A poll keeps the signature of the graph');
+    // A poll ran before the end: the graph it read leaves with the session.
+    const t=await sessionPage(liveWorld()),poll=t.pg.intervals.find(i=>i.ms===180000),reads=()=>t.sv.calls.filter(c=>c.path==='/v1/views/graph').length,before=reads();
+    poll.fn();await settle();assert.equal(reads(),before+1,'A poll reads the graph');
     goneNow(t.w);await t.pg.sandbox.reloadGrove();await settle();assertCleared(t,'a poll ran');
   }
   {
@@ -1106,9 +1125,9 @@ function legendRows(elements){
     clickKind(pg,'observation');
     assert(drawn().includes('kind-seen'),'It comes back with its kind');assert(linked().includes('kind-seen>kind-task>about'),'It comes back with its link');
     atStored('the hidden kind shown again');
-    // A later page load draws the same map.
-    const later=page(sv,st,GRAPH_FILES);await settle();
-    for(const n of later.sandbox.GroveView.nodes()){const at=display[n.id];assert(n.__home[0]===at.x&&n.__home[1]===at.y,'A later load keeps the display place of '+n.id);}
+    // A later page load draws the same map as any other fresh page: the display is a projection of the current graph.
+    const later=page(sv,st,GRAPH_FILES);await settle();const again=page(sv,st,GRAPH_FILES);await settle();const fresh=fgPositions(again);
+    for(const n of later.sandbox.GroveView.nodes()){const at=fresh[n.id];assert(n.__home[0]===at.x&&n.__home[1]===at.y,'A later load keeps the display place of '+n.id);}
     assert.equal(JSON.stringify(w.positions),storedBefore,'A later load changes no stored coordinate');
     assert.deepStrictEqual(pg.errors,[],'legend: no error');
   }
@@ -1147,7 +1166,7 @@ function legendRows(elements){
   // A page at an address: env.search and env.pathname, with a history that records each new address.
   function signinPage(w,st,where){
     const sv=makeServer(w),addresses=[];
-    let pg;pg=page(sv,st,ALL_FILES,HOOK,null,(el,env)=>{Object.assign(env,{search:'',pathname:'/signin'},where);if(!(where&&where.noHistory))env.globals.history=where&&where.badHistory?{replaceState(){throw new Error('denied');}}:{replaceState:(s,t,url)=>{addresses.push(url);if(pg)pg.sandbox.location.pathname=url;}};});
+    let pg;pg=page(sv,st,ALL_FILES,HOOK,null,(el,env)=>{Object.assign(env,{search:'',pathname:'/signin'},where);if(!(where&&where.noHistory))env.globals.history=where&&where.badHistory?{replaceState(){throw new Error('denied');}}:{replaceState:(s,t,url)=>{addresses.push(url);if(pg){const to=new URL(url,'http://grove.test/');Object.assign(pg.sandbox.location,{pathname:to.pathname,search:to.search});}}};});
     return {w,sv,st,pg,addresses,p:pg.sandbox.productTest,S:pg.sandbox.GroveSimulation,graphReads:()=>sv.calls.filter(c=>c.path==='/v1/views/graph').length};
   }
   const signedOutWorld=()=>Object.assign(liveWorld(),{session:false,graphStatus:401});
@@ -1320,12 +1339,12 @@ function legendRows(elements){
   const banned=new RegExp([['ham','za'],['ham','py'],['aa','tar']].map(p=>p.join('')).join('|'),'i');
   assert(!banned.test(dist),'The bundle holds none of the banned words');
   assert(dist.includes('window.GroveLive')&&dist.includes('GroveLayoutKeep')&&dist.includes('<title>Grove</title>'));
-  // build.py percent-encodes A and a inside data: URLs; a data: URL is percent-decoded before
-  // its base64 is read, so every vendored font still decodes to its exact bytes.
+  // build.py writes each vendored font to dist/assets under the hash of its bytes, and the page
+  // links it on the same origin, so every font the page names holds its exact vendored bytes.
   const fontFiles=[...new Set([...read('vendor/fonts.css').matchAll(/url\((fonts\/[^)]+)\)/g)].map(m=>m[1]))];
   const fontBytes=fontFiles.map(f=>fs.readFileSync(path.join(web,'vendor',f)));
-  const encoded=[...new Set([...dist.matchAll(/url\((data:font\/woff2;base64,[^)]*%(?:41|61)[^)]*)\)/g)].map(m=>m[1]))];
-  assert.equal(encoded.length,fontFiles.length,'Every vendored font is embedded, encoded');
-  for(const uri of encoded){const bytes=Buffer.from(await (await fetch(uri)).arrayBuffer());assert(fontBytes.some(b=>b.equals(bytes)),'An encoded font decodes to its vendored bytes');}
+  const built=[...new Set([...dist.matchAll(/url\(\/assets\/grove\/([a-f0-9]{64})\.woff2\)/g)].map(m=>m[1]))];
+  assert.equal(built.length,fontFiles.length,'Every vendored font is built');
+  for(const hash of built){const bytes=fs.readFileSync(path.join(web,'dist','assets',hash+'.woff2'));assert(fontBytes.some(b=>b.equals(bytes)),'A built font holds its vendored bytes');assert.equal(require('crypto').createHash('sha256').update(bytes).digest('hex'),hash,'A built font is named by its bytes');}
   console.log('PASS: the way back to the consent page after Google, the email code or a session in hand, and no other next; the Google error on the card, the limit on codes, the address after a sign-in, the account binding and resume; one endpoint map with same-origin calls and batched positions, live routes and the self alias, live counts and empty imports, first-visit save under real ids, kept positions after a reload and after new items arrive, only new items saved, failed saves retried with the same positions, starter kinds as hubs and legend names, local identity node, typed errors, session check, Google start, Apple not available, email code start and verify with errors, logout, item text that never runs in the node panel or behind Show more, kind names as text with a working legend toggle, a 401 mid-session (reload, poll, node detail, position save) that ends on the sign-in card with the graph cleared, a read out at that moment (reload, poll) that draws nothing and brings no title back, a new session in the same page that keeps none of the old places and saves its own, unblocked and not ended by what the old session had out, search results, the selection pill and hidden kinds that end with the session, a retry after a failed save that keeps the drawn places, a rejected node read after the end that draws nothing, a late 401 that keeps the code step, a next session whose poll works, logout only when the server confirms it (network down too), offline text at each sign-in step, the look of starter and unknown kinds from the style tokens of the page, new leaves at their seed offset, no new home in a drawn hub disc or the identity disc, even after a hub grows, no local questions from store titles, no example identity in live mode, and a session check that fails with anything but a 401 and keeps the local state with the offline text, a session end that leaves no tour, address, code, confirmation, guide, host step, error or moved camera and nothing in the memory of the map, a legend click that only hides and shows, fixture mode that keeps the relayout and URL settings of the sim, a live first visit that no URL setting changes, and a built page with no fixture');
 })().catch(e=>{console.error(e);process.exitCode=1;});

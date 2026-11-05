@@ -701,7 +701,7 @@ def health_run(ledger, browser, base, width, theme, shots):
     context.close()
 
 
-def main(shots, keep_going):
+def main(shots, keep_going=False, only=None):
     shots.mkdir(parents=True, exist_ok=True)
     subprocess.run(
         [sys.executable, str(WEB / "build.py")],
@@ -716,6 +716,8 @@ def main(shots, keep_going):
             browser = pw.chromium.launch(headless=True)
             for width in (1440, 390):
                 for theme in ("light", "dark"):
+                    if only and only != f"{width}:{theme}":
+                        continue
                     health_run(ledger, browser, base, width, theme, shots)
                     reduced_run(ledger, browser, base, width, theme, shots)
                     deferred_run(ledger, browser, base, width, theme, shots)
@@ -732,5 +734,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--shots", type=Path, required=True)
     parser.add_argument("--keep-going", action="store_true")
+    parser.add_argument("--only", help="one view, for example 390:dark")
     args = parser.parse_args()
-    sys.exit(main(args.shots, args.keep_going))
+    sys.exit(main(args.shots, args.keep_going, args.only))
