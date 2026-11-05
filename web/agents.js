@@ -82,6 +82,8 @@
       graph.graphData().nodes.forEach(function(node){var real=liveState.realId(node.id);if(real!==null)shown[real]=node.id;});
       return ids.filter(function(id){return id in shown;}).map(function(id){return shown[id];});
     }
+    // A checkbox holds no text, so Escape still means Overview there.
+    function typing(target){var tag=target&&target.tagName||'';return /textarea/i.test(tag)||/input/i.test(tag)&&!/checkbox|radio/i.test(target.type||'');}
     function followable(agent){var row=recordRow(agent);return !!(row&&row.trail)&&onMap(row.trail.item_ids).length>0;}
     function recordWords(agent){
       if(recordStatus==='loading')return 'Checking recorded work…';
@@ -267,7 +269,7 @@
     // Capture: the search and the dialogs keep their own Escape, and the map's handler would clear the selection first.
     document.addEventListener('keydown',function(e){
       var search=document.getElementById('search-overlay');
-      if(e.key!=='Escape'||!followed||(search&&!search.hasAttribute('hidden'))||document.querySelector('.gp-dialog')||/input|textarea/i.test((e.target&&e.target.tagName)||''))return;
+      if(e.key!=='Escape'||!followed||(search&&!search.hasAttribute('hidden'))||document.querySelector('.gp-dialog')||typing(e.target))return;
       endFollow(true);
     },true);
     // Any other way the map drops the selection (its clear button, a node, a filter) ends the follow.

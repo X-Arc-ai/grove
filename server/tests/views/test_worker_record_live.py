@@ -320,6 +320,27 @@ def test_item_ids_are_newest_first_by_each_items_newest_entry(driver, world):
     assert learner(driver, world)["trail"]["item_ids"] == [first, third, second]
 
 
+def test_an_item_ranks_by_its_newest_entry_across_item_and_link_entries(driver, world):
+    linked, other, later = (plant_item(driver, world) for _ in range(3))
+    link = plant_keyed_link(driver, world, linked, other, "m")["id"]
+    run = plant_run(driver, world, ago(hours=1))["id"]
+    plant_change(driver, world, run, linked, 1)
+    plant_change(driver, world, run, later, 2)
+    plant_change(driver, world, run, link, 3, entity_type="link")
+    ids = learner(driver, world)["trail"]["item_ids"]
+    assert ids.index(linked) < ids.index(later)
+
+
+def test_an_entry_of_another_kind_that_names_an_item_id_adds_no_item(driver, world):
+    changed, named = plant_item(driver, world), plant_item(driver, world)
+    run = plant_run(driver, world, ago(hours=1))["id"]
+    plant_change(driver, world, run, changed, 1)
+    plant_change(driver, world, run, named, 2, entity_type="evidence")
+    trail = learner(driver, world)["trail"]
+    assert trail["item_ids"] == [changed]
+    assert trail["changed_items"] == 1
+
+
 def test_more_items_than_the_page_keep_the_newest_and_the_true_total(driver, world):
     run = plant_run(driver, world, ago(hours=1))["id"]
     items = [plant_item(driver, world) for _ in range(TRAIL_ITEMS + 2)]

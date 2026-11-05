@@ -1354,6 +1354,9 @@ function legendRows(elements){
     assert.deepStrictEqual(l.pg.assigned,['/v1/auth/google/start?next='+encodeURIComponent(longest)],'A next of 2048 characters passes');
     const home=signinPage(outWorld(),{},Object.assign(at(next),{pathname:'/'}));await settle();home.p.chooseSignIn('google');
     assert.deepStrictEqual(home.pg.assigned,['/v1/auth/google/start?next=/'],'Off the sign-in page, a next is ignored');
+    // With a history the page moves to /login and the query goes. With none it stays here, next and all, so only the page test stops it.
+    const stay=signinPage(outWorld(),{},Object.assign(at(next),{pathname:'/',noHistory:true}));await settle();stay.p.chooseSignIn('google');
+    assert.deepStrictEqual(stay.pg.assigned,['/v1/auth/google/start?next=/'],'A next off the sign-in page is ignored with no history too');
   }
 
   // 7. The production page: live scripts first, and no fixture anywhere in the built file.

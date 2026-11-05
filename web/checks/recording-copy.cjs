@@ -146,9 +146,13 @@ check('Apple remains disabled without an unavailable label', () => {
 });
 check('Files and notes remain visible without simulated success', () => {
   const h = harness(), html = h.p.filesComposer();
-  clean(html); assert(html.includes('data-materials="sources"'), 'Live files and notes mount their durable service');
-  h.p.handle('choose-files'); h.p.handle('write-note');
-  assert.equal(h.p.ui.filePicker, false); assert.equal(h.p.ui.noteEditor, false);
+  clean(html);
+  for (const kind of ['file', 'note']) assert(html.includes(`data-agent-files="${kind}"`), 'Live files and notes mount the agent folder service');
+  let picked = 0; h.p.modalRoot.innerHTML = html;
+  h.p.modalRoot.querySelector('[data-agent-file-input]').click = () => { picked++; };
+  h.p.handle('choose-files');
+  assert.equal(picked, 1, 'Add files opens the real file picker'); assert.equal(h.p.ui.filePicker, false);
+  h.p.handle('write-note'); assert.equal(h.p.ui.noteEditor, true, 'Add note opens the real note form');
   assert.deepEqual(h.calls, []); assert.deepEqual(h.state.files, {});
 });
 check('Questions use a neutral empty description', () => {
@@ -242,57 +246,75 @@ check('Late worker response cannot cross an account change', async () => {
   assert(!panel.innerHTML.includes('Run recorded as active'));
 });
 
-function mountConnections(h, configured = true) {
+const SETUP_ROWS = ['gmail', 'google_calendar', 'notion', 'slack_v2', 'linear', 'dropbox'];
+const CONNECT_URL = 'https://pipedream.com/_static/connect.html?token=synthetic';
+function mountConnections(h, { configured = true, accounts } = {}) {
   const root = element(), scope = { querySelectorAll: () => [root] };
-  h.live.getJSON = async url => ({ ok: true, body: url.includes('/apps?') ? {
-    account: h.state.account, configured, apps: [{ provider: 'synthetic', name: 'Synthetic app', auth_type: 'oauth', connectable: true }], next_cursor: null, total: 1,
-  } : { account: h.state.account, configured, providers: [{ provider: 'synthetic', status: 'not_connected' }] } });
+  h.live.getJSON = accounts || (async () => ({ ok: true, body: { account: h.state.account, configured, providers: SETUP_ROWS.map(provider => ({ provider, status: 'not_connected' })) } }));
   h.load('pipedream.js'); h.box.GrovePipedream.mount(scope); return root;
 }
-check('Connections use neutral copy and keep disabled configuration guards', async () => {
-  const h = harness(), root = mountConnections(h, false); await settle();
-  clean(root.innerHTML); assert(root.innerHTML.includes('Connect your accounts with Pipedream.'));
-  root.querySelector('[data-pipedream-select]').click(); await settle();
-  disabled(root.innerHTML, 'data-pipedream-connect="synthetic"');
-  root.querySelector('[data-pipedream-connect]').onclick(); await settle(); assert.deepEqual(h.calls, []);
+const row = (root, provider) => root.querySelector(`[data-pipedream-select="${provider}"]`);
+function tabs(h) {
+  const opened = [];
+  h.box.open = () => { const tab = { closed: false, opener: null, location: {}, close() { this.closed = true; } }; opened.push(tab); return tab; };
+  return opened;
+}
+check('Connections use neutral copy and the server refuses an unconfigured connect', async () => {
+  const h = harness(), root = mountConnections(h, { configured: false }), opened = tabs(h); await settle();
+  clean(root.innerHTML);
+  assert.deepEqual(root.querySelectorAll('[data-pipedream-select]').map(button => button.dataset.pipedreamSelect), SETUP_ROWS);
+  h.live.postJSON = async url => { h.calls.push(url); return { ok: false, status: 503, body: { error: { code: 'unavailable', message: 'Connections are not configured yet.' } } }; };
+  row(root, 'gmail').click(); await settle();
+  assert.deepEqual(h.calls, ['/v1/views/pipedream/gmail/connect']);
+  assert(root.innerHTML.includes('Connections are not configured yet.')); assert(!root.innerHTML.includes('is-connected'));
+  assert.equal(opened[0].closed, true); assert.equal(opened[0].location.href, undefined);
 });
 check('Denied provider action remains an error without connection success', async () => {
-  const h = harness(), root = mountConnections(h); await settle();
-  root.querySelector('[data-pipedream-select]').click(); await settle();
-  root.querySelector('[data-pipedream-connect]').click(); await settle();
+  const h = harness(), root = mountConnections(h), opened = tabs(h); await settle();
+  row(root, 'gmail').click(); await settle();
   assert.deepEqual(h.calls, ['provider-request']);
   assert(root.innerHTML.includes('Connections are disabled for this prepared demo account'));
-  assert(root.innerHTML.includes('Not connected')); assert(!root.innerHTML.includes('is-connected'));
+  assert.equal(row(root, 'gmail').getAttribute('aria-label'), 'Connect Gmail'); assert(!root.innerHTML.includes('is-connected'));
+  assert.equal(opened[0].closed, true); assert.equal(opened[0].location.href, undefined);
 });
 check('A failed Gmail status read does not block a real authorization attempt', async () => {
-  const h = harness(), root = mountConnections(h); await settle();
-  h.live.getJSON = async () => ({ok:false,status:503,body:{error:{message:'Status read failed'}}});
-  root.querySelector('[data-pipedream-select]').click(); await settle();
-  assert.equal(root.querySelector('[data-pipedream-connect]').disabled, false);
-  let opened;
-  h.box.open = () => (opened = {closed:false,location:{},close(){this.closed=true;}});
-  h.live.postJSON = async url => {
-    h.calls.push(url);
-    return {ok:true,body:{account:h.state.account,provider:'synthetic',
-      connect_url:'https://pipedream.com/_static/connect.html?token=synthetic'}};
-  };
-  root.querySelector('[data-pipedream-connect]').click(); await settle();
-  assert.deepEqual(h.calls, ['/v1/views/pipedream/synthetic/connect']);
-  assert.equal(opened.location.href,'https://pipedream.com/_static/connect.html?token=synthetic');
-  assert(!root.innerHTML.includes('is-connected'));
-  h.live.getJSON = async () => ({ok:true,body:{account:h.state.account,configured:true,
-    providers:[{provider:'synthetic',status:'connected'}]}});
-  h.box.dispatchEvent({type:'focus'}); await settle();
-  assert(root.innerHTML.includes('is-connected'));
+  const failures = [
+    async () => ({ ok: false, status: 503, body: { error: { message: 'Status read failed' } } }),
+    async () => { throw new TypeError('Failed to fetch'); },
+  ];
+  for (const accounts of failures) {
+    const h = harness(), root = mountConnections(h, { accounts }), opened = tabs(h); await settle();
+    assert.equal(row(root, 'gmail').disabled, false); assert(!root.innerHTML.includes('Status read failed'));
+    h.live.postJSON = async url => { h.calls.push(url); return { ok: true, body: { account: h.state.account, provider: 'gmail', connect_url: CONNECT_URL } }; };
+    row(root, 'gmail').click(); await settle();
+    assert.deepEqual(h.calls, ['/v1/views/pipedream/gmail/connect']);
+    assert.equal(opened[0].location.href, CONNECT_URL); assert.equal(opened[0].closed, false);
+    assert(!root.innerHTML.includes('is-connected'));
+    h.live.getJSON = async () => ({ ok: true, body: { account: h.state.account, configured: true, providers: [{ provider: 'gmail', status: 'connected' }] } });
+    h.box.dispatchEvent({ type: 'focus' }); await settle();
+    assert(root.innerHTML.includes('is-connected'));
+  }
 });
 check('Late connection response cannot cross an account change', async () => {
-  const h = harness(), root = mountConnections(h); await settle(); let resolve;
-  h.live.getJSON = () => new Promise(done => { resolve = done; });
-  root.querySelector('[data-pipedream-refresh]').click();
+  let resolve;
+  const h = harness(), root = mountConnections(h, { accounts: () => new Promise(done => { resolve = done; }) });
   h.state.account = 'synthetic-next-account';
   h.box.dispatchEvent({ type: 'grove:change' });
-  resolve({ ok: true, body: { account: 'synthetic-recording-account', configured: true, providers: [{ provider: 'synthetic', status: 'connected' }] } });
+  resolve({ ok: true, body: { account: 'synthetic-recording-account', configured: true, providers: [{ provider: 'gmail', status: 'connected' }] } });
   await settle(); assert(!root.innerHTML.includes('is-connected')); assert(root.innerHTML.includes('Your account changed. Reload Grove.'));
+  // A repaint draws what the late read left, so nothing of the old account can hide behind the note.
+  root.querySelector('[data-pipedream-search]').oninput({ target: { value: '' } });
+  assert(!root.innerHTML.includes('is-connected'));
+});
+check('Late connect answer cannot open the hosted page across an account change', async () => {
+  let resolve;
+  const h = harness(), root = mountConnections(h), opened = tabs(h); await settle();
+  h.live.postJSON = () => new Promise(done => { resolve = done; });
+  row(root, 'gmail').click(); await settle();
+  h.state.account = 'synthetic-next-account';
+  h.box.dispatchEvent({ type: 'grove:change' });
+  resolve({ ok: true, body: { account: 'synthetic-recording-account', provider: 'gmail', connect_url: CONNECT_URL } });
+  await settle(); assert.equal(opened[0].closed, true); assert.equal(opened[0].location.href, undefined);
 });
 
 (async () => {
