@@ -1,23 +1,30 @@
-// Completion stays visible after the Claude preview; no provider consent is simulated.
+// The tile and the top mark follow the server's counts; no provider consent is simulated.
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const web=process.env.GROVE_ONBOARDING_WEB||path.resolve(__dirname,'..');
 const source=fs.readFileSync(path.join(web,'product.js'),'utf8');
-const start=source.indexOf('  function updateLive(){'),end=source.indexOf('\n  function ',start+4);
-const classes=new Set(),attributes={},label={};
-const styles={};const choice={dataset:{sourceChoice:'claude'},classList:{toggle(name,on){on?classes.add(name):classes.delete(name);},remove(name){classes.delete(name);}},style:{setProperty(k,v){styles[k]=v;}},querySelector(){return label;},setAttribute(k,v){attributes[k]=v;}};
-const state={conversationPreview:{status:'importing',progress:50},pendingExports:{}};
-const c={live:true,api:{getState:()=>state},document:{getElementById:()=>({innerHTML:''})},progress:{innerHTML:''},root:{querySelectorAll:()=>[choice]},liveSourceAccounts:()=>[],icon:()=>'<svg/>',PROVIDERS:{claude:{label:'Claude'}}};
-vm.createContext(c);vm.runInContext(source.slice(start,end),c);
-c.updateLive();assert(!c.progress.innerHTML.includes('gp-complete-check'));assert(classes.has('is-added'),'The check shows as soon as the upload is accepted');assert(!classes.has('is-learning'));assert.equal(styles['--source-progress'],0.5);
-state.conversationPreview={status:'ready',progress:100};c.updateLive();
+const fn=name=>{const start=source.indexOf('  function '+name+'('),end=source.indexOf('\n  function ',start+4);assert(start>=0,name);return source.slice(start,end);};
+const classes=new Set(),attributes={},label={},styles={};
+const choice={dataset:{sourceChoice:'claude'},classList:{toggle(name,on){on?classes.add(name):classes.delete(name);},remove(name){classes.delete(name);}},style:{setProperty(k,v){styles[k]=v;}},querySelector(){return label;},setAttribute(k,v){attributes[k]=v;}};
+const state={pendingExports:{}};
+const upload={result:{state:'taken_in',failed_chats:0}};
+const c={live:true,api:{getState:()=>state},document:{getElementById:()=>({innerHTML:''})},progress:{innerHTML:''},root:{querySelectorAll:selector=>selector==='[data-source-choice]'?[choice]:[]},liveSourceAccounts:()=>[],liveUpload:()=>upload,icon:()=>'<svg/>',esc:String,PROVIDERS:{chatgpt:{label:'ChatGPT'},claude:{label:'Claude'}},IMPORT_CODES:{chatgpt:'chatgpt',claude:'claude_ai'},lastImportMarks:'',importProgressState:{values:{},tracked:{claude:true}}};
+vm.createContext(c);vm.runInContext(['updateLive','importView','importMark','importMoving','importShare','plural','chatFailure','progressFailure'].map(fn).join('\n'),c);
+const counts=patch=>Object.assign({state:'processing',requests_total:4,queued_count:0,processing_count:0,retry_wait_count:0,extracted_count:0,held_nothing_count:0,held_count:0,failed_count:0},patch);
+
+c.updateLive();assert(classes.has('is-added'),'The check shows as soon as the upload is accepted');assert.equal(styles['--source-progress'],0);assert.equal(label.textContent,'Added');assert.equal(c.progress.innerHTML,'','No read yet: no mark');
+c.importProgressState.values.claude=counts({extracted_count:1,held_nothing_count:1,processing_count:2});c.updateLive();
+assert(!c.progress.innerHTML.includes('gp-complete-check'));assert(classes.has('is-added'),'The check stays while the ring runs');assert(!classes.has('is-learning'));assert.equal(styles['--source-progress'],0.5);
+assert.equal(label.textContent,'Added');assert.equal(attributes['aria-label'],'Added Claude, 50 percent');assert(c.progress.innerHTML.includes('Claude import, 50 percent'));assert(c.progress.innerHTML.includes('--progress:0.5'));
+c.importProgressState.values.claude=counts({state:'complete',extracted_count:3,held_nothing_count:1});c.updateLive();
 assert(c.progress.innerHTML.includes('gp-complete-check'),'Completion must retain a check in the progress control');
-assert(c.progress.innerHTML.includes('✓'));assert.equal(label.textContent,'');
-assert.equal(attributes['aria-label'],'Claude added');
-assert(classes.has('is-added'));assert(!classes.has('is-learning'));
-state.conversationPreview=null;c.updateLive();assert.equal(c.progress.innerHTML,'');
+assert(c.progress.innerHTML.includes('✓'));assert.equal(label.textContent,'Added');assert.equal(attributes['aria-label'],'Added Claude');assert.equal(styles['--source-progress'],1);
+assert(classes.has('is-added'));assert(!classes.has('is-learning'));assert(!classes.has('is-partial'));
+c.importProgressState.values.claude=counts({state:'partial',extracted_count:3,failed_count:1});c.updateLive();
+assert(!c.progress.innerHTML.includes('gp-complete-check'),'A partial end is no clean success');assert(classes.has('is-partial'));assert.equal(label.textContent,'Partial import');
+c.importProgressState.values={};upload.result=null;c.updateLive();assert.equal(c.progress.innerHTML,'');assert(!classes.has('is-added'));assert.equal(label.textContent,'Connect');
 const pipedream=fs.readFileSync(path.join(web,'pipedream.js'),'utf8');
 const validator=pipedream.match(/  function slug\(v\)\{[^\n]+/)[0];
 vm.runInContext(validator,c);
 for(const slug of ['_0codekit','_1crm','__1msg','gmail'])assert(c.slug(slug),'Valid Pipedream slug: '+slug);
 for(const slug of ['../gmail','gmail?x=1','gmail/other','a'.repeat(121)])assert(!c.slug(slug));
-console.log('PASS Claude completion check and documented Pipedream identifier shapes');
+console.log('PASS accepted check, real ring, completion mark, partial state and documented Pipedream identifier shapes');

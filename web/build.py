@@ -2,9 +2,8 @@
 public homepage (home.html), privacy, consent and forget pages.
 
 Standard library only; runs under the Mac's /usr/bin/python3 (3.9) and under 3.12.
-The ordinary views compile the legacy fixture hook out. The authenticated Claude
-preview loads invented data on demand and keeps its graph in page memory.
-The archived demo-onboarding.html embeds the invented data for offline checks.
+The ordinary views compile the legacy fixture hook out and carry no invented data.
+The archived demo-onboarding.html embeds the invented data for offline checks; no route serves it.
 The privacy generator writes docs/data-flow.md; the page includes every generated table row.
 The consent page is a template: the API fills its two marks at each /authorize (grove.oauth.consent).
 """
@@ -15,8 +14,6 @@ import importlib.util
 import json
 import re
 from pathlib import Path
-
-import preview_corpus
 
 ROOT = Path(__file__).resolve().parent
 FIXTURE_HOOK = "window.GROVE_FIXTURE"
@@ -78,14 +75,9 @@ def css(match):
 
 def script(match, demo=False):
     name = Path(match[1]).name
-    if demo and name in {"live.js", "pipedream.js", "conversation-preview.js"}:
+    if demo and name in {"live.js", "pipedream.js", "import-growth.js"}:
         return ""
     text = (ROOT / match[1].removeprefix("./")).read_text(encoding="utf-8")
-    if name == "conversation-preview.js":
-        data = preview_corpus.cut(json.loads((ROOT / "demo.synthetic.json").read_text(encoding="utf-8")))
-        payload = "window.GroveClaudePreviewData=" + json.dumps(data).replace("<", "\\u003c") + ";"
-        url = emit_asset(payload.encode("utf-8"), ".js", "text/javascript")
-        text = "GroveDeferred.register('claude-preview'," + json.dumps(url) + ");\n" + text
     if name in DEFERRED:
         url = emit_asset(text.encode("utf-8"), ".js", "text/javascript")
         return "<script>GroveDeferred.register(" + json.dumps(DEFERRED[name]) + "," + json.dumps(url) + ");</script>"
@@ -184,3 +176,7 @@ for name, html in pages.items():
     print(f"Built {(dist / name).relative_to(ROOT.parent)} ({len(html.encode()):,} bytes)")
 
 (dist / "assets" / "manifest.json").write_text(json.dumps(ASSET_MANIFEST, sort_keys=True), encoding="utf-8")
+# An asset of an earlier build must not stay beside this one: dist holds what this build made.
+for stale in (dist / "assets").iterdir():
+    if stale.name != "manifest.json" and stale.name not in ASSET_MANIFEST:
+        stale.unlink()

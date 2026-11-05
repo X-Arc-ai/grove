@@ -837,3 +837,13 @@ main#canvas canvas { display: block; }
   height: 6px;
 }
 .health-btn .health-badge svg.healthy { display: none; }
+
+/* Import progress: the persistent line of a partial failure and the status below the tiles. */
+#grove-product .gp-import-status { margin-top: 20px; color: var(--text); }
+#grove-product .gp-import-status section { margin-top: 14px; font: 400 11px/1.6 var(--gp-font); }
+#grove-product .gp-import-status strong { font-weight: 500; }
+#grove-product .gp-import-status p { margin: 6px 0; }
+#grove-product .gp-import-status details { margin: 8px 0; }
+#grove-product .gp-import-status summary { cursor: pointer; }
+#grove-product .gp-import-note { display: block; margin: 6px 0; font: 400 11px/1.6 var(--gp-font); color: var(--gp-danger); }
+#grove-product .gp-import-note[hidden] { display: none; }

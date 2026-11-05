@@ -274,14 +274,14 @@ def run_checks(base, shots):
                 assert page.evaluate("p=>!!GroveSimulation.getState().pendingExports[p]", provider)
                 page.request.post(base + "/__test/upload", data={})
                 page.locator("[data-action=upload-export]").click()
-                expect(page.locator(".gp-upload-result")).to_contain_text("Sources added: 1")
-                expect(page.locator("[data-action=upload-export]")).to_be_disabled()
+                # A clean answer closes the guide; its counts stay below the tiles.
+                expect(page.locator(f"[data-import-provider={provider}] .gp-upload-result")).to_contain_text("Sources added: 1")
+                expect(page.locator("[data-action=upload-export]")).to_have_count(0)
                 assert not page.evaluate("p=>!!GroveSimulation.getState().pendingExports[p]", provider)
                 assert not page.evaluate("p=>!!GroveSimulation.getState().accountImports[p]", provider), "No invented import contribution"
                 calls = page.request.get(base + "/__test/uploads").json()
                 assert calls[-1] == dict(provider="claude_ai" if provider == "claude" else provider, size=len(payload), sha256=hashlib.sha256(payload).hexdigest())
                 page.screenshot(path=str(shots / f"live-{width}-{provider}-upload.png"))
-                page.locator("[data-action=guide-back]").first.click()
             for provider in ("chats", "grok"):
                 page.locator(f"[data-guide={provider}]").click()
                 page.locator("[data-action=export-requested]").click()

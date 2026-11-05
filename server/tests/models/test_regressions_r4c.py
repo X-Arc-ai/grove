@@ -30,7 +30,7 @@ from grove import clock
 from grove.clock import TestClock
 from grove.models.config import ModelSettings, load_catalog, load_model_settings
 from grove.models.errors import InvalidOutput, ModelRefused, NotConfigured, ProviderError
-from grove.models.gateway import Gateway, create_app, upstream_body
+from grove.models.gateway import DrainIncomplete, Gateway, create_app, upstream_body
 from grove.models.gateway_auth import mint, verify
 from grove.models.layer import ModelLayer
 from grove.models.shape import (
@@ -617,7 +617,9 @@ def test_the_client_stream_ends_even_when_the_record_fails(driver, world, test_c
             return [piece async for piece in relay]
 
         got = await asyncio.wait_for(collect(), timeout=5.0)
-        await gateway.aclose()
+        # The client is free. The lost record still fails the close, so it is never silent.
+        with pytest.raises(DrainIncomplete, match="accounting_failed"):
+            await gateway.aclose()
         return got
 
     assert asyncio.run(drive()) == [chunk, b"data: [DONE]\n\n"]

@@ -286,12 +286,16 @@ def write_chat_delta(
             for cut, indices in zip(cuts, cut_parts, strict=True)
         ]
         _move_connector(tx, connector_id, locked[0], cuts, newest_at, at, len(episode_ids))
+        from grove.writer.import_queue import enqueue_import_parts_in_tx
+
+        processing = enqueue_import_parts_in_tx(tx, source_ids, locked[0]["provider"])
         return {
             "source_id": source_ids[0],
             "source_ids": source_ids,
             "counts": dict(counts),
             "kept_messages": len(messages),
             "episode_ids": episode_ids,
+            **processing,
         }
 
     return WorldWriter(driver, world_id).transaction(work)

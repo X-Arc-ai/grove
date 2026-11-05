@@ -39,8 +39,9 @@ def test_old_demo_link_never_needs_a_separate_simulation_artifact(tmp_path):
     assert response.text == "ordinary login"
 
 
-def test_claude_preview_assets_fit_and_pass_the_real_public_asset_route():
-    """A successful static build must not ship a preview that the API returns as 404."""
+def test_deferred_assets_fit_and_pass_the_real_public_asset_route():
+    """A successful static build must not ship a deferred asset the API returns as 404, and it
+    must not ship invented onboarding data at all."""
     import re
     import subprocess
     import sys
@@ -51,13 +52,16 @@ def test_claude_preview_assets_fit_and_pass_the_real_public_asset_route():
     web = Path(__file__).resolve().parents[3] / "web"
     subprocess.run([sys.executable, str(web / "build.py")], check=True, capture_output=True)
     page = (web / "dist/index.html").read_text()
-    urls = re.findall(r"GroveDeferred\.register\('claude-preview(?:-edges)?',\"([^\"]+)\"\)", page)
-    assert urls, "The authenticated onboarding must register its Claude preview assets"
+    for marker in ("claude-preview", "GroveClaudePreviewData", "conversation-preview"):
+        assert marker not in page, "The authenticated onboarding carries no invented data"
+    urls = re.findall(r'GroveDeferred\.register\("[a-z]+","([^"]+)"\)', page)
+    assert urls, "The authenticated onboarding must register its deferred guide assets"
     app = FastAPI()
     add_public_assets(app, web / "dist")
     client = TestClient(app)
     for url in urls:
         response = client.get(url)
-        assert response.status_code == 200, "The Claude preview must pass the real asset size limit"
+        assert response.status_code == 200, "A deferred asset must pass the real asset size limit"
         assert response.content == (web / "dist/assets" / url.rsplit("/", 1)[1]).read_bytes()
+        assert b"GroveClaudePreviewData" not in response.content
         assert response.headers["cache-control"] == "public, max-age=31536000, immutable"

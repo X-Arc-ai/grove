@@ -76,7 +76,7 @@ each running pass as `stopped`.
 |---|---|---|
 | Time cap (watchdog) | 600 s | `PassSettings.time_cap_seconds` |
 | Lease margin | 120 s | `PassSettings.lease_margin_seconds` |
-| Token cap per pass | 300,000 | `PassSettings.token_cap` |
+| Token cap per pass | 300,000, none for an import pass | `PassSettings.token_cap` |
 | Requests per Learner pass | 5 | `PassSettings.learner_requests` |
 | Poll | 5 s | `GROVE_RUNNER_POLL_SECONDS` |
 | Passes at once (all worlds) | 2 | `GROVE_RUNNER_MAX_PASSES` |
@@ -90,7 +90,7 @@ exit status 1.
 | Verb | Route | What it answers |
 |---|---|---|
 | `brain status` | `GET /v1/internal/brain/status` | the pass, its agent and inputs, and the world's counts |
-| `brain pass` | `GET /v1/internal/brain/pass` | the input packet: the requests with their source, episode, locators and messages; the job; the kinds and meanings with the kinds each end takes; the statement classes; a filled batch form and a field guide |
+| `brain pass` | `GET /v1/internal/brain/pass` | the input packet: the requests with their source, episode, locators and messages; the job; `world_items`, the count of items in the world; the kinds, each with its `recheck_statuses`, and the meanings with the kinds each end takes; the statement classes; a filled batch form and a field guide |
 | `brain recall TEXT` | `POST /v1/internal/brain/recall` (the text in the body, never in a URL an access log keeps) | a lexical lookup over titles, summaries and search terms, no model call. `hosts-b` replaces it with D7's recall |
 | `brain get ITEM` | `GET /v1/internal/brain/items/{id}` (an id of the row id form only) | one item, its active links and its active evidence rows |
 | `brain propose [--request ID]` | `POST /v1/internal/brain/propose` | the batch from stdin (a heredoc) or `--file`; saved with a receipt, or declined with the writer's reasons. A Learner proposes under one of its requests; one repair of a decline is allowed |

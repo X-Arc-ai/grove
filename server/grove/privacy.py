@@ -68,7 +68,9 @@ _ROWS = (
         "The upload is temporary. There is no local runner. "
         "A code-supplied account policy drops or masks sensitive content before storage, "
         "without a model call. Personal exclusions and identifier exemptions are not configured "
-        "by this upload route; operator and connector policies are separate.",
+        "by this upload route; operator and connector policies are separate. "
+        "Eligible retained Claude and ChatGPT messages enter the Learner queue. "
+        "The server sends that screened text to Meta for extraction.",
     ),
     (
         "agent_files",
@@ -91,7 +93,8 @@ _ROWS = (
         "Screened text for extraction, verification and agent work",
         "Meta Model API, Muse Spark 1.3",
         "Provider terms apply. Contributor model ids are refused. "
-        "This run uses synthetic data only.",
+        "Eligible screened uploads may be processed by the server Learner. "
+        "Retained input, queued work and completed extraction are different states.",
     ),
     (
         "voice",

@@ -245,7 +245,7 @@
   var liveSourceItems={};
   function sourceChanges(connector){var ids=new Set(liveSourceItems[connector]||[]);return {new_nodes:clone(live.nodes.filter(function(n){return ids.has(n.data.id);}).map(function(n){return n.data;})),new_edges:[]};}
   function getChanges(provider) {
-    if(LIVE&&window.GroveConversationPreview&&window.GroveConversationPreview.active())return provider&&provider!=='claude'?{new_nodes:[],new_edges:[]}:window.GroveConversationPreview.changes();
+    if(LIVE&&window.GroveImportGrowth&&window.GroveImportGrowth.active())return window.GroveImportGrowth.changes(provider);
     if(LIVE)return provider?sourceChanges(provider):{new_nodes:clone(live.nodes.filter(function(n){return liveDelta.nodes.has(n.data.id);}).map(function(n){return n.data;})),new_edges:clone(live.edges.filter(function(e){return liveDelta.edges.has(liveEdgeId(e.data));}).map(function(e){return e.data;})),removed_nodes:liveDelta.removedNodes,removed_edges:liveDelta.removedEdges};
     if(!fixture)return {new_nodes:[],new_edges:[]};
     var graph=visibleElements(fixture),ids,edges;
@@ -331,7 +331,7 @@
       totalNodeCount: all.nodes.length, totalEdgeCount: all.edges.length,
       updatedAt: state.updatedAt, sources: sources,
     };
-    return LIVE&&window.GroveConversationPreview?window.GroveConversationPreview.project(result):result;
+    return LIVE&&window.GroveImportGrowth?window.GroveImportGrowth.project(result):result;
   }
 
   function announce() { window.dispatchEvent(new CustomEvent('grove:change', { detail: getState() })); }
@@ -444,7 +444,7 @@
   function answerRequest(id,answer){var r=state.requests.find(function(r){return r.id===id;});var text=String(answer||'').trim().slice(0,2000);if(!r||!text)return getState();r.answer=text;r.status='answered';r.answeredAt=new Date().toISOString();save();return getState();}
   // Live mode: the last graph payload goes too, so no item of the session stays in memory.
   function signOut(){
-    if(window.GroveConversationPreview)window.GroveConversationPreview.clear();
+    if(window.GroveImportGrowth)window.GroveImportGrowth.clear();
     if(LIVE){
       saveOnboardingPreference();verifiedAccount=null;
       reminderEpoch++;reminderRevision=-1;importEpoch++;
@@ -492,7 +492,7 @@
   function completeOnboarding() { state.onboardingComplete = true; save(); return getState(); }
   function completeTour() { state.tourComplete = true; save(); return getState(); }
   function resetOnboarding() {
-    if(window.GroveConversationPreview)window.GroveConversationPreview.clear();
+    if(window.GroveImportGrowth)window.GroveImportGrowth.clear();
     var before = currentCounts();
     verifiedAccount = null;
     if(LIVE){liveSession++;clearLiveSnapshot();live={selfId:null,nodes:[],edges:[]};}
@@ -629,7 +629,9 @@
   }
 
   window.groveApi = function (url) {
-    if(LIVE&&window.GroveConversationPreview&&window.GroveConversationPreview.active())return window.GroveConversationPreview.answer(url);
+    // While an import plays, the pacer answers the graph read. Every other read is the server's.
+    var paced = LIVE && window.GroveImportGrowth ? window.GroveImportGrowth.answer(url) : null;
+    if (paced) return paced;
     if (LIVE) return liveApi(url);
     return fixturePromise.then(function (data) {
       fixture = data;
@@ -647,7 +649,9 @@
     // Live mode: true when no fixture is injected; realId maps a view id back to the item id
     // (the identity node to the self item, null when the identity node is the sim's own).
     isLive: function () { return LIVE; },
-    realId: function (id) { if (!LIVE || id == null || (window.GroveConversationPreview&&window.GroveConversationPreview.active())) return null; return id === 'grove-self' ? live.selfId : String(id); },
+    realId: function (id) { if (!LIVE || id == null) return null; return id === 'grove-self' ? live.selfId : String(id); },
+    // Live mode: the server's whole graph, for the import pacer. The view never reads this directly.
+    readLiveGraph: function () { return liveApi('/api/graph'); },
   };
 
   fixturePromise.then(function(data){
