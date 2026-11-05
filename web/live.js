@@ -246,6 +246,8 @@
     authPagePath: authPagePath,
     invalidateSession: invalidateSession,
     notifySessionChange: notifySessionChange,
+    // The last sign-in or logout signal of this browser: a random nonce, or null before the first.
+    authMark: function () { try { return localStorage.getItem(AUTH_CHANGE_KEY); } catch (_) { return null; } },
     KIND_STYLE: KIND_STYLE,
     getJSON: getJSON,
     postJSON: postJSON,

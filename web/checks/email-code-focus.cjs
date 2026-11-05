@@ -41,6 +41,7 @@ const check = (name, run) => checks.push([name, run]);
 function page(initialStore = {}, tab = {}) {
   const store = { ...initialStore }, listeners = {}, requests = [], classes = new Set();
   const counts = { clears: 0, renders: 0, invalidations: 0, notifications: 0 };
+  let signals = 0;
   const box = {
     console, URL, URLSearchParams, Date, Math, Promise,
     clearTimeout() {},
@@ -48,7 +49,7 @@ function page(initialStore = {}, tab = {}) {
     CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
     location: { pathname: '/login', href: 'https://grove.example.test/login', search: '' },
     history: { replaceState(_state, _title, url) { box.location.pathname = url; } },
-    crypto: { randomUUID: () => 'synthetic-session-change' },
+    crypto: { randomUUID: () => 'synthetic-session-change-' + ++signals },
     localStorage: {
       getItem: key => store[key] || null,
       setItem: (key, value) => { store[key] = String(value); },
@@ -140,7 +141,7 @@ async function reopen(p) {
   await settle();
   return next;
 }
-function held(email, age) { return JSON.stringify({ email, sent: Date.now() - age }); }
+function held(email, age) { return JSON.stringify({ email, sent: Date.now() - age, mark: null }); }
 function assertAnonymous(p) {
   assert.equal(p.box.api.getState().auth, null);
   assert.equal(p.box.api.getState().account, null);
@@ -376,6 +377,7 @@ check('A new page load in the same tab brings back the card, and its code signs 
   await pending;
   assert.equal(next.box.api.getState().account, 'synthetic-account-a');
   assert.equal(next.box.ui.authStage, null);
+  assert.equal(next.box.api.getState().auth.email, 'held@example.test');
   assert.deepEqual(next.tab, {}, 'A finished sign-in holds no card');
 });
 
@@ -412,9 +414,11 @@ check('The held card keeps the address and its time, never a code', async () => 
   await pending;
   assert.equal(p.box.ui.authStage, 'code');
   assert.deepEqual(Object.keys(p.tab), [HELD]);
-  assert.deepEqual(Object.keys(JSON.parse(p.tab[HELD])).sort(), ['email', 'sent']);
-  assert.doesNotMatch(p.tab[HELD], /654321/);
-  assert.doesNotMatch(p.store[MAIN] || '', /held@example|654321/);
+  const { sent, ...kept } = JSON.parse(p.tab[HELD]);
+  assert.equal(typeof sent, 'number');
+  assert.deepEqual(Object.keys(kept).sort(), ['email', 'mark']);
+  assert.doesNotMatch(JSON.stringify(kept), /654321/);
+  assert.doesNotMatch(JSON.stringify(p.store), /held@example|654321/, 'Every local key, not one');
 });
 
 check('Use another email drops the held card', async () => {
@@ -451,9 +455,10 @@ check('The card comes back for the life of a code and no longer', async () => {
 });
 
 check('A held value that makes no card is dropped', async () => {
-  const values = ['not json', 'null', '7', '{}', '{"email":5,"sent":1}',
-    JSON.stringify({ email: '', sent: Date.now() }), held('future@example.test', -60000),
-    JSON.stringify({ email: 'nosent@example.test' })];
+  const values = ['not json', 'null', '7', '{}', JSON.stringify({ email: 5, sent: Date.now(), mark: null }),
+    JSON.stringify({ email: '', sent: Date.now(), mark: null }), held('future@example.test', -60000),
+    JSON.stringify({ email: 'nosent@example.test', mark: null }),
+    JSON.stringify({ email: 'nomark@example.test', sent: Date.now() })];
   for (const value of values) {
     const p = page({}, { [HELD]: value }), pending = p.box.checkSession();
     p.take('/v1/views/session').reply(401);
@@ -532,23 +537,89 @@ check('Browser cache restoration brings back the code card', async () => {
   assertAnonymous(p);
 });
 
-check('A cross-tab signal keeps an anonymous code card', async () => {
+check('A sign-in or logout in another tab ends an open code card', async () => {
   const p = await anonymous();
   await send(p, 'held@example.test');
-  p.fire('storage', { key: 'grove-auth-change', newValue: '{"nonce":"synthetic-other-tab"}' });
+  const signal = '{"nonce":"synthetic-other-tab"}';
+  p.store['grove-auth-change'] = signal;
+  p.fire('storage', { key: 'grove-auth-change', newValue: signal });
   assert.equal(p.box.ui.authStage, 'checking');
   p.take('/v1/views/session').reply(401);
   await settle();
+  assert.equal(p.box.ui.authStage, 'signin');
+  assert.deepEqual(p.tab, {});
+});
+
+check('A sign-in or logout in another tab ends a held card while this tab is away', async () => {
+  // A static page such as Privacy hears no signal, so the check comes on the return.
+  const p = await anonymous();
+  await send(p, 'held@example.test');
+  p.store['grove-auth-change'] = '{"nonce":"synthetic-other-tab"}';
+  const next = await reopen(p);
+  assert.equal(next.box.ui.authStage, 'signin');
+  assert.deepEqual(next.tab, {});
+});
+
+check('A signal from before the send does not end the held card', async () => {
+  const p = await anonymous({ 'grove-auth-change': '{"nonce":"synthetic-earlier"}' });
+  await send(p, 'held@example.test');
+  const next = await reopen(p);
+  assert.equal(next.box.ui.authStage, 'code');
+});
+
+check('A session this tab did not verify never takes the typed address', async () => {
+  const p = await anonymous();
+  await send(p, 'first@example.test');
+  p.fire('focus');
+  p.take('/v1/views/session').reply(200, signedIn('synthetic-account-b'));
+  await settle();
+  assert.equal(p.box.api.getState().account, 'synthetic-account-b');
+  assert.equal(p.box.api.getState().auth.email, '');
+  assert.deepEqual(p.tab, {});
+});
+
+check('An address edited during a pending send does not replace the sent address', async () => {
+  const p = await anonymous(), pending = p.box.startEmail('sent@example.test');
+  const request = p.take('/v1/auth/email/start');
+  p.box.ui.email = 'edited@example.test';
+  request.reply(200);
+  await pending;
   assert.equal(p.box.ui.authStage, 'code');
-  assert.equal(p.box.ui.email, 'held@example.test');
+  assert.equal(p.box.ui.email, 'sent@example.test');
+  assert.match(p.box.html, /sent@example\.test/);
+  assert.equal(JSON.parse(p.tab[HELD]).email, 'sent@example.test');
+});
+
+check('A new code card after an ended session survives focus 401', async () => {
+  const p = await anonymous();
+  await login(p);
+  await focus401(p);
+  assert.equal(p.box.ui.authStage, 'signin');
+  await send(p);
+  p.box.ui.code = '123';
+  await focus401(p);
+  assert.equal(p.box.ui.authStage, 'code');
+  assert.equal(p.box.ui.code, '123');
+});
+
+check('A session found on a consent return drops the held card', async () => {
+  const p = page({}, { [HELD]: held('held@example.test', 0) });
+  p.box.live.returnToNext = () => true;
+  const pending = p.box.checkSession();
+  p.take('/v1/views/session').reply(200, signedIn('synthetic-account-a'));
+  await pending;
+  await settle();
+  assert.deepEqual(p.tab, {});
 });
 
 (async () => {
+  // A promise that never settles empties the event loop. Only a full run may exit 0.
+  process.exitCode = 1;
   let failures = 0;
   for (const [name, run] of checks) {
     try { await run(); console.log('PASS: ' + name); }
     catch (error) { failures++; console.error('FAIL: ' + name + '\n' + error.stack); }
   }
   console.log(`Email code focus: ${checks.length - failures} passed, ${failures} failed`);
-  if (failures) process.exitCode = 1;
+  process.exitCode = failures ? 1 : 0;
 })().catch(error => { console.error(error); process.exitCode = 1; });

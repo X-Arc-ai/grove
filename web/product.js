@@ -169,7 +169,7 @@
     var epoch=++authEpoch;
     if(!live){ui.authStage='code';render(true);return Promise.resolve();}
     dropEmailCard();
-    return live.emailStart(email).then(function(res){if(epoch!==authEpoch)return;if(res.ok){ui.authStage='code';holdEmailCard(email);}else{ui.error=res.status===429?SIGNIN_COPY.tooMany:SIGNIN_COPY.email;}render(true);},function(){if(epoch!==authEpoch)return;ui.error=SIGNIN_COPY.offline;render(true);});
+    return live.emailStart(email).then(function(res){if(epoch!==authEpoch)return;if(res.ok){ui.authStage='code';ui.email=email;holdEmailCard(email);}else{ui.error=res.status===429?SIGNIN_COPY.tooMany:SIGNIN_COPY.email;}render(true);},function(){if(epoch!==authEpoch)return;ui.error=SIGNIN_COPY.offline;render(true);});
   }
   function verifyEmail(code){
     code=String(code||'').trim();
@@ -179,14 +179,15 @@
     return live.emailVerify(ui.email,code).then(function(res){if(epoch!==authEpoch||res.stale)return;if(res.ok){dropEmailCard();if(!live.returnToNext())finishSignIn('email',res.body);}else{ui.error=SIGNIN_COPY.code;render(true);}},function(){if(epoch!==authEpoch)return;ui.error=SIGNIN_COPY.offline;render(true);});
   }
   // The code card outlives a reload or a trip to another page in this tab: the typed address waits
-  // in this tab's session storage for the life of a code. The code itself is never stored.
-  function holdEmailCard(email){try{window.sessionStorage.setItem(EMAIL_CARD_KEY,JSON.stringify({email:email,sent:Date.now()}));}catch(_){/* a blocked store: the card lasts as long as the page */}}
+  // in this tab's session storage for the life of a code. The code itself is never stored. The mark
+  // ends the card after a sign-in or logout elsewhere: a static page in this tab hears no signal.
+  function holdEmailCard(email){try{window.sessionStorage.setItem(EMAIL_CARD_KEY,JSON.stringify({email:email,sent:Date.now(),mark:live.authMark()}));}catch(_){/* a blocked store: the card lasts as long as the page */}}
   function dropEmailCard(){try{window.sessionStorage.removeItem(EMAIL_CARD_KEY);}catch(_){/* a blocked store holds nothing */}}
   function heldEmailCard(){
     try{
       var held=JSON.parse(window.sessionStorage.getItem(EMAIL_CARD_KEY));
       var age=held?Date.now()-held.sent:NaN;
-      if(held&&typeof held.email==='string'&&held.email&&age>=0&&age<EMAIL_CARD_MS)return held.email;
+      if(held&&typeof held.email==='string'&&held.email&&age>=0&&age<EMAIL_CARD_MS&&held.mark===live.authMark())return held.email;
     }catch(_){/* a value that cannot be read holds no card */}
     dropEmailCard();
     return '';
@@ -223,7 +224,8 @@
         // Signed in already on a sign-in page the consent page sent here: straight back to it.
         if(live.returnToNext())return;
         var resumed=arrive(res.body),waiting=ui.authStage==='checking';
-        if(!api.getState().auth){finishSignIn(res.body.method||'google',res.body);return;}
+        // This tab did not verify this session, so the typed address is not known to be its own.
+        if(!api.getState().auth){ui.email='';finishSignIn(res.body.method||'google',res.body);return;}
         signinError='';if(waiting)ui.authStage=null;if(waiting||resumed)render(true);if(resumed&&window.reloadGrove)window.reloadGrove();
         return;
       }
