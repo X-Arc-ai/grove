@@ -547,7 +547,11 @@ def check_delete(page, base, server, shots, label, expect, theme):
     ).to_be_visible()
     assert server.posts == [("/v1/world/delete", {"confirm": "DELETE"})], server.posts
     # The other tab heard the change: it cannot save the old world's state back.
-    other_tab.wait_for_function("!GroveSimulation.getState().onboardingComplete")
+    other_tab.wait_for_timeout(900)
+    other_tab.wait_for_function(
+        "window.GroveSimulation&&GroveSimulation.getState().auth"
+    )
+    assert not other_tab.evaluate("GroveSimulation.getState().onboardingComplete")
     assert other_tab.evaluate("GroveSimulation.getState().growth.focus") == ""
     other_tab.close()
     assert not page.evaluate("GroveSimulation.getState().onboardingComplete")

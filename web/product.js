@@ -715,6 +715,7 @@
     if(res.status===403&&error.code==='scope_denied')return 'This prepared demo account cannot be deleted.';
     return live.errorText(res.body,'Your Grove could not be deleted. Try again.');
   }
+  function dropLocalGrove(){api.clearGrove();api.saveGrowth({focus:'',reading:'',avoid:'',confirm:true});}
   function deleteLiveGrove(){
     var ticket=authEpoch;ui.deleteBusy=true;ui.deleteError='';render(true);
     function failed(text){ui.deleteBusy=false;ui.deleteError=text;render(true);}
@@ -722,9 +723,7 @@
       if(ticket!==authEpoch){ui.deleteBusy=false;return;}
       if(!res.ok||!res.body||res.body.deleted!==true)return failed(deleteFailure(res));
       // The page starts over from the server: no memory of the old world stays in this browser.
-      api.clearGrove();api.saveGrowth({focus:'',reading:'',avoid:'',confirm:true});
-      // Another tab of this browser holds the old world in memory, and could save it back.
-      live.notifySessionChange();
+      dropLocalGrove();live.notifyWorldReset();
       window.location.assign(res.body.signed_in?live.PAGES.home:live.PAGES.login);
     },function(){if(ticket===authEpoch)failed('Grove could not be reached. Check your Grove before you try again.');else ui.deleteBusy=false;});
   }
@@ -1065,6 +1064,8 @@
       document.body.classList.remove('gp-session-hidden');checkSession();
     });
     window.addEventListener('focus',function(){checkSession();if(ui.panel==='profile'&&ui.settingsTab==='sources')refreshLiveData(true);});
+    // Another tab deleted this Grove: nothing of the old world stays here to save back.
+    window.addEventListener('grove:world-reset',function(){dropLocalGrove();window.location.assign(live.PAGES.home);});
     readSigninError();ui.authStage='checking';checkSession();
   }
   render(true);maybeTour();
