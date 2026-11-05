@@ -96,7 +96,16 @@ async function demo(search, expectedProvider) {
   assert.equal(JSON.parse(read('checks/fixture.synthetic.json')).elements.nodes.length, 222);
   const ordinary = read('dist/index.html'), artifact = read('dist/demo-onboarding.html');
   assert(!ordinary.includes('GROVE_FIXTURE'));
-  assert(!ordinary.includes('window.GroveClaudePreviewData='));
+  assert(!ordinary.includes('GroveClaudePreviewData'));
+  assert(!ordinary.includes('claude-preview'));
+  assert(!ordinary.includes('GroveConversationPreview'));
+  assert(ordinary.includes('window.GroveImportGrowth ='), 'The live page paces the real graph');
+  assert(!artifact.includes('window.GroveImportGrowth ='), 'The demo build leaves the live-only pacer out');
+  for (const name of fs.readdirSync(path.join(web, 'dist/assets'))) {
+    if (name === 'manifest.json') continue;
+    const asset = fs.readFileSync(path.join(web, 'dist/assets', name));
+    assert(!asset.includes('GroveClaudePreviewData') && !asset.includes('"source_node_ids"'), 'No public asset carries invented data: ' + name);
+  }
   assert(!ordinary.includes('"source_node_ids": {'));
   assert(artifact.includes('window.GROVE_FIXTURE='));
   assert(artifact.includes('})(window.GroveDemo.storage);'));

@@ -8,6 +8,7 @@ export's other files (users.json, projects.json) are never opened.
 """
 
 import json
+from collections import Counter, defaultdict
 from collections.abc import Iterator
 from datetime import datetime
 from typing import Any
@@ -164,16 +165,62 @@ def _tool_name(block: dict[str, Any]) -> str:
 
 
 def _attachments(record: dict[str, Any]) -> list[object]:
-    """One line per attachment and file. extracted_content is never read: it is the file."""
-    lines: list[object] = []
+    """One fact per identified file; ambiguous references remain separate.
+
+    UUID identity wins. A UUID-free reference can match another container only
+    by the complete (file_name, file_size, file_type) tuple, one-to-one. Neither
+    filenames alone nor container cardinalities establish file identity.
+    """
+    entries = []
     for field in ("attachments", "files"):
         items = record.get(field)
         for item in items if isinstance(items, list) else []:
-            if not isinstance(item, dict):
-                continue
-            name = clip(clean_text(item.get("file_name")), _NAME)
-            lines.append(f"[attached file: {name}]" if name else "[attached a file]")
-    return lines
+            if isinstance(item, dict):
+                entries.append((field, item))
+    for block in _content_blocks(record) or []:
+        if block.get("type") == "document" and any(
+            block.get(key) for key in ("file_uuid", "uuid", "file_name")
+        ):
+            entries.append(("document", block))
+    described = []
+    matches = defaultdict(list)
+    for index, (container, item) in enumerate(entries):
+        values = [item[key] for key in ("file_uuid", "uuid") if item.get(key) is not None]
+        ids = [
+            _text_id(value) if isinstance(value, str) and value.strip() else None
+            for value in values
+        ]
+        ambiguous = any(value is None for value in ids) or len(set(ids)) > 1
+        uuid = ids[0] if ids and not ambiguous else None
+        name, size, kind = (item.get(key) for key in ("file_name", "file_size", "file_type"))
+        metadata = None
+        if (
+            not ambiguous
+            and isinstance(name, str)
+            and name.strip()
+            and len(name) <= 1024
+            and isinstance(kind, str)
+            and kind.strip()
+            and len(kind) <= 1024
+            and type(size) is int
+            and 0 < size <= 2**63 - 1
+        ):
+            metadata = (name, size, kind)
+            matches[metadata].append((container, uuid))
+        described.append((index, item, uuid, metadata))
+    names = {}
+    for index, item, uuid, metadata in described:
+        identity = ("uuid", uuid) if uuid else ("reference", index)
+        if uuid is None and metadata is not None:
+            candidates = matches[metadata]
+            containers = Counter(container for container, _ in candidates)
+            ids = {value for _, value in candidates if value is not None}
+            if len(containers) > 1 and max(containers.values()) == 1 and len(ids) <= 1:
+                identity = ("uuid", next(iter(ids))) if ids else ("metadata", metadata)
+        name = clip(clean_text(item.get("file_name")), _NAME)
+        if identity not in names or not names[identity]:
+            names[identity] = name
+    return [f"[attached file: {name}]" if name else "[attached a file]" for name in names.values()]
 
 
 def _content_blocks(record: dict[str, Any]) -> list[dict[str, Any]] | None:

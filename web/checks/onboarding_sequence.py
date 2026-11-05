@@ -7,12 +7,52 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
-from ui_fidelity import Handler, Preview
+from ui_fidelity import FIXTURE, Handler, Preview
+
+
+def progress_body(provider, **changes):
+    """One provider's import_progress.v1, as the server answers it."""
+    body = dict(contract="import_progress.v1", provider=provider, state="idle", sources_total=0,
+                requests_total=0, queued_count=0, processing_count=0, retry_wait_count=0,
+                extracted_count=0, held_nothing_count=0, held_count=0, failed_count=0,
+                graph=dict(items_created=0, items_changed=0, links_created=0, links_changed=0))
+    body.update(changes)
+    return body
+
+
+def graph_body(server):
+    """The self item first, then as many stored items as the import has written so far."""
+    nodes = sorted(FIXTURE["elements"]["nodes"], key=lambda row: row["data"]["id"] != "p001")[: server.graph_limit]
+    ids = {row["data"]["id"] for row in nodes}
+    edges = [row for row in FIXTURE["elements"]["edges"] if row["data"]["source"] in ids and row["data"]["target"] in ids]
+    return dict(elements=dict(nodes=nodes, edges=edges), stats={}, time={"min": None, "max": None},
+                self_item_id="p001", generated_at="2026-11-04T12:00:00Z")
+
+
+def reset_import(server):
+    server.graph_limit = 1
+    server.progress = {}
+    server.import_run = None
+    server.auto_import = True
 
 
 class OnboardingHandler(Handler):
     def do_GET(self):
         path = urlparse(self.path).path
+        if path == "/v1/views/graph":
+            return self.send(graph_body(self.server))
+        if path == "/v1/sources/import-progress":
+            provider = parse_qs(urlparse(self.path).query)["provider"][0]
+            run = self.server.import_run
+            if run and run["provider"] == provider:
+                # Each read finds one more part finished, and the graph that part wrote.
+                if run["done"] < run["total"]:
+                    run["done"] += 1
+                    self.server.graph_limit += run["items"]
+                left = run["total"] - run["done"]
+                return self.send(progress_body(provider, state="processing" if left else "complete", sources_total=run["total"],
+                                               requests_total=run["total"], extracted_count=run["done"], processing_count=left))
+            return self.send(self.server.progress.get(provider, progress_body(provider)))
         if path == "/v1/sources/pending-exports":
             return self.send({"account": self.server.account, "revision": 0, "pending_exports": {}})
         if path == "/v1/views/pipedream/apps":
@@ -46,6 +86,9 @@ class OnboardingHandler(Handler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/v1/sources/upload" and self.server.auto_import:
+            provider = parse_qs(urlparse(self.path).query)["provider"][0]
+            self.server.import_run = dict(provider=provider, total=2, done=0, items=20)
         if path == "/v1/agent-files":
             size = int(self.headers.get("Content-Length", "0"))
             data = self.rfile.read(size)
@@ -97,6 +140,7 @@ def serve():
     server.connections = 0
     server.positions = []
     server.agent_files = []
+    reset_import(server)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
@@ -116,6 +160,7 @@ def main(shots):
                 server.connections = 0
                 server.positions = []
                 server.agent_files = []
+                reset_import(server)
                 context = browser.new_context(viewport={"width": width, "height": height})
                 # No provider request may leave this controlled browser context.
                 context.route(
@@ -143,7 +188,6 @@ def main(shots):
                         "buffer": b"[]",
                     }
                 )
-                positions_before_preview = len(server.positions)
                 page.get_by_role("button", name="Upload export", exact=True).click()
                 expect(
                     page.get_by_role("heading", name="Start with your conversations")
@@ -151,7 +195,7 @@ def main(shots):
                 assert page.url == base + "/"
                 assert not page.evaluate("GroveSimulation.getState().onboardingComplete")
                 assert not page.evaluate("GroveSimulation.getState().tourComplete")
-                assert server.uploads == []
+                assert [row["provider"] for row in server.uploads] == ["claude_ai"], server.uploads
                 page.screenshot(
                     animations="disabled",
                     path=str(shots / f"{width}-01-conversations.png"),
@@ -200,12 +244,13 @@ def main(shots):
                 page.get_by_label("Title", exact=True).fill("Synthetic note")
                 body = page.get_by_label("Note", exact=True)
                 body.fill("Keep this draft and its focus during graph growth.")
-                before_tick = page.evaluate(
-                    "GroveSimulation.getState().conversationPreview.step"
-                )
+                # New real items reach the graph while the person types.
+                before_tick = page.evaluate("GroveSimulation.getState().currentNodeCount")
+                server.import_run["total"] += 2
                 page.wait_for_function(
-                    "before => GroveSimulation.getState().conversationPreview.step > before",
+                    "before => GroveSimulation.getState().currentNodeCount > before",
                     arg=before_tick,
+                    timeout=45000,
                 )
                 # Wait for the asynchronous graph response and its UI change event too.
                 page.wait_for_function(
@@ -268,13 +313,13 @@ def main(shots):
                     page.locator("[data-tour-next]").click()
                 assert page.evaluate("GroveSimulation.getState().tourComplete")
                 assert not errors, errors
-                # The example cannot send synthetic node coordinates to the real service.
-                assert len(server.positions) == positions_before_preview, (
-                    "Preview must not write graph coordinates"
-                )
-                assert server.uploads == []
+                # Saved coordinates belong to items the server holds, and to no invented node.
+                stored = {row["data"]["id"] for row in FIXTURE["elements"]["nodes"]}
+                assert {row["id"] for row in server.positions} <= stored, "Only real items get coordinates"
+                assert len(server.uploads) == 1
                 print(
-                    f"PASS {width}px: three steps, one-click Gmail consent, working file and note buttons, AI controls, six tour steps, no Claude upload",
+                    f"PASS {width}px: three steps, real Claude upload, paced real graph, one-click "
+                    "Gmail consent, working file and note buttons, AI controls, six tour steps",
                     flush=True,
                 )
                 context.close()

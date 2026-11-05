@@ -188,7 +188,7 @@ def test_ordinary_claude_zip_uses_mandatory_screening_without_global_film_files(
 
 @pytest.mark.parametrize("provider", ["claude_ai", "chatgpt"])
 @pytest.mark.parametrize("zipped", [False, True], ids=["json", "zip"])
-def test_real_ordinary_exports_screen_store_and_reimport_without_graph_or_model_work(
+def test_real_ordinary_exports_screen_store_queue_and_reimport_without_graph_or_model_work(
     driver, seeded_world, client_for, test_clock, clean_env, caplog, provider, zipped
 ):
     clean_env.setenv("GROVE_ENV", "production")
@@ -232,11 +232,20 @@ def test_real_ordinary_exports_screen_store_and_reimport_without_graph_or_model_
     assert "cedar planter" in content and "cedar planter" not in response.text
     assert query.read("MATCH (n:Item) RETURN count(n) AS n") == before_items
     assert query.read("MATCH ()-[r:LINK]->() RETURN count(r) AS n") == before_links
-    assert query.read("MATCH (r:Request) RETURN r.id") == []
+    queued = query.read(
+        "MATCH (s:Source) MATCH (r:Request {source_id: s.id}) "
+        "RETURN r.id AS id, r.status AS status, s.id AS source"
+    )
+    assert [(row["id"], row["status"]) for row in queued] == [
+        ("import:" + queued[0]["source"], "queued")
+    ]
+    assert body["processing"]["requests_added"] == 1
     again = upload(client, data, **arguments)
     assert again.status_code == 200
     assert again.json()["state"] == "nothing_new"
+    assert again.json()["processing"]["requests_added"] == 0
     assert counts(driver, seeded_world) == stored
+    assert query.read("MATCH (r:Request) RETURN count(r) AS n") == [{"n": 1}]
 
 
 def test_a_session_upload_stores_each_chat(driver, seeded_world, client_for, test_clock):
