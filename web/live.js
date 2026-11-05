@@ -26,6 +26,7 @@
     pipedreamAccounts: '/v1/views/pipedream/accounts',
     forgetApprove: '/v1/forget/approve',
     forget: '/v1/forget',
+    worldDelete: '/v1/world/delete',
     materials: '/v1/materials',
     materialFiles: '/v1/materials/files',
     materialNotes: '/v1/materials/notes',
@@ -262,6 +263,7 @@
         return postJSON(ENDPOINTS.forget, { target: target, approval_token: res.body.approval_token });
       });
     },
+    deleteWorld: function () { return postJSON(ENDPOINTS.worldDelete, { confirm: 'DELETE' }); },
     disconnectConnection: function (id) { return postJSON(ENDPOINTS.sourceConnections + '/' + encodeURIComponent(id) + '/disconnect', {}); },
     errorText: errorText,
     agentFiles: function () {

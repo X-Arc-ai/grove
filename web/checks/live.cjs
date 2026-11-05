@@ -159,7 +159,7 @@ function legendRows(elements){
   // 1. live.js: one endpoint map, same-origin fetch helpers, positions in batches of 5000.
   {
     const server=makeServer(liveWorld()),pg=page(server,{},['live.js']),G=pg.sandbox.GroveLive;
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',workerRecord:'/v1/views/workers/record',positions:'/v1/views/positions',upload:'/v1/sources/upload',pendingExports:'/v1/sources/pending-exports',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',pipedreamAccounts:'/v1/views/pipedream/accounts',forgetApprove:'/v1/forget/approve',forget:'/v1/forget',materials:'/v1/materials',materialFiles:'/v1/materials/files',materialNotes:'/v1/materials/notes',materialDetail:'/v1/materials/{id}',materialEdit:'/v1/materials/notes/{id}',materialPreview:'/v1/materials/{id}/delete-preview',materialConfirmation:'/v1/materials/{id}/delete-confirmations',materialDelete:'/v1/materials/{id}/delete',agentFiles:'/v1/agent-files',agentNotes:'/v1/agent-files/notes',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',workerRecord:'/v1/views/workers/record',positions:'/v1/views/positions',upload:'/v1/sources/upload',pendingExports:'/v1/sources/pending-exports',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',pipedreamAccounts:'/v1/views/pipedream/accounts',forgetApprove:'/v1/forget/approve',forget:'/v1/forget',worldDelete:'/v1/world/delete',materials:'/v1/materials',materialFiles:'/v1/materials/files',materialNotes:'/v1/materials/notes',materialDetail:'/v1/materials/{id}',materialEdit:'/v1/materials/notes/{id}',materialPreview:'/v1/materials/{id}/delete-preview',materialConfirmation:'/v1/materials/{id}/delete-confirmations',materialDelete:'/v1/materials/{id}/delete',agentFiles:'/v1/agent-files',agentNotes:'/v1/agent-files/notes',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
     const res=await G.getJSON('/v1/views/health');assert(res.ok&&res.body.overall.state==='healthy');
     assert.equal(server.calls[0].method,'GET');assert.equal(server.calls[0].init.credentials,'same-origin');
     const many=[];for(let i=0;i<12000;i++)many.push({id:i<11990?synthetic.elements.nodes[i%222].data.id:'x'+i,x:i,y:-i});
@@ -1363,7 +1363,7 @@ function legendRows(elements){
   const dist=read('dist/index.html');
   assert(!dist.includes('GROVE_FIXTURE'),'The bundle names no fixture hook');
   assert(!dist.includes('fixture.js')&&!dist.includes('fixture.json'),'The bundle references no fixture file');
-  assert(!/482910|data-action="use-code"|Delete my Grove/.test(dist),'Simulation-only sign-in and resets are gone');
+  assert(!/482910|data-action="use-code"/.test(dist),'Simulation-only sign-in is gone');
   const banned=new RegExp([['ham','za'],['ham','py'],['aa','tar']].map(p=>p.join('')).join('|'),'i');
   assert(!banned.test(dist),'The bundle holds none of the banned words');
   assert(dist.includes('window.GroveLive')&&dist.includes('GroveLayoutKeep')&&dist.includes('<title>Grove</title>'));

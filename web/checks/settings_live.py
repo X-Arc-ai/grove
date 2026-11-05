@@ -134,9 +134,11 @@ class SettingsHandler(OnboardingHandler):
             return self.send(
                 {"error": {"code": "unavailable"}}, self.server.logout_status
             )
-        if path in ("/v1/forget/approve", "/v1/forget") or path.endswith(
-            ("/gmail/disconnect", "/gmail/connect")
-        ):
+        if path in (
+            "/v1/forget/approve",
+            "/v1/forget",
+            "/v1/world/delete",
+        ) or path.endswith(("/gmail/disconnect", "/gmail/connect")):
             size = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(size) or b"{}")
             self.server.posts.append((path, body))
@@ -150,6 +152,21 @@ class SettingsHandler(OnboardingHandler):
                     return self.send({"error": message}, self.server.forget_status)
                 self.server.rows = [SELF_ROW]
                 return self.send({"receipt_id": "r1", "counts": {"sources": 3}})
+            if path == "/v1/world/delete":
+                if self.server.delete_answer is not None:
+                    status, error = self.server.delete_answer
+                    return self.send({"error": error}, status)
+                self.server.has_items = False
+                self.server.rows = [SELF_ROW]
+                self.server.agent_files = []
+                self.server.health = dict(self.server.health, nodes=1, edges=0)
+                return self.send(
+                    {
+                        "deleted": True,
+                        "backups_clear_after": "2026-12-05",
+                        "signed_in": True,
+                    }
+                )
             account = self.server.account
             if path.endswith("/gmail/disconnect"):
                 self.server.gmail = "not_connected"
@@ -191,6 +208,7 @@ def reset(server, has_items=True):
     server.forget_gate = threading.Event()
     server.forget_gate.set()
     server.forget_status = 200
+    server.delete_answer = None
     server.logout_status = 200
     server.health_status = 200
     server.gets = []
@@ -476,6 +494,60 @@ def check_refresh(page, base, server, shots, label, expect, theme):
     assert not errors, errors
 
 
+def check_delete(page, base, server, shots, label, expect, theme):
+    errors = opened(page, base, theme)
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="account"]').click()
+    page.get_by_role("button", name="Delete my Grove", exact=True).click()
+    dialog = page.locator(".gp-delete-dialog")
+    expect(dialog).to_be_visible()
+    submit = dialog.locator("[type=submit]")
+    expect(submit).to_be_disabled()
+    field = dialog.get_by_label("Type DELETE to confirm")
+    field.fill("delete")
+    expect(submit).to_be_disabled()
+    field.press("Enter")
+    assert not server.posts, server.posts
+    shot(page, shots, label, "delete")
+
+    # Each refusal says what is left, and the dialog stays open for a retry.
+    answers = (
+        (503, {"code": "unavailable", "retryable": False}, "Nothing was removed"),
+        (
+            502,
+            {"code": "unavailable", "retryable": True},
+            "connected app could not be reached",
+        ),
+        (503, {"code": "unavailable", "retryable": True}, "may already be gone"),
+        (
+            403,
+            {"code": "scope_denied", "retryable": False},
+            "demo account cannot be deleted",
+        ),
+    )
+    field.fill("DELETE")
+    for status, error, words in answers:
+        server.delete_answer = (status, error)
+        expect(submit).to_be_enabled()
+        submit.click()
+        expect(dialog).to_contain_text(words)
+    server.delete_answer = None
+    server.posts = []
+
+    submit.click()
+    expect(
+        page.get_by_role("heading", name="Start with your conversations")
+    ).to_be_visible()
+    assert server.posts == [("/v1/world/delete", {"confirm": "DELETE"})], server.posts
+    assert not page.evaluate("GroveSimulation.getState().onboardingComplete")
+    # A reload stays in the new empty Grove: no stored progress brings the old map back.
+    page.reload()
+    expect(
+        page.get_by_role("heading", name="Start with your conversations")
+    ).to_be_visible()
+    assert not errors, errors
+
+
 def check_three_steps(page, base, server, shots, label, expect, theme):
     server.has_items = False
     errors = []
@@ -519,6 +591,7 @@ CHECKS = (
     ("failed logout", check_failed_logout),
     ("partial refresh", check_partial_refresh),
     ("refresh", check_refresh),
+    ("delete my grove", check_delete),
     ("three onboarding steps", check_three_steps),
 )
 

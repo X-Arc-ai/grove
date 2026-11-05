@@ -49,7 +49,7 @@
       render(true);
     });
   }
-  function clearSourceState(){ui.appsOff={};ui.sourceNotice='';ui.sourceError='';ui.sourceBusy=null;if(api.setSourceItems)api.setSourceItems({});if(refreshNote)refreshNote.hidden=true;}
+  function clearSourceState(){ui.deleteDraft='';ui.deleteError='';ui.deleteBusy=false;ui.appsOff={};ui.sourceNotice='';ui.sourceError='';ui.sourceBusy=null;if(api.setSourceItems)api.setSourceItems({});if(refreshNote)refreshNote.hidden=true;}
   function coverageMessage(){return liveData.pending?'Check in progress':liveData.sources===null?'Source information could not be read. Try again.':'';}
   // Every ordinary world holds one connector with no provider: Grove's record of what a person
   // types in the views. It is no source, so Settings and Health never list it.
@@ -76,7 +76,7 @@
   var modalRoot = document.createElement('div'); modalRoot.id='gp-modal-root'; root.appendChild(modalRoot);
   var chrome = document.createElement('div'); chrome.id='gp-chrome'; root.appendChild(chrome);
   var tourRoot = document.createElement('div'); tourRoot.id='gp-tour-root'; root.appendChild(tourRoot);
-  ui.appsOff={};ui.sourceNotice='';ui.sourceError='';ui.sourceBusy=null;ui.editName=false;ui.nameDraft='';ui.guideStage=0;ui.uploadFile=null;ui.settingsTab='account';ui.authStage=api.getState().auth?null:'signin';ui.requestId=null;ui.requestTab='open';ui.requestDrafts={};ui.guideDevice='iphone';ui.email='';ui.code='';ui.query='';ui.connecting={};ui.keyApp=null;ui.sourceTab='chats';ui.filePicker=false;ui.noteEditor=false;ui.confirm=null;ui.notice='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};
+  ui.appsOff={};ui.sourceNotice='';ui.sourceError='';ui.sourceBusy=null;ui.deleteDraft='';ui.deleteBusy=false;ui.deleteError='';ui.editName=false;ui.nameDraft='';ui.guideStage=0;ui.uploadFile=null;ui.settingsTab='account';ui.authStage=api.getState().auth?null:'signin';ui.requestId=null;ui.requestTab='open';ui.requestDrafts={};ui.guideDevice='iphone';ui.email='';ui.code='';ui.query='';ui.connecting={};ui.keyApp=null;ui.sourceTab='chats';ui.filePicker=false;ui.noteEditor=false;ui.confirm=null;ui.notice='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};
   var lastShape='', lastTourShape='', moving=false, tourAfter=0, arrivalTimer=null, uiEpoch=0, authEpoch=0, signinError='';
   function accountMode(){return live&&window.location.pathname===live.PAGES.signup?'signup':'login';}
   function logoutPage(){return live&&window.location.pathname===live.PAGES.logout;}
@@ -444,12 +444,17 @@
   }
   function confirmation(){
     var c=ui.confirm;
+    if(c.type==='brain'&&live)return deleteGrove();
     if(c.type==='brain')return '<div class="gp-confirm-backdrop"><section class="gp-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="gp-confirm-title" aria-describedby="gp-confirm-copy"><header><h2 id="gp-confirm-title" tabindex="-1">Delete your brain?</h2><button class="gp-icon" data-action="cancel-confirm" aria-label="Close confirmation">×</button></header><p id="gp-confirm-copy">This would remove the memories and connections in your Grove. Your login account would stay.</p><div class="gp-confirm-actions"><button class="gp-small" data-action="cancel-confirm">Cancel</button><button class="gp-small gp-danger" disabled aria-disabled="true">Delete brain</button></div></section></div>';
     var liveRow=live?sourceAccounts(api.getState()).find(function(a){return a.connectorId===c.id||a.provider===c.id;}):null;
     var remove=c.type==='source',disconnect=c.type==='disconnect'||c.type==='app'||c.type==='connection',label=liveRow?liveRow.label:disconnect?(PROVIDERS[c.id]||{}).label||c.id:'';
     var title=remove?'Remove '+label+'?':disconnect?'Disconnect '+label+'?':'Remove this file?';
     var copy=remove?'Grove forgets what it took in from this source. Memories supported only by this source go, and shared memories stay. Backups clear within 30 days. This cannot be undone.':disconnect?'New imports will stop. The memories already in your Grove stay.':'Memories supported only by this file will be removed. Shared memories stay.';
     return '<div class="gp-confirm-backdrop"><section class="gp-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="gp-confirm-title" aria-describedby="gp-confirm-copy"><header><h2 id="gp-confirm-title" tabindex="-1">'+esc(title)+'</h2><button class="gp-icon" data-action="cancel-confirm" aria-label="Close confirmation">×</button></header><p id="gp-confirm-copy">'+copy+'</p><div class="gp-confirm-actions"><button class="gp-small" data-action="cancel-confirm">Cancel</button><button class="gp-small gp-danger" data-action="confirm-delete">'+(remove?'Remove source':disconnect?'Disconnect':'Remove file')+'</button></div></section></div>';
+  }
+  function deleteGrove(){
+    var ready=ui.deleteDraft==='DELETE'&&!ui.deleteBusy;
+    return '<div class="gp-confirm-backdrop"><section class="gp-confirm-dialog gp-delete-dialog" role="alertdialog" aria-modal="true" aria-labelledby="gp-confirm-title" aria-describedby="gp-confirm-copy"><header><h2 id="gp-confirm-title" tabindex="-1">Delete your Grove?</h2><button class="gp-icon" data-action="cancel-confirm" aria-label="Close confirmation"'+(ui.deleteBusy?' disabled':'')+'>×</button></header><p id="gp-confirm-copy">This removes your memories, connections, sources, files, notes, connected apps and AI access. Your login stays, and you start again with an empty Grove. This cannot be undone.</p><p class="gp-section-copy">Older backups clear after about 30 days. Exports you downloaded, and what a model already received, are out of Grove’s reach.</p><form data-delete-form><label for="gp-delete-word">Type DELETE to confirm</label><input id="gp-delete-word" name="word" autocomplete="off" autocapitalize="characters" spellcheck="false" value="'+esc(ui.deleteDraft)+'"'+(ui.deleteBusy?' disabled':'')+'>'+(ui.deleteError?'<p class="gp-footnote" role="alert">'+esc(ui.deleteError)+'</p>':'')+'<div class="gp-confirm-actions"><button class="gp-small" type="button" data-action="cancel-confirm"'+(ui.deleteBusy?' disabled':'')+'>Cancel</button><button class="gp-small gp-danger" type="submit"'+(ready?'':' disabled aria-disabled="true"')+'>'+(ui.deleteBusy?'Deleting…':'Delete my Grove')+'</button></div></form></section></div>';
   }
   function growthForm(s){var g=ui.growthDraft||s.growth;return '<h2>My Grove</h2><p class="gp-section-copy">A little guidance, entirely up to you</p>'+(live?'<p class="gp-section-copy">Your guidance notes, saved on this browser.</p>':'')+'<form data-growth-form class="gp-growth-form"><label><span class="gp-field-label">Focus on '+info('Tell Grove which work, people, or ideas deserve more attention. Leave this blank to let your sources lead.')+'</span><textarea name="focus" rows="2" placeholder="The work, people, and ideas that matter to you">'+esc(g.focus)+'</textarea></label><label><span class="gp-field-label">How to read my sources '+info('Set the context for interpretation. For example, a plan is a possibility until there is evidence it happened.')+'</span><textarea name="reading" rows="2" placeholder="Treat plans as possibilities until I confirm what happened">'+esc(g.reading)+'</textarea></label><label><span class="gp-field-label">Leave out '+info('Describe topics or details that should not shape your Grove, such as temporary logistics or routine chatter.')+'</span><textarea name="avoid" rows="2" placeholder="Routine chatter, temporary details, or topics to ignore">'+esc(g.avoid)+'</textarea></label><div class="gp-check-row"><label class="gp-check-label"><input type="checkbox" name="confirm" '+(g.confirm?'checked':'')+'>Ask before changing an established preference</label>'+info('Grove will bring a question to your input inbox before replacing a preference it has already learned.')+'</div><footer><span class="gp-save-note gp-positive" role="status">'+esc(ui.notice)+'</span><button class="gp-small">'+(live?'Save browser guidance':'Save guidance')+'</button></footer></form>';}
   // The sim's example name is fixture mode only; live mode with no name known says 'You'.
@@ -461,7 +466,7 @@
     // Live mode shows only the address the sign-in knows; with none (Google), the sign-in method.
     var email=state.auth&&state.auth.email||(live?'':'anas@example.com');
     var emailRow=email?'<div class="gp-setting-row"><span><strong>Email</strong><small>'+esc(email)+'</small></span><span class="gp-positive">Verified</span></div>':'<div class="gp-setting-row"><span><strong>Email</strong><small>Signed in with '+esc(method)+'</small></span></div>';
-    return '<h2>Account</h2><p class="gp-section-copy">Your identity and access</p><section class="gp-account-section"><h3>Profile</h3>'+name+emailRow+'</section><section class="gp-account-section"><h3>Sign-in</h3><div class="gp-setting-row"><span><strong>'+esc(method)+'</strong><small>This device</small></span><button class="gp-small" data-action="logout">Log out</button></div>'+(ui.logoutError?'<p class="gp-footnote" role="alert">'+esc(ui.logoutError)+'</p>':'')+'</section><section class="gp-account-section"><h3>Your data</h3><div class="gp-setting-row"><span><strong>'+(live?'Download browser settings':'Download my Grove')+'</strong><small>'+(live?'Keep this browser’s preferences and pending reminders':'Keep a copy of your sources and guidance')+'</small></span><button class="gp-text" data-action="download-data">Download ↗</button></div><div class="gp-setting-row"><span><strong>Delete brain</strong><small>Remove your Grove memories and connections</small></span><button class="gp-text gp-danger-text" data-action="delete-brain">Delete brain</button></div></section>';
+    return '<h2>Account</h2><p class="gp-section-copy">Your identity and access</p><section class="gp-account-section"><h3>Profile</h3>'+name+emailRow+'</section><section class="gp-account-section"><h3>Sign-in</h3><div class="gp-setting-row"><span><strong>'+esc(method)+'</strong><small>This device</small></span><button class="gp-small" data-action="logout">Log out</button></div>'+(ui.logoutError?'<p class="gp-footnote" role="alert">'+esc(ui.logoutError)+'</p>':'')+'</section><section class="gp-account-section"><h3>Your data</h3><div class="gp-setting-row"><span><strong>'+(live?'Download browser settings':'Download my Grove')+'</strong><small>'+(live?'Keep this browser’s preferences and pending reminders':'Keep a copy of your sources and guidance')+'</small></span><button class="gp-text" data-action="download-data">Download ↗</button></div><div class="gp-setting-row"><span><strong>'+(live?'Delete my Grove':'Delete brain')+'</strong><small>Remove your memories, connections, sources and files</small></span><button class="gp-text gp-danger-text" data-action="delete-brain">'+(live?'Delete my Grove':'Delete brain')+'</button></div></section>';
   }
   function requestsPanel(){
     var items=(api.getState().requests||[]).filter(function(r){return r.status==='open';}),r=items.find(function(r){return r.id===ui.requestId;})||items[0],index=items.indexOf(r);
@@ -587,6 +592,26 @@
   function reconnectLiveApp(provider){
     var ticket=authEpoch;ui.sourceNotice='';ui.sourceError='';
     window.GrovePipedream.connect(provider).then(function(){if(ticket===authEpoch){ui.sourceNotice='Finish the connection in the new tab.';render(true);}},function(error){if(ticket===authEpoch)sourceFailed(error.message);});
+  }
+  // Each answer of POST /v1/world/delete says what is left. A 401 goes to the sign-in card by itself.
+  function deleteFailure(res){
+    var error=res.body&&res.body.error||{};
+    if(res.status===503&&error.retryable===false)return 'Delete is not available on this server yet. Nothing was removed.';
+    if(res.status===503)return 'Part of your Grove may already be gone. Try again to finish.';
+    if(res.status===502)return 'A connected app could not be reached. Nothing was removed. Try again.';
+    if(res.status===403&&error.code==='scope_denied')return 'This prepared demo account cannot be deleted.';
+    return live.errorText(res.body,'Your Grove could not be deleted. Try again.');
+  }
+  function deleteLiveGrove(){
+    var ticket=authEpoch;ui.deleteBusy=true;ui.deleteError='';render(true);
+    function failed(text){ui.deleteBusy=false;ui.deleteError=text;render(true);}
+    live.deleteWorld().then(function(res){
+      if(ticket!==authEpoch){ui.deleteBusy=false;return;}
+      if(!res.ok||!res.body||res.body.deleted!==true)return failed(deleteFailure(res));
+      // The page starts over from the server: no memory of the old world stays in this browser.
+      api.clearGrove();api.saveGrowth({focus:'',reading:'',avoid:'',confirm:true});
+      window.location.assign(res.body.signed_in?live.PAGES.home:live.PAGES.login);
+    },function(){if(ticket===authEpoch)failed('Grove could not be reached. Check your Grove before you try again.');else ui.deleteBusy=false;});
   }
   function setStep(n){ui.step=n;ui.guide=null;if(api.setStep)api.setStep(n);render(true);if(window.GroveView)window.GroveView.fit();}
   function finish(){ui.guide=null;ui.panel=null;var duration=reduceMotion.matches?0:1300;document.body.classList.add('gp-arriving');tourAfter=performance.now()+duration+900;api.completeOnboarding();render(true);if(window.GroveView)window.GroveView.fit(duration);clearTimeout(arrivalTimer);arrivalTimer=setTimeout(function(){document.body.classList.remove('gp-arriving');},duration);setTimeout(maybeTour,duration+950);}
@@ -726,7 +751,7 @@
     else if(action==='manage-sources'){ui.panel='profile';ui.settingsTab='sources';refreshLiveData(true);render(true);}
     else if(action==='watch-care'){ui.panel=null;render();var toggle=document.getElementById('agents-toggle');if(!toggle.checked)toggle.click();}
     else if(action==='delete-brain'){openConfirmation('brain','');ui.confirmReturn='[data-action="delete-brain"]';}
-    else if(action==='cancel-confirm'){ui.confirm=null;render(true);}
+    else if(action==='cancel-confirm'){if(ui.deleteBusy)return;ui.confirm=null;ui.deleteDraft='';ui.deleteError='';render(true);}
     else if(action==='confirm-delete'){
       var c=ui.confirm;ui.confirm=null;
       if(c.type==='disconnect'){api.disconnectSource(c.id);render(true);}
@@ -817,6 +842,7 @@
     modalRoot.querySelectorAll('[data-source-remove]').forEach(function(el){el.onclick=function(){openConfirmation('source',el.dataset.sourceRemove);};});
     modalRoot.querySelectorAll('[data-connection-off]').forEach(function(el){el.onclick=function(){openConfirmation('connection',el.dataset.connectionOff);};});
     modalRoot.querySelectorAll('[data-app-toggle]').forEach(function(el){el.onclick=function(){var id=el.dataset.appToggle,row=liveSourceAccounts().find(function(a){return a.provider===id;});if(row&&row.status==='connected')openConfirmation('app',id);else reconnectLiveApp(id);};});
+    var deleteForm=modalRoot.querySelector('[data-delete-form]');if(deleteForm){deleteForm.elements.word.oninput=function(){ui.deleteDraft=deleteForm.elements.word.value;var ready=ui.deleteDraft==='DELETE'&&!ui.deleteBusy,button=deleteForm.querySelector('[type=submit]');button.disabled=!ready;button.setAttribute('aria-disabled',String(!ready));};deleteForm.onsubmit=function(e){e.preventDefault();if(ui.deleteDraft==='DELETE'&&!ui.deleteBusy)deleteLiveGrove();};}
     modalRoot.querySelectorAll('[data-live-source]').forEach(function(el){el.onclick=function(){ui.panel=null;render();if(window.GroveView)window.GroveView.showChanges('nodes',el.dataset.liveSource);};});
     modalRoot.querySelectorAll('[data-source-value]').forEach(function(el){el.onclick=function(){ui.panel=null;render();if(window.GroveView)window.GroveView.showChanges('nodes',el.dataset.sourceValue);};});
     var filesForm=modalRoot.querySelector('[data-files-form]');if(!live&&filesForm)filesForm.onsubmit=function(e){e.preventDefault();var names=Array.from(filesForm.querySelectorAll('input:checked')).map(function(i){return i.value;});if(!names.length)return;ui.filePicker=false;Promise.all(names.map(function(name){return api.addFile(name);})).then(function(){render(true);if(window.GroveMotion)window.GroveMotion.source('notes');});};
