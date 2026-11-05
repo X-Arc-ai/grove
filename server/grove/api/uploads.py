@@ -78,13 +78,30 @@ RETRY_AFTER_SECONDS = 30
 # Keep one upload at a time inside the api's 4 GiB limit, which includes its tmpfs.
 UPLOAD_SLOTS = threading.BoundedSemaphore(MAX_PARALLEL_UPLOADS)
 
+# What the page can highlight on the map. The counts are never capped.
+MAX_CONTRIBUTION_ITEM_IDS = 500
+
+# One read for all connectors. Evidence names its Source by id, so the targets come from the
+# world's sources (docs/store-map.md). Each locator test lets a composite index serve the read.
 _CONNECTORS = (
     "MATCH (c:Connector) "
+    "WITH c, COLLECT { MATCH (s:Source {connector_id: c.id}) "
+    "WHERE s.external_locator IS NOT NULL AND coalesce(s.forget_state, 'kept') <> 'forgotten' "
+    "RETURN s.id } AS source_ids "
+    "WITH c, source_ids, COLLECT { MATCH (e:Evidence) "
+    "WHERE e.source_id IN source_ids AND e.locator IS NOT NULL AND e.active = true "
+    "RETURN DISTINCT e.target_id } AS targets "
     "RETURN c.id AS connector_id, c.type AS type, c.provider AS provider, "
     "c.last_attempted_read AS last_attempted_read, "
     "c.last_successful_read AS last_successful_read, c.last_outcome AS last_outcome, "
     "c.read_count AS read_count, c.failed_count AS failed_count, "
-    "c.oldest_unprocessed_item AS oldest_unprocessed_item, c.watermark AS watermark "
+    "c.oldest_unprocessed_item AS oldest_unprocessed_item, c.watermark AS watermark, "
+    "size(source_ids) AS sources, "
+    "COUNT { MATCH (i:Item) WHERE i.id IN targets AND i.end_class IS NULL } AS nodes, "
+    "COUNT { MATCH (:Item)-[l:LINK]->(:Item) "
+    "WHERE l.id IN targets AND l.active_key IS NOT NULL } AS edges, "
+    "COLLECT { MATCH (i:Item) WHERE i.id IN targets AND i.end_class IS NULL "
+    "RETURN i.id AS id ORDER BY id LIMIT $item_cap } AS item_ids "
     "ORDER BY c.type, c.provider, c.id"
 )
 
@@ -336,13 +353,21 @@ def _connector(row: dict[str, Any]) -> dict[str, Any]:
         "failed_count": row["failed_count"] or 0,
         "oldest_unprocessed_item": _iso(row["oldest_unprocessed_item"]),
         "watermark": row["watermark"],
+        "contribution": {
+            "sources": row["sources"],
+            "nodes": row["nodes"],
+            "edges": row["edges"],
+            "item_ids": row["item_ids"],
+        },
     }
 
 
 @router.get("/connectors")
 def get_connectors(request: Request, session: Session) -> dict[str, Any]:
     """The session's world only. An upload token is no session, so it gets a 401 here."""
-    rows = WorldQuery(request.app.state.driver, session.world_id).read(_CONNECTORS)
+    rows = WorldQuery(request.app.state.driver, session.world_id).read(
+        _CONNECTORS, item_cap=MAX_CONTRIBUTION_ITEM_IDS
+    )
     return {"connectors": [_connector(row) for row in rows]}
 
 

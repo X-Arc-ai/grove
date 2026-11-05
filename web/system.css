@@ -403,7 +403,6 @@ body.gp-tour-ai.hood-on .gp-accounts-trigger{display:block}
 .graph-status{font:400 9px/1.5 var(--gp-font);color:var(--text-secondary);margin-top:4px}
 .graph-status[data-state=error]{color:var(--gp-danger)}
 .stats-delta.is-removed{color:var(--text-secondary)}
-.stats-baseline{color:var(--text-secondary);font-size:9px}
 #grove-product .gp-danger-text{color:var(--gp-danger)}
 #grove-product .gp-host-guide{width:100%;min-width:0}
 #grove-product .gp-host-guide .gp-app-frame{margin-top:20px}

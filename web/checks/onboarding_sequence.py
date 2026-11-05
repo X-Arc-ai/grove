@@ -99,7 +99,11 @@ class OnboardingHandler(Handler):
             return self.send({"account": self.server.account, "file": row})
         if path == "/v1/agent-files/notes":
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            row = {"name": body["title"] + ".md", "kind": "note", "bytes": len(body["body"])}
+            row = {
+                "name": body["title"] + ".md",
+                "kind": "note",
+                "bytes": len(body["body"]),
+            }
             self.server.agent_files.append(row)
             return self.send({"account": self.server.account, "file": row})
         if path == "/v1/views/pipedream/gmail/connect":
@@ -213,8 +217,16 @@ def main(shots):
                     page.get_by_role("button", name="Add files +", exact=True).click()
                 chooser.value.set_files(
                     [
-                        {"name": "plan.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1"},
-                        {"name": "ideas.txt", "mimeType": "text/plain", "buffer": b"Ideas"},
+                        {
+                            "name": "plan.pdf",
+                            "mimeType": "application/pdf",
+                            "buffer": b"%PDF-1",
+                        },
+                        {
+                            "name": "ideas.txt",
+                            "mimeType": "text/plain",
+                            "buffer": b"Ideas",
+                        },
                     ]
                 )
                 expect(page.locator('[data-agent-files="file"]')).to_contain_text("plan.pdf")
@@ -225,7 +237,9 @@ def main(shots):
                     "plan.pdf",
                 ], server.agent_files
                 page.get_by_role("button", name="Remove ideas.txt", exact=True).click()
-                expect(page.locator('[data-agent-files="file"]')).not_to_contain_text("ideas.txt")
+                expect(page.locator('[data-agent-files="file"]')).not_to_contain_text(
+                    "ideas.txt"
+                )
                 page.get_by_role("button", name="Add note +", exact=True).click()
                 page.get_by_label("Title", exact=True).fill("Synthetic note")
                 body = page.get_by_label("Note", exact=True)
@@ -255,16 +269,15 @@ def main(shots):
                 page.screenshot(
                     animations="disabled", path=str(shots / f"{width}-03-materials.png")
                 )
-                page.get_by_role("button", name="Next step", exact=True).click()
-                expect(page.get_by_role("heading", name="Take Grove with you")).to_be_visible()
-                expect(
-                    page.get_by_role("button", name="Set up Grove in Muse", exact=True)
-                ).to_be_visible()
-                page.screenshot(animations="disabled", path=str(shots / f"{width}-04-ai.png"))
-                # The original previous/next controls retain all four steps.
+                # Setup ends here. The previous and next controls keep all three steps.
                 page.get_by_role("button", name="Previous step", exact=True).click()
-                expect(page.get_by_role("heading", name="Add what matters")).to_be_visible()
+                expect(
+                    page.get_by_role("heading", name="Bring your world closer")
+                ).to_be_visible()
                 page.get_by_role("button", name="Next step", exact=True).click()
+                expect(
+                    page.get_by_role("heading", name="Add what matters")
+                ).to_be_visible()
                 page.get_by_role("button", name="Enter your Grove", exact=True).click()
                 expect(page.get_by_role("dialog", name="Grove tour", exact=True)).to_be_visible(
                     timeout=15000
@@ -305,7 +318,7 @@ def main(shots):
                 assert {row["id"] for row in server.positions} <= stored, "Only real items get coordinates"
                 assert len(server.uploads) == 1
                 print(
-                    f"PASS {width}px: four steps, real Claude upload, paced real graph, one-click "
+                    f"PASS {width}px: three steps, real Claude upload, paced real graph, one-click "
                     "Gmail consent, working file and note buttons, AI controls, six tour steps",
                     flush=True,
                 )

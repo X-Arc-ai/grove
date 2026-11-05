@@ -73,8 +73,7 @@
       value.accountImports = stored.accountImports || {};
       value.name = typeof stored.name === 'string' ? stored.name : '';
       value.onboardingComplete = !!stored.onboardingComplete;
-      value.onboardingStep = Math.max(0, Math.min(4, Number(stored.onboardingStep) || 0));
-      if (!stored.schema && value.onboardingStep === 3) value.onboardingStep = 4;
+      value.onboardingStep = Math.max(0, Math.min(3, Number(stored.onboardingStep) || 0));
       value.growth = Object.assign(value.growth, stored.growth || {});
       value.files = stored.files || {};
       value.recentNodes = stored.recentNodes || []; value.recentEdges = stored.recentEdges || [];
@@ -120,14 +119,14 @@
   function saveOnboardingPreference() {
     if (!LIVE || !verifiedAccount || state.account !== verifiedAccount) return;
     var rows = onboardingPreferences().filter(function (row) { return row.account !== verifiedAccount; });
-    rows.push({account: verifiedAccount, step: Math.max(0, Math.min(4, Math.round(state.onboardingStep || 0))),
+    rows.push({account: verifiedAccount, step: Math.max(0, Math.min(3, Math.round(state.onboardingStep || 0))),
       complete: !!state.onboardingComplete, tour: !!state.tourComplete});
     try { localStorage.setItem(ONBOARDING_KEY, JSON.stringify(rows.slice(-MAX_ONBOARDING_ACCOUNTS))); } catch (_) {}
   }
   function restoreOnboardingPreference(account) {
     var row = onboardingPreferences().find(function (value) { return value.account === account; });
     if (!row) return;
-    state.onboardingStep = row.step; state.onboardingComplete = row.complete; state.tourComplete = row.tour;
+    state.onboardingStep = Math.min(3, row.step); state.onboardingComplete = row.complete; state.tourComplete = row.tour;
   }
 
   function pendingExportContext() { return { account: state.account, epoch: reminderEpoch }; }
@@ -242,9 +241,12 @@
     state.nodeDelta=state.recentNodes.length;state.edgeDelta=state.recentEdges.length;
     return ns.length+es.length>0;
   }
+  // Live mode: the items a source holds evidence for, read from /v1/sources/connectors.
+  var liveSourceItems={};
+  function sourceChanges(connector){var ids=new Set(liveSourceItems[connector]||[]);return {new_nodes:clone(live.nodes.filter(function(n){return ids.has(n.data.id);}).map(function(n){return n.data;})),new_edges:[]};}
   function getChanges(provider) {
     if(LIVE&&window.GroveImportGrowth&&window.GroveImportGrowth.active())return window.GroveImportGrowth.changes(provider);
-    if(LIVE)return provider?{new_nodes:[],new_edges:[]}:{new_nodes:clone(live.nodes.filter(function(n){return liveDelta.nodes.has(n.data.id);}).map(function(n){return n.data;})),new_edges:clone(live.edges.filter(function(e){return liveDelta.edges.has(liveEdgeId(e.data));}).map(function(e){return e.data;})),removed_nodes:liveDelta.removedNodes,removed_edges:liveDelta.removedEdges};
+    if(LIVE)return provider?sourceChanges(provider):{new_nodes:clone(live.nodes.filter(function(n){return liveDelta.nodes.has(n.data.id);}).map(function(n){return n.data;})),new_edges:clone(live.edges.filter(function(e){return liveDelta.edges.has(liveEdgeId(e.data));}).map(function(e){return e.data;})),removed_nodes:liveDelta.removedNodes,removed_edges:liveDelta.removedEdges};
     if(!fixture)return {new_nodes:[],new_edges:[]};
     var graph=visibleElements(fixture),ids,edges;
     if(provider){var a=state.accountImports[provider];ids=a?(a.nodeIds||[]).slice(0,a.loadedCount||0):[];edges=graph.edges.filter(function(e){return ids.includes(e.data.source)&&ids.includes(e.data.target);}).map(function(e){return e.data.id;});}
@@ -261,13 +263,22 @@
   var liveDelta=emptyLiveDelta(), liveSnapshot=null;
   function liveEdgeId(e){return e.id || JSON.stringify([e.source,e.verb||e.label||'',e.target]);}
   function clearLiveSnapshot(){liveGraphRequest++;liveSnapshot=null;liveDelta=emptyLiveDelta();}
-  function compareLiveGraph(nodes,edges){
+  // +X counts what the store recorded in the day before this read, from each row's own record time.
+  // So it survives a later read, a page reload and a new device. A row with no record time, or a read
+  // with no read time, counts for nothing: no number comes from any other source.
+  var DELTA_WINDOW_MS=86400000;
+  function recordedAfter(row,from){var at=Date.parse(row.created_at||'');return isFinite(at)&&at>from;}
+  function compareLiveGraph(nodes,edges,readAt){
     var next={nodes:new Set(nodes.map(function(w){return w.data.id;})),edges:new Set(edges.map(function(w){return liveEdgeId(w.data);})),at:new Date().toISOString()};
     var before=liveSnapshot;liveDelta=emptyLiveDelta();liveDelta.checkedAt=next.at;
+    var read=Date.parse(readAt||'');
+    if(isFinite(read)){
+      var from=read-DELTA_WINDOW_MS;
+      liveDelta.baselineAt=new Date(from).toISOString();
+      nodes.forEach(function(w){if(w.data.id!=='grove-self'&&recordedAfter(w.data,from))liveDelta.nodes.add(w.data.id);});
+      edges.forEach(function(w){if(recordedAfter(w.data,from))liveDelta.edges.add(liveEdgeId(w.data));});
+    }
     if(before){
-      liveDelta.baselineAt=before.at;
-      next.nodes.forEach(function(id){if(!before.nodes.has(id))liveDelta.nodes.add(id);});
-      next.edges.forEach(function(id){if(!before.edges.has(id))liveDelta.edges.add(id);});
       before.nodes.forEach(function(id){if(!next.nodes.has(id))liveDelta.removedNodes++;});
       before.edges.forEach(function(id){if(!next.edges.has(id))liveDelta.removedEdges++;});
     }
@@ -350,7 +361,7 @@
     save({reload:true}); return getState();
   }
   function setStep(step) {
-    state.onboardingStep = Math.max(0, Math.min(4, Math.round(Number(step) || 0)));
+    state.onboardingStep = Math.max(0, Math.min(3, Math.round(Number(step) || 0)));
     save({reload:true}); return getState();
   }
 
@@ -585,7 +596,7 @@
       nodes: nodes.map(function (w) { var d = Object.assign({}, w.data); d.id = alias(d.id); return { data: d }; }),
       edges: edges.map(function (w) { var d = Object.assign({}, w.data); d.source = alias(d.source); d.target = alias(d.target); return { data: d }; }),
     };
-    compareLiveGraph(live.nodes,live.edges);
+    compareLiveGraph(live.nodes,live.edges,body.generated_at);
     return Object.assign({}, body, { elements: clone(liveElements()) });
   }
   function aliasDetail(body) {
@@ -632,7 +643,7 @@
   window.GroveSimulation = {
     pendingExportContext: pendingExportContext, isPendingExportContext: isPendingExportContext,
     applyPendingExports: applyPendingExports, refreshPendingExports: refreshPendingExports,
-    addMcpClient:addMcpClient, removeMcpClient:removeMcpClient, acknowledgeChanges:acknowledgeChanges, addFile:addFile, removeFile:removeFile, updateSource:updateSource, cancelExport:cancelExport, saveGrowth:saveGrowth, clearGrove:clearGrove, getChanges:getChanges, getState: getState, getSources: getSources, setName: setName, setStep: setStep,
+    addMcpClient:addMcpClient, removeMcpClient:removeMcpClient, acknowledgeChanges:acknowledgeChanges, addFile:addFile, removeFile:removeFile, updateSource:updateSource, cancelExport:cancelExport, saveGrowth:saveGrowth, clearGrove:clearGrove, getChanges:getChanges, setSourceItems:function(items){liveSourceItems=items||{};}, getState: getState, getSources: getSources, setName: setName, setStep: setStep,
     importSource: importSource, completeOnboarding: completeOnboarding, completeTour: completeTour,
     signIn: signIn, signOut:signOut, bindAccount: bindAccount, resumeOnboarding: resumeOnboarding, answerRequest:answerRequest, disconnectSource: disconnectSource, disconnectHost: disconnectHost, resetOnboarding: resetOnboarding, connectHost: connectHost, requestExport: requestExport, connectGoogle: connectGoogle,
     // Live mode: true when no fixture is injected; realId maps a view id back to the item id
