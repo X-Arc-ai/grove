@@ -156,3 +156,17 @@ local model; `test_shell.py` runs each form through the shell.
 ## Added files
 
 The files and notes a person adds in setup go to `/var/lib/grove-runner/worlds/<world id>/` through `grove.api.agent_files`. Notes are in its `notes/` folder. Once that folder exists, the runner starts each pass of the world in it, so it is the working folder of OpenCode. The API owns the folder and the runner's group reads it. OpenCode's session store and logs stay in the pass folder, which goes when the pass ends. Only the Learner has OpenCode's `read` tool, and OpenCode refuses any path outside the working folder. A file is not screened, so what the Learner reads goes to the model through the gateway as it is.
+
+A person's file is data, so no file in that folder may act on OpenCode. `grove.instruction_names.is_instruction_name` is the one rule, and it compares in any case:
+
+| Name | What OpenCode 1.18.32 does with it under the runner's flags |
+|---|---|
+| `AGENTS.md`, `CONTEXT.md` below the working folder | Its read tool adds the file to the read of any other file there, as `Instructions from:` text. No flag stops this. |
+| `.opencode` in the working folder or a parent | It runs the folder's plugins as code. No flag stops this. A plain file of that name stops OpenCode when it starts. |
+| `CLAUDE.md`, `AGENTS.md` and `CONTEXT.md` at the top of the working folder, `opencode.json`, `opencode.jsonc` | Nothing, but only `OPENCODE_FLAGS` keeps them out. |
+| `tui.json`, `tui.jsonc` | Nothing: only its terminal interface reads them. |
+| Any other hidden name, such as `.claude`, `.agents`, `.git` | The API never makes one, so it is out of place. The temporary file of a running upload (`.upload-*`) is the one exception. |
+
+The rule has two layers. The API answers 400 for such a file name or note title (the stored note name is the title and `.md`). `pass_folder` does not use a folder that holds such a name at any depth, or a link, and the pass then runs in its own empty folder, without the world's files. That also covers a name from an earlier build. Until that file is gone, the Learner reads none of the world's files. The person can remove a listed name with DELETE. A hidden name is not listed, so an operator removes it. A step that copies a person's material into a world's folder must use the same function.
+
+The quota of `grove.api.agent_files` counts every file on disk under the world's folder, hidden ones too. It leaves out only the running request's own temporary file. A temporary file older than an hour is what a killed API left, and the next quota check removes it.

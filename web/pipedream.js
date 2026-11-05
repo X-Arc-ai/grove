@@ -28,7 +28,7 @@
   function mount(scope){scope.querySelectorAll('[data-pipedream-apps]').forEach(function(root){
     if(root.dataset.pipedreamMounted)return;
     root.dataset.pipedreamMounted='true';
-    var owner=account(),generation=0,catalogRequest=0,statusRequest=0,found=[],states={},pendingApp=null,confirmApp=null;
+    var owner=account(),generation=0,catalogRequest=0,statusRequest=0,rowRequest=0,found=[],states={},pendingApp=null,confirmApp=null;
     var query='',configured=false,busy=false,loading=false,note='',popup=null,timer=null;
     function current(ticket){return !!owner&&root.isConnected&&account()===owner&&ticket===generation;}
     function shown(){return query.trim()?found:FEATURED;}
@@ -41,14 +41,17 @@
     function paint(){
       var focused=root.contains(document.activeElement)&&document.activeElement.hasAttribute('data-pipedream-search');
       var pos=focused?document.activeElement.selectionStart:null;
+      var row=root.contains(document.activeElement)&&document.activeElement.getAttribute('data-pipedream-select');
       var empty=query.trim()&&!loading&&!found.length&&!note;
       root.innerHTML='<label class="gp-integration-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" maxlength="128" placeholder="Search 3,000+ integrations" aria-label="Search 3,000+ integrations" data-pipedream-search value="'+esc(query)+'" '+(busy?'disabled':'')+'></label><div class="gp-integrations" data-pipedream-results>'+cards()+'</div>'+(empty?'<p class="gp-empty-sources">No matches — try another name</p>':'')+dialog()+'<p class="gp-section-copy" role="status" aria-live="polite"'+(note?'':' hidden')+'>'+esc(note)+'</p>';
       var input=root.querySelector('[data-pipedream-search]');
-      input.oninput=function(e){query=e.target.value;confirmApp=null;note='';catalogRequest++;clearTimeout(timer);if(!query.trim()){found=[];loading=false;paint();return;}timer=setTimeout(loadCatalog,200);};
+      input.oninput=function(e){query=e.target.value;confirmApp=null;note='';catalogRequest++;rowRequest++;clearTimeout(timer);if(!query.trim()){found=[];loading=false;paint();return;}timer=setTimeout(loadCatalog,200);};
       if(focused){input.focus();try{input.setSelectionRange(pos,pos);}catch(_) {}}
+      if(row){var again=root.querySelector('[data-pipedream-select="'+row+'"]');if(again)again.focus();}
       root.querySelectorAll('[data-pipedream-select]').forEach(function(button){button.onclick=function(){
         var app=shown().find(function(row){return row.provider===button.dataset.pipedreamSelect;});if(!app)return;
-        if(states[app.provider]==='connected'){confirmApp=app;paint();root.querySelector('[data-pipedream-cancel]').focus();return;}
+        if(states[app.provider]==='connected'){askDisconnect(app);return;}
+        if(typeof states[app.provider]!=='string'){check(app);return;}
         connect(app);
       };});
       var button=root.querySelector('[data-pipedream-cancel]');if(button)button.onclick=function(){confirmApp=null;paint();};
@@ -69,26 +72,57 @@
         found=ranked(body.apps.filter(function(app){return app.connectable;}).map(function(app){return Object.assign({},app,{detail:typeof app.category==='string'?app.category:''});}));
         configured=body.configured===true;
       }catch(err){if(current(ticket)&&request===catalogRequest){found=[];note=err.message||'The app catalog could not load. Try again.';}}
-      finally{if(current(ticket)&&request===catalogRequest){loading=false;paint();}}
+      finally{if(current(ticket)&&request===catalogRequest){loading=false;paint();readFound();}}
     }
+    function askDisconnect(app){confirmApp=app;paint();root.querySelector('[data-pipedream-cancel]').focus();}
     // A failed status read shows nothing: the rows stay usable and the Connect call decides.
+    function take(res){
+      if(!res.ok){if(res.status===403)note=error(res,'');return;}
+      if(!res.body||res.body.account!==owner||!Array.isArray(res.body.providers))return;
+      res.body.providers.forEach(function(row){if(slug(row.provider)&&['connected','not_connected','attention','unavailable'].includes(row.status))states[row.provider]=row.status;});
+      configured=res.body.configured===true;
+    }
     async function refresh(provider){
       var ticket=generation,request=++statusRequest;
       if(!current(ticket)||busy)return;
       try{
         var res=await window.GroveLive.getJSON('/v1/views/pipedream/accounts'+(provider?'?provider='+encodeURIComponent(provider):''));
         if(!current(ticket)||request!==statusRequest)return;
-        if(!res.ok){if(res.status===403)note=error(res,'');return;}
-        if(!res.body||res.body.account!==owner||!Array.isArray(res.body.providers))return;
-        res.body.providers.forEach(function(row){if(slug(row.provider)&&['connected','not_connected','attention','unavailable'].includes(row.status))states[row.provider]=row.status;});
-        configured=res.body.configured===true;
+        take(res);
       }catch(_){return;}
       finally{if(current(ticket)&&request===statusRequest)paint();}
     }
-    async function connect(app){
+    async function readRow(provider,valid){
+      try{
+        var res=await window.GroveLive.getJSON('/v1/views/pipedream/accounts?provider='+encodeURIComponent(provider));
+        if(valid())take(res);
+      }catch(_){}
+    }
+    // After a search each found app reads its own status. The reads share one ticket, so they never
+    // cancel each other, and a newer search, a connect or a disconnect ends all of them.
+    function readFound(){
+      var ticket=generation,request=++rowRequest;
+      function valid(){return current(ticket)&&request===rowRequest;}
+      if(busy)return;
+      found.forEach(function(app){readRow(app.provider,valid).then(function(){if(valid()&&!confirmApp)paint();});});
+    }
+    function openTab(){popup=window.open('about:blank','_blank');if(!popup){note='Allow popups for Grove, then try again.';paint();return null;}popup.opener=null;return popup;}
+    // A click on a row of unknown status reads it first. The tab opens here, inside the click, or a
+    // browser blocks it. It closes again if the app is connected. A failed read still connects.
+    async function check(app){
       var ticket=generation;if(busy||!current(ticket))return;
-      popup=window.open('about:blank','_blank');if(!popup){note='Allow popups for Grove, then try again.';paint();return;}popup.opener=null;
-      var opened=popup;busy=true;pendingApp=app.provider;confirmApp=null;note='';statusRequest++;paint();
+      var opened=openTab();if(!opened)return;
+      busy=true;pendingApp=app.provider;confirmApp=null;note='';paint();
+      await readRow(app.provider,function(){return current(ticket);});
+      if(!current(ticket)){opened.close();return;}
+      busy=false;pendingApp=null;
+      if(states[app.provider]!=='connected'){connect(app,opened);return;}
+      opened.close();popup=null;askDisconnect(app);
+    }
+    async function connect(app,tab){
+      var ticket=generation;if(busy||!current(ticket))return;
+      var opened=tab||openTab();if(!opened)return;
+      busy=true;pendingApp=app.provider;confirmApp=null;note='';statusRequest++;rowRequest++;paint();
       try{
         var res=await window.GroveLive.postJSON('/v1/views/pipedream/'+encodeURIComponent(app.provider)+'/connect',{});
         if(!current(ticket)){opened.close();return;}
@@ -102,7 +136,7 @@
     }
     async function disconnect(){
       var app=confirmApp,ticket=generation;if(!app||busy||!current(ticket))return;
-      busy=true;statusRequest++;note='';paint();
+      busy=true;statusRequest++;rowRequest++;note='';paint();
       try{
         var res=await window.GroveLive.postJSON('/v1/views/pipedream/'+encodeURIComponent(app.provider)+'/disconnect',{confirm:true});
         if(!current(ticket))return;
@@ -114,7 +148,7 @@
     }
     function reset(force){
       if(!force&&root.isConnected&&account()===owner)return;
-      generation++;catalogRequest++;statusRequest++;clearTimeout(timer);
+      generation++;catalogRequest++;statusRequest++;rowRequest++;clearTimeout(timer);
       if(popup&&!popup.closed)popup.close();
       found=[];states={};configured=false;busy=false;confirmApp=null;pendingApp=null;query='';
       returns.delete(onReturn);
