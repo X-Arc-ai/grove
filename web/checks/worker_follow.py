@@ -240,6 +240,7 @@ def follow_part(walk, shots):
     walk.at("Escape on a focused checkbox still returns to the overview")
     page.wait_for_timeout(1000)
     walk.follow()
+    walk.settled_on(FIRST)
     page.locator("#agents-toggle").focus()
     page.keyboard.press("Escape")
     walk.ended()
