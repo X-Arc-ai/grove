@@ -27,8 +27,7 @@ from grove.store.query import WorldQuery
 from grove.writer import apply_request, finish_request, import_queue, request_state
 from grove.writer.errors import InvalidRecord
 from grove.writer.import_queue import request_id_for
-from grove.writer.testing import plant_node
-from grove.writer.tx import WorldWriter
+from grove.writer.testing import plant_node, set_import_part_state
 from tests.hosts import conftest as host_fixtures
 from tests.ingest.conftest import STORE_TIME, counts, make_screener, upload_of
 from tests.ingest.test_chatgpt import Conversation, message
@@ -459,29 +458,22 @@ def test_progress_requires_a_real_noop_receipt_or_attributed_commit(
 
 def end_part(driver, world, request_id, source_id, ending):
     """Leave one part in the state that its real path leaves it in."""
-
-    def work(tx):
-        if ending in ("forgotten", "span_forgotten"):
-            tx.run(
-                "MATCH (s:Source {id: $id}) SET s.forget_state = $state, s.content = '[]'",
-                id=source_id,
-                state=ending,
-            )
-        elif ending == "retrying":
-            tx.run(
-                "MATCH (r:Request {id: $id}) SET r.status = 'failed', r.retry_at = $later",
-                id=request_id,
-                later=clock.now(world) + timedelta(hours=1),
-            )
-        else:
-            tx.run(
-                "MATCH (r:Request {id: $id}) SET r.status = $status, r.last_error_code = $code",
-                id=request_id,
-                status="declined" if ending == "declined" else "failed",
-                code=ending,
-            )
-
-    WorldWriter(driver, world).transaction(work)
+    if ending in ("forgotten", "span_forgotten"):
+        set_import_part_state(driver, world, request_id, source_id, forget_state=ending)
+    elif ending == "retrying":
+        later = clock.now(world) + timedelta(hours=1)
+        set_import_part_state(
+            driver,
+            world,
+            request_id,
+            source_id,
+            status="failed",
+            code="pass_failed",
+            retry_at=later,
+        )
+    else:
+        status = "declined" if ending == "declined" else "failed"
+        set_import_part_state(driver, world, request_id, source_id, status=status, code=ending)
 
 
 @pytest.mark.parametrize(
