@@ -187,6 +187,12 @@ def serve():
     return server
 
 
+def shot(page, shots, label, name):
+    # The panels fade in. A picture taken at once shows the map through them.
+    page.wait_for_timeout(700)
+    page.screenshot(path=str(shots / f"{label}-{name}.png"))
+
+
 def opened(page, base, theme):
     errors = []
     page.on("pageerror", lambda error: errors.append(str(error)))
@@ -212,7 +218,7 @@ def check_account_icon(page, base, server, shots, label, expect, theme):
     button.click()
     expect(page.locator(".gp-settings")).to_be_visible()
     assert not errors, errors
-    page.screenshot(path=str(shots / f"{label}-account.png"))
+    shot(page, shots, label, "account")
     page.keyboard.press("Escape")
     expect(page.locator(".gp-settings")).to_have_count(0)
     button.click()
@@ -238,7 +244,7 @@ def check_health(page, base, server, shots, label, expect, theme):
     expect(dialog).to_contain_text("Last checked")
     expect(page.locator(".gp-health-freshness strong")).not_to_have_text("—")
     assert not errors, errors
-    page.screenshot(path=str(shots / f"{label}-health.png"))
+    shot(page, shots, label, "health")
     server.health = dict(server.health, nodes=230)
     page.get_by_role("button", name="Check health", exact=True).click()
     expect(page.locator('[data-live-count="nodes"]')).to_have_text("230")
@@ -264,7 +270,7 @@ def check_sources(page, base, server, shots, label, expect, theme):
     expect(page.locator(".gp-settings")).to_contain_text("Gmail")
     expect(page.locator('[data-agent-files="file"]')).to_contain_text("plan.pdf")
     assert not errors, errors
-    page.screenshot(path=str(shots / f"{label}-sources.png"))
+    shot(page, shots, label, "sources")
 
     # Disconnect, then reconnect, a synced app.
     page.get_by_role("button", name="Disconnect Gmail", exact=True).click()
@@ -285,7 +291,7 @@ def check_sources(page, base, server, shots, label, expect, theme):
 
     # Remove an uploaded source through the two D14 steps.
     page.get_by_role("button", name="Remove ChatGPT", exact=True).click()
-    page.screenshot(path=str(shots / f"{label}-sources-remove.png"))
+    shot(page, shots, label, "sources-remove")
     page.locator('.gp-confirm-actions [data-action="confirm-delete"]').click()
     expect(page.locator(".gp-settings")).to_contain_text(
         "ChatGPT was removed from your Grove"
@@ -329,7 +335,7 @@ def check_refresh(page, base, server, shots, label, expect, theme):
     ):
         assert path in server.gets, (path, server.gets)
     expect(button).not_to_have_class("is-refreshing")
-    page.screenshot(path=str(shots / f"{label}-refresh.png"))
+    shot(page, shots, label, "refresh")
     server.graph_delay = 0
     assert not errors, errors
 
@@ -349,7 +355,7 @@ def check_three_steps(page, base, server, shots, label, expect, theme):
     page.get_by_role("button", name="Next step", exact=True).click()
     expect(number).to_have_text("03 / 03")
     expect(page.get_by_role("heading", name="Add what matters")).to_be_visible()
-    page.screenshot(path=str(shots / f"{label}-step-3.png"))
+    shot(page, shots, label, "step-3")
     assert page.get_by_role("button", name="Skip for now", exact=True).count() == 0
     # A browser that stopped on the old fourth card comes back to the last step.
     assert page.evaluate("GroveSimulation.setStep(4).onboardingStep") == 3
@@ -364,7 +370,7 @@ def check_three_steps(page, base, server, shots, label, expect, theme):
             page.get_by_role("button", name=f"Set up Grove in {name}", exact=True)
         ).to_be_visible()
     expect(page.locator(".gp-settings")).to_contain_text("Custom MCP")
-    page.screenshot(path=str(shots / f"{label}-connections.png"))
+    shot(page, shots, label, "connections")
     assert not errors, errors
 
 
