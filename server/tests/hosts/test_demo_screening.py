@@ -123,7 +123,7 @@ def test_cedar_store_and_seed_use_fresh_real_policy(driver, demo, missing_global
         DemoStoreHandler(wait_seconds=0)(context, {**args, "text": DEMO_TEXT + " Other text."})
     with pytest.raises(ApiError) as refused:
         StoreHandler(wait_seconds=0)(context, args)
-    assert refused.value.code == "unavailable"
+    assert refused.value.code == "demo_access_refused"
     # Obtain only the already verified configured hash, never the account's address.
     from grove.demo_policy import configured_email_hash
 

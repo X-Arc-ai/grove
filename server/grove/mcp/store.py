@@ -1,7 +1,7 @@
 """Store transport over the published screened-source, queue and receipt contracts.
 
-No model call, writer algorithm, authentication or default registration lives here. The caller
-supplies an authenticated ToolContext. Public activation still needs the common D14 release guard.
+No model call, writer algorithm or authentication lives here. The caller supplies an authenticated
+ToolContext. An ordinary world gets the account-bound baseline screening of an upload.
 """
 
 from __future__ import annotations
@@ -17,9 +17,12 @@ from datetime import UTC, datetime
 from grove import clock
 from grove.api.errors import ApiError, invalid_arguments, not_found, unavailable
 from grove.config import ConfigError
+from grove.demo_policy import DemoDenied, is_demo_world
 from grove.ids import new_id
-from grove.mcp.tools import ToolContext
-from grove.screening import Message, Screener, ScreeningConfig
+from grove.ingest.upload_policy import screener_for_upload
+from grove.mcp.access import demo_refusal
+from grove.mcp.contract import ToolContext
+from grove.screening import Message, Screener
 from grove.store.errors import STORE_UNAVAILABLE, Neo4jError
 from grove.store.query import WorldQuery
 from grove.writer import Caller, enqueue_request, request_state
@@ -173,8 +176,6 @@ class StoreHandler:
         self.sleep = sleep
 
     def __call__(self, context: ToolContext, arguments: dict) -> dict:
-        from grove.demo_policy import DemoDenied
-
         _scope(context, "grove.write")
         checked, said_at = _arguments(arguments)
         request_id = request_identity(context, checked["idempotency_key"])
@@ -186,9 +187,7 @@ class StoreHandler:
         except ConfigError:
             raise unavailable("input screening is not configured") from None
         except DemoDenied:
-            raise ApiError(
-                403, "scope_denied", "the restricted demo operation is refused"
-            ) from None
+            raise demo_refusal() from None
         except BatchDeclined as error:
             refusal = error.refusals[0]
             raise ApiError(
@@ -228,10 +227,17 @@ class StoreHandler:
             )
             if {row["id"] for row in found} != set(about):
                 raise not_found("an about item is not available in this world")
-        screener = self.screener or Screener(ScreeningConfig.from_environment())
+        demo_world = is_demo_world(context.driver, context.world_id)
+        if demo_world and self.screener is None:
+            raise DemoDenied()
+        screener = self.screener or screener_for_upload(context.world_id)
         message_key = "m_" + _digest(checked["host_message_id"] or request_id)
+        # Forget refuses a later source with a forgotten locator, so each ordinary store has its
+        # own. An empty locator would let one forget stop every later store in the world. The
+        # demo evidence check requires the empty form.
+        locator = "" if demo_world else "mcp-store:" + _digest(request_id)
         screened = screener.screen_source(
-            "", [Message(key=message_key, sender=None, text=checked["text"], at=said_at or at)]
+            locator, [Message(key=message_key, sender=None, text=checked["text"], at=said_at or at)]
         )
         if not screened.messages or not any(message.text.strip() for message in screened.messages):
             raise ApiError(422, "contamination", "input screening retained no message")
@@ -303,7 +309,7 @@ class DemoStoreHandler:
 
     def __call__(self, context: ToolContext, arguments: dict) -> dict:
         from grove.demo.screening import new_demo_screener
-        from grove.demo_policy import DEMO_TEXT, DemoDenied, require_designation
+        from grove.demo_policy import DEMO_TEXT, require_designation
 
         _scope(context, "grove.write")
         checked, _ = _arguments(arguments)
@@ -312,7 +318,7 @@ class DemoStoreHandler:
         try:
             require_designation(context.driver, context.world_id, context.user_id)
         except DemoDenied:
-            raise ApiError(403, "scope_denied", "the restricted demo is not available") from None
+            raise demo_refusal() from None
         store = self.store or StoreHandler(
             screener=new_demo_screener(), wait_seconds=self.wait_seconds
         )

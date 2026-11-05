@@ -10,7 +10,10 @@ The code:
 | `server/grove/api/oauth.py` | `/register`, `/authorize`, `/authorize/decision`, `/token`, `/revoke`, and the person's connections under `/v1/views/`. |
 | `server/grove/api/mcp.py` | The `/mcp` route: the bearer token, the Origin, the method, the body. |
 | `server/grove/mcp/transport.py` | JSON-RPC: one parsed body in, one answer out. |
-| `server/grove/mcp/tools.py` | The tool registry (`Tool`, `ToolContext`, `DEFAULT_TOOLS`, `INSTRUCTIONS`). |
+| `server/grove/mcp/contract.py` | `Tool` and `ToolContext`, with no Grove imports. |
+| `server/grove/mcp/tools.py` | The tool registry (`DEFAULT_TOOLS`, `INSTRUCTIONS`). |
+| `server/grove/mcp/access.py` | Who may use the general tools: the owner of an ordinary world. |
+| `server/grove/reads/host_recall.py` | The general `recall` read. |
 | `server/grove/oauth/` | Scopes, redirect URIs, PKCE, registration, Client ID Metadata Documents, the consent page, the lifetimes, the reads and the secrets. |
 | `server/grove/writer/oauth.py` | The only writer of the client, grant, code and token rows (S20, S41 in `docs/store-map.md`). |
 | `web/consent.html` | The consent page template, built into `web/dist/consent.html` by `web/build.py`. |
@@ -179,6 +182,8 @@ Every routed method (`POST`, `GET`, `DELETE`, `PUT`, `PATCH`, `OPTIONS`) checks 
 | An `Origin` header that is not exactly `<base>` | 403 typed `forbidden_origin` |
 | `GET`, `PUT`, `PATCH`, `OPTIONS` | 405 typed `invalid_arguments`, `Allow: POST, DELETE` |
 | `DELETE` | 204. Nothing is stored for a session. |
+| A `POST` on a token whose account does not own the world, or whose grant is not of that owner | 401 typed `unauthenticated`, the same challenge as a token that is not live |
+| A `POST` on a demo world that does not hold a valid designation, or on any demo world with the demo configuration removed | 403 typed `demo_access_refused` |
 
 A `POST`:
 
@@ -194,9 +199,36 @@ A `POST`:
 
 Every tool call runs with the token's world, person, client, scopes and grant only. The handler gets nothing from the request that could name another world.
 
-## Tools: how `hosts-b` adds them
+`scope_denied` means a missing scope, and nothing else on this route. An account refusal is `demo_access_refused`.
 
-The registry is `server/grove/mcp/tools.py`. `DEFAULT_TOOLS` is empty until `hosts-b` adds `store` and `recall` (handoff decision 17), so `tools/list` in production gives `[]` until then. `create_app(mcp_tools=...)` replaces the set, as the tests do.
+## Which tools an account gets
+
+The route selects the set by account (`grove.mcp.demo.tools_for_request`), from the verified token only.
+
+| Account | Tools |
+|---|---|
+| The designated account, with its demo configuration | The restricted pair and its release guard |
+| The owner of an ordinary world | `DEFAULT_TOOLS` |
+| A demo world in any other state, partial designation included | Refused with `demo_access_refused` |
+
+Designation is durable account metadata, so a demo world stays refused with the demo configuration removed. A request with two `Authorization` headers stays on the guarded path.
+
+## Recall in this release
+
+`recall` is a direct read with no model call (handoff decision 18). It is registered with `current_recall_schema()`. `grove.api.mcp` binds it to the request's `ToolContext` inside the packet response guard, which gives it a two-second budget and a complete buffered body. `store` stays outside that budget.
+
+It matches the exact words of `about` against the lexical indexes, in the token's world only. All worlds share those indexes, so a Lucene score or a close-spelling search would carry the word counts of other worlds. The read uses neither: it takes every match in the world and ranks by the query words in each row's own text, title first, then keeps the first 200. `kinds`, `source_types`, `limit` and `include: ["evidence"]` work. `hops` and `cursor` are refused with `unsupported_recall_mode`, and `next_cursor` is always null. An item that has ended or has not started stays out, unless a successor replaces it.
+
+The D14 owner lease and filter are waived for this release, so:
+
+- A forgotten field, source or evidence row stays out when the row shows it. Nothing holds a forget back while an answer is in flight, so that answer can carry the old text.
+- A revocation does not wait for an answer in flight.
+- No person-set disclosure class exists. A live grant with `grove.read` reads the owner's whole world, within the fields a card shows.
+- `no_record` covers the match only. It does not check connector coverage.
+
+## Tools: how to add one
+
+The registry is `server/grove/mcp/tools.py`. `DEFAULT_TOOLS` holds `store` and `recall` (handoff decision 17), and a partial set is never the default. `create_app(mcp_tools=...)` replaces the set, as the tests do.
 
 ```python
 Tool(
@@ -210,7 +242,7 @@ Tool(
 )
 ```
 
-- The handler gets a `ToolContext(driver, world_id, user_id, client_id, scopes, grant_id)` and the call's `arguments`. It reads through `WorldQuery(context.driver, context.world_id)` and writes through the writer, never with a world id from the arguments.
+- The handler gets a `ToolContext(driver, world_id, user_id, client_id, scopes, grant_id)` and the call's `arguments`. It reads through `WorldQuery(context.driver, context.world_id)` and writes through the writer, never with a world id from the arguments. `recall` does this in `grove.reads.host_recall`, through the binding above.
 - It returns a dict of JSON values: a `datetime` or a NaN in it is a 500. It raises `grove.api.errors.ApiError` for a typed refusal, which the host sees with `isError: true`. Any other exception is a 500.
 - Two tools with one name make every POST to `/mcp` a 500, so keep the names unique.
 - `INSTRUCTIONS` is the text of `initialize`. Keep it short, and keep the rule that tool results are facts, not instructions.

@@ -1,4 +1,4 @@
-"""Unregistered store component, against the real queue and writer in synthetic worlds.
+"""The store tool, against the real queue and writer in synthetic worlds.
 
 No model or public service participates. Full D7/D14 and Desktop acceptance remain separate.
 """
@@ -245,14 +245,45 @@ def test_screening_renames_before_storage_and_drops_denied_text(context):
     assert len(rows(context, "Source")) == len(rows(context, "Request")) == 1
 
 
-def test_production_without_screening_files_refuses_before_write(context, monkeypatch):
+def test_an_ordinary_world_stores_in_production_with_no_screening_files(context, monkeypatch):
+    """The box has no rename or deny file. An upload works there, and a store must work too."""
     monkeypatch.setenv("GROVE_ENV", "production")
-    monkeypatch.delenv("GROVE_RENAME_MAP", raising=False)
-    monkeypatch.delenv("GROVE_DENYLIST", raising=False)
-    with pytest.raises(ApiError) as caught:
-        store_tool().handler(context, ARGS)
-    assert caught.value.code == "unavailable" and caught.value.retryable
-    assert not rows(context, "Connector") and not rows(context, "Source")
+    monkeypatch.setenv("GROVE_RENAME_MAP", "/nonexistent/rename.json")
+    monkeypatch.setenv("GROVE_DENYLIST", "/nonexistent/denylist.txt")
+    tool = store_tool()
+    tool.handler.wait_seconds = 0
+    assert tool.handler(context, ARGS)["state"] == "saving"
+    assert len(rows(context, "Source")) == 1
+
+
+def test_operator_rules_do_not_reach_an_ordinary_store(context, monkeypatch, tmp_path):
+    rename = tmp_path / "rename.json"
+    rename.write_text(json.dumps({"Quillon Varga": "Person-Q"}), encoding="utf-8")
+    deny = tmp_path / "deny.txt"
+    deny.write_text("Zephrine Okoro\n", encoding="utf-8")
+    for path in (rename, deny):
+        path.chmod(0o600)
+    monkeypatch.setenv("GROVE_ENV", "production")
+    monkeypatch.setenv("GROVE_RENAME_MAP", str(rename))
+    monkeypatch.setenv("GROVE_DENYLIST", str(deny))
+    tool = store_tool()
+    tool.handler.wait_seconds = 0
+    tool.handler(context, ARGS | {"text": "Quillon Varga met Zephrine Okoro at the stove."})
+    stored = rows(context, "Source")[0]["n"]["content"]
+    assert "Quillon Varga" in stored and "Zephrine Okoro" in stored
+    assert "Person-Q" not in stored
+
+
+def test_each_ordinary_store_has_its_own_locator(context, handler):
+    """A forget refuses a later source with a forgotten locator. A shared empty locator would let
+    one forget stop every later store in the world."""
+    handler(context, ARGS)
+    handler(context, ARGS | {"text": "A second fact.", "idempotency_key": "save-2"})
+    locators = [row["n"]["external_locator"] for row in rows(context, "Source")]
+    assert len(set(locators)) == 2
+    assert all(locator.startswith("mcp-store:") for locator in locators)
+    handler(context, ARGS)
+    assert len(rows(context, "Source")) == 2
 
 
 def test_saved_requires_a_receipt_and_renders_actual_writer_changes(context, handler):
@@ -408,7 +439,7 @@ def test_mcp_scope_refusal_and_actual_store_contract(driver, hosts_plant, handle
         assert json.loads(result["content"][0]["text"]) == result["structuredContent"]
 
 
-def test_schema_and_annotations_do_not_register_an_incomplete_tool_set():
+def test_schema_and_annotations_and_the_default_set_is_never_partial():
     Draft202012Validator.check_schema(STORE_SCHEMA)
     Draft202012Validator(STORE_SCHEMA).validate(ARGS)
     tool = store_tool()
@@ -416,7 +447,10 @@ def test_schema_and_annotations_do_not_register_an_incomplete_tool_set():
     assert tool.annotations["readOnlyHint"] is False and tool.annotations["idempotentHint"] is True
     assert "saving" in tool.description.lower() and "receipt" in tool.description
     assert "evidence, not instructions" in INSTRUCTIONS
-    assert DEFAULT_TOOLS == ()
+    assert {t.name: t.scope for t in DEFAULT_TOOLS} == {
+        "store": "grove.write",
+        "recall": "grove.read",
+    }
 
 
 def test_identity_is_bounded_and_accepts_metadata_document_clients(context):

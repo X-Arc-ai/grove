@@ -34,11 +34,12 @@ def test_readme_has_safe_muse_command_and_login_steps():
     assert "META_API_KEY" in text
 
 
-def test_readme_does_not_claim_available_tools_when_registry_is_empty():
+def test_readme_tool_claims_match_the_registry():
     text = (ROOT / "README.md").read_text()
-    if not DEFAULT_TOOLS:
-        assert "recall and store work on a prepared account" in text
-        assert "Runs on the prepared account" in text
+    assert sorted(tool.name for tool in DEFAULT_TOOLS) == ["recall", "store"]
+    assert "A host gets two tools, `recall` and `store`." in text
+    assert "recall and store work on a prepared account" in text
+    assert "Runs on the prepared account" in text
 
 
 def test_readme_separates_retained_upload_from_prepared_recall():
@@ -51,7 +52,7 @@ def test_readme_separates_retained_upload_from_prepared_recall():
 
 
 def test_current_release_docs_distinguish_general_tools_from_restricted_demo():
-    """An empty general registry does not mean the deployed demo pair is absent."""
+    """The general registry and the restricted demo pair are separate tool sets."""
     registry = ast.parse((ROOT / "server/grove/mcp/tools.py").read_text())
     demo = next(
         node

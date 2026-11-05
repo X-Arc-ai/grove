@@ -7,8 +7,9 @@ default scopes in `WWW-Authenticate` (RFC 9728, A.3); a token that is not live g
 `error="invalid_token"`. Then an `Origin` header, when present, must be this server's origin.
 
 GET offers no event stream (405), DELETE ends a session that was never stored (204), and POST
-carries JSON-RPC, which `grove.mcp.transport` answers with the tools of `app.state.mcp_tools`, read
-at request time. A tool runs with the token's world only.
+carries JSON-RPC, which `grove.mcp.transport` answers with the tools the account may use
+(`grove.mcp.demo.tools_for_request`), read at request time. A tool runs with the token's world
+only. A general recall runs inside the packet response guard, bound to this request's ToolContext.
 """
 
 from __future__ import annotations
@@ -22,8 +23,9 @@ from starlette.concurrency import run_in_threadpool
 from grove import clock
 from grove.api.config import ApiSettings
 from grove.api.errors import INVALID_ARGUMENTS, ApiError, invalid_arguments, unauthenticated
+from grove.api.packet_release import activate_packet_response
+from grove.mcp.contract import Tool, ToolContext
 from grove.mcp.demo import tools_for_request
-from grove.mcp.tools import ToolContext
 from grove.mcp.transport import (
     INVALID_REQUEST,
     PARSE_ERROR,
@@ -33,9 +35,13 @@ from grove.mcp.transport import (
     answer,
     error_message,
     parse_body,
+    preflight,
 )
 from grove.oauth.secrets import token_hash
 from grove.oauth.store import TokenRow, find_access_token
+from grove.reads.host_recall import read_current
+from grove.reads.mcp_adapter import bind_recall, recall_handler
+from grove.reads.requests import RecallQuery
 from grove.store.connection import Driver
 
 MCP_PATH = "/mcp"
@@ -174,6 +180,29 @@ def _context(request: Request, token: TokenRow) -> ToolContext:
     )
 
 
+def _scope_refusal(request: Request, denied: ScopeDenied) -> JSONResponse:
+    refused = ApiError(
+        403,
+        SCOPE_DENIED,
+        "the access token does not hold the scope this tool needs",
+        details={"tool": denied.tool, "scope": denied.scope},
+    )
+    challenge = insufficient_scope_challenge(_settings(request), denied.scope)
+    return _typed(refused, {"WWW-Authenticate": challenge})
+
+
+def _general_recall(tools: tuple[Tool, ...]) -> bool:
+    """The restricted pair and a test's own tools also use the name, and keep their own path."""
+    return any(tool.name == "recall" and tool.handler is recall_handler for tool in tools)
+
+
+def _recall_invocation(context: ToolContext):
+    async def invoke(query: RecallQuery) -> dict:
+        return await run_in_threadpool(read_current, context, query)
+
+    return invoke
+
+
 async def _post(request: Request, token: TokenRow) -> Response:
     refused = _content_type_refused(request)
     if refused is not None:
@@ -188,18 +217,30 @@ async def _post(request: Request, token: TokenRow) -> Response:
         payload: Any = parse_body(raw)
     except ParseFailed:
         return _rpc_refusal(PARSE_ERROR, "the body is not valid JSON")
-    tools = tools_for_request(request, token)
     try:
-        answered = await run_in_threadpool(answer, payload, tools, _context(request, token))
+        tools = await run_in_threadpool(tools_for_request, request, token)
+    except ApiError as refused:
+        if refused.status == 401:
+            challenge = invalid_token_challenge(_settings(request))
+            return _typed(refused, {"WWW-Authenticate": challenge})
+        return _typed(refused)
+    context = _context(request, token)
+    try:
+        # The scope and mixed-batch checks come before activation and before any handler.
+        checked = preflight(payload, tools, context)
     except ScopeDenied as denied:
-        refused_scope = ApiError(
-            403,
-            SCOPE_DENIED,
-            "the access token does not hold the scope this tool needs",
-            details={"tool": denied.tool, "scope": denied.scope},
-        )
-        challenge = insufficient_scope_challenge(_settings(request), denied.scope)
-        return _typed(refused_scope, {"WWW-Authenticate": challenge})
+        return _scope_refusal(request, denied)
+    except ApiError as refused:
+        return _typed(refused)
+    try:
+        if checked.has_executable_recall and _general_recall(tools):
+            await activate_packet_response()
+            async with bind_recall(context, _recall_invocation(context)):
+                answered = await run_in_threadpool(answer, payload, tools, context)
+        else:
+            answered = await run_in_threadpool(answer, payload, tools, context)
+    except ScopeDenied as denied:
+        return _scope_refusal(request, denied)
     if answered.body is None:
         return Response(status_code=answered.status, headers=_NO_STORE)
     headers = dict(_NO_STORE)

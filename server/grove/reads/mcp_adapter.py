@@ -1,8 +1,8 @@
 """The accepted first recall capability and a bridge for the synchronous MCP transport.
 
-This module defines no principal or policy. The API installs an invocation bound to the exact
-server-authenticated ToolContext; the production service must bind the D14-owned principal and
-perform the owner lease/filter protocol. Merely installing this bridge grants no disclosure.
+This module defines no principal or policy. `grove.api.mcp` installs an invocation bound to the
+exact server-authenticated ToolContext, and `grove.reads.host_recall` does the read. The D14 owner
+lease and filter are waived for this release; they belong at this binding when they exist.
 """
 
 import asyncio
@@ -15,13 +15,13 @@ import anyio
 
 from grove.api.errors import ApiError, unavailable
 from grove.api.packet_release import require_packet_response
-from grove.mcp.tools import ToolContext
+from grove.mcp.contract import ToolContext
 from grove.reads.requests import RecallQuery, parse_recall
 from grove.reads.runtime import deadline
 from grove.store.enums import ENUMS
 
 
-def _unsupported(field: str, rule: str = "unsupported_recall_mode") -> ApiError:
+def unsupported_mode(field: str, rule: str = "unsupported_recall_mode") -> ApiError:
     return ApiError(
         400,
         "invalid_arguments",
@@ -34,13 +34,13 @@ def parse_current_recall(value: object) -> RecallQuery:
     """Reject unsupported capabilities explicitly; retain the complete D7 parser unchanged."""
     query = parse_recall(value)
     if query.about is None:
-        raise _unsupported("about", "about_required")
+        raise unsupported_mode("about", "about_required")
     if query.time.mode != "current" or ("time" in value and value["time"] != {"mode": "current"}):
-        raise _unsupported("time")
+        raise unsupported_mode("time")
     if query.areas:
-        raise _unsupported("areas")
+        raise unsupported_mode("areas")
     if set(query.include) - {"evidence"}:
-        raise _unsupported("include")
+        raise unsupported_mode("include")
     return query
 
 
