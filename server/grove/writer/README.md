@@ -140,6 +140,22 @@ complete D14 restore procedure.
 only logical snapshots locally. The physical command is CI-only; it never uses a local second
 store. Deployment of the separate ledger and a production clean-backup process remain separate.
 
+### Deleting a whole world
+
+`grove.writer.world_delete` is the only place that removes a real world. `POST /v1/world/delete`
+(`grove.api.world_delete`) calls it for the session's own world. `docs/forget-api.md` has the
+contract.
+
+| Function | What it does |
+|---|---|
+| `begin_erasure(driver, world_id, user_id, *, ledger_dir=None) -> str` | Refuses a demo world and a world of another owner (`ErasureRefused`), fsyncs a `started` ledger row, and returns the address hash that sign-in needs. |
+| `remove_world_files(world_id)` | Removes `GROVE_AGENT_FILES_DIR/<world id>`, never through a link. Skipped with the variable unset. Raises `FilesUnavailable`. |
+| `erase_world_rows(driver, world_id, user_id, *, ledger_dir=None) -> str` | Under the ledger lock and then the world's lock for the whole delete: removes every node of the world in batches, writes the `finished` row, and commits the end of the `:World` row and of the user's sessions. Returns `backups_clear_after`. |
+| `replay_world_erasures(driver, ledger_dir, *, snapshot_taken_at, world_id=None) -> list[str]` | Removes the restored rows of each world erased after the snapshot, and makes nothing. `restore_loaded` calls it for its world; `python -m grove.writer.restore erasures --taken-at <time>` runs it for a whole dump. |
+
+Each step can run again. `restore` and `restore_loaded` refuse with `LedgerUnavailable` when no
+ledger folder is given or set, so a restore cannot leave the erasures out.
+
 ### The resolver
 
 ```python

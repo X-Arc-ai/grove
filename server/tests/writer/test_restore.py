@@ -503,7 +503,7 @@ def test_rebuild_refuses_an_inconsistent_history(driver, small, plant, rule, cap
 # --- the full restore -------------------------------------------------------------------------
 
 
-def test_full_restore_matches_snapshot_fingerprint(driver, mixed, chat):
+def test_full_restore_matches_snapshot_fingerprint(driver, mixed, chat, tmp_path):
     world_id = mixed["world_id"]
     confirmed = last_confirmed(driver, world_id)
     snapshot = json.loads(json.dumps(take_snapshot(driver, world_id)))
@@ -542,7 +542,7 @@ def test_full_restore_matches_snapshot_fingerprint(driver, mixed, chat):
     purge_world_rows(driver, world_id)
     assert world_rows(driver, world_id) == 0
 
-    result = restore(driver, world_id, snapshot, ledger)
+    result = restore(driver, world_id, snapshot, ledger, ledger_dir=tmp_path)
 
     forgotten = set(result["forgotten"])
     assert {mixed["picnic"], mixed["picnic_part"]} <= forgotten
@@ -622,7 +622,7 @@ def tamper_entry(snapshot: dict, mixed: dict) -> None:
 
 
 @pytest.mark.parametrize("tamper", [tamper_fingerprint, tamper_entry], ids=["fingerprint", "entry"])
-def test_restore_refuses_a_mismatch(driver, mixed, tamper):
+def test_restore_refuses_a_mismatch(driver, mixed, tamper, tmp_path):
     world_id = mixed["world_id"]
     snapshot = json.loads(json.dumps(take_snapshot(driver, world_id)))
     tamper(snapshot, mixed)
@@ -630,7 +630,7 @@ def test_restore_refuses_a_mismatch(driver, mixed, tamper):
     sequence = next_sequence(driver, world_id)
 
     with pytest.raises(RestoreMismatch) as caught:
-        restore(driver, world_id, snapshot, [])
+        restore(driver, world_id, snapshot, [], ledger_dir=tmp_path)
 
     if tamper is tamper_fingerprint:
         # Refused before any write: the world still holds no row, and its sequence is as it was.
@@ -669,7 +669,7 @@ def swap_a_source_id(snapshot: dict) -> str:
 
 
 @pytest.mark.parametrize("tamper", [lose_a_source, swap_a_source_id], ids=["lost", "swapped"])
-def test_restore_refuses_a_snapshot_table_that_differs(driver, mixed, tamper):
+def test_restore_refuses_a_snapshot_table_that_differs(driver, mixed, tamper, tmp_path):
     """D3: every snapshot-only table's count, and its newest id, matches after the restore. The
     rebuild never reads these tables, so only the live read of their sizes can catch a dump that
     lost or changed one of their rows (R4, round two)."""
@@ -679,7 +679,7 @@ def test_restore_refuses_a_snapshot_table_that_differs(driver, mixed, tamper):
     purge_world_rows(driver, world_id)
 
     with pytest.raises(RestoreMismatch) as caught:
-        restore(driver, world_id, snapshot, [])
+        restore(driver, world_id, snapshot, [], ledger_dir=tmp_path)
 
     assert caught.value.problems == [expected]
 

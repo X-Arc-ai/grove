@@ -1,6 +1,9 @@
 """D3's one restore procedure: load the snapshot, rebuild the projections, replay the forget
 ledger, and compare the D3 fingerprint. It lives in the writer folder because it writes.
 
+Before any of that, a world the person deleted after the snapshot was taken is removed again and
+stays gone (grove.writer.world_delete), so a restore always needs the ledger folder.
+
 The order is the spec's: (1) the snapshot tables go into a world that holds no world row; (2)
 the projections are rebuilt from the change entries in sequence, each checked as the writer
 checks it, with nothing appended; (3) the forget ledger replaces every value it names with the
@@ -14,6 +17,7 @@ and dates survive JSON, the live fingerprint, and the no-text parts of every pro
 
     python -m grove.writer.restore fingerprint --world <world id>
     python -m grove.writer.restore rebuild --world <world id> [--expect <fingerprint>]
+    python -m grove.writer.restore erasures --taken-at <time of the dump>
 """
 
 import argparse
@@ -21,6 +25,7 @@ import json
 import sys
 from collections.abc import Iterable, Mapping
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from grove import clock
@@ -46,7 +51,9 @@ from grove.store.replay import (
     rebuild,
     validate_question_snapshots,
 )
+from grove.writer.forget_ledger import _root as ledger_root
 from grove.writer.tx import UnknownWorld, WorldTx, WorldWriter
+from grove.writer.world_delete import replay_world_erasures
 
 __all__ = [
     "FORGOTTEN_MARKER",
@@ -57,6 +64,7 @@ __all__ = [
     "main",
     "rebuild_in_place",
     "replay_ledger",
+    "replay_world_erasures",
     "restore",
     "restore_loaded",
     "take_snapshot",
@@ -196,12 +204,27 @@ def take_snapshot(driver: Driver, world_id: str) -> dict[str, Any]:
     return {
         "format": SNAPSHOT_FORMAT,
         "world_id": world_id,
+        # What decides whether a later world erasure reaches this snapshot.
+        "taken_at": clock.now(world_id).isoformat(),
         "rows": rows,
         "fingerprint": fingerprint(parts["projection"], parts["history"], parts["tables"]),
         "projection": parts["projection"],
         # The D8 measures of the word rows, which no change entry holds (S47).
         "measures": parts["measures"],
     }
+
+
+def _instant(text: str) -> datetime:
+    at = datetime.fromisoformat(text)
+    if at.tzinfo is None:
+        raise ValueError("a snapshot time needs its offset")
+    return at
+
+
+def _taken_at(snapshot: Mapping[str, Any]) -> datetime | None:
+    """None for a snapshot from before this field: it counts as older than every erasure."""
+    text = snapshot.get("taken_at")
+    return None if text is None else _instant(text)
 
 
 def _snapshot_rows(world_id: str, snapshot: Mapping[str, Any]) -> dict[tuple[str, ...], list]:
@@ -598,9 +621,14 @@ def restore_loaded(
     world_id: str,
     snapshot: Mapping[str, Any],
     ledger_rows: Iterable[Mapping[str, Any]],
+    *,
+    ledger_dir: Path | str | None = None,
 ) -> dict[str, Any]:
     """D3's shared post-load procedure for a logical or physical snapshot. Returns the restored
-    world's fingerprint without the forgotten ids, with `forgotten` (the ids, sorted). Raises
+    world's fingerprint without the forgotten ids, with `forgotten` (the ids, sorted). When the
+    person deleted this world after the snapshot, it removes what was loaded and returns
+    `{"erased": True, "forgotten": []}`. `ledger_dir` defaults to GROVE_FORGET_LEDGER_DIR; with
+    neither, LedgerUnavailable: a restore that cannot read the erasures must not run. Raises
     RestoreMismatch before any write when the snapshot does not give its own recorded
     fingerprint, and after the restore when the world does not match it; ReplayRefused when an
     entry of the snapshot fails a check (the rebuild then writes nothing), or when a ledger row
@@ -623,6 +651,10 @@ def restore_loaded(
             expected=recorded,
             found=whole,
         )
+    if replay_world_erasures(
+        driver, ledger_dir, snapshot_taken_at=_taken_at(snapshot), world_id=world_id
+    ):
+        return {"erased": True, "forgotten": []}
     measures = {
         row_id: {key: _untag(value) for key, value in held.items()}
         for row_id, held in (snapshot.get("measures") or {}).items()
@@ -714,10 +746,13 @@ def restore(
     world_id: str,
     snapshot: Mapping[str, Any],
     ledger_rows: Iterable[Mapping[str, Any]],
+    *,
+    ledger_dir: Path | str | None = None,
 ) -> dict[str, Any]:
     """Validate the manifest and complete ledger, load the logical snapshot, then run D3."""
     from grove.writer.forget import validate_ledger_rows
 
+    ledger_root(ledger_dir)
     _snapshot_rows(world_id, snapshot)
     ledger = validate_ledger_rows(world_id, ledger_rows)
     recorded = snapshot["fingerprint"]
@@ -735,7 +770,7 @@ def restore(
     ]
     _require_stored_ledger(world_id, stored, ledger)
     load_snapshot(driver, world_id, snapshot)
-    return restore_loaded(driver, world_id, snapshot, ledger)
+    return restore_loaded(driver, world_id, snapshot, ledger, ledger_dir=ledger_dir)
 
 
 # The command line ------------------------------------------------------------------------------
@@ -744,7 +779,9 @@ def restore(
 def main(argv: list[str] | None = None) -> int:
     """`fingerprint` prints the world's D3 fingerprint. `rebuild` rebuilds the world's projections
     in place, prints the fingerprint after, and exits 3 when it is not `--expect`, 4 when an
-    entry is refused (nothing written)."""
+    entry is refused (nothing written). `erasures` removes, from a store loaded from a dump, every
+    world deleted after the dump's time, and prints how many; GROVE_FORGET_LEDGER_DIR names the
+    ledger. It removes rows, so it is for a loaded dump only, never for a store that serves."""
     parser = argparse.ArgumentParser(prog="python -m grove.writer.restore")
     commands = parser.add_subparsers(dest="command", required=True)
     shown = commands.add_parser("fingerprint", help="print the D3 fingerprint of a world")
@@ -752,8 +789,15 @@ def main(argv: list[str] | None = None) -> int:
     again = commands.add_parser("rebuild", help="rebuild a world's projections in place")
     again.add_argument("--world", required=True)
     again.add_argument("--expect", help="exit 3 when the fingerprint after is another one")
+    erasures = commands.add_parser("erasures", help="remove the worlds deleted after a dump")
+    erasures.add_argument("--taken-at", required=True, type=_instant)
     args = parser.parse_args(argv)
 
+    if args.command == "erasures":
+        with open_driver() as driver:
+            erased = replay_world_erasures(driver, None, snapshot_taken_at=args.taken_at)
+        print(json.dumps({"erased": len(erased)}, sort_keys=True))
+        return 0
     with open_driver() as driver:
         if args.command == "rebuild":
             try:

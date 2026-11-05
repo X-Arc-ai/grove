@@ -240,7 +240,7 @@ def test_retire_and_verify_defer_link_validation_to_same_transaction_cascade(
     assert {m["depth"] for m in impacts(driver, w)} == {1, 2}
 
 
-def test_rebuild_keeps_impact_and_proposal_snapshots(driver, seeded, chat):
+def test_rebuild_keeps_impact_and_proposal_snapshots(driver, seeded, chat, tmp_path):
     from grove.writer.restore import restore, take_snapshot
     from tests.writer.test_restore import purge_world_rows
 
@@ -263,7 +263,7 @@ def test_rebuild_keeps_impact_and_proposal_snapshots(driver, seeded, chat):
         == proposals
     )
     purge_world_rows(driver, w)
-    restore(driver, w, saved, [])
+    restore(driver, w, saved, [], ledger_dir=tmp_path)
     assert (
         json.dumps(read(driver, w, "MATCH (m:Impact) RETURN m ORDER BY m.link_id"), default=str)
         == before
