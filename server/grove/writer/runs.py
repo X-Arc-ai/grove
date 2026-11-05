@@ -158,7 +158,7 @@ def start_run(
     trigger: str,
     model: str,
     effort: str,
-    token_cap: int,
+    token_cap: int | None,
     time_cap: int,
     stale_margin_seconds: int,
 ) -> dict | None:

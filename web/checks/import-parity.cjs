@@ -208,6 +208,14 @@ check('canUpload holds ChatGPT and Claude, and one entry adds a provider', () =>
   test.evaluate("IMPORT_CODES.chats='whatsapp'");
   assert.equal(test.evaluate("canUpload('chats')"), true);
 });
+check('WhatsApp says plainly that it is off, and stops before any export steps', () => {
+  const source = require('fs').readFileSync(require('path').join(__dirname, '..', 'product.js'), 'utf8');
+  assert.match(source, /whatsappOff=live&&id==='chats'/);
+  assert.match(source, /WhatsApp is not available yet/);
+  assert.match(source, /Grove does not import WhatsApp exports yet/);
+  assert.ok(source.indexOf('if(whatsappOff){') < source.indexOf('var frames=upload?'));
+  assert.match(source, /id==='chats'\?'Not available'/);
+});
 check('Missing totals, mismatched providers, and unsupported completion claims stay out', async () => {
   for (const patch of [{ requests_total: undefined }, { provider: 'muse' }, { state: 'complete', requests_total: 1 }, { extracted_count: 2, requests_total: 1 }]) {
     const test = harness();

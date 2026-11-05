@@ -270,15 +270,24 @@ def test_partial_upload_receipt_stays_separate_from_complete_provider_history(
     assert owner.get(reminders).json() == pending
 
 
+def test_an_ordinary_pass_keeps_its_token_cap(driver, seeded_world, test_clock):
+    queue_store(driver, seeded_world)
+    auth, grant = grant_for(driver, seeded_world)
+    claims = verify(auth.gateway_secret, load_catalog(), grant.gateway_token)
+    assert claims.profile is None and claims.token_cap == PassSettings().token_cap
+    assert run_record(driver, seeded_world, grant.run_id)["token_cap"] == 300_000
+
+
 def test_one_import_per_pass_keeps_message_order_and_signed_limits(
     driver, seeded_world, test_clock
 ):
     result = ingest(driver, seeded_world, count=MAX_PART_MESSAGES + 1)
     auth, first = grant_for(driver, seeded_world)
     assert first.input_ids == [request_id_for(result.source_ids[0])]
-    assert first.time_cap_seconds == 120
+    assert first.time_cap_seconds == PassSettings().time_cap_seconds == 600
     claims = verify(auth.gateway_secret, load_catalog(), first.gateway_token)
-    assert claims.profile == IMPORT_PROFILE and claims.token_cap == 64000
+    assert claims.profile == IMPORT_PROFILE and claims.token_cap is None
+    assert "token_cap" not in run_record(driver, seeded_world, first.run_id)
     packet = pass_input(driver, seeded_world, run_record(driver, seeded_world, first.run_id))
     # The source's exact keys, speaker and dates travel into the proposal form.
     request_id, batch = proposal(driver, seeded_world, first)

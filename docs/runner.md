@@ -76,7 +76,7 @@ each running pass as `stopped`.
 |---|---|---|
 | Time cap (watchdog) | 600 s | `PassSettings.time_cap_seconds` |
 | Lease margin | 120 s | `PassSettings.lease_margin_seconds` |
-| Token cap per pass | 300,000 | `PassSettings.token_cap` |
+| Token cap per pass | 300,000, none for an import pass | `PassSettings.token_cap` |
 | Requests per Learner pass | 5 | `PassSettings.learner_requests` |
 | Poll | 5 s | `GROVE_RUNNER_POLL_SECONDS` |
 | Passes at once (all worlds) | 2 | `GROVE_RUNNER_MAX_PASSES` |

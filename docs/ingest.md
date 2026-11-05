@@ -225,11 +225,12 @@ Existing Request `said_at` records the earliest actual message time only for com
 It orders parts across overlapping episode ranges; equal or unknown times retain episode/source order.
 Each message keeps its own provenance timestamp. The receipt time is never substituted for that timestamp.
 
-An import pass uses a 64000-token stop threshold and a 120-second watchdog. The API signs
+An import pass has no per-pass token limit. The world's daily budget stops it, and the general
+600-second time cap ends a hung pass. Its run record and gateway token hold no token cap. The API signs
 `import_progress.v1` into its gateway token. That profile restricts complete outgoing JSON to
 131072 bytes, prohibits images, and limits the output request to 8192 tokens. One import call
 can be active in the current single gateway process; its slot stays held through provider drain
-and meter recording. These are request bounds, not a hard total-token or monetary ceiling.
+and meter recording. These are bounds on one request, not on a pass.
 
 `GET /v1/sources/import-progress?provider=claude_ai|chatgpt&limit=1..50&after=<source-id>` is
 session-only. Every Authorization header is refused. Counts describe that world's provider;
