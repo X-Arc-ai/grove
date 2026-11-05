@@ -54,6 +54,19 @@ function grow(data,count,tag){
   grow(calmData,40,'c');await calm.box.reloadGrove();await settle();
   for(const n of calm.box.GroveView.nodes())assert(!(n.__born>calm.clock.now),'Reduced motion shows new nodes at once');
 
+  // A large arrival on a small map stays fast: the page must not freeze before the paced arrival.
+  const bigData=world(1);
+  const big=await signedIn(bigData,{});
+  for(let h=0;h<12;h++)grow(bigData,125,'b'+h+'-');
+  bigData.nodes.slice(4).forEach((row,i)=>{if(i%3===0)bigData.edges.push(link('cross'+i,row.data.id,bigData.nodes[4+(i*7)%(bigData.nodes.length-4)].data.id));});
+  const placed=Date.now();
+  await big.box.reloadGrove();await settle();
+  const spent=Date.now()-placed;
+  assert.equal(big.box.GroveView.nodes().length,bigData.nodes.length,'All nodes of a large arrival join the map');
+  assert(spent<8000,'A read of 1,500 new nodes takes '+spent+' ms');
+  const spots=big.box.GroveView.nodes().map(n=>n.x+','+n.y);
+  assert.equal(new Set(spots).size,spots.length,'No two nodes of a large arrival share a spot');
+
   // A new session on the same page draws its first read at once.
   box.GroveView.clear();
   await box.reloadGrove();await settle();
