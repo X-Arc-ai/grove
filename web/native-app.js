@@ -439,18 +439,18 @@
   var liveDrawn = {};
   var SELF_R_FAR = 90;
   function prepareLiveLayout(payload) {
-    keepStoredLayout(payload);
     var el=payload.elements,all=el.nodes.map(function(w){return Object.assign({},w.data);});
     adoptKinds(all);
     var es=el.edges.map(function(w){return w.data;});
     var metadata=simLayout(all.filter(function(n){return n.id!=='grove-self';}),es);
-    var Keep=window.GroveLayoutKeep,view=Keep.organicView(all,es,window.innerWidth/Math.max(1,window.innerHeight));
+    var Keep=window.GroveLayoutKeep,view=Keep.organicView(all,es);
     var items=all.map(function(n){return {id:n.id,_primaryHubId:view.primary[n.id]===n.id?null:view.primary[n.id]};});
-    liveDrawn=Keep.placeNew(liveDrawn,items,es,view.positions,function(n){return (view.radii[n.id]||6)+5;}).positions;
+    liveDrawn=Object.keys(liveDrawn).length?Keep.placeNew(liveDrawn,items,es,view.positions,function(n){return (view.radii[n.id]||6)+5;}).positions:view.positions;
     layoutCache={};
     var x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity;
     all.forEach(function(n){var p=liveDrawn[n.id];layoutCache[n.id]=Object.assign({},metadata.cache[n.id]||{},p,{_primaryHubId:view.primary[n.id]===n.id?null:view.primary[n.id],_hubR:view.radii[n.id],_demoted:false});x0=Math.min(x0,p.x);x1=Math.max(x1,p.x);y0=Math.min(y0,p.y);y1=Math.max(y1,p.y);});
     stableFrame=all.length?{x0:x0-65,x1:x1+65,y0:y0-65,y1:y1+65}:metadata.frame;
+    keepStoredLayout(payload);
   }
   // Retain the original insert-only map independently of the visual projection.
   function keepStoredLayout(payload) {
