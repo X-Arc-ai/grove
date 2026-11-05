@@ -19,7 +19,8 @@ What OpenCode 1.18.32 does under the runner's flags (tests/runner/test_opencode.
   jsconfig.json is the same setting. bunfig.toml, package.json, node_modules and the bun lock files
   are Bun's other startup names. Bun's .env files and .bunfig.toml fall under the hidden name rule.
 - HEAD and commondir together: the embedded libgit2 takes the folder for a repository and reads
-  the one that commondir names, outside the world's folder. No code ran in the test of this.
+  the one that commondir names, outside the world's folder. No code ran in a one-off probe of
+  this. No test here holds it.
 
 The API never makes a hidden name, so any other one is out of place too: .claude, .agents, .git.
 The one exception is the temporary file of an upload that is running.
