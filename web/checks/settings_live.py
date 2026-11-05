@@ -210,6 +210,8 @@ def opened(page, base, theme):
 
 
 def check_account_icon(page, base, server, shots, label, expect, theme):
+    # A new person holds only the row with no provider, so the click opens the Sources tab.
+    server.rows = [SELF_ROW]
     errors = opened(page, base, theme)
     button = page.locator("#profile-button")
     assert button.locator("svg circle").count() == 1, (
