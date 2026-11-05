@@ -633,6 +633,7 @@ def test_the_connectors_read_shows_the_coverage(driver, seeded_world, client_for
                 "failed_count": 0,
                 "oldest_unprocessed_item": FIRST_AT.isoformat(),
                 "watermark": "at:" + (FIRST_AT + timedelta(minutes=2)).isoformat(),
+                "contribution": {"sources": 2, "nodes": 0, "edges": 0, "item_ids": []},
             }
         ]
     }

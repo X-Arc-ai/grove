@@ -12,7 +12,7 @@ import json
 import math
 from collections import Counter
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from grove.store.current import Standing, standings_of
@@ -26,10 +26,13 @@ STATUS_FIELD = "status"
 SOURCE_FIELD = "store"
 READY = "ready"
 HEALTHY = "healthy"
+ATTENTION = "attention"
 SUMMARY_READY = "Your Grove is ready"
 SUMMARY_EMPTY = "Your Grove is empty"
 MAX_GRAPH_ITEMS = 2500
 MAX_GRAPH_LINKS = 10000
+GROWTH_DAYS = 30
+ADDITIONS_WINDOW = timedelta(hours=24)
 
 # The graph reads only what node_data, edge_data, the time filters and the standing use: never an
 # item's body, search terms or property values. world_id rides along so the WorldLeak guard checks
@@ -97,10 +100,37 @@ _POSITIONS = (
     "RETURN p.item_id AS item_id, p.x AS x, p.y AS y LIMIT $item_cap"
 )
 _POSITION = "MATCH (p:MapPosition {item_id: $id}) RETURN p.x AS x, p.y AS y"
-_KIND_COUNTS = "MATCH (i:Item) RETURN i.kind AS kind, count(i) AS n"
-_ACTIVE_LINK_COUNT = (
-    "MATCH (a:Item)-[l:LINK]->(b:Item) WHERE l.active_key IS NOT NULL RETURN count(l) AS n"
+# The health counts and the health growth share these two filters, so the last point of the growth
+# equals the totals. An active item has no end class: a done task is still active, a refuted one
+# is not. This counts rows and says nothing on what is current, which is grove.store.current's.
+_ACTIVE_ITEM_ROWS = "MATCH (i:Item) WHERE i.end_class IS NULL"
+_ACTIVE_LINK_ROWS = _LINK_MATCH + "WHERE l.active_key IS NOT NULL"
+_KIND_COUNTS = _ACTIVE_ITEM_ROWS + " RETURN i.kind AS kind, count(i) AS n"
+_ACTIVE_LINK_COUNT = _ACTIVE_LINK_ROWS + " RETURN count(l) AS n"
+
+
+def _change_days(rows: str, row: str, field: str) -> str:
+    """One table's newest change days: what each UTC day added, and how much of it is fresh.
+
+    `recorded` is the record time, set by the writer at commit. The limit bounds the answer: no
+    more than GROWTH_DAYS days of each table can be among the last GROWTH_DAYS days of the two.
+    """
+    day = f"date(datetime({{datetime: {row}.recorded, timezone: 'UTC'}}))"
+    fresh = f"CASE WHEN {row}.recorded > $since AND {row}.recorded <= $now THEN 1 END"
+    return (
+        f"{rows} AND {row}.recorded IS NOT NULL "
+        f"WITH {day} AS day, count({row}) AS added, count({fresh}) AS fresh "
+        f"ORDER BY day DESC LIMIT $days "
+        f"RETURN '{field}' AS field, day, added, fresh"
+    )
+
+
+_CHANGE_DAYS = (
+    _change_days(_ACTIVE_ITEM_ROWS, "i", "nodes")
+    + " UNION ALL "
+    + _change_days(_ACTIVE_LINK_ROWS, "l", "edges")
 )
+_FAILED_CONNECTORS = "MATCH (c:Connector) WHERE c.last_outcome = 'failed' RETURN count(c) AS n"
 
 
 @dataclass(frozen=True)
@@ -373,22 +403,62 @@ def schema_payload(world: WorldQuery, primitives: WorldQuery) -> dict[str, Any]:
     }
 
 
+def _growth_point(day: date, nodes: int, edges: int) -> dict[str, Any]:
+    return {"at": day.isoformat(), "nodes": nodes, "edges": edges}
+
+
+def _growth(rows: list[dict], nodes: int, edges: int, now: datetime) -> list[dict[str, Any]]:
+    """The totals at the end of each change day, oldest first.
+
+    It starts from the totals and walks back, taking off what each day added, so the last point
+    equals them and a row older than the oldest point still counts in it. A world with no dated
+    row has one point: its totals today.
+    """
+    added: dict[date, dict[str, int]] = {}
+    for row in rows:
+        added.setdefault(row["day"], {"nodes": 0, "edges": 0})[row["field"]] = row["added"]
+    if not added:
+        return [_growth_point(now.astimezone(UTC).date(), nodes, edges)]
+    points = []
+    for day in sorted(added, reverse=True)[:GROWTH_DAYS]:
+        points.append(_growth_point(day, nodes, edges))
+        nodes -= added[day]["nodes"]
+        edges -= added[day]["edges"]
+    return points[::-1]
+
+
+def _additions(rows: list[dict], since: datetime) -> dict[str, Any]:
+    fresh: Counter[str] = Counter()
+    for row in rows:
+        fresh[row["field"]] += row["fresh"]
+    return {"nodes": fresh["nodes"], "edges": fresh["edges"], "since": iso_z(since)}
+
+
 def health_payload(world: WorldQuery, primitives: WorldQuery, *, now: datetime) -> dict[str, Any]:
+    """checks.graph is a plain ready: a read that fails raises, and the route answers 503.
+
+    So the answer exists only when every read below worked, and it never holds a guessed number.
+    """
     registry = read_registry(world, primitives)
     by_type: Counter[str] = Counter()
     for row in world.read(_KIND_COUNTS):
         by_type[registry.kind_name(row["kind"])] += row["n"]
     nodes = sum(by_type.values())
     edges = world.read(_ACTIVE_LINK_COUNT)[0]["n"]
+    since = now - ADDITIONS_WINDOW
+    days = world.read(_CHANGE_DAYS, since=since, now=now, days=GROWTH_DAYS)
+    failed = world.read(_FAILED_CONNECTORS)[0]["n"]
     return {
         "status": HEALTHY,
         "summary": SUMMARY_READY if nodes else SUMMARY_EMPTY,
         "generated_at": iso_z(now),
-        "checks": {"graph": READY, "sources": READY},
+        "checks": {"graph": READY, "sources": ATTENTION if failed else READY},
         "nodes": nodes,
         "edges": edges,
         "by_type": dict(by_type),
         "overall": {"state": HEALTHY},
+        "growth": _growth(days, nodes, edges, now),
+        "additions": _additions(days, since),
     }
 
 

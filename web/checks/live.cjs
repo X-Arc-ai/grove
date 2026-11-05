@@ -49,6 +49,7 @@ function makeServer(world){
       return held(world.holdNode,n?reply(200,{node:Object.assign({},n,{title:n.label,content:n.summary,status_field_value:n.status}),required_props:[],optional_props:[],required_prop_names:[],status_field:'status'}):typed(404,'not_found','No such item'));
     }
     if(u.pathname==='/v1/views/schema'){if(world.schemaThrows)return Promise.reject(new TypeError('Failed to fetch'));if(world.schemaStatus)return typed(world.schemaStatus,world.schemaStatus===401?'unauthenticated':'unavailable','Sign in to continue');return held(world.holdSchema,reply(200,world.schema||{}));}
+    if(u.pathname==='/v1/sources/connectors'&&world.connectors)return reply(200,{connectors:world.connectors});
     if(u.pathname==='/v1/views/health')return reply(200,{status:'healthy',summary:'Your Grove is ready',checks:{graph:'ready',sources:'ready'},nodes:world.nodes.length,edges:world.edges.length,by_type:{},overall:{state:'healthy'}});
     if(u.pathname==='/v1/sources/pending-exports'&&method==='GET')return reply(200,{account:world.account||null,revision:0,pending_exports:{}});
     if(u.pathname==='/v1/views/positions'&&method==='POST'){
@@ -158,7 +159,7 @@ function legendRows(elements){
   // 1. live.js: one endpoint map, same-origin fetch helpers, positions in batches of 5000.
   {
     const server=makeServer(liveWorld()),pg=page(server,{},['live.js']),G=pg.sandbox.GroveLive;
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',positions:'/v1/views/positions',upload:'/v1/sources/upload',pendingExports:'/v1/sources/pending-exports',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',materials:'/v1/materials',materialFiles:'/v1/materials/files',materialNotes:'/v1/materials/notes',materialDetail:'/v1/materials/{id}',materialEdit:'/v1/materials/notes/{id}',materialPreview:'/v1/materials/{id}/delete-preview',materialConfirmation:'/v1/materials/{id}/delete-confirmations',materialDelete:'/v1/materials/{id}/delete',agentFiles:'/v1/agent-files',agentNotes:'/v1/agent-files/notes',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',positions:'/v1/views/positions',upload:'/v1/sources/upload',pendingExports:'/v1/sources/pending-exports',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',pipedreamAccounts:'/v1/views/pipedream/accounts',forgetApprove:'/v1/forget/approve',forget:'/v1/forget',materials:'/v1/materials',materialFiles:'/v1/materials/files',materialNotes:'/v1/materials/notes',materialDetail:'/v1/materials/{id}',materialEdit:'/v1/materials/notes/{id}',materialPreview:'/v1/materials/{id}/delete-preview',materialConfirmation:'/v1/materials/{id}/delete-confirmations',materialDelete:'/v1/materials/{id}/delete',agentFiles:'/v1/agent-files',agentNotes:'/v1/agent-files/notes',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
     const res=await G.getJSON('/v1/views/health');assert(res.ok&&res.body.overall.state==='healthy');
     assert.equal(server.calls[0].method,'GET');assert.equal(server.calls[0].init.credentials,'same-origin');
     const many=[];for(let i=0;i<12000;i++)many.push({id:i<11990?synthetic.elements.nodes[i%222].data.id:'x'+i,x:i,y:-i});
@@ -274,6 +275,31 @@ function legendRows(elements){
   const AUTH_FILES=['live.js','simulation.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'];
   const HOOK='  window.productTest={ui,handle,bind,chooseSignIn,startEmail,verifyEmail,render,modalRoot,tourRoot,sessionNote,html:()=>modalRoot.innerHTML};render(true);';
 
+  // An ordinary world holds one connector with no provider: Grove's record of what a person types
+  // in the views. That row crashed the render, so the account button and Sources opened nothing,
+  // and Health stayed on a dash. It is no source, so no panel lists it.
+  {
+    const selfRow={connector_id:'c-self',type:'person_in_views',provider:null,read_count:0,failed_count:0,last_outcome:null};
+    const upload={connector_id:'c-chat',type:'past_ai_conversations',provider:'chatgpt',read_count:3,failed_count:0,last_outcome:'took_in',contribution:{sources:3,nodes:12,edges:30,item_ids:['p002'],removable:true}};
+    const w=Object.assign(liveWorld(),{connectors:[upload,selfRow]}),sv=makeServer(w);
+    const stored={'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,account:'acct-default',auth:{provider:'email',email:'robin@example.test'},onboardingComplete:true,onboardingStep:3,tourComplete:true})};
+    const pg=page(sv,stored,AUTH_FILES,HOOK),p=pg.sandbox.productTest;await settle();
+    pg.elements['profile-button'].onclick();await settle();
+    assert(p.html().includes('gp-settings'),'The account button opens Settings');
+    p.ui.settingsTab='sources';p.render(true);
+    assert(p.html().includes('data-live-row="chatgpt"'),'Sources lists the upload');
+    assert(/data-contribution-nodes="chatgpt">12</.test(p.html())&&/data-contribution-edges="chatgpt">30</.test(p.html()),'Sources shows stored contributions');
+    assert(p.html().includes('data-source-remove="c-chat"'),'A source the server can forget offers Remove');
+    upload.contribution.removable=false;await p.handle('refresh-live-data');await settle();
+    assert(!p.html().includes('data-source-remove='),'A source the server cannot forget offers no Remove');
+    assert(!p.html().includes('c-self'),'The row of the person is no source');
+    p.ui.panel=null;p.render(true);
+    pg.elements['health-link'].onclick({preventDefault(){}});await settle();
+    assert(p.html().includes('data-live-count="nodes">'+w.nodes.length.toLocaleString()),'Health shows the counts the server read');
+    p.ui.panel=null;p.render(true);
+    console.log('PASS settings: a connector with no provider opens Settings, Sources and Health');
+  }
+
   // The real setup must never turn a browser-local flag into a connection receipt.
   {
     const failures=[];
@@ -286,7 +312,7 @@ function legendRows(elements){
     const snapshot=()=>JSON.stringify(['sources','accountImports','pendingExports','connectedHosts','mcpClients','files'].map(k=>S.getState()[k]));
     await check('skip preserves unfinished work',async()=>{
       const before=snapshot(),calls=sv.calls.length;
-      for(let step=1;step<=3;step++){
+      for(let step=1;step<=2;step++){
         assert.equal(p.ui.step,step);
         assert(/data-action="skip"[^>]*>Skip for now</.test(p.html()),'visible Skip for now at step '+step);
         assert(!/data-import=|data-integration=|data-file=|data-files-form|data-note-form/.test(p.html()),'unfinished actions are not offered in live setup');
@@ -294,9 +320,11 @@ function legendRows(elements){
         assert.equal(snapshot(),before,'skip changes no source, pending export or connection');
         assert.equal(S.getState().onboardingComplete,false,'skip does not complete onboarding');
       }
+      assert.equal(p.ui.step,3);assert(!/data-action="skip"/.test(p.html()),'the last step has no skip');
       assert.equal(sv.calls.length,calls,'skip sends no request');
     });
-    p.ui.step=4;p.render(true);
+    // The AI hosts left setup. Their controls live in Settings > Connections.
+    S.completeOnboarding();p.ui.panel='profile';p.ui.settingsTab='connections';p.render(true);
     await check('same-origin MCP URL and copy',async()=>{
       assert.equal(pg.sandbox.GroveLive.ENDPOINTS.mcp,'/mcp');
       pg.sandbox.location.href='https://app.grove.x-arc.ai/signin?next=x';
@@ -308,7 +336,7 @@ function legendRows(elements){
     });
     await check('cached host and custom app are not receipts',async()=>{
       assert(!/is-connected|Grove is connected|Cached app|data-mcp-form|data-mcp-remove/.test(p.html()),'cached flags cannot claim a connection');
-      const reload=page(sv,stored,AUTH_FILES,HOOK);await settle();reload.sandbox.productTest.ui.step=4;reload.sandbox.productTest.render(true);
+      const reload=page(sv,stored,AUTH_FILES,HOOK);await settle();reload.sandbox.GroveSimulation.completeOnboarding();reload.sandbox.productTest.ui.panel='profile';reload.sandbox.productTest.ui.settingsTab='connections';reload.sandbox.productTest.render(true);
       assert(!/is-connected|Grove is connected|Cached app|data-mcp-form/.test(reload.sandbox.productTest.html()),'reload cannot restore false success');
     });
     await check('Muse action opens directions without a local connection',async()=>{
@@ -321,7 +349,7 @@ function legendRows(elements){
       assert(!/data-action="host-connect"|Grove is with you/.test(p.html()));
       assert.equal(snapshot(),before,'selecting Muse changes no connection state');
       p.handle('host-connect');assert.equal(snapshot(),before,'the old action cannot fabricate a live connection');
-      p.handle('host-back');assert(p.html().includes('Take Grove with you'));
+      p.handle('host-back');assert(p.html().includes('Take your Grove to the AI you use'));
     });
     await check('Muse source shortcut also opens real directions',async()=>{
       const before=snapshot(),entry=makeElement('button');entry.dataset.guide='muse';
@@ -335,7 +363,7 @@ function legendRows(elements){
     await check('simulation still connects locally',async()=>{
       const fixturePage=page(makeServer(liveWorld()),{},['simulation.js','provider-icons.js','app-screens.js','whatsapp-guide.js','product.js'],HOOK,null,(el,env)=>{env.globals.GROVE_FIXTURE=synthetic;});
       const f=fixturePage.sandbox.productTest,A=fixturePage.sandbox.GroveSimulation;
-      A.signIn('email','robin@example.test');f.ui.authStage=null;f.ui.step=4;f.render(true);
+      A.signIn('email','robin@example.test');f.ui.authStage=null;A.completeOnboarding();f.ui.panel='profile';f.ui.settingsTab='connections';f.render(true);
       const host=makeElement('button');host.dataset.hostInline='muse';f.modalRoot.querySelectorAll=selector=>selector==='[data-host-inline]'?[host]:[];
       f.bind();host.onclick();assert(A.getState().connectedHosts.includes('muse'));assert(f.html().includes('Grove is connected'));assert(f.html().includes('data-mcp-form'));
     });
