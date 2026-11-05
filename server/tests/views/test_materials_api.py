@@ -7,6 +7,8 @@ from fastapi.testclient import TestClient
 
 from grove.api.app import create_app
 from grove.views.session import SESSION_COOKIE
+from tests.views.test_read_only import _READ_ENTRY as READ_ENTRY
+from tests.views.test_read_only import ReadOnlyDriver
 from tests.writer import test_materials
 
 material_world = test_materials.material_world
@@ -61,6 +63,30 @@ def test_note_create_reload_edit_and_delete(driver, material_world, material_cli
     assert result.json()["deleted"] is True
     assert client.get(path).status_code == 404
     assert client.get("/v1/materials").json()["materials"] == []
+
+
+def test_the_reads_of_a_real_note_run_in_read_mode_only(driver, material_world, material_client):
+    """An empty list never reaches summary or receipt_of, so this one holds a note."""
+    created = material_client.post(
+        "/v1/materials/notes", json={"title": "Plan", "body": "Mira plans the launch."}
+    )
+    assert created.status_code == 201, created.text
+    item = created.json()["material"]
+    guarded = ReadOnlyDriver(driver)
+    reader = TestClient(
+        create_app(driver=guarded),
+        raise_server_exceptions=False,
+        cookies={SESSION_COOKIE: material_world[1]},
+    )
+    for path in (
+        "/v1/materials",
+        "/v1/materials/" + item["id"],
+        "/v1/materials/" + item["id"] + "/delete-preview",
+    ):
+        answer = reader.get(path)
+        assert answer.status_code == 200, (path, answer.text)
+    assert reader.get("/v1/materials").json()["materials"][0]["id"] == item["id"]
+    assert guarded.calls and set(guarded.calls) == {READ_ENTRY}, set(guarded.calls)
 
 
 def test_file_has_retained_text_and_no_request(material_client):

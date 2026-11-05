@@ -10,8 +10,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from grove.api import forget as forget_route
+from grove.api import internal as internal_route
+from grove.api import materials as materials_route
 from grove.api.app import create_app
 from grove.views.session import SESSION_COOKIE
+from grove.writer import forget_ledger
 from grove.writer.testing import plant_node, plant_session, set_self_item
 from tests.views.conftest import plant_small_world
 
@@ -96,14 +100,34 @@ def test_the_guard_sees_a_write(driver, world):
 
 
 def imports_of(path: Path) -> set[str]:
+    """Every module in each import form: `from grove.writer import x` is grove.writer.x, so a row
+    can name one submodule, and `from grove import writer` is grove.writer."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             found |= {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module in ("grove", "grove.writer"):
+            found |= {f"{node.module}.{alias.name}" for alias in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module:
             found.add(node.module)
     return found
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from grove import writer",
+        "from grove.writer import accounts",
+        "from grove.writer.accounts import create_account",
+        "import grove.writer.accounts",
+        "import grove.writer.accounts as chosen",
+    ],
+)
+def test_every_import_form_of_the_writer_is_seen(tmp_path, source):
+    planted = tmp_path / "planted.py"
+    planted.write_text(source)
+    assert any(name.startswith("grove.writer") for name in imports_of(planted))
 
 
 def test_the_views_package_never_imports_the_writer():
@@ -135,17 +159,21 @@ def assert_api_writer_boundary(files):
         # run record's account of a proposal, a receipt for the agent, the request id check.
         # The ledger's refusal is the shared type: this route takes no ledger operation.
         "internal.py": {
-            "grove.writer",
+            "grove.writer.BatchDeclined",
+            "grove.writer.apply_batch",
+            "grove.writer.apply_request",
             "grove.writer.errors",
+            "grove.writer.finish_request",
             "grove.writer.receipts",
             "grove.writer.requests",
+            "grove.writer.runs",
         },
         # A person's material: the route saves it through the writer and forgets it through D14.
         "materials.py": {
-            "grove.writer",
             "grove.writer.errors",
             "grove.writer.forget",
             "grove.writer.forget_approvals",
+            "grove.writer.materials",
         },
         # Reads under the D14 ledger lock. MATERIAL_READ_NAMES bounds this row by name.
         "material_reads.py": {
@@ -175,13 +203,21 @@ MATERIAL_READ_NAMES = {
 
 def test_material_reads_take_only_read_helpers_from_the_writer():
     tree = ast.parse((SERVER / "grove/api/material_reads.py").read_text(encoding="utf-8"))
-    taken = {
-        alias.name
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("grove.writer")
-        for alias in node.names
-    }
+    taken = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            taken |= {alias.name for alias in node.names if alias.name.startswith("grove.writer")}
+        elif isinstance(node, ast.ImportFrom) and node.module == "grove":
+            taken |= {alias.name for alias in node.names if alias.name == "writer"}
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").startswith("grove.writer"):
+            taken |= {alias.name for alias in node.names}
     assert taken == MATERIAL_READ_NAMES
+
+
+def test_every_route_holds_the_one_ledger_refusal_type():
+    """An except clause on a second class of this name would miss the refusal: a 500, not a 503."""
+    for route in (forget_route, internal_route, materials_route):
+        assert route.LedgerUnavailable is forget_ledger.LedgerUnavailable, route.__name__
 
 
 def test_the_material_list_runs_in_read_mode_only(driver, world, tmp_path, monkeypatch):
@@ -220,6 +256,10 @@ def test_api_app_can_import_the_shared_writer_error_type(tmp_path):
         ("forget.py", "from grove.writer.forget_ledger import append_intent"),
         ("internal.py", "from grove.writer.forget_ledger import locked_ledger"),
         ("materials.py", "from grove.writer.accounts import create_account"),
+        ("materials.py", "from grove.writer import accounts"),
+        ("materials.py", "import grove.writer.accounts"),
+        ("materials.py", "from grove import writer"),
+        ("internal.py", "from grove.writer import accounts"),
         ("materials.py", "from grove.writer.forget_ledger import append_intent"),
         ("material_reads.py", "from grove.writer.tx import WorldWriter"),
     ],

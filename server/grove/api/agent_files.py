@@ -1,8 +1,8 @@
 """The files and notes a person adds in setup, kept where the world's OpenCode passes run.
 
 Each world has one folder under GROVE_AGENT_FILES_DIR. The API writes it and the runner starts
-every pass of that world in it (grove.runner.loop.pass_folder), so an added file is in the
-working folder of the agent. Nothing here reads the content, screens it, or writes the store.
+every Learner pass of that world in it (grove.runner.loop.pass_folder), so an added file is in
+the working folder of the agent. Nothing here reads the content, screens it, or writes the store.
 
 POST /v1/agent-files takes the file as the raw body, never multipart: a cross-site form cannot
 send application/octet-stream without a preflight, and the session cookie is SameSite=Lax.
@@ -57,7 +57,7 @@ def _utf8(text: str, field: str) -> bytes:
 
 
 def clean_name(raw: str, room: int = 0) -> str:
-    """One plain file name: no folder, no control character, no hidden or reserved name.
+    """One plain file name: no folder, no control character, no hidden name.
 
     `room` is the bytes of a suffix that the caller adds after. A URL's decoder turns a lone
     surrogate into U+FFFD, so that character is refused as the surrogate is."""
