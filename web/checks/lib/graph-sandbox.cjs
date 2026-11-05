@@ -13,7 +13,8 @@ function element(){
     addEventListener(){},removeEventListener(){},querySelector:()=>null,querySelectorAll:()=>[],appendChild:c=>c,append(){},remove(){},contains:()=>false,closest:()=>null,focus(){},click(){},
     getBoundingClientRect:()=>({left:0,top:0,width:100,height:100,right:100,bottom:100})};
 }
-function force(){const f=function(){};['strength','distanceMax','radius','iterations','distance','x','y','id','links'].forEach(k=>{f[k]=()=>f;});return f;}
+const forceRuns={count:0};
+function force(){const f=function(){forceRuns.count++;};['strength','distanceMax','radius','iterations','distance','x','y','id','links'].forEach(k=>{f[k]=()=>f;});return f;}
 function fakeGraph(){
   let data={nodes:[],links:[]},zoom=1;const forces={link:force()},kept={};
   const keep=name=>function(fn){if(!arguments.length)return kept[name];kept[name]=fn;return proxy;};
@@ -43,7 +44,7 @@ function openPage(world,store,options){
   const box={URL,URLSearchParams,Math,JSON,Date,Promise,MutationObserver:class{observe(){}},console:{log(){},info(){},warn(){},error(){}},
     setTimeout:()=>0,clearTimeout(){},setInterval:()=>0,clearInterval(){},requestAnimationFrame:()=>0,cancelAnimationFrame(){},performance:{now:()=>clock.now},
     innerWidth:1440,innerHeight:900,devicePixelRatio:1,document,navigator:{},matchMedia:q=>({matches:!!settings.reducedMotion&&/reduced-motion/.test(q),addEventListener(){},removeEventListener(){}}),
-    getComputedStyle:()=>({getPropertyValue:()=>''}),localStorage:{getItem:k=>(k in store?store[k]:null),setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}},
+    getComputedStyle:()=>({getPropertyValue:name=>name}),localStorage:{getItem:k=>(k in store?store[k]:null),setItem:(k,v)=>{store[k]=String(v);},removeItem:k=>{delete store[k];}},
     location:{href:'http://grove.test/',search:'',pathname:'/',assign(){}},fetch,ForceGraph:()=>()=>fakeGraph(),
     d3:{forceManyBody:force,forceCollide:force,forceX:force,forceY:force},CustomEvent:class{constructor(type,init){this.type=type;this.detail=init&&init.detail;}},
     addEventListener:(k,fn)=>{(listeners[k]||(listeners[k]=[])).push(fn);},dispatchEvent:e=>{(listeners[e.type]||[]).forEach(fn=>fn(e));return true;}};
@@ -80,4 +81,4 @@ function link(id,source,target,recorded){
   const at=recorded===undefined?stamp:recorded;
   return {data:{id,source,target,label:'relates to',verb:'relates to',valid_at:'2020-01-01T00:00:00Z',invalid_at:null,created_at:at}};
 }
-module.exports={read,settle,openPage,signedIn,drawn,item,link};
+module.exports={read,settle,openPage,signedIn,drawn,item,link,forceRuns};
