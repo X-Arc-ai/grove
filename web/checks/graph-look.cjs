@@ -38,6 +38,9 @@ function check(count,aspect){
   const sizes=Object.values(lobes).map(m=>m.length).sort((a,b)=>b-a);
   assert(sizes.length>=Math.min(5,count/60)&&sizes.length<=count/12,label+'lobes: '+sizes.length);
   assert(sizes[0]<=count*.3,label+'the largest lobe holds '+sizes[0]);
+  // A few large hubs, not many of one size: the target shows about three that stand out.
+  const hubSizes=g.nodes.filter(n=>['plan','organisation'].includes(n.type)).map(n=>view.radii[n.id]).sort((a,b)=>b-a);
+  if(count>=5000)assert(hubSizes[0]>=hubSizes[Math.floor(hubSizes.length/2)]*1.6,label+'hub sizes stay uneven: '+hubSizes.slice(0,3).join(',')+' over a median of '+hubSizes[Math.floor(hubSizes.length/2)]);
   const xs=points.map(p=>p.x),ys=points.map(p=>p.y),width=Math.max(...xs)-Math.min(...xs),height=Math.max(...ys)-Math.min(...ys);
   for(const [hub,ids] of Object.entries(lobes)){
     if(ids.length<30)continue;
@@ -45,6 +48,11 @@ function check(count,aspect){
     const reach=ids.map(id=>Math.hypot(view.positions[id].x-cx,view.positions[id].y-cy)).sort((a,b)=>a-b);
     assert(at(reach,.9)<=11*Math.sqrt(ids.length)*1.6+40,label+'lobe '+hub+' stays together: '+at(reach,.9).toFixed(0));
   }
+  // Clumps: lobes gather into a few masses with open space between them, not one even field.
+  const cells=new Map(),size=40;
+  points.forEach(p=>{const k=Math.floor(p.x/size)+','+Math.floor(p.y/size);cells.set(k,(cells.get(k)||0)+1);});
+  const filled=cells.size*size*size/(width*height);
+  if(count>=5000)assert(filled<.62,label+'open space stays between clumps: '+filled.toFixed(2)+' of the map holds dots');
   // The mass takes the shape of the screen, with room for the owner at its middle.
   assert(width/height>aspect*.62&&width/height<aspect*1.6,label+'the map is '+(width/height).toFixed(2)+' wide for a screen of '+aspect);
   const owner=view.positions['grove-self'],room=Math.min(...points.map(p=>Math.hypot(p.x-owner.x,p.y-owner.y)));
