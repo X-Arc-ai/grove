@@ -15,7 +15,7 @@
  * - A new node goes to its seed position re-anchored on its primary hub's position; with no
  *   placed hub, at the centre of its placed neighbours; with neither, at its seed position
  *   moved by the mean offset between the seed frame and the stored frame. From there it takes
- *   the nearest spot where its disc overlaps no placed disc (radius + radius apart).
+ *   a near spot where its disc overlaps no placed disc (radius + radius apart).
  * Hubs and nodes without a hub are placed before the leaves that anchor on them.
  *
  * Used by native-app.js in live mode (window.GroveLayoutKeep) and by web/checks (require).
@@ -23,24 +23,33 @@
 (function (root) {
   'use strict';
 
+  var LARGE_ARRIVAL = 300;   // above this many new nodes, speed comes before the nearest spot
+
   function has(map, id) { return Object.prototype.hasOwnProperty.call(map, id) && !!map[id]; }
   function finite(p) { return !!p && typeof p.x === 'number' && typeof p.y === 'number' && isFinite(p.x) && isFinite(p.y); }
 
-  // A uniform grid of placed discs, so a spot check reads only the nearby cells.
+  // A uniform grid of placed discs, so a spot check reads only the nearby cells. A disc sits in each
+  // cell its box touches, so that one wide disc does not force wide cells on all the small ones.
   function Discs(cell) {
     this.cell = cell;
-    this.cells = {};
+    this.cells = new Map();
   }
-  Discs.prototype.key = function (cx, cy) { return cx + ',' + cy; };
+  Discs.prototype.key = function (cx, cy) { return cx * 4194301 + cy; };
   Discs.prototype.add = function (x, y, r) {
-    var k = this.key(Math.floor(x / this.cell), Math.floor(y / this.cell));
-    (this.cells[k] || (this.cells[k] = [])).push({ x: x, y: y, r: r });
+    var disc = { x: x, y: y, r: r }, c = this.cell;
+    for (var i = Math.floor((x - r) / c); i <= Math.floor((x + r) / c); i++) {
+      for (var j = Math.floor((y - r) / c); j <= Math.floor((y + r) / c); j++) {
+        var k = this.key(i, j), list = this.cells.get(k);
+        if (list) list.push(disc); else this.cells.set(k, [disc]);
+      }
+    }
   };
+  // Two overlapping discs share a point, and so a cell of both boxes: this box scan misses none.
   Discs.prototype.free = function (x, y, r) {
-    var cx = Math.floor(x / this.cell), cy = Math.floor(y / this.cell);
-    for (var i = cx - 1; i <= cx + 1; i++) {
-      for (var j = cy - 1; j <= cy + 1; j++) {
-        var list = this.cells[this.key(i, j)];
+    var c = this.cell;
+    for (var i = Math.floor((x - r) / c); i <= Math.floor((x + r) / c); i++) {
+      for (var j = Math.floor((y - r) / c); j <= Math.floor((y + r) / c); j++) {
+        var list = this.cells.get(this.key(i, j));
         if (!list) continue;
         for (var n = 0; n < list.length; n++) {
           var d = list[n];
@@ -51,16 +60,21 @@
     return true;
   };
 
-  // The nearest free spot: the target itself, else the first free point on rings of growing
-  // radius around it (each ring a little wider than the last, points evenly spaced on it).
-  function freeSpot(discs, target, r) {
+  // A near free spot: the target itself, else the first free point on a spiral around it, at about
+  // two points for each disc width. A large arrival passes `reached`: placed discs never leave, so a
+  // search in the same area resumes near the point where the last one stopped. That costs a node
+  // a little distance from its target, and it keeps the page from freezing.
+  function freeSpot(discs, target, r, reached) {
     if (discs.free(target.x, target.y, r)) return { x: target.x, y: target.y };
-    var step = Math.max(1, r / 2);
-    for (var ring = 1; ring <= 20000; ring++) {
-      var R = ring * step, count = Math.max(8, Math.ceil(2 * Math.PI * R / step));
-      for (var i = 0; i < count; i++) {
-        var a = 2 * Math.PI * i / count, x = target.x + R * Math.cos(a), y = target.y + R * Math.sin(a);
-        if (discs.free(x, y, r)) return { x: x, y: y };
+    var step = Math.max(1, r * 0.5), wide = step * 12;
+    var area = reached ? discs.key(Math.floor(target.x / wide), Math.floor(target.y / wide)) : 0;
+    var first = reached ? Math.max(1, Math.floor((reached.get(area) || 0) * 0.85)) : 1;
+    for (var k = first; k <= 2000000; k++) {
+      var reach = step * Math.sqrt(k), angle = k * 2.399963229728653;
+      var x = target.x + reach * Math.cos(angle), y = target.y + reach * Math.sin(angle);
+      if (discs.free(x, y, r)) {
+        if (reached) reached.set(area, k);
+        return { x: x, y: y };
       }
     }
     return { x: target.x, y: target.y };
@@ -78,11 +92,10 @@
       byId[n.id] = n;
       ids.push(n.id);
     });
-    var room = {}, maxRoom = 1;
+    var room = {};
     ids.forEach(function (id) {
       var r = Number(roomOf(byId[id]));
       room[id] = isFinite(r) && r > 0 ? r : 0;
-      if (room[id] > maxRoom) maxRoom = room[id];
     });
 
     var out = {}, placed = [];
@@ -129,7 +142,8 @@
       (near[b] || (near[b] = [])).push(a);
     });
 
-    var discs = new Discs(2 * maxRoom);
+    var rooms = ids.map(function (id) { return room[id]; }).sort(function (a, b) { return a - b; });
+    var discs = new Discs(Math.max(8, 2 * (rooms[rooms.length >> 1] || 1)));
     kept.forEach(function (id) { discs.add(out[id].x, out[id].y, room[id]); });
 
     // Hubs (anything a node names as its primary hub) first, then nodes without a hub, then leaves.
@@ -140,6 +154,7 @@
     function group(id) { return anchor[id] ? 0 : byId[id]._primaryHubId == null ? 1 : 2; }
     var fresh = ids.filter(function (id) { return !out[id]; });
     fresh.sort(function (a, b) { return group(a) - group(b) || order[a] - order[b]; });
+    var reached = fresh.length > LARGE_ARRIVAL ? new Map() : null;
 
     fresh.forEach(function (id) {
       var s = finite(seed[id]) ? seed[id] : null, hub = byId[id]._primaryHubId, target = null;
@@ -157,7 +172,7 @@
           target = { x: cx, y: cy };
         }
       }
-      var spot = freeSpot(discs, target, room[id]);
+      var spot = freeSpot(discs, target, room[id], reached);
       out[id] = spot;
       discs.add(spot.x, spot.y, room[id]);
       placed.push(id);
