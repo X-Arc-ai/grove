@@ -118,7 +118,7 @@
     liveSessionReady=true;
     var previousAccount=api.getState().account;
     if(api.bindAccount(body.account)){
-      if(window.GroveMaterials)window.GroveMaterials.reset();
+      if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
       if(previousAccount&&previousAccount!==body.account)live.notifySessionChange();
       liveUploads={};ui.reminderRequest=null;ui.reminderError='';
       ui.step=0;ui.guideStage=0;ui.editName=false;ui.nameDraft='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};ui.requestDrafts={};ui.uploadFile=null;ui.connecting={};ui.query='';ui.notice='';
@@ -194,7 +194,7 @@
   // sign-in ends, the graph leaves memory and the screen, panels close and the sign-in card shows.
   // A person already on the sign-in card (checking, the email code) keeps the step they are on.
   function endSession(){
-    if(window.GroveMaterials)window.GroveMaterials.reset();
+    if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
     authEpoch++;live.invalidateSession();
     liveSessionReady=false;liveData={owner:null};
     liveUploads={};ui.reminderRequest=null;ui.reminderError='';
@@ -210,7 +210,7 @@
   }
   // Logout signs out here only when the server confirms it, or when the session is already gone.
   function logout(){
-    if(window.GroveMaterials)window.GroveMaterials.reset();
+    if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
     authEpoch++;
     ui.logoutError='';
     var failed=function(){ui.logoutError=SIGNIN_COPY.logout;render(true);};
@@ -785,7 +785,7 @@
     document.title=(logoutPage()?'Log out':accountMode()==='signup'?'Create account':live.isAuthPage()?'Log in':'Grove')+' · Grove';
     window.addEventListener('grove:session-changed',function(){endSession();ui.authStage='checking';render(true);checkSession();});
     window.addEventListener('pagehide',function(){
-      if(window.GroveMaterials)window.GroveMaterials.reset();
+      if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
       authEpoch++;live.invalidateSession();
       if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
       document.body.classList.add('gp-session-hidden');
