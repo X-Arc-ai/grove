@@ -15,6 +15,7 @@ event by hand. The listener, the session request and the server's 401 are all re
 fails if that 401 does not come.
 """
 
+import json
 import os
 import socket
 import subprocess
@@ -48,7 +49,9 @@ SESSION_PATH = "/v1/views/session"
 WAIT_MS = 30_000
 POLL_SECONDS = 0.25
 POLLS = 120
-PARTIAL_CODE = "12"
+PARTIAL_CODE = "90817"
+HELD_KEY = "grove-email-code"
+STORES_JS = "() => ({local: {...localStorage}, session: {...sessionStorage}})"
 SESSION_JS = """async () => {
   const response = await fetch('/v1/views/session', {credentials: 'same-origin'});
   return {status: response.status, body: await response.json()};
@@ -148,6 +151,17 @@ def _ask_for_a_code(page, address: str) -> None:
     page.locator("#gp-code").wait_for(timeout=WAIT_MS)
 
 
+def _assert_only_the_address_is_held(page, address: str) -> None:
+    stores = page.evaluate(STORES_JS)
+    assert list(stores["session"]) == [HELD_KEY]
+    held = json.loads(stores["session"][HELD_KEY])
+    assert set(held) == {"email", "mark", "sent"}
+    assert held["email"] == address
+    assert PARTIAL_CODE not in json.dumps(held["mark"])
+    assert address not in json.dumps(stores["local"]), "the address reached local storage"
+    assert PARTIAL_CODE not in json.dumps(stores["local"])
+
+
 def _expect_session_401(page):
     return page.expect_response(
         lambda r: r.url.endswith(SESSION_PATH) and r.status == 401, timeout=WAIT_MS
@@ -196,6 +210,7 @@ def test_the_code_card_stays_and_the_code_signs_in(
         page.screenshot(path=str(shots / f"{leave}-1-card.png"))
         page.fill("#gp-code", PARTIAL_CODE)
         page.evaluate("window.codeField = document.querySelector('#gp-code')")
+        _assert_only_the_address_is_held(page, address)
 
         LEAVES[leave](page, context, base_url)
         page.wait_for_timeout(500)
@@ -218,6 +233,45 @@ def test_the_code_card_stays_and_the_code_signs_in(
         assert session["status"] == 200
         assert session["body"]["signed_in"] is True
         assert page.evaluate("Object.keys(sessionStorage)") == []
+        code = mail_sink.last_code(address)
+        assert code not in json.dumps(page.evaluate(STORES_JS)), "the code was stored"
+        assert errors == []
+    finally:
+        context.close()
+
+
+def test_a_held_card_ends_with_a_sign_in_and_logout_in_another_tab(
+    browser, base_url, accounts, mail_sink, shots
+):
+    errors: list[str] = []
+    address = accounts.address()
+    context = browser.new_context(viewport=VIEWPORT, base_url=base_url)
+    try:
+        first = context.new_page()
+        first.on("pageerror", lambda error: errors.append(str(error)))
+        _ask_for_a_code(first, address)
+        first.get_by_role("link", name="Privacy").click()
+        first.wait_for_url("**/privacy", timeout=WAIT_MS)
+
+        second = context.new_page()
+        _ask_for_a_code(second, address)
+        second.fill("#gp-code", mail_sink.last_code(address))
+        second.locator("[data-code-form] button").click()
+        second.locator("#gp-code").wait_for(state="detached", timeout=WAIT_MS)
+        second.goto("/logout")
+        second.locator('[data-action="logout"]').click()
+        second.locator("#gp-email").wait_for(timeout=WAIT_MS)
+        second.close()
+
+        first.bring_to_front()
+        with _expect_session_401(first):
+            first.go_back()
+        first.locator("#gp-email").wait_for(timeout=WAIT_MS)
+        first.screenshot(path=str(shots / "held-card-after-logout.png"))
+
+        assert first.locator("#gp-code").count() == 0, "a dead code card came back"
+        assert address not in first.locator("#grove-product").inner_text()
+        assert first.evaluate("Object.keys(sessionStorage)") == []
         assert errors == []
     finally:
         context.close()
