@@ -66,6 +66,8 @@ HEALTH_KEYS = {
     "edges",
     "by_type",
     "overall",
+    "growth",
+    "additions",
 }
 
 
