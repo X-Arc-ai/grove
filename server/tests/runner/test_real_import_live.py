@@ -58,8 +58,7 @@ pytestmark = pytest.mark.live
 REPO = Path(__file__).resolve().parents[3]
 BIN = Path(sys.executable).parent
 MODEL = "muse-spark-1.3"
-IMPORT_TOKEN_CAP = 64_000
-IMPORT_TIME_CAP = 120
+IMPORT_TIME_CAP = 600
 MAX_PASSES = 3
 T0 = datetime(2026, 10, 20, 9, 0, tzinfo=UTC)
 ACCOUNT = "7c1f0e52-0000-4000-8000-00000000ac01"
@@ -582,11 +581,10 @@ def _walk(chain: Chain, loop, evidence, world, decoy, home) -> None:
             "token_cap": last["token_cap"],
             "last_pass_seconds": last["duration_seconds"],
             "time_cap": last["time_cap"],
-            "fits_token_cap": used < IMPORT_TOKEN_CAP,
             "fits_time_cap": (last["duration_seconds"] or 0) < IMPORT_TIME_CAP,
         },
     )
-    assert all(run["token_cap"] == IMPORT_TOKEN_CAP for run in runs if run["agent"] == "learner")
+    assert all(run["token_cap"] is None for run in runs if run["agent"] == "learner")
     assert all(run["time_cap"] == IMPORT_TIME_CAP for run in runs if run["agent"] == "learner")
     assert outcomes.get("ok", 0) > 0, "no model call succeeded through the gateway"
     assert {row["model"] for row in calls} == {MODEL}

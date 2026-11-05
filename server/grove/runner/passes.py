@@ -16,7 +16,7 @@ The runner service holds no store credential, so the API does each step for it:
 
 import json
 import os
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -320,13 +320,9 @@ def start_pass(
         and not is_demo_world(driver, world_id)
         and has_due_import(WorldQuery(driver, world_id), clock.now(world_id))
     )
-    if import_due:
-        # A threshold and watchdog, not a reservation or a hard total cost promise.
-        settings = replace(
-            settings,
-            token_cap=min(settings.token_cap, 64_000),
-            time_cap_seconds=min(settings.time_cap_seconds, 120),
-        )
+    # An import pass has no per-pass token limit. The world's daily budget and the time cap
+    # still end it. The run record and the gateway token then hold no cap.
+    token_cap = None if import_due else settings.token_cap
     catalog = load_catalog()
     _, job = AGENTS[agent]
     job_spec = catalog.job(job)
@@ -341,7 +337,7 @@ def start_pass(
         trigger="queue" if agent == "learner" else "job",
         model=model,
         effort=effort or "low",
-        token_cap=settings.token_cap,
+        token_cap=token_cap,
         time_cap=settings.time_cap_seconds,
         stale_margin_seconds=settings.lease_margin_seconds,
     )
@@ -420,7 +416,7 @@ def start_pass(
             run_id=run_id,
             job=job,
             ttl_seconds=settings.token_ttl_seconds,
-            token_cap=settings.token_cap,
+            token_cap=token_cap,
             profile=IMPORT_PROFILE
             if any(key.startswith(IMPORT_PREFIX) for key in input_ids)
             else None,

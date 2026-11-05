@@ -426,9 +426,14 @@
   function guide(){
     var id=ui.guide,p=PROVIDERS[id],walk=WALKS[id],upload=ui.guideStage===1||id==='notes';
     if(id==='google'||['notion','linear','slack','microsoft'].includes(id))return integrationGuide(id);
-    var title=upload?'Upload your '+(id==='notes'?'files':p.label+' history'):id==='muse'?'Connect Muse':'Export your '+p.label+' history';
-    var help=!upload&&HELP[id]?'<a class="gp-help" href="'+HELP[id]+'" target="_blank" rel="noreferrer" aria-label="Official '+p.label+' export instructions" title="Official instructions">↗</a>':'';
+    var whatsappOff=live&&id==='chats';
+    var title=whatsappOff?'WhatsApp is not available yet':upload?'Upload your '+(id==='notes'?'files':p.label+' history'):id==='muse'?'Connect Muse':'Export your '+p.label+' history';
+    var help=!upload&&!whatsappOff&&HELP[id]?'<a class="gp-help" href="'+HELP[id]+'" target="_blank" rel="noreferrer" aria-label="Official '+p.label+' export instructions" title="Official instructions">↗</a>':'';
     var header='<header class="gp-guide-heading"><span class="gp-provider-icon" style="color:'+p.color+'">'+icon(id)+'</span><h1 id="gp-title" tabindex="-1">'+title+help+'</h1><button class="gp-icon" data-action="guide-back" aria-label="Close guide">×</button></header>';
+    if(whatsappOff){
+      var off='<p class="gp-section-copy" role="status" data-whatsapp-off>Grove does not import WhatsApp exports yet, so nothing from WhatsApp reaches your graph.</p><footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">Back</button></footer>';
+      return api.getState().onboardingComplete?settingsFrame(off,'sources',sourceTrail(id,false)):shell(header+off,'gp-guide gp-visual-guide',false);
+    }
     if(!window.GroveAppScreens&&window.GroveDeferred){
       loadViewAsset('guides');
       var pending=assetNotice('guides')+'<footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">Back</button></footer>';
@@ -776,7 +781,7 @@
       var state=api.getState(),marks=Object.keys(IMPORT_CODES).map(importMark).join('');
       if(marks!==lastImportMarks){lastImportMarks=marks;progress.innerHTML=marks;}
       root.querySelectorAll('[data-source-choice]').forEach(function(el){
-        var id=el.dataset.sourceChoice,view=importView(id),text=view.label||(state.pendingExports[id]?'Upload':'Connect');
+        var id=el.dataset.sourceChoice,view=importView(id),text=view.label||(id==='chats'?'Not available':state.pendingExports[id]?'Upload':'Connect');
         // The check marks the accepted upload and stays. The ring follows the server's counts.
         el.classList.toggle('is-added',view.added);el.classList.toggle('is-partial',view.warned);el.classList.remove('is-learning');el.style.setProperty('--source-progress',view.ring);
         var label=el.querySelector('strong small');if(label)label.textContent=text;
