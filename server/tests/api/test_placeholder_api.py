@@ -210,7 +210,7 @@ def test_the_deploy_smoke_passes_against_the_real_app(served):
     assert done.returncode == 0, done.stderr
     assert done.stdout.splitlines() == [
         f"ok healthz build={SHA}",
-        "ok / page",
+        "ok / redirects to /login",
         "ok /signin page",
         "ok /privacy page",
         "ok /.well-known/oauth-protected-resource",
@@ -219,10 +219,11 @@ def test_the_deploy_smoke_passes_against_the_real_app(served):
     ]
 
 
-def test_the_real_app_answers_the_home_page_at_root_with_no_cookie(served):
+def test_the_real_app_redirects_root_to_login_with_no_cookie(served):
     response = httpx.get(f"{served}/", timeout=10)
-    assert response.status_code == 200
-    assert "<title>home.html</title>" in response.text
+    assert response.status_code == 303
+    assert response.headers["location"] == "/login"
+    assert "no-store" in response.headers["cache-control"]
 
 
 def test_the_deploy_smoke_fails_against_the_real_app_serving_another_build(served):

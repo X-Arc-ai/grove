@@ -271,7 +271,13 @@
     },
     pendingExports: function () { return getJSON(ENDPOINTS.pendingExports); },
     errorText: errorText,
-    agentFiles: function () { return getJSON(ENDPOINTS.agentFiles); },
+    agentFiles: function () {
+      var sentIn = sessionsBegun;
+      return request('GET', ENDPOINTS.agentFiles).then(function (res) {
+        if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
+        return watchSession(sentIn, res);
+      });
+    },
     addAgentNote: function (title, body) { return postJSON(ENDPOINTS.agentNotes, { title: title, body: body }); },
     addAgentFile: function (file) {
       return window.fetch(ENDPOINTS.agentFiles + '?name=' + encodeURIComponent(file.name), {

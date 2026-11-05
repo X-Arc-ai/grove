@@ -36,7 +36,7 @@ const htmlRows=[...table.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map(m=>[...m[1].matc
 assert.deepStrictEqual(htmlRows,[mdHead,...mdBody].map(r=>r.map(c=>c.replace(/`/g,''))),'The table is every row of docs/data-flow.md');
 assert(!privacy.includes('data-flow-table'),'The mark is gone');
 assert(table.includes('<code>sources</code>'),'Backticks become code');
-for(const [needle,status] of [['Resend','Deployment not checked'],['Google sign-in','Deployment not checked'],['Items, links, history','Deployment not checked'],['Backups','Deployment not checked'],['conversation exports','Deployment not checked'],['Calendar','Deployment not checked'],['Git repository','Deployment not checked'],['Pipedream','Deployment not checked'],['Screened text for extraction','Deployment not checked'],['Voice notes','Implementation pending'],['Muse Glimmer','Deployment not checked'],['Evidence returned','Deployment not checked'],['Forget targets','Deployment not checked']]){
+for(const [needle,status] of [['Resend','Deployment not checked'],['Google sign-in','Deployment not checked'],['Items, links, history','Deployment not checked'],['Backups','Deployment not checked'],['conversation exports','Deployment not checked'],['Calendar','Deployment not checked'],['Git repository','Deployment not checked'],['Pipedream','Deployment not checked'],['Screened text for extraction','Deployment not checked'],['Notes and supported text','Deployment not checked'],['Audio selected for transcription','Deployment not checked'],['Muse Glimmer','Deployment not checked'],['Evidence returned','Deployment not checked'],['Forget targets','Deployment not checked']]){
   const row=mdBody.find(r=>r[0].includes(needle)||r[1].includes(needle));assert(row,'docs/data-flow.md has a row for '+needle);assert.equal(row[3],status,needle+' is '+status);
 }
 assert(mdBody.every(r=>r[3]==='Deployment not checked'||r[3]==='Implementation pending'),'A static build never asserts a deployed operation');
@@ -65,7 +65,9 @@ for(const [name,html] of [['home',home],['privacy',privacy]]){
   }
   assert(!/<(?:img|iframe|video|audio|source|embed|object)\b/i.test(html),name+': no outside media');
   assert(!/<link[^>]+rel="stylesheet"/.test(html),name+': every sheet is inside the page');
-  for(const m of html.matchAll(/url\(([^)]{0,16})/g))assert(m[1].startsWith('data:'),name+': every asset is inside the page');
+  // Fonts are built same-origin files. Everything else stays inside the page, and swap keeps the text readable without them.
+  for(const m of html.matchAll(/url\(([^)]*)\)/g)){const font=m[1].match(/^\/assets\/grove\/([a-f0-9]{64}\.woff2)$/);assert(m[1].startsWith('data:')||(font&&fs.existsSync(path.join(web,'dist','assets',font[1]))),name+': every asset is inside the page or a built font');}
+  assert(!/@font-face\{(?![^}]*font-display:swap)/.test(html),name+': a font that does not load hides no text');
   assert(html.includes('@media (prefers-color-scheme:dark)')&&html.includes(':root[data-theme=dark]'),name+': light and dark');
   assert(html.includes('name="viewport"'),name+': made for a phone too');
   assert(Buffer.byteLength(html)<400000,name+': a public page stays small');

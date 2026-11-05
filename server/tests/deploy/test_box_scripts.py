@@ -6,14 +6,16 @@ import json
 import os
 import shutil
 import signal
+import stat
 import subprocess
 import time
+from pathlib import Path
 
 import pytest
 import yaml
 
 from grove import clock
-from tests.deploy.conftest import BASE, FP, HOST, OTHER_SHA, SHA
+from tests.deploy.conftest import BASE, DEPLOY, FP, HOST, OTHER_SHA, SHA
 
 # ---- deploy.sh and apply.sh -------------------------------------------------------------------
 
@@ -44,7 +46,7 @@ def test_deploy_waits_for_the_box_lock_and_stops_when_it_is_held(box):
     done = box.run("deploy.sh", SHA, FAKE_FLOCK_STATUS="1")
     assert done.returncode != 0
     assert "holds" in done.stderr
-    assert box.calls()[0].startswith("flock -w 1800 9")
+    assert box.calls()[0].startswith("flock -w 30 9")
     assert not [call for call in box.calls() if call.startswith("git ")]
 
 
@@ -69,7 +71,7 @@ def test_a_deploy_runs_its_steps_in_order(box):
     assert done.returncode == 0, done.stderr
 
     steps = [
-        "flock -w 1800 9",
+        "flock -w 30 9",
         "git fetch",
         f"git merge-base --is-ancestor {SHA} origin/develop",
         "git status --porcelain",
@@ -245,6 +247,25 @@ def test_apply_gives_the_oauth_file_to_the_api_user_alone(box):
     assert oct((box.etc / "google-oauth.json").stat().st_mode & 0o777) == "0o400"
 
 
+def test_a_deploy_makes_the_worlds_folder_for_the_api_user_and_the_runner_group(box):
+    # The steps after this one need a bounded launch, so only this step's result is read here.
+    done = box.run("deploy.sh", SHA)
+    worlds = Path(box.env["GROVE_RUNNER_HOME"]) / "worlds"
+    assert f"-d -o 10001 -g 10002 -m 2750 {worlds}" in box.installs(), done.stderr
+    assert stat.S_IMODE(worlds.stat().st_mode) == 0o2750
+
+
+def test_a_deploy_on_the_box_makes_the_worlds_folder_at_the_path_compose_mounts(box):
+    # The box sets no GROVE_RUNNER_HOME. The fake install records this path and never creates it.
+    host_path = "/var/lib/grove-runner/worlds"
+    del box.env["GROVE_RUNNER_HOME"]
+    done = box.run("deploy.sh", SHA, FAKE_INSTALL_RECORD_ONLY=host_path)
+    assert f"-d -o 10001 -g 10002 -m 2750 {host_path}" in box.installs(), done.stderr
+    compose = yaml.safe_load((DEPLOY / "compose.yml").read_text(encoding="utf-8"))
+    sources = [mount["source"] for mount in compose["services"]["api"]["volumes"]]
+    assert host_path in sources
+
+
 # ---- install-host.sh --------------------------------------------------------------------------
 
 
@@ -326,7 +347,7 @@ def test_a_backup_stops_the_writers_fingerprints_dumps_and_starts_them_again(box
     assert done.returncode == 0, done.stderr
 
     order = [
-        "flock -w 1800 9",
+        "flock -w 30 9",
         "compose --project-name grove",  # the first compose call, below
         "stop runner gateway api",
         "python -m grove.store.dump_fingerprint",
