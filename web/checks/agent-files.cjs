@@ -254,6 +254,17 @@ check('reset clears every row and an answer on its way stays out', async () => {
   await h.answer(h.adds.list.at(-1), { account: ACCOUNT_A, file: row('late-upload.pdf') });
   assert(!h.html().includes(PLAN) && !h.html().includes('late-upload.pdf'));
 });
+check('reset frees the queue, so a held upload of one account holds up no upload of the next', async () => {
+  const h = files();
+  await listed(h, [row(PLAN)]);
+  h.api.add([{ name: 'slow-upload.pdf', size: 7 }]); await settle();
+  assert.equal(h.adds.list.length, 1, 'the first upload is on its way');
+  h.api.reset();
+  h.state.account = ACCOUNT_B;
+  h.api.add([{ name: 'first-of-b.pdf', size: 7 }]); await settle();
+  assert.equal(h.adds.list.length, 2, 'the upload of the next account starts at once');
+  assert.equal(h.adds.list[1].args[0].name, 'first-of-b.pdf');
+});
 check('An account change drops the rows with no reset call', async () => {
   const h = files();
   await listed(h, [row(PLAN)]);
