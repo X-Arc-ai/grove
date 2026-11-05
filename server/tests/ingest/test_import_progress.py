@@ -468,7 +468,7 @@ def test_progress_requires_a_real_noop_receipt_or_attributed_commit(
 def test_lease_recovery_and_retry_do_not_duplicate_work(driver, seeded_world, test_clock):
     result = ingest(driver, seeded_world)
     auth, first = grant_for(driver, seeded_world)
-    test_clock.advance(seconds=241)
+    test_clock.advance(seconds=PassSettings().lease_seconds + 1)
     second = start_pass(driver, auth, seeded_world, agent="learner")
     assert second.input_ids == first.input_ids == [request_id_for(result.source_ids[0])]
     end_pass(driver, seeded_world, second.run_id, outcome="killed")
