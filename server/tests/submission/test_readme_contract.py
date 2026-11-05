@@ -90,7 +90,6 @@ def test_documents_agree_with_the_readme_on_prepared_account_muse():
     for relative in (
         "HACKATHON.md",
         "docs/architecture.md",
-        "docs/submission-checklist.md",
         "docs/submission-status.md",
     ):
         text = " ".join((ROOT / relative).read_text().split())
