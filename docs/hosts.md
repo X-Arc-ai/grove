@@ -217,7 +217,7 @@ Designation is durable account metadata, so a demo world stays refused with the 
 
 `recall` is a direct read with no model call (handoff decision 18). It is registered with `current_recall_schema()`. `grove.api.mcp` binds it to the request's `ToolContext` inside the packet response guard, which gives it a two-second budget and a complete buffered body. `store` stays outside that budget.
 
-It matches the words of `about` against the lexical indexes of the token's world, exact matches first and close spellings after them, and reads the first 200 results. `kinds`, `source_types`, `limit` and `include: ["evidence"]` work. `hops` and `cursor` are refused with `unsupported_recall_mode`, and `next_cursor` is always null. An item that has ended or has not started stays out, unless a successor replaces it.
+It matches the exact words of `about` against the lexical indexes, in the token's world only. All worlds share those indexes, so a Lucene score or a close-spelling search would carry the word counts of other worlds. The read uses neither: it takes every match in the world and ranks by the query words in each row's own text, title first, then keeps the first 200. `kinds`, `source_types`, `limit` and `include: ["evidence"]` work. `hops` and `cursor` are refused with `unsupported_recall_mode`, and `next_cursor` is always null. An item that has ended or has not started stays out, unless a successor replaces it.
 
 The D14 owner lease and filter are waived for this release, so:
 
