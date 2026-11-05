@@ -13,7 +13,7 @@ from typing import Any
 
 from grove import clock
 from grove.api.errors import ApiError, invalid_arguments, unavailable
-from grove.mcp.tools import ToolContext
+from grove.mcp.contract import ToolContext
 from grove.store.current import SUCCESSOR_MEANINGS, Successor, standing
 from grove.store.errors import Neo4jError
 from grove.store.query import WorldQuery

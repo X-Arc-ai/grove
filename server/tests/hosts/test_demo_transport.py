@@ -67,15 +67,23 @@ def test_demo_tools_real_scope_owner_and_revocation(driver, demo, hosts_plant):
     with TestClient(app) as web:
         response = web.post("/mcp", json=rpc("tools/list"), headers=bearer(token.access))
         assert response.status_code == 200
-        assert [tool["name"] for tool in response.json()["result"]["tools"]] == ["store", "recall"]
+        listed = response.json()["result"]["tools"]
+        assert [tool["title"] for tool in listed] == [
+            "Store the Cedar demo fact",
+            "Recall the Cedar demo",
+        ]
         batch = [rpc("ping"), rpc("tools/call", {"name": "store", "arguments": {}})]
         refused = web.post("/mcp", json=batch, headers=bearer(token.access))
         assert refused.status_code == 403
         assert WorldQuery(driver, demo.world_id).read("MATCH (r:Request) RETURN r.id AS id") == []
         other = hosts_plant.person()
         foreign = issue(driver, other, hosts_plant.client())
-        refused = web.post("/mcp", json=rpc("tools/list"), headers=bearer(foreign.access))
-        assert refused.status_code == 403
+        general = web.post("/mcp", json=rpc("tools/list"), headers=bearer(foreign.access))
+        assert general.status_code == 200
+        assert [tool["title"] for tool in general.json()["result"]["tools"]] == [
+            "Store in Grove",
+            "Recall from Grove",
+        ]
         revoke_grant(driver, grant_id=token.grant_id, world_id=demo.world_id, at=clock.now())
         refused = web.post("/mcp", json=rpc("tools/list"), headers=bearer(token.access))
         assert refused.status_code == 401

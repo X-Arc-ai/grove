@@ -1,4 +1,9 @@
-"""Restricted demo tool selection and final ASGI release under real OAuth authority."""
+"""Tool selection by account, and the restricted demo's final ASGI release under OAuth authority.
+
+The designated account keeps its restricted pair and its release guard. Every other live token
+leaves the guard before its first await on the body, and the route then checks it against the
+store. A demo world never gets the general tools, with or without the demo configuration.
+"""
 
 import asyncio
 from typing import Any
@@ -11,6 +16,7 @@ from grove import clock
 from grove.api.errors import ApiError, unavailable
 from grove.config import ConfigError
 from grove.demo_guard import DemoConfiguration, ReleaseFile, configuration
+from grove.mcp.access import demo_refusal, require_general_access, token_refusal
 from grove.oauth.secrets import token_hash
 from grove.oauth.store import TokenRow, find_access_token
 from grove.store.errors import Neo4jError
@@ -48,12 +54,24 @@ async def _request_body(receive) -> bytes | None:
 
 
 def tools_for_request(request: Request, token: TokenRow):
-    """The one shared route hook. No argument or client header can set this authority."""
-    if request.app.state.demo_config is None:
-        return request.app.state.mcp_tools
-    if request.scope.get(_AUTHORITY_KEY) != token:
-        raise ApiError(403, "scope_denied", "the restricted demo is not available")
-    return request.app.state.demo_tools
+    """The one shared route hook. No argument or client header can set this authority.
+
+    Only the release guard sets the demo authority, after it proves the designation. Every other
+    request meets the store check here, so a missing key never means an unrestricted world.
+    """
+    authority = request.scope.get(_AUTHORITY_KEY)
+    if authority is not None:
+        if authority != token:
+            raise demo_refusal()
+        return request.app.state.demo_tools
+    require_general_access(
+        request.app.state.driver,
+        world_id=token.world_id,
+        user_id=token.user_id,
+        grant_id=token.grant_id,
+        client_id=token.client_id,
+    )
+    return request.app.state.mcp_tools
 
 
 def _authority(scope: dict, config: DemoConfiguration, hashed_token: str) -> TokenRow:
@@ -64,11 +82,11 @@ def _authority(scope: dict, config: DemoConfiguration, hashed_token: str) -> Tok
         raise unavailable("the demo configuration changed")
     token = find_access_token(app.state.driver, hashed_token, clock.now())
     if token is None or token.resource != app.state.settings.mcp_url:
-        raise ApiError(401, "unauthenticated", "the access token is not valid")
+        raise token_refusal()
     try:
         require_designation(app.state.driver, token.world_id, token.user_id)
     except DemoDenied:
-        raise ApiError(403, "scope_denied", "the restricted demo is not available") from None
+        raise demo_refusal() from None
     # The published token lookup checks grant/world/client/scopes. Also bind the owner and
     # require the real registered client. ToolContext alone does not retain these checks.
     rows = PlatformQuery(app.state.driver).read(
@@ -81,8 +99,41 @@ def _authority(scope: dict, config: DemoConfiguration, hashed_token: str) -> Tok
         world_id=token.world_id,
     )
     if len(rows) != 1:
-        raise ApiError(401, "unauthenticated", "the access token is not valid")
+        raise token_refusal()
     return token
+
+
+def _ordinary_token(scope: dict, raw_header: bytes) -> bool:
+    from grove.api.mcp import bearer_token
+
+    raw_token = bearer_token(raw_header.decode("latin-1"))
+    if not raw_token:
+        return False
+    app = scope["app"]
+    token = find_access_token(app.state.driver, token_hash(raw_token), clock.now())
+    if token is None or token.resource != app.state.settings.mcp_url:
+        return False
+    require_general_access(
+        app.state.driver,
+        world_id=token.world_id,
+        user_id=token.user_id,
+        grant_id=token.grant_id,
+        client_id=token.client_id,
+    )
+    return True
+
+
+async def _is_ordinary(scope: dict) -> bool:
+    """True only for one live token of an ordinary owner. Two Authorization headers stay guarded:
+    this code and the route could read different ones. Any failure takes the guarded path, which
+    reads the store again and answers as it always did."""
+    headers = [value for key, value in scope.get("headers", ()) if key == b"authorization"]
+    if len(headers) != 1:
+        return False
+    try:
+        return await run_in_threadpool(_ordinary_token, scope, headers[0])
+    except Exception:
+        return False
 
 
 class DemoReleaseMiddleware:
@@ -99,6 +150,10 @@ class DemoReleaseMiddleware:
 
     async def __call__(self, scope, receive, send) -> None:
         if self.config is None or scope["type"] != "http" or scope["path"] not in ("/mcp", "/mcp/"):
+            await self.app(scope, receive, send)
+            return
+        if await _is_ordinary(scope):
+            # Outside the shielded task, so a cancelled read cannot outlive its response scope.
             await self.app(scope, receive, send)
             return
         abandoned = asyncio.Event()

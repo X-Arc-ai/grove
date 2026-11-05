@@ -993,13 +993,22 @@ def test_two_tools_with_one_name_are_refused(tools):
         index_tools((*tools, tools[0]))
 
 
-def test_the_default_registry_is_empty_until_the_tools_lane(driver, planted):
-    assert DEFAULT_TOOLS == ()
+def test_an_app_with_no_tools_argument_serves_exactly_the_default_registry(driver, planted):
+    assert sorted(tool.name for tool in DEFAULT_TOOLS) == ["recall", "store"]
     default = TestClient(
         create_app(ApiSettings(public_base_url=BASE), driver=driver), base_url=BASE
     )
     body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
     response = rpc(default, planted.ines_rw.access, body)
-    assert response.json() == {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
+    assert [tool["name"] for tool in response.json()["result"]["tools"]] == ["store", "recall"]
     refused = call_tool(default, planted.ines_rw.access, "whoami")
+    assert refused.json()["error"]["code"] == -32602
+
+
+def test_an_empty_registry_lists_nothing_and_runs_nothing(driver, planted):
+    empty = TestClient(make_app(driver, ()), base_url=BASE)
+    body = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    response = rpc(empty, planted.ines_rw.access, body)
+    assert response.json() == {"jsonrpc": "2.0", "id": 1, "result": {"tools": []}}
+    refused = call_tool(empty, planted.ines_rw.access, "recall", {"about": "Cedar"})
     assert refused.json()["error"]["code"] == -32602
