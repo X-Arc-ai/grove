@@ -42,6 +42,7 @@ def _erase_import_source(driver, world, source_id, *, remove=False, change=False
     from grove.writer.tx import WorldWriter
 
     refuse_real_world(world)
+
     def work(tx):
         source = tx.run("MATCH (s:Source {id: $id}) RETURN s", id=source_id)[0]["s"]
         if remove:
@@ -52,9 +53,12 @@ def _erase_import_source(driver, world, source_id, *, remove=False, change=False
             messages[0]["at"] = "2026-10-02T09:00:00+00:00"
             row = {**source, "content": json.dumps(messages)}
         else:
-            row = _source_content(source, [{"mode": "whole", "source_key": locator_key(source["external_locator"])}])
+            row = _source_content(
+                source, [{"mode": "whole", "source_key": locator_key(source["external_locator"])}]
+            )
         row.pop("world_id", None)
         tx.run("MATCH (s:Source {id: $id}) SET s += $row", id=source_id, row=row)
+
     WorldWriter(driver, world).transaction(work)
 
 
@@ -383,7 +387,9 @@ def test_a_token_stops_granting_when_its_world_changes_owner(driver, seeded, tes
             ).consume()
 
 
-def test_import_erased_before_claim_is_unavailable_and_cannot_be_reimported(driver, seeded, test_clock):
+def test_import_erased_before_claim_is_unavailable_and_cannot_be_reimported(
+    driver, seeded, test_clock
+):
     from grove.ingest.import_progress import read_import_progress
     from tests.ingest.test_import_progress import grant_for, ingest, request_rows
 
@@ -397,7 +403,9 @@ def test_import_erased_before_claim_is_unavailable_and_cannot_be_reimported(driv
     assert len(request_rows(driver, world)) == 1
 
 
-def test_import_erased_after_claim_has_no_input_and_cannot_finish_as_empty(driver, seeded, test_clock):
+def test_import_erased_after_claim_has_no_input_and_cannot_finish_as_empty(
+    driver, seeded, test_clock
+):
     from grove.runner.brain import pass_input
     from grove.runner.passes import caller_for, run_record
     from grove.writer import finish_request
@@ -412,11 +420,15 @@ def test_import_erased_after_claim_has_no_input_and_cannot_finish_as_empty(drive
     assert "Mira Vale" not in json.dumps(packet)
     assert "No eligible source messages" in packet["batch_form"]["note"]
     with pytest.raises(BatchDeclined):
-        finish_request(driver, world, caller_for("learner"), grant.input_ids[0], worker=grant.run_id)
+        finish_request(
+            driver, world, caller_for("learner"), grant.input_ids[0], worker=grant.run_id
+        )
 
 
 @pytest.mark.parametrize("mode", ["erased", "changed", "removed"])
-def test_import_source_is_checked_again_before_graph_commit(driver, seeded, test_clock, monkeypatch, mode):
+def test_import_source_is_checked_again_before_graph_commit(
+    driver, seeded, test_clock, monkeypatch, mode
+):
     from grove.runner.passes import caller_for
     from grove.writer import api
     from grove.writer.errors import BatchDeclined
@@ -428,23 +440,46 @@ def test_import_source_is_checked_again_before_graph_commit(driver, seeded, test
     key, batch = proposal(driver, world, grant)
     original = api.WorldWriter
     intervened = []
+
     class InterleavingWriter:
         def __init__(self, *args, **kwargs):
             self.writer = original(*args, **kwargs)
+
         def transaction(self, work):
             if not intervened:
                 intervened.append(True)
-                _erase_import_source(driver, world, result.source_ids[0], remove=mode == "removed", change=mode == "changed")
+                _erase_import_source(
+                    driver,
+                    world,
+                    result.source_ids[0],
+                    remove=mode == "removed",
+                    change=mode == "changed",
+                )
             return self.writer.transaction(work)
+
     monkeypatch.setattr(api, "WorldWriter", InterleavingWriter)
     with pytest.raises(BatchDeclined):
-        api.apply_batch(driver, world, caller_for("learner"), batch, request_id=key, run_id=grant.run_id)
+        api.apply_batch(
+            driver, world, caller_for("learner"), batch, request_id=key, run_id=grant.run_id
+        )
     assert intervened
-    assert WorldQuery(driver, world).read("MATCH (i:Item {title: $title}) RETURN i.id AS id", title="Mira Vale") == []
-    assert WorldQuery(driver, world).read("MATCH (e:ChangeEntry {request_id: $id}) RETURN e.commit_id AS id", id=key) == []
+    assert (
+        WorldQuery(driver, world).read(
+            "MATCH (i:Item {title: $title}) RETURN i.id AS id", title="Mira Vale"
+        )
+        == []
+    )
+    assert (
+        WorldQuery(driver, world).read(
+            "MATCH (e:ChangeEntry {request_id: $id}) RETURN e.commit_id AS id", id=key
+        )
+        == []
+    )
 
 
-def test_import_saved_replay_checks_erasure_and_removed_source_is_not_idle(driver, seeded, test_clock):
+def test_import_saved_replay_checks_erasure_and_removed_source_is_not_idle(
+    driver, seeded, test_clock
+):
     from grove.ingest.import_progress import ProgressUnavailable, read_import_progress
     from grove.runner.passes import caller_for
     from grove.writer.api import apply_batch
@@ -458,7 +493,9 @@ def test_import_saved_replay_checks_erasure_and_removed_source_is_not_idle(drive
     apply_batch(driver, world, caller_for("learner"), batch, request_id=key, run_id=grant.run_id)
     _erase_import_source(driver, world, result.source_ids[0])
     with pytest.raises(BatchDeclined):
-        apply_batch(driver, world, caller_for("learner"), batch, request_id=key, run_id=grant.run_id)
+        apply_batch(
+            driver, world, caller_for("learner"), batch, request_id=key, run_id=grant.run_id
+        )
     assert read_import_progress(driver, world, "claude_ai")["state"] == "unavailable"
     _erase_import_source(driver, world, result.source_ids[0], remove=True)
     with pytest.raises(ProgressUnavailable, match="source_unavailable"):

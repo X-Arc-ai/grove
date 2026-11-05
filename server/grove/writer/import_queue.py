@@ -37,10 +37,13 @@ def enqueue_import_parts_in_tx(tx, source_ids: list[str], provider: str) -> dict
     caller = Caller("writer", {"grove.write"}, PREFIX + provider)
     for source_id in source_ids:
         source = tx.run("MATCH (s:Source {id: $id}) RETURN s", id=source_id)[0]["s"]
-        connector = tx.run(
-            "MATCH (c:Connector {id: $id}) RETURN c", id=source["connector_id"]
-        )[0]["c"]
-        if connector.get("provider") != provider or connector.get("type") != "past_ai_conversations":
+        connector = tx.run("MATCH (c:Connector {id: $id}) RETURN c", id=source["connector_id"])[0][
+            "c"
+        ]
+        if (
+            connector.get("provider") != provider
+            or connector.get("type") != "past_ai_conversations"
+        ):
             raise ValueError("import source does not match its connector")
         reason = input_status(source, connector)
         if reason == "kept_out":
@@ -58,7 +61,8 @@ def enqueue_import_parts_in_tx(tx, source_ids: list[str], provider: str) -> dict
                     "MATCH (r:Request {id: $id}) "
                     "SET r.status = 'failed', r.last_error_code = $code, "
                     "r.version = r.version + 1",
-                    id=request_id, code=HOLD_PREFIX + reason,
+                    id=request_id,
+                    code=HOLD_PREFIX + reason,
                 )
                 counts["held_sources"] += 1
     return counts
@@ -102,8 +106,11 @@ def readiness_reason(reader, request) -> str | None:
             "OR (r.said_at.epochSeconds = current.said_at.epochSeconds "
             "AND r.said_at.nanosecond < current.said_at.nanosecond)) "
             "RETURN r.id AS id LIMIT 1",
-            connector=source["connector_id"], locator=source["external_locator"],
-            caller=request["caller"], prefix=PREFIX, request_id=request["id"],
+            connector=source["connector_id"],
+            locator=source["external_locator"],
+            caller=request["caller"],
+            prefix=PREFIX,
+            request_id=request["id"],
         )
         if earlier:
             return "earlier_pending_time"
@@ -118,15 +125,17 @@ def readiness_reason(reader, request) -> str | None:
             "WHERE s.id IN e.source_ids "
             "RETURN DISTINCT e.id AS id, e.start_time AS start, e.read_at AS read, "
             "e.source_ids AS sources ORDER BY start, read, id SKIP $offset LIMIT $limit",
-            connector=source["connector_id"], locator=source["external_locator"],
-            offset=offset, limit=READ_PAGE,
+            connector=source["connector_id"],
+            locator=source["external_locator"],
+            offset=offset,
+            limit=READ_PAGE,
         )
         if not episodes:
             return "episode_unavailable"
         for episode in episodes:
             ids = episode["sources"]
             found = source["id"] in ids
-            prior = ids[:ids.index(source["id"])] if found else ids
+            prior = ids[: ids.index(source["id"])] if found else ids
             # Historical sources without an import Request never become work.
             # Page history rather than permanently blocking after 512 old parts.
             for start in range(0, len(prior), READ_PAGE):
@@ -139,7 +148,7 @@ def readiness_reason(reader, request) -> str | None:
                     "OR (r.said_at.epochSeconds = current.said_at.epochSeconds "
                     "AND r.said_at.nanosecond <= current.said_at.nanosecond)) "
                     "RETURN r.id AS id LIMIT 1",
-                    ids=[request_id_for(key) for key in prior[start:start + READ_PAGE]],
+                    ids=[request_id_for(key) for key in prior[start : start + READ_PAGE]],
                     request_id=request["id"],
                 )
                 if unresolved:
@@ -163,10 +172,14 @@ def _import_candidates(reader, now):
     )
     touched = {row["caller"]: row["last"] for row in last}
     # Each provider gets a turn, even when another has over one page of work.
-    providers = sorted(IMPORT_PROVIDERS, key=lambda provider: (
-        touched.get(PREFIX + provider) is not None,
-        touched.get(PREFIX + provider) or now, provider,
-    ))
+    providers = sorted(
+        IMPORT_PROVIDERS,
+        key=lambda provider: (
+            touched.get(PREFIX + provider) is not None,
+            touched.get(PREFIX + provider) or now,
+            provider,
+        ),
+    )
     for provider in providers:
         cursor = ""
         order_seconds = order_nanos = created_seconds = created_nanos = 0
@@ -175,8 +188,9 @@ def _import_candidates(reader, now):
             # loses sub-microsecond precision. Keep the cursor as exact integers.
             rows = _read(
                 reader,
-                "MATCH (r:Request {caller: $caller}) WHERE " + _DUE +
-                " AND r.id STARTS WITH $prefix "
+                "MATCH (r:Request {caller: $caller}) WHERE "
+                + _DUE
+                + " AND r.id STARTS WITH $prefix "
                 "WITH r, coalesce(r.said_at, r.created_at) AS order_at "
                 "WITH r, order_at.epochSeconds AS order_seconds, "
                 "order_at.nanosecond AS order_nanos, "
@@ -192,9 +206,15 @@ def _import_candidates(reader, now):
                 "RETURN r, order_seconds, order_nanos, created_seconds, created_nanos "
                 "ORDER BY order_seconds, order_nanos, created_seconds, created_nanos, r.id "
                 "LIMIT $limit",
-                now=now, prefix=PREFIX, caller=PREFIX + provider,
-                cursor=cursor, order_seconds=order_seconds, order_nanos=order_nanos,
-                created_seconds=created_seconds, created_nanos=created_nanos, limit=READ_PAGE,
+                now=now,
+                prefix=PREFIX,
+                caller=PREFIX + provider,
+                cursor=cursor,
+                order_seconds=order_seconds,
+                order_nanos=order_nanos,
+                created_seconds=created_seconds,
+                created_nanos=created_nanos,
+                limit=READ_PAGE,
             )
             if not rows:
                 break
@@ -214,13 +234,15 @@ def claim_import_request(driver, world_id, caller, *, worker, lease_seconds):
     now = clock.now(world_id)
     query = WorldQuery(driver, world_id)
     for candidate in _import_candidates(query, now):
-        def work(tx):
+
+        def work(tx, key=candidate["r"]["id"]):
             if has_designation(designation_in_tx(tx) or {}):
                 return None
-            rows = tx.run("MATCH (r:Request {id: $id}) RETURN r", id=candidate["r"]["id"])
+            rows = tx.run("MATCH (r:Request {id: $id}) RETURN r", id=key)
             if not rows or not _ready(tx, rows[0]["r"]):
                 return None
             return _claim_one(tx, rows[0]["r"]["id"], worker, now, timedelta(seconds=lease_seconds))
+
         claimed = WorldWriter(driver, world_id).transaction(work)
         if claimed is not None:
             return claimed
@@ -233,7 +255,9 @@ def claim_interactive_request(driver, world_id, caller, *, worker, lease_seconds
     rows = WorldQuery(driver, world_id).read(
         "MATCH (r:Request) WHERE " + _DUE + " AND NOT r.id STARTS WITH $prefix "
         "RETURN r.id AS id ORDER BY r.created_at, r.id LIMIT $limit",
-        now=now, prefix=PREFIX, limit=20,
+        now=now,
+        prefix=PREFIX,
+        limit=20,
     )
     for row in rows:
         # A note is material: its claim holds the forget ledger lock, as claim_next_request does.

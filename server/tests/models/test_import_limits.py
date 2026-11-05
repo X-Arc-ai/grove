@@ -11,8 +11,8 @@ import httpx
 import pytest
 from starlette.requests import Request
 
-from grove.models.errors import ModelRefused, Unauthenticated
 from grove.models import gateway as gateway_module
+from grove.models.errors import ModelRefused, Unauthenticated
 from grove.models.gateway import Gateway
 from grove.models.gateway_auth import IMPORT_PROFILE, mint, verify
 from tests.models.test_gateway import CATALOG, SECRET, SPARK, SPARK_DOC, settings
@@ -21,22 +21,40 @@ WORLD = "t_import_00000000-0000-0000-0000-000000000001"
 
 
 def token(profile=IMPORT_PROFILE):
-    return mint(SECRET, CATALOG, world_id=WORLD, run_id="import-limit-test",
-                job="update_pass", profile=profile)
+    return mint(
+        SECRET,
+        CATALOG,
+        world_id=WORLD,
+        run_id="import-limit-test",
+        job="update_pass",
+        profile=profile,
+    )
 
 
 def request(body=None, *, auth=None):
-    raw = json.dumps(body or {"model": SPARK, "messages": [{"role": "user", "content": "Invented orchard notes"}]}).encode()
+    raw = json.dumps(
+        body
+        or {"model": SPARK, "messages": [{"role": "user", "content": "Invented orchard notes"}]}
+    ).encode()
 
     async def receive():
         return {"type": "http.request", "body": raw, "more_body": False}
 
-    return Request({"type": "http", "method": "POST", "path": "/v1/chat/completions",
-                    "headers": [(b"authorization", ("Bearer " + (auth or token())).encode())]}, receive)
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [(b"authorization", ("Bearer " + (auth or token())).encode())],
+        },
+        receive,
+    )
 
 
 def gateway(monkeypatch, provider):
-    found = Gateway(object(), settings=settings(), catalog=CATALOG, transport=httpx.MockTransport(provider))
+    found = Gateway(
+        object(), settings=settings(), catalog=CATALOG, transport=httpx.MockTransport(provider)
+    )
     records = []
     monkeypatch.setattr(found, "_admit", lambda claims: None)
     monkeypatch.setattr(found, "_record", lambda *args: records.append(args))
@@ -50,7 +68,13 @@ def test_unknown_signed_profiles_are_rejected(profile):
     claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
     claims["profile"] = profile
     payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
-    signature = base64.urlsafe_b64encode(hmac.new(SECRET, ("g1." + payload).encode(), hashlib.sha256).digest()).rstrip(b"=").decode()
+    signature = (
+        base64.urlsafe_b64encode(
+            hmac.new(SECRET, ("g1." + payload).encode(), hashlib.sha256).digest()
+        )
+        .rstrip(b"=")
+        .decode()
+    )
     with pytest.raises(Unauthenticated):
         verify(SECRET, CATALOG, f"g1.{payload}.{signature}")
 
@@ -67,17 +91,52 @@ def test_profile_requires_signature_and_update_job():
         mint(SECRET, CATALOG, world_id=WORLD, run_id="test", job="screen", profile=IMPORT_PROFILE)
 
 
-@pytest.mark.parametrize("body,status", [
-    ({"messages": [{"role": "user", "content": "🌳" * 33000}]}, 413),
-    ({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,aW52ZW50ZWQ="}}]}]}, 400),
-    ({"messages": [{"role": "user", "content": "Orchard"}], "tools": [{"type": "function", "function": {"name": "orchard", "description": "x" * 132000, "parameters": {"type": "object", "properties": {}}}}]}, 413),
-])
+@pytest.mark.parametrize(
+    "body,status",
+    [
+        ({"messages": [{"role": "user", "content": "🌳" * 33000}]}, 413),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": "data:image/png;base64,aW52ZW50ZWQ="},
+                            }
+                        ],
+                    }
+                ]
+            },
+            400,
+        ),
+        (
+            {
+                "messages": [{"role": "user", "content": "Orchard"}],
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "orchard",
+                            "description": "x" * 132000,
+                            "parameters": {"type": "object", "properties": {}},
+                        },
+                    }
+                ],
+            },
+            413,
+        ),
+    ],
+)
 def test_rejected_payload_never_reaches_provider_and_frees_slot(monkeypatch, body, status):
     async def run():
         calls = []
+
         async def provider(req):
             calls.append(req)
             return httpx.Response(200, json=SPARK_DOC)
+
         found, records = gateway(monkeypatch, provider)
         try:
             result = await found.chat_completions(request({"model": SPARK, **body}))
@@ -87,24 +146,34 @@ def test_rejected_payload_never_reaches_provider_and_frees_slot(monkeypatch, bod
             assert len(calls) == len(records) == 1
         finally:
             await found.aclose()
+
     asyncio.run(run())
 
 
 def test_output_limit_and_absent_profile_compatibility(monkeypatch):
     async def run():
         calls = []
+
         async def provider(req):
             calls.append(json.loads(req.content))
             return httpx.Response(200, json=SPARK_DOC)
+
         found, _ = gateway(monkeypatch, provider)
-        body = {"model": SPARK, "messages": [{"role": "user", "content": "Invented orchard"}], "max_tokens": 20000}
+        body = {
+            "model": SPARK,
+            "messages": [{"role": "user", "content": "Invented orchard"}],
+            "max_tokens": 20000,
+        }
         try:
             assert (await found.chat_completions(request(body))).status_code == 200
             assert calls[-1]["max_tokens"] == 8192
-            assert (await found.chat_completions(request(body, auth=token(None)))).status_code == 200
+            assert (
+                await found.chat_completions(request(body, auth=token(None)))
+            ).status_code == 200
             assert calls[-1]["max_tokens"] > 8192
         finally:
             await found.aclose()
+
     asyncio.run(run())
 
 
@@ -113,15 +182,19 @@ def test_cancelled_client_holds_slot_until_provider_and_meter_finish(monkeypatch
         entered, finish_provider = asyncio.Event(), asyncio.Event()
         meter_entered, finish_meter = threading.Event(), threading.Event()
         calls = []
+
         async def provider(req):
             calls.append(req)
             entered.set()
             await finish_provider.wait()
             return httpx.Response(200, json=SPARK_DOC)
+
         found, _ = gateway(monkeypatch, provider)
+
         def record(*args):
             meter_entered.set()
             assert finish_meter.wait(5)
+
         monkeypatch.setattr(found, "_record", record)
         first = asyncio.create_task(found.chat_completions(request()))
         try:
@@ -141,6 +214,7 @@ def test_cancelled_client_holds_slot_until_provider_and_meter_finish(monkeypatch
             finish_provider.set()
             finish_meter.set()
             await found.aclose()
+
     asyncio.run(run())
 
 
@@ -150,27 +224,43 @@ def test_stream_disconnect_drains_before_releasing_import_slot(monkeypatch):
         finish = asyncio.Event()
         meter_entered, finish_meter = threading.Event(), threading.Event()
         calls = []
+
         class Chunks(httpx.AsyncByteStream):
             async def __aiter__(self):
                 yield b'data: {"choices":[{"delta":{"content":"Pear"}}]}\n\n'
                 await finish.wait()
-                yield b'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15}}\n\n'
+                yield (
+                    b'data: {"choices":[],"usage":{"prompt_tokens":12,'
+                    b'"completion_tokens":3,"total_tokens":15}}\n\n'
+                )
                 drained.set()
                 yield b"data: [DONE]\n\n"
+
         async def provider(req):
             calls.append(req)
             if len(calls) == 1:
                 return httpx.Response(200, stream=Chunks())
             return httpx.Response(200, json=SPARK_DOC)
+
         found, records = gateway(monkeypatch, provider)
         original_record = found._record
+
         def record(*args):
             meter_entered.set()
             assert finish_meter.wait(5)
             original_record(*args)
+
         monkeypatch.setattr(found, "_record", record)
         try:
-            result = await found.chat_completions(request({"model": SPARK, "messages": [{"role": "user", "content": "Invented"}], "stream": True}))
+            result = await found.chat_completions(
+                request(
+                    {
+                        "model": SPARK,
+                        "messages": [{"role": "user", "content": "Invented"}],
+                        "stream": True,
+                    }
+                )
+            )
             await anext(result.body_iterator)
             await result.body_iterator.aclose()
             assert (await found.chat_completions(request())).status_code == 429
@@ -188,6 +278,7 @@ def test_stream_disconnect_drains_before_releasing_import_slot(monkeypatch):
             finish.set()
             finish_meter.set()
             await found.aclose()
+
     asyncio.run(run())
 
 
@@ -196,13 +287,23 @@ def test_exception_paths_release_import_slot(monkeypatch, where):
     async def run():
         async def provider(req):
             return httpx.Response(200, json=SPARK_DOC)
+
         found, _ = gateway(monkeypatch, provider)
-        original = {"admit": found._admit, "provider": found.client.send, "meter": found._record}[where]
+        original = {"admit": found._admit, "provider": found.client.send, "meter": found._record}[
+            where
+        ]
+
         def fail(*args, **kwargs):
             raise RuntimeError("invented failure")
+
         async def fail_async(*args, **kwargs):
             raise RuntimeError("invented failure")
-        target, attr = (found.client, "send") if where == "provider" else (found, "_admit" if where == "admit" else "_record")
+
+        target, attr = (
+            (found.client, "send")
+            if where == "provider"
+            else (found, "_admit" if where == "admit" else "_record")
+        )
         monkeypatch.setattr(target, attr, fail_async if where == "provider" else fail)
         try:
             if where == "admit":
@@ -218,11 +319,13 @@ def test_exception_paths_release_import_slot(monkeypatch, where):
                     await found.aclose()
             else:
                 await found.aclose()
+
     asyncio.run(run())
 
 
 def test_close_waits_for_late_created_stream_pump(monkeypatch):
     """Original control: the first settle snapshot contains only the dispatch."""
+
     async def run():
         provider_entered, provider_finish = asyncio.Event(), asyncio.Event()
         pump_entered, pump_finish = asyncio.Event(), asyncio.Event()
@@ -248,10 +351,17 @@ def test_close_waits_for_late_created_stream_pump(monkeypatch):
             await settle(timeout)
 
         monkeypatch.setattr(found, "settle", observed_settle)
-        admitted = asyncio.create_task(found.chat_completions(request({
-            "model": SPARK, "messages": [{"role": "user", "content": "Invented"}],
-            "stream": True,
-        })))
+        admitted = asyncio.create_task(
+            found.chat_completions(
+                request(
+                    {
+                        "model": SPARK,
+                        "messages": [{"role": "user", "content": "Invented"}],
+                        "stream": True,
+                    }
+                )
+            )
+        )
         closer = None
         try:
             await asyncio.wait_for(provider_entered.wait(), 2)
@@ -357,10 +467,15 @@ def test_close_deadline_waits_for_cancelled_pumps_late_meter_finalizer(monkeypat
         monkeypatch.setattr(found, "_record", record)
         closer = None
         try:
-            await found.chat_completions(request({
-                "model": SPARK, "messages": [{"role": "user", "content": "Invented"}],
-                "stream": True,
-            }))
+            await found.chat_completions(
+                request(
+                    {
+                        "model": SPARK,
+                        "messages": [{"role": "user", "content": "Invented"}],
+                        "stream": True,
+                    }
+                )
+            )
             await asyncio.wait_for(pump_entered.wait(), 2)
             closer = asyncio.create_task(found.aclose(drain_timeout=0, finalizer_timeout=2))
             assert await asyncio.to_thread(entered.wait, 2)

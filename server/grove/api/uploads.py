@@ -34,8 +34,12 @@ from grove.api.views import check_json_type, read_json_body
 from grove.config import ConfigError
 from grove.demo_policy import is_demo_world
 from grove.ingest.connector import NotAnExport, Upload, providers
+from grove.ingest.import_progress import (
+    ProgressSelectionDenied,
+    ProgressUnavailable,
+    read_import_progress,
+)
 from grove.ingest.take_in import take_in
-from grove.ingest.import_progress import ProgressSelectionDenied, ProgressUnavailable, read_import_progress
 from grove.ingest.tokens import find_upload_grant
 from grove.ingest.upload_policy import screener_for_upload
 from grove.screening import Screener
@@ -347,7 +351,9 @@ def get_import_progress(request: Request, response: Response, session: Session) 
     if "authorization" in request.headers:
         raise unauthenticated("import progress requires a session")
     params = request.query_params
-    if set(params) - {"provider", "after", "limit", "client_id"} or any(len(params.getlist(key)) != 1 for key in params):
+    if set(params) - {"provider", "after", "limit", "client_id"} or any(
+        len(params.getlist(key)) != 1 for key in params
+    ):
         raise invalid_arguments("unsupported import progress query", "query")
     provider = params.get("provider")
     if provider not in {"chatgpt", "claude_ai", "muse"}:
@@ -362,13 +368,20 @@ def get_import_progress(request: Request, response: Response, session: Session) 
     if not 1 <= limit <= 50:
         raise invalid_arguments("limit must be between 1 and 50", "limit")
     after = params.get("after")
-    if after is not None and not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", after):
+    if after is not None and not re.fullmatch(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}", after
+    ):
         raise invalid_arguments("after must be a source cursor", "after")
     response.headers["Cache-Control"] = "no-store"
     try:
         return read_import_progress(
-            request.app.state.driver, session.world_id, provider, after=after, limit=limit,
-            client_id=client_id, user_id=session.user_id,
+            request.app.state.driver,
+            session.world_id,
+            provider,
+            after=after,
+            limit=limit,
+            client_id=client_id,
+            user_id=session.user_id,
         )
     except ProgressSelectionDenied as error:
         raise ApiError(403, "scope_denied", str(error)) from None

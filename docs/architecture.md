@@ -79,12 +79,16 @@ Disabled or disclosed controls still require implementation where the feature sc
 PR #58 changes ordinary authenticated ChatGPT/Claude JSON and ZIP uploads to a fresh mandatory
 screening policy. It removes the exact-Lumen-only fallback without bypassing screening.
 It is present in this source baseline and the PR #66 recording API.
-An accepted upload retains screened Sources, Episodes, and receipts; it does not create graph
-Items or links. The prepared graph is a separate dataset. See [ingest](ingest.md).
+An accepted upload retains screened Sources, Episodes, and receipts, and creates one Request for
+each eligible Claude or ChatGPT part in the same transaction. The upload route itself calls no
+model and writes no graph Items or links. The Learner takes at most one import part per pass, and
+the writer adds what it proposes. `import_progress.v1` separates retention, queued work, holds,
+successful no-ops and graph changes. The prepared graph is a separate dataset. See [ingest](ingest.md).
 
 A real Claude ZIP upload passed on PR60 at 2026-11-04 19:53:06 UTC:
 one source, one episode, and two kept messages; the exact repeat added zero new records.
-The upload did not change the graph. At that time, real prepared-account Muse use was **NOT RUN**.
+That dated upload predates the import queue and did not change the graph. At that time, real
+prepared-account Muse use was **NOT RUN**.
 The [later Muse update](submission-status.md#prepared-account-muse-update) records the run.
 
 Calendar and Git have read-only connector source and revocation rules. Actual configured

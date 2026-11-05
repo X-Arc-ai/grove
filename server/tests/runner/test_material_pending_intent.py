@@ -13,6 +13,7 @@ from grove.store.query import WorldQuery
 from grove.views.session import token_hash
 from grove.writer import apply_request, claim_next_request, finish_request
 from grove.writer.forget_ledger import LedgerUnavailable, read_ledger
+from grove.writer.import_queue import claim_interactive_request
 from grove.writer.requests import pending_requests
 from grove.writer.restore import replay_ledger
 from tests.runner.helpers import FAST, new_auth, queue_store
@@ -275,3 +276,18 @@ def test_material_input_holds_ledger_lock_through_source_read(driver, material_w
     monkeypatch.setattr(brain, "_request_input", read_under_lock)
     packet = pass_input(driver, world, run_record(driver, world, grant.run_id))
     assert observed == [True] and packet["requests"][0]["input_complete"]
+
+
+def test_pending_material_intent_refuses_the_interactive_import_claim(
+    driver, material_world, monkeypatch
+):
+    """A pass claims through the import queue now, so that path must hold the same guard."""
+    world = material_world[0].world_id
+    item = test_materials.write_note(driver, material_world)["id"]
+    pending_delete(driver, material_world, monkeypatch, item)
+    before = request_rows(driver, world)
+    with pytest.raises(LedgerUnavailable):
+        claim_interactive_request(
+            driver, world, caller_for("learner"), worker="pending-control", lease_seconds=60
+        )
+    assert request_rows(driver, world) == before

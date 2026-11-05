@@ -208,10 +208,16 @@ check('Upload failure stays an error with no added source or graph changes', asy
   assert.equal(h.p.liveUpload('chatgpt').result, null);
   h.p.importSource('notes', { name: 'synthetic.txt' }, 'notes'); assert.deepEqual(h.calls, ['upload-request']);
 });
-check('Accepted upload retains exact counts and its actual graph outcome', () => {
-  const html = harness().p.uploadResult({ state: 'taken_in', chats: 2, chats_new: 1, sources_added: 1, episodes_added: 3, messages_read: 8, messages_kept: 6, failed_chats: 0 });
+check('Accepted upload retains exact counts and says only what they prove', () => {
+  const p = harness().p;
+  const html = p.uploadResult({ state: 'taken_in', chats: 2, chats_new: 1, sources_added: 1, episodes_added: 3, messages_read: 8, messages_kept: 6, failed_chats: 0, processing: { requests_added: 2, held_sources: 0 } });
   assert(html.includes('Import accepted')); assert(html.includes('Messages read: 8')); assert(html.includes('Messages kept: 6'));
-  assert(html.includes('Your graph has not changed from this upload.'));
+  assert(html.includes('Grove accepted 6 messages from 1 new chat.')); assert(html.includes('2 parts added to the queue.'));
+  assert(!html.includes('Your graph has not changed')); assert(!/%|percent/.test(html));
+  const again = p.uploadResult({ state: 'nothing_new', chats: 2, chats_new: 0, sources_added: 0, episodes_added: 0, messages_read: 8, messages_kept: 0, failed_chats: 0 });
+  assert(again.includes('No new messages')); assert(!again.includes('accepted'));
+  const partial = p.uploadResult({ state: 'taken_in', chats: 2, chats_new: 1, sources_added: 1, episodes_added: 1, messages_read: 4, messages_kept: 4, failed_chats: 1 });
+  assert(partial.includes('Some chats failed: 1.'));
 });
 check('Worker rows retain actual recorded activity and disabled Follow', async () => {
   const h = harness(); h.load('agents.js'); h.live.workers = async () => ({ ok: true, body: workerPayload() });

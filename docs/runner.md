@@ -90,7 +90,7 @@ exit status 1.
 | Verb | Route | What it answers |
 |---|---|---|
 | `brain status` | `GET /v1/internal/brain/status` | the pass, its agent and inputs, and the world's counts |
-| `brain pass` | `GET /v1/internal/brain/pass` | the input packet: the requests with their source, episode, locators and messages; the job; the kinds and meanings with the kinds each end takes; the statement classes; a filled batch form and a field guide |
+| `brain pass` | `GET /v1/internal/brain/pass` | the input packet: the requests with their source, episode, locators and messages; the job; `world_items`, the count of items in the world; the kinds, each with its `recheck_statuses`, and the meanings with the kinds each end takes; the statement classes; a filled batch form and a field guide |
 | `brain recall TEXT` | `POST /v1/internal/brain/recall` (the text in the body, never in a URL an access log keeps) | a lexical lookup over titles, summaries and search terms, no model call. `hosts-b` replaces it with D7's recall |
 | `brain get ITEM` | `GET /v1/internal/brain/items/{id}` (an id of the row id form only) | one item, its active links and its active evidence rows |
 | `brain propose [--request ID]` | `POST /v1/internal/brain/propose` | the batch from stdin (a heredoc) or `--file`; saved with a receipt, or declined with the writer's reasons. A Learner proposes under one of its requests; one repair of a decline is allowed |

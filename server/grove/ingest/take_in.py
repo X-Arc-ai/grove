@@ -26,7 +26,10 @@ from grove.ingest.connector import (
 )
 from grove.ingest.connector import chat_locator as _chat_locator
 from grove.ingest.import_parts import (
-    IMPORT_PROVIDERS, MAX_IMPORT_PARTS, ImportLimit, screen_import_parts,
+    IMPORT_PROVIDERS,
+    MAX_IMPORT_PARTS,
+    ImportLimit,
+    screen_import_parts,
 )
 from grove.screening import Message, ScreenedSource, Screener
 from grove.store.connection import Driver
