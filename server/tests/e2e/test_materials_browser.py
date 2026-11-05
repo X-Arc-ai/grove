@@ -71,7 +71,8 @@ def material_app(driver, material_world, material_pages, monkeypatch):  # noqa: 
 
 
 @pytest.fixture
-def material_page(material_browser, material_app):
+def setup_page(material_browser, material_app):
+    """The setup step of files and notes, which writes the agent folder, not materials."""
     origin, (_, cookie, _) = material_app
     context = material_browser.new_context(
         base_url=origin, viewport={"width": 1440, "height": 1000}, reduced_motion="reduce"
@@ -93,6 +94,23 @@ def material_page(material_browser, material_app):
     finally:
         context.close()
         assert errors == []
+
+
+@pytest.fixture
+def material_page(setup_page):
+    """The material controls, which live in Settings after setup."""
+    page = setup_page
+    page.get_by_role("button", name="Next step", exact=True).click()
+    page.get_by_role("button", name="Enter your Grove", exact=True).click()
+    open_materials(page)
+    return page
+
+
+def open_materials(page):
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="sources"]').click()
+    page.get_by_role("button", name="Add note +", exact=True).wait_for()
+    expect(page.locator('[data-materials="settings"]')).to_be_visible()
 
 
 def action(page, name):
@@ -129,12 +147,44 @@ def test_live_material_controls_are_enabled(material_page):
     assert page.get_by_label("Title", exact=True).is_visible()
 
 
+def test_setup_file_upload_reaches_the_agent_folder_with_its_bytes(
+    setup_page, tmp_path, monkeypatch
+):
+    page = setup_page
+    folder = tmp_path / "agent-files"
+    folder.mkdir()
+    monkeypatch.setenv("GROVE_AGENT_FILES_DIR", str(folder))
+    name = "Café %20 plan.pdf"
+    data = pdf_bytes("A cedar file plan.")
+    add_files = page.get_by_role("button", name="Add files +", exact=True)
+    expect(add_files).to_be_enabled()
+    with page.expect_response(
+        lambda response: "/v1/agent-files?" in response.url and response.request.method == "POST"
+    ) as upload:
+        with page.expect_file_chooser() as chooser:
+            add_files.click()
+        chooser.value.set_files({"name": name, "mimeType": "application/pdf", "buffer": data})
+    assert upload.value.status == 200
+    assert upload.value.request.header_value("content-length") == str(len(data))
+    assert upload.value.json()["file"] == {"name": name, "kind": "file", "bytes": len(data)}
+    rows = page.locator('[data-agent-files="file"]')
+    expect(rows).to_contain_text(name)
+    expect(rows).not_to_contain_text("Adding")
+    expect(page.get_by_role("heading", name="Add what matters", exact=True)).to_be_visible()
+    shot(page, "onboarding-agent-file-saved")
+    saved = [path for path in folder.rglob("*") if path.is_file()]
+    assert [path.name for path in saved] == [name]
+    assert saved[0].read_bytes() == data
+    assert materials(page) == []
+
+
 def test_create_reload_edit_conflict_and_confirmed_all_revision_delete(material_page, material_app):
     page = material_page
     note(page)
     saved = materials(page)[0]
     path = "/v1/materials/" + saved["id"]
     page.reload()
+    open_materials(page)
     page.get_by_role("button", name="Cedar launch", exact=True).click()
     assert "Mira plans the Cedar launch." in page.locator(".gp-material-parts").inner_text()
     action(page, "edit").click()
@@ -186,16 +236,13 @@ def test_create_reload_edit_conflict_and_confirmed_all_revision_delete(material_
     "viewport", [{"width": 1440, "height": 1000}, {"width": 390, "height": 844}]
 )
 @pytest.mark.parametrize("theme", ["light", "dark"])
-def test_setup_and_settings_share_materials_with_readable_layout(material_page, viewport, theme):
+def test_settings_materials_keep_a_readable_layout(material_page, viewport, theme):
     page = material_page
     page.set_viewport_size(viewport)
     page.evaluate("theme => document.documentElement.setAttribute('data-theme', theme)", theme)
     note(page)
     shot(page, f"material-detail-{viewport['width']}-{theme}")
-    page.get_by_role("button", name="Next step", exact=True).click()
-    page.get_by_role("button", name="Enter your Grove", exact=True).click()
-    page.locator("#profile-button").click()
-    page.locator('[data-settings-tab="sources"]').click()
+    action(page, "list").click()
     page.get_by_role("button", name="Cedar launch", exact=True).wait_for()
     page.locator(".gp-materials").scroll_into_view_if_needed()
     assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
@@ -226,17 +273,29 @@ def test_file_bytes_formats_and_encoded_filename(material_page, extension):
         data = template_presentation()
     name = "Café %20." + extension
     before = page.context.request.get("/v1/views/graph").json()
-    page.get_by_role("button", name="Add files +", exact=True).click()
+    add_files = page.get_by_role("button", name="Add files +", exact=True)
+    expect(add_files).to_be_enabled()
+    add_files.click()
     page.locator("[data-material-file]").set_input_files(
         {"name": name, "mimeType": "application/octet-stream", "buffer": data}
     )
-    page.get_by_role("button", name="Upload file", exact=True).click()
+    with page.expect_response(
+        lambda response: (
+            response.url.endswith("/v1/materials/files") and response.request.method == "POST"
+        )
+    ) as upload:
+        page.get_by_role("button", name="Upload file", exact=True).click()
+    assert upload.value.status == 201
+    assert upload.value.request.header_value("content-length") == str(len(data))
     page.get_by_text("File saved. Brain extraction needs source details.", exact=True).wait_for()
+    expect(page.locator('[data-materials="settings"]')).to_be_visible()
+    shot(page, "settings-file-saved-" + extension)
     saved = materials(page)[0]
     assert saved["title"] == name
     assert saved["request"] is None and saved["graph_state"] == "held_provenance"
     assert page.context.request.get("/v1/views/graph").json()["elements"] == before["elements"]
     page.reload()
+    open_materials(page)
     page.get_by_role("button", name=name, exact=True).click()
     page.locator(".gp-material-parts").wait_for()
     expected = "Quarterly plan" if extension == "pptx" else "cedar"
@@ -271,19 +330,23 @@ def test_route_close_and_logout_discard_late_responses_and_drafts(material_page)
     page.get_by_label("Title", exact=True).fill("Private late title")
     page.get_by_label("Note", exact=True).fill("Private late body")
     page.get_by_role("button", name="Save note", exact=True).click()
-    page.get_by_role("button", name="Next step", exact=True).click()
+    page.locator('[data-settings-tab="account"]').click()
     page.evaluate("""() => resolveMaterial(new Response(JSON.stringify({
       account:GroveSimulation.getState().account,generation:0,material:{
         id:'11111111-1111-4111-8111-111111111111',title:'Private late title',revision:1}
     }), {status:201}))""")
-    page.get_by_role("button", name="Previous step", exact=True).click()
+    page.locator('[data-settings-tab="sources"]').click()
     page.get_by_role("button", name="Add note +", exact=True).click()
     assert page.get_by_label("Title", exact=True).input_value() == ""
     page.get_by_label("Title", exact=True).fill("Private unsent title")
     page.get_by_label("Note", exact=True).fill("Private unsent body")
     page.evaluate("window.dispatchEvent(new Event('grove:session-changed'))")
-    page.get_by_role("button", name="Add note +", exact=True).wait_for()
+    expect(page.get_by_label("Note", exact=True)).to_have_count(0)
+    open_materials(page)
     assert "Private" not in page.locator(".gp-materials").inner_text()
+    page.get_by_role("button", name="Add note +", exact=True).click()
+    assert page.get_by_label("Title", exact=True).input_value() == ""
+    assert page.get_by_label("Note", exact=True).input_value() == ""
     assert not page.evaluate("JSON.stringify(localStorage).includes('Private')")
 
 
