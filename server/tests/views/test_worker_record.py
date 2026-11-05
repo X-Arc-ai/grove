@@ -224,6 +224,13 @@ def test_a_bad_trail_page_is_refused(rows):
     refused(driver)
 
 
+def test_a_trail_page_that_repeats_an_id_is_refused_when_the_total_fits():
+    driver = filled()
+    driver.replies["ids"] = [{"item_id": "item-1"}, {"item_id": "item-1"}]
+    driver.replies["count"] = [{"changed_items": 2}]
+    refused(driver)
+
+
 @pytest.mark.parametrize(
     "rows",
     [
