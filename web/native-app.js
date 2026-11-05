@@ -314,7 +314,7 @@
     var epoch = viewEpoch;
     schemaAsked = true;
     window.groveApi('/api/schema').then(function (r) { return r.json(); }).then(function (s) {
-      if (epoch !== viewEpoch || request!==graphRequest) return;   // stale reads cannot change the view
+      if (epoch !== viewEpoch) return;   // the session ended while this read was out
       if (s && !s.error) schemaByType = s; else schemaAsked = false;
     }).catch(function () { /* schema is optional; panel falls back */ if (epoch === viewEpoch) schemaAsked = false; });
   }
@@ -2070,7 +2070,7 @@
 
     var epoch = viewEpoch;
     window.groveApi('/api/node/' + encodeURIComponent(node.id)).then(function (r) { return r.json(); }).then(function (extra) {
-      if (epoch !== viewEpoch || request!==graphRequest) return;   // stale reads cannot change the view
+      if (epoch !== viewEpoch) return;   // the session ended while this read was out
       var apiNode = (extra && extra.node) || {};
       var fullSummary = apiNode.content || apiNode.summary || raw.summary || '';
       var apiProps = apiNode.properties || localProps;
