@@ -185,7 +185,8 @@
   // fixture-specific name affects it, and the same graph gives the same map in any input order.
   var GOLDEN = 2.399963229728653;
   var SPIRAL = 10.5;      // the step of a lobe's spiral: neighbouring dots sit about 20 apart
-  var LOBE_GAP = 5;       // the space two lobes keep: their edges meet, as in a real brain
+  var LOBE_GAP = 5;       // the space two lobes of one clump keep: their edges meet
+  var CLUMP_GAP = 26;     // the open space between clumps, which the hairline edges cross
   var OWNER_ROOM = 92;    // the clear disc the owner node and its name take at the centre
   var MIN_LOBE = 6;       // a smaller group joins a neighbouring lobe
   var CHUNK = 24;         // the spiral slots that share out by direction, in one pass
@@ -320,7 +321,7 @@
 
   // Lobes pack as touching discs: linked lobes pull together, none overlaps, and the mass takes
   // the shape of the screen (aspect is its width over its height).
-  function packLobes(lobes, bridges, aspect, owner) {
+  function packLobes(lobes, bridges, aspect, owner, gap) {
     var wide = Math.max(0.5, Math.min(1.7, aspect || 1.45)), used = owner ? OWNER_ROOM * OWNER_ROOM : 0;
     var ordered = lobes.slice().sort(function (a, b) { return b.r - a.r || compareIds(a.id, b.id); });
     ordered.forEach(function (lobe, index) {
@@ -334,11 +335,11 @@
       for (var a = 0; a < count; a++) {
         var one = ordered[a];
         if (owner) {
-          var od = Math.max(1, Math.hypot(one.x, one.y)), oroom = OWNER_ROOM + one.r + LOBE_GAP;
+          var od = Math.max(1, Math.hypot(one.x, one.y)), oroom = OWNER_ROOM + one.r + gap;
           if (od < oroom) { one.dx += one.x / od * (oroom - od) * strength * 2; one.dy += one.y / od * (oroom - od) * strength * 2; }
         }
         for (var b = a + 1; b < count; b++) {
-          var two = ordered[b], x = two.x - one.x, y = two.y - one.y, d = Math.max(1, Math.hypot(x, y)), room = one.r + two.r + LOBE_GAP;
+          var two = ordered[b], x = two.x - one.x, y = two.y - one.y, d = Math.max(1, Math.hypot(x, y)), room = one.r + two.r + gap;
           if (d >= room) continue;
           var push = (room - d) * strength;
           one.dx -= x / d * push; one.dy -= y / d * push;
@@ -350,7 +351,7 @@
       ordered.forEach(function (lobe) { lobe.dx = -lobe.x * 0.012 / wide; lobe.dy = -lobe.y * 0.012 * wide; });
       apart(0.35);
       bridges.forEach(function (edge) {
-        var x = edge.b.x - edge.a.x, y = edge.b.y - edge.a.y, d = Math.max(1, Math.hypot(x, y)), target = edge.a.r + edge.b.r + LOBE_GAP;
+        var x = edge.b.x - edge.a.x, y = edge.b.y - edge.a.y, d = Math.max(1, Math.hypot(x, y)), target = edge.a.r + edge.b.r + gap;
         var pull = (d - target) * Math.min(0.012, 0.0025 * Math.sqrt(edge.w));
         edge.a.dx += x / d * pull; edge.a.dy += y / d * pull;
         edge.b.dx -= x / d * pull; edge.b.dy -= y / d * pull;
@@ -384,6 +385,84 @@
       ordered.forEach(function (lobe) { lobe.dx = 0; lobe.dy = 0; });
       apart(0.5);
       ordered.forEach(function (lobe) { lobe.x += lobe.dx; lobe.y += lobe.dy; });
+    }
+  }
+
+  // Lobes gather into a few clumps of uneven size: the most linked pairs join first, and no clump
+  // takes more than a quarter of the map. Linked lobes touch inside a clump, and open space lies
+  // between clumps, as in a real brain of thousands of nodes.
+  function gatherClumps(lobes, bridges, total) {
+    var wanted = Math.max(1, Math.min(14, Math.round(Math.sqrt(total) / 5.5))), most = Math.max(total / 4, 120);
+    var into = new Map(), size = new Map();
+    lobes.forEach(function (lobe) { size.set(lobe, lobe.members.length); });
+    function root(lobe) { while (into.has(lobe)) lobe = into.get(lobe); return lobe; }
+    var strongest = bridges.slice().sort(function (a, b) {
+      var one = a.w / Math.sqrt(a.a.members.length * a.b.members.length), two = b.w / Math.sqrt(b.a.members.length * b.b.members.length);
+      return two - one || compareIds(a.a.id + a.b.id, b.a.id + b.b.id);
+    });
+    var left = lobes.length;
+    strongest.forEach(function (edge) {
+      if (left <= wanted) return;
+      var a = root(edge.a), b = root(edge.b);
+      if (a === b || size.get(a) + size.get(b) > most) return;
+      into.set(b, a);
+      size.set(a, size.get(a) + size.get(b));
+      left--;
+    });
+    var byRoot = new Map();
+    lobes.forEach(function (lobe) {
+      var r = root(lobe);
+      if (!byRoot.has(r)) byRoot.set(r, { id: r.id, lobes: [], x: 0, y: 0, dx: 0, dy: 0, r: 0 });
+      byRoot.get(r).lobes.push(lobe);
+    });
+    return Array.from(byRoot.values()).sort(function (a, b) { return compareIds(a.id, b.id); });
+  }
+
+  // Each clump packs its own lobes, then the clumps pack as wide discs around the owner.
+  function packClumps(lobes, bridges, total, aspect, owner) {
+    var clumps = gatherClumps(lobes, bridges, total), clumpOf = new Map();
+    clumps.forEach(function (clump) {
+      clump.lobes.forEach(function (lobe) { clumpOf.set(lobe, clump); });
+      var inside = bridges.filter(function (edge) { return clumpOf.get(edge.a) === clump && clumpOf.get(edge.b) === clump; });
+      packLobes(clump.lobes, inside, 1, false, LOBE_GAP);
+      var cx = 0, cy = 0, mass = 0;
+      clump.lobes.forEach(function (lobe) { cx += lobe.x * lobe.r; cy += lobe.y * lobe.r; mass += lobe.r; });
+      cx /= mass; cy /= mass;
+      var area = 0;
+      clump.lobes.forEach(function (lobe) { lobe.x -= cx; lobe.y -= cy; area += lobe.r * lobe.r; });
+      clump.r = Math.sqrt(area) * 1.12;   // by area, not reach: a long clump leaves room beside it
+    });
+    var joined = new Map();
+    bridges.forEach(function (edge) {
+      var a = clumpOf.get(edge.a), b = clumpOf.get(edge.b);
+      if (a === b) return;
+      var key = a.id < b.id ? a.id + '\0' + b.id : b.id + '\0' + a.id;
+      if (!joined.has(key)) joined.set(key, { a: a, b: b, w: 0 });
+      joined.get(key).w += edge.w;
+    });
+    var between = Array.from(joined.keys()).sort().map(function (key) { return joined.get(key); });
+    packLobes(clumps, between, aspect, owner, CLUMP_GAP);
+    clumps.forEach(function (clump) {
+      clump.lobes.forEach(function (lobe) { lobe.x += clump.x; lobe.y += clump.y; });
+    });
+    // Clumps packed by area can touch at their ends: the lobes themselves settle apart.
+    var count = lobes.length, rounds = Math.min(40, Math.max(4, Math.floor(800000 / Math.max(1, count * count))));
+    for (var round = 0; round < rounds; round++) {
+      for (var a = 0; a < count; a++) {
+        for (var b = a + 1; b < count; b++) {
+          var one = lobes[a], two = lobes[b], x = two.x - one.x, y = two.y - one.y, d = Math.max(1, Math.hypot(x, y));
+          var push = (one.r + two.r + LOBE_GAP - d) * 0.5;
+          if (push <= 0) continue;
+          one.x -= x / d * push; one.y -= y / d * push;
+          two.x += x / d * push; two.y += y / d * push;
+        }
+      }
+      if (owner) {
+        lobes.forEach(function (lobe) {
+          var d = Math.max(1, Math.hypot(lobe.x, lobe.y)), room = OWNER_ROOM + lobe.r + LOBE_GAP;
+          if (d < room) { lobe.x += lobe.x / d * (room - d); lobe.y += lobe.y / d * (room - d); }
+        });
+      }
     }
   }
 
@@ -464,7 +543,7 @@
     lobes.forEach(function (lobe) {
       lobe.members.forEach(function (id, rank) {
         var n = byId[id], degree = near[id].length, semantic = ['company', 'project', 'organisation', 'plan'].indexOf(n.type) !== -1;
-        var r = semantic ? Math.min(30, 9 + Math.sqrt(degree) * 1.7)
+        var r = semantic ? Math.min(46, 7 + Math.sqrt(degree) * 1.25)
           : ['person', 'instance', 'place'].indexOf(n.type) !== -1 ? 10
           : ['event', 'observation'].indexOf(n.type) !== -1 ? 5 : 6;
         if (rank === 0 && degree >= 20) r = Math.max(r, Math.min(18, 6 + Math.sqrt(degree)));
@@ -485,7 +564,7 @@
       });
     });
     var bridges = Object.keys(joined).sort().map(function (key) { return joined[key]; });
-    packLobes(lobes, bridges, aspect, owner);
+    packClumps(lobes, bridges, content.length, aspect, owner);
     lobes.forEach(function (lobe) {
       var x = 0, y = 0;
       bridges.forEach(function (edge) {

@@ -651,8 +651,6 @@
         var ids={};visible.forEach(function(n){ids[n.id]=1;});
         Graph.graphData({nodes:visible,links:fgLinks.filter(function(l){return ids[l.source]&&ids[l.target];})});
       }
-      // A large live map holds each dot at its place, so these forces would only take frame time.
-      if(!window.GROVE_FIXTURE&&fgNodes.length>LARGE_MAP)['charge','collide','link','hubX','hubY'].forEach(function(name){Graph.d3Force(name,null);});
       applyVisibility();
       if(focusedNode&&!fgNodeById[focusedNode.id]){focusedNode=null;closePanel();}
       clearSelection({silent:true});
@@ -1374,10 +1372,14 @@
     // it instead of collapsing it towards the hubs and letting it spring
     // back. Later reheats (filters) run at full heat as before.
     var ALPHA_START = 0.01, CALM_MS = 12000, calmUntil = performance.now() + CALM_MS;
-    ['charge', 'link', 'hubX', 'hubY'].forEach(function (name) {
+    // A large live map holds each dot at its place, so these forces would only take frame time.
+    ['charge', 'collide', 'link', 'hubX', 'hubY'].forEach(function (name) {
       var f = Graph.d3Force(name);
       if (!f) return;
-      var calm = function (alpha) { return f(performance.now() < calmUntil ? Math.min(alpha, ALPHA_START) : alpha); };
+      var calm = function (alpha) {
+        if (!window.GROVE_FIXTURE && fgNodes.length > LARGE_MAP) return;
+        return f(performance.now() < calmUntil ? Math.min(alpha, ALPHA_START) : alpha);
+      };
       Object.keys(f).forEach(function (k) {
         if (typeof f[k] !== 'function') return;
         calm[k] = function () { var r = f[k].apply(f, arguments); return r === f ? calm : r; };
@@ -1656,6 +1658,13 @@
 
   // ---------------- canvas drawing ----------------
 
+  // A new node takes a heavy ring. The end of a new connection stays near its own size: a hub with
+  // many new links is not itself new. The fixture keeps the sim's size.
+  function highlightSize(base) {
+    if (window.GROVE_FIXTURE) return Math.max(base * 2, 22);
+    return highlightedEdgeCount ? base * 1.2 : Math.max(base * 1.7, 14);
+  }
+
   function drawNode(node, ctx, scale) {
     if(unborn(node))return;
     if(node.id==='grove-self'){
@@ -1673,7 +1682,7 @@
     // Multi-select highlighted nodes scale up aggressively so even tier-5/6
     // nodes (event/observation/task at sz 6–10) are unmistakable at
     // fit-everything zooms.
-    var sz = isHL ? Math.max(baseSz * 2, 22) : baseSz;
+    var sz = isHL ? highlightSize(baseSz) : baseSz;
     if (node.__born && !prefersReducedMotion.matches) { var bornT=Math.min(1,(performance.now()-node.__born)/1000); sz*=.65+.35*(1-Math.pow(1-bornT,3)); }
     var tier = TIER[node.type] || 5;
     var isHub = HUB_TYPES[node.type];
@@ -1707,7 +1716,7 @@
             if (highlightedIds[nbId]) touchesSelectedNode = true;
           });
         }
-        alpha *= touchesSelectedNode ? 0.4 : 0.08;
+        alpha *= touchesSelectedNode && !highlightedEdgeCount ? 0.4 : 0.08;
       }
     } else if (focusedNode) {
       var d = hopDist[node.id];
@@ -1739,7 +1748,7 @@
     else if (tier === 4) ringW = 2.0;
     else if (tier === 5) ringW = 1.4;
     else ringW = 1.2; // tier 6 — event/observation/status_change
-    ctx.lineWidth = window.GROVE_FIXTURE ? ringW / Math.max(scale, 0.85) : Math.max(ringW*.48 / Math.max(scale, 0.85), 0.8 / scale);
+    ctx.lineWidth = window.GROVE_FIXTURE ? ringW / Math.max(scale, 0.85) : Math.max(ringW*.48 / Math.max(scale, 0.85), Math.min(0.8, scale * 3.2) / scale);
     ctx.strokeStyle = ringColor;
     ctx.stroke();
 
@@ -1750,13 +1759,13 @@
     var isFocused = focusedNode && focusedNode.id === node.id;
     if (isFocused || isHL) {
       var hlColor = isFocused ? THEME.accent : ringColor;
-      if (isHL && !isFocused) {
+      if (isHL && !isFocused && window.GROVE_FIXTURE) {
         ctx.shadowColor = hlColor;
         ctx.shadowBlur = 18;
       }
       ctx.beginPath();
       ctx.arc(node.x, node.y, sz + 5, 0, 2 * Math.PI);
-      ctx.lineWidth = (isHL && !isFocused ? 4.5 : 2.4) / scale;
+      ctx.lineWidth = (isHL && !isFocused ? (window.GROVE_FIXTURE ? 4.5 : highlightedEdgeCount ? 1.6 : 3.4) : 2.4) / scale;
       ctx.strokeStyle = hlColor;
       ctx.globalAlpha = 1;
       ctx.stroke();
@@ -1905,7 +1914,7 @@
     // Highlighted nodes draw at 2x size; the hit area must match so clicks
     // on the visible disk actually register (otherwise clicks on the scaled
     // edge fall outside the original-size hit zone and silently no-op).
-    var sz = Math.max((highlightedIds[node.id] ? Math.max(baseSz * 2, 22) : baseSz) + 4, 5 / Graph.zoom());
+    var sz = Math.max((highlightedIds[node.id] ? highlightSize(baseSz) : baseSz) + 4, 5 / Graph.zoom());
     ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(node.x, node.y, sz, 0, 2 * Math.PI);
@@ -1941,7 +1950,7 @@
       if (highlightedEdgeCount === 0 && highlightedIds[ss] && highlightedIds[tt]) {
         return THEME.edgeBright;
       }
-      if (highlightedIds[ss] || highlightedIds[tt]) return THEME.edge;
+      if (highlightedEdgeCount === 0 && (highlightedIds[ss] || highlightedIds[tt])) return THEME.edge;
       return THEME.edgeFaded;
     }
 
@@ -2599,8 +2608,9 @@
           var vh = window.innerHeight * 0.65;
           var z = Math.min(vw / w, vh / h, 2.5);
           z = Math.max(z, Math.min(0.7, Graph.zoom()));   // a wide selection keeps the whole map in view
-          Graph.centerAt(cx, cy, 600);
-          Graph.zoom(z, 600);
+          var across = !window.GROVE_FIXTURE && stableFrame && (maxX - minX > (stableFrame.x1 - stableFrame.x0) * 0.5 || maxY - minY > (stableFrame.y1 - stableFrame.y0) * 0.5);
+          if (across) frameGrove(prefersReducedMotion.matches ? 0 : 600);
+          else { Graph.centerAt(cx, cy, 600); Graph.zoom(z, 600); }
         }
       }
 
