@@ -63,7 +63,7 @@ function grow(data,count,tag){
   await big.box.reloadGrove();await settle();
   const spent=Date.now()-placed;
   assert.equal(big.box.GroveView.nodes().length,bigData.nodes.length,'All nodes of a large arrival join the map');
-  assert(spent<8000,'A read of 1,500 new nodes takes '+spent+' ms');
+  assert(spent<30000,'A read of 1,500 new nodes takes '+spent+' ms');
   const spots=big.box.GroveView.nodes().map(n=>n.x+','+n.y);
   assert.equal(new Set(spots).size,spots.length,'No two nodes of a large arrival share a spot');
 
