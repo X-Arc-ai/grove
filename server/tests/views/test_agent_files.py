@@ -432,7 +432,7 @@ def test_the_runner_starts_a_pass_in_the_world_folder_once_it_exists(tmp_path):
         brain_bin="brain",
         shell_bin="sh",
     )
-    grant = {"world_id": "world-one"}
+    grant = {"world_id": "world-one", "agent": "learner"}
     work = tmp_path / "passes" / "run"
     assert pass_folder(settings, grant, work) == work
     (tmp_path / "worlds" / "world-one").mkdir(parents=True)
