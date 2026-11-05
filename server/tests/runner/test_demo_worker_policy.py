@@ -4,6 +4,7 @@ Database queries and writer calls are controlled here; the scheduler, designatio
 policy, agent inference and token codecs are real. No native store or provider runs.
 """
 
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import timedelta
 from types import SimpleNamespace
@@ -65,6 +66,8 @@ def state(monkeypatch, frozen):
             ]
         if "state: 'failed'" in query:
             return []
+        if "r.id STARTS WITH $prefix" in query:
+            return []  # This rig holds no import Request.
         pytest.fail("unexpected world query")
 
     def designation_read(query, **params):
@@ -88,7 +91,13 @@ def state(monkeypatch, frozen):
         "abandon_stale_runs",
     ):
         monkeypatch.setattr(passes.run_rows, name, forbidden)
-    for name in ("claim_next_request", "_ensure_episode", "mint_pass_token", "mint_gateway_token"):
+    for name in (
+        "claim_interactive_request",
+        "claim_import_request",
+        "_ensure_episode",
+        "mint_pass_token",
+        "mint_gateway_token",
+    ):
         monkeypatch.setattr(passes, name, forbidden)
     monkeypatch.setattr(packet, "work", forbidden)
     return state
@@ -190,7 +199,9 @@ def allow_start(state, monkeypatch):
     monkeypatch.setattr(passes.run_rows, "start_run", start_run)
     monkeypatch.setattr(passes.run_rows, "claim_job", claim_job)
     monkeypatch.setattr(passes.run_rows, "set_run_inputs", lambda *args: None)
-    monkeypatch.setattr(passes, "claim_next_request", claim_request)
+    monkeypatch.setattr(passes, "claim_interactive_request", claim_request)
+    # This rig has no store, and the guard reads one before each learner pass.
+    monkeypatch.setattr(passes, "material_request_guard", lambda *_args, **_kw: nullcontext())
     monkeypatch.setattr(passes, "_ensure_episode", ensure_episode)
     from grove.models.gateway_auth import mint
     from grove.runner.tokens import mint_pass_token

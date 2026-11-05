@@ -420,7 +420,11 @@ def test_an_attachment_is_only_the_fact():
 
 def _file_facts(*, attachments=(), files=(), documents=()):
     row = record(
-        "files-1", "human", seconds=10, attachments=list(attachments), files=list(files),
+        "files-1",
+        "human",
+        seconds=10,
+        attachments=list(attachments),
+        files=list(files),
         content=[text_block("Read these files.", 10), *documents],
     )
     (chat,) = parse(as_json(conversation(BEES, [row])))
@@ -440,13 +444,23 @@ def test_uuid_free_file_matches_only_complete_unique_cross_container_metadata():
     assert text.count("[attached file: map.txt]") == 1
 
 
-@pytest.mark.parametrize("attachments,files,expected", [
-    ([{"file_name": "map.txt"}], [{"file_name": "map.txt"}], 2),
-    ([{"file_uuid": "one", "file_name": "map.txt"}], [{"file_uuid": "two", "file_name": "map.txt"}], 2),
-    ([{}], [{"file_uuid": "one"}], 2),
-    ([{"file_name": "map.txt", "file_size": True, "file_type": "text/plain"}],
-     [{"file_name": "map.txt", "file_size": True, "file_type": "text/plain"}], 2),
-])
+@pytest.mark.parametrize(
+    "attachments,files,expected",
+    [
+        ([{"file_name": "map.txt"}], [{"file_name": "map.txt"}], 2),
+        (
+            [{"file_uuid": "one", "file_name": "map.txt"}],
+            [{"file_uuid": "two", "file_name": "map.txt"}],
+            2,
+        ),
+        ([{}], [{"file_uuid": "one"}], 2),
+        (
+            [{"file_name": "map.txt", "file_size": True, "file_type": "text/plain"}],
+            [{"file_name": "map.txt", "file_size": True, "file_type": "text/plain"}],
+            2,
+        ),
+    ],
+)
 def test_ambiguous_file_references_and_distinct_uuids_remain_distinct(attachments, files, expected):
     assert _file_facts(attachments=attachments, files=files).count("[attached") == expected
 
@@ -479,7 +493,8 @@ def test_blank_declared_file_identifier_cannot_use_metadata_fallback(invalid_id)
 def test_uuid_free_metadata_cannot_bridge_two_different_uuids():
     item = {"file_name": "map.txt", "file_size": 120, "file_type": "text/plain"}
     text = _file_facts(
-        attachments=[item], files=[{**item, "file_uuid": "one"}],
+        attachments=[item],
+        files=[{**item, "file_uuid": "one"}],
         documents=[{"type": "document", **item, "file_uuid": "two"}],
     )
     assert text.count("[attached") == 3

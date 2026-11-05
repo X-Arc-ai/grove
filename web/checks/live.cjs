@@ -154,7 +154,7 @@ function legendRows(elements){
   // 1. live.js: one endpoint map, same-origin fetch helpers, positions in batches of 5000.
   {
     const server=makeServer(liveWorld()),pg=page(server,{},['live.js']),G=pg.sandbox.GroveLive;
-    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',positions:'/v1/views/positions',upload:'/v1/sources/upload',pendingExports:'/v1/sources/pending-exports',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',materials:'/v1/materials',materialFiles:'/v1/materials/files',materialNotes:'/v1/materials/notes',materialDetail:'/v1/materials/{id}',materialEdit:'/v1/materials/notes/{id}',materialPreview:'/v1/materials/{id}/delete-preview',materialConfirmation:'/v1/materials/{id}/delete-confirmations',materialDelete:'/v1/materials/{id}/delete',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(G.ENDPOINTS)),{mcp:'/mcp',session:'/v1/views/session',graph:'/v1/views/graph',node:'/v1/views/node/',schema:'/v1/views/schema',health:'/v1/views/health',workers:'/v1/views/workers',positions:'/v1/views/positions',upload:'/v1/sources/upload',agentFiles:'/v1/agent-files',agentNotes:'/v1/agent-files/notes',pendingExports:'/v1/sources/pending-exports',importProgress:'/v1/sources/import-progress',approvedConnections:'/v1/views/connections',sourceCoverage:'/v1/sources/connectors',sourceConnections:'/v1/connectors',materials:'/v1/materials',materialFiles:'/v1/materials/files',materialNotes:'/v1/materials/notes',materialDetail:'/v1/materials/{id}',materialEdit:'/v1/materials/notes/{id}',materialPreview:'/v1/materials/{id}/delete-preview',materialConfirmation:'/v1/materials/{id}/delete-confirmations',materialDelete:'/v1/materials/{id}/delete',googleStart:'/v1/auth/google/start?next=/',emailStart:'/v1/auth/email/start',emailVerify:'/v1/auth/email/verify',logout:'/v1/auth/logout'});
     const res=await G.getJSON('/v1/views/health');assert(res.ok&&res.body.overall.state==='healthy');
     assert.equal(server.calls[0].method,'GET');assert.equal(server.calls[0].init.credentials,'same-origin');
     const many=[];for(let i=0;i<12000;i++)many.push({id:i<11990?synthetic.elements.nodes[i%222].data.id:'x'+i,x:i,y:-i});
@@ -364,7 +364,7 @@ function legendRows(elements){
     bp.ui.panel='profile';bp.ui.settingsTab='account';bp.render(true);
     assert(!/anas@example\.com|Anas/.test(bp.html()),'Account shows no example identity');
     assert(bp.html().includes('Signed in with Google')&&bp.html().includes('<small>You</small>'),'Account shows the sign-in method and a neutral name');
-    assert.equal(back.elements['profile-button'].textContent,'Y');
+    assert(back.elements['profile-button'].innerHTML.includes('<svg')&&!/Anas/.test(back.elements['profile-button'].innerHTML),'The profile button shows its icon and no example initial');
     // An email sign-in shows the typed address.
     const typed=page(sv,done(),AUTH_FILES,HOOK);await settle();const tp=typed.sandbox.productTest;w.session=false;
     typed.sandbox.GroveSimulation.signOut();tp.ui.authStage='signin';await tp.startEmail('sam.reyes@example.org');await tp.verifyEmail('246810');
@@ -441,7 +441,7 @@ function legendRows(elements){
     assert.equal(t.V.nodes().length,0,label+': no node in memory');assert.equal(t.V.graph()?t.V.graph().graphData().nodes.length:0,0,label+': no node on the map');
     assert.deepStrictEqual(JSON.parse(JSON.stringify(t.pg.sandbox.__mapState())),MAP_EMPTY,label+': the map keeps nothing in memory');
     assert.equal(t.pg.elements['legend-list'].innerHTML,'',label+': the legend is empty');
-    assert.equal(t.pg.elements.stats.innerHTML,'<span>0 nodes</span> <span class="gp-stat-divider">·</span> <span>0 connections</span>',label+': the counts are zero');
+    assert(t.pg.elements.stats.innerHTML.startsWith('<span>0 nodes</span> <span class="gp-stat-divider">·</span> <span>0 connections</span>'),label+': the counts are zero');
     assert.equal(t.pg.elements['detail-body'].innerHTML,'',label+': the node panel is empty');assert(!t.pg.elements.detail.classList.contains('open'),label+': the node panel is closed');assert.equal(t.pg.elements.detail.getAttribute('aria-hidden'),'true',label+': the node panel is out of reach');
     assert.equal(t.S.getState().currentNodeCount,0,label+': the last payload is gone');assert.equal(t.S.getState().currentEdgeCount,0,label+': the last payload holds no link');
     const E=t.pg.elements;

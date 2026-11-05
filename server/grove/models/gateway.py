@@ -504,8 +504,13 @@ class Gateway:
             # Shutdown exhausted the provider drain. The provider may have run;
             # preserve estimated accounting before releasing the import slot.
             await self._record_call(
-                claims, spec, effort, estimate_usage(input_chars),
-                "provider_error", started, attempt[0],
+                claims,
+                spec,
+                effort,
+                estimate_usage(input_chars),
+                "provider_error",
+                started,
+                attempt[0],
             )
             raise
         except ModelError as error:
@@ -532,9 +537,7 @@ class Gateway:
             outcome = "rate_limited" if response.status_code == 429 else "provider_error"
             ran = may_have_run(response.status_code)
             usage = estimate_usage(input_chars) if ran else Usage()
-            await self._record_call(
-                claims, spec, effort, usage, outcome, started, attempt[0]
-            )
+            await self._record_call(claims, spec, effort, usage, outcome, started, attempt[0])
             if cancelled:
                 raise asyncio.CancelledError
             if response.status_code < 400:
@@ -556,13 +559,13 @@ class Gateway:
             usage = usage_or_estimate(chat_usage(doc.get("usage")), input_chars, len(text))
             # The answer passes on as it came; an empty one is recorded as such (D15).
             outcome = "invalid_output" if _empty_completion(doc) else "ok"
-            await self._record_call(
-                claims, spec, effort, usage, outcome, started, attempt[0]
-            )
+            await self._record_call(claims, spec, effort, usage, outcome, started, attempt[0])
             # The provider's bytes: its answer may hold what JSONResponse refuses to encode.
             return Response(response.content, media_type="application/json")
         return StreamingResponse(
-            self._relay(response, claims, spec, effort, started, attempt[0], input_chars, on_complete),
+            self._relay(
+                response, claims, spec, effort, started, attempt[0], input_chars, on_complete
+            ),
             media_type="text/event-stream",
             headers={"cache-control": "no-cache"},
         )
@@ -611,7 +614,18 @@ class Gateway:
         queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         gone = asyncio.Event()
         pump = self._spawn(
-            self._pump(response, queue, gone, claims, spec, effort, started, gpu_from, input_chars, on_complete),
+            self._pump(
+                response,
+                queue,
+                gone,
+                claims,
+                spec,
+                effort,
+                started,
+                gpu_from,
+                input_chars,
+                on_complete,
+            ),
             provider=True,
         )
         # Start the pump even if the client never starts reading the response.
@@ -685,13 +699,12 @@ class Gateway:
             # The cap's cancel lands here too.
             if outcome is None:
                 outcome = "client_closed" if gone.is_set() else "provider_error"
+
             async def finish() -> None:
                 try:
                     usage = usage_or_estimate(chat_usage(watch.usage), input_chars, watch.chars)
                     # In a thread: a slow store must not freeze other streams.
-                    await self._record_call(
-                        claims, spec, effort, usage, outcome, started, gpu_from
-                    )
+                    await self._record_call(claims, spec, effort, usage, outcome, started, gpu_from)
                 finally:
                     queue.put_nowait(None)
                     try:
@@ -786,7 +799,9 @@ class Gateway:
         self, *, drain_timeout: float = DRAIN_SECONDS, finalizer_timeout: float = 5.0
     ) -> None:
         """Close once; every caller observes the same complete/incomplete result."""
-        if any(not math.isfinite(value) or value < 0 for value in (drain_timeout, finalizer_timeout)):
+        if any(
+            not math.isfinite(value) or value < 0 for value in (drain_timeout, finalizer_timeout)
+        ):
             raise ValueError("close timeouts must be finite and nonnegative")
         if self._close_task is None:
             self._closing = True

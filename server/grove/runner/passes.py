@@ -24,22 +24,25 @@ from grove import clock
 from grove.demo_policy import is_demo_world
 from grove.ids import new_id
 from grove.models.config import load_catalog
-from grove.models.gateway_auth import IMPORT_PROFILE, mint as mint_gateway_token
+from grove.models.gateway_auth import IMPORT_PROFILE
+from grove.models.gateway_auth import mint as mint_gateway_token
 from grove.runner.tokens import AGENTS, check_runner_token_hash, mint_pass_token
 from grove.store.connection import Driver
 from grove.store.errors import ScopeError
 from grove.store.query import PlatformQuery, WorldQuery
 from grove.writer import Caller, fail_request, record_episode
+from grove.writer import runs as run_rows
+from grove.writer.clocks import parse_instant
+from grove.writer.forget_ledger import LedgerUnavailable, material_request_guard
 from grove.writer.import_queue import (
     PREFIX as IMPORT_PREFIX,
+)
+from grove.writer.import_queue import (
     claim_import_request,
     claim_interactive_request,
     has_due_import,
 )
-from grove.writer import runs as run_rows
-from grove.writer.clocks import parse_instant
-from grove.writer.forget_ledger import LedgerUnavailable, material_request_guard
-from grove.writer.requests import LEASE_SECONDS, _DUE
+from grove.writer.requests import _DUE, LEASE_SECONDS
 
 # Appendix C line 3269: ten changed items since the Connector's last pass, or a new contradiction.
 CONNECTOR_CHANGED_ITEMS = 10
@@ -174,7 +177,9 @@ def due_work(
                 driver, world_id, stale_margin_seconds=settings.lease_margin_seconds
             )
         if live is not None:
-            if live["agent"] != "learner" and _has_due_requests(query, now, allow_import=not demo_world):
+            if live["agent"] != "learner" and _has_due_requests(
+                query, now, allow_import=not demo_world
+            ):
                 due.append({"world_id": world_id, "agent": "learner", "preempt": live["id"]})
             continue
         if _has_due_requests(query, now, allow_import=not demo_world):
@@ -311,13 +316,15 @@ def start_pass(
         with material_request_guard(driver, world_id, due_at=clock.now(world_id)):
             pass
     import_due = (
-        agent == "learner" and not is_demo_world(driver, world_id)
+        agent == "learner"
+        and not is_demo_world(driver, world_id)
         and has_due_import(WorldQuery(driver, world_id), clock.now(world_id))
     )
     if import_due:
         # A threshold and watchdog, not a reservation or a hard total cost promise.
         settings = replace(
-            settings, token_cap=min(settings.token_cap, 64_000),
+            settings,
+            token_cap=min(settings.token_cap, 64_000),
             time_cap_seconds=min(settings.time_cap_seconds, 120),
         )
     catalog = load_catalog()
@@ -414,7 +421,9 @@ def start_pass(
             job=job,
             ttl_seconds=settings.token_ttl_seconds,
             token_cap=settings.token_cap,
-            profile=IMPORT_PROFILE if any(key.startswith(IMPORT_PREFIX) for key in input_ids) else None,
+            profile=IMPORT_PROFILE
+            if any(key.startswith(IMPORT_PREFIX) for key in input_ids)
+            else None,
         ),
         time_cap_seconds=settings.time_cap_seconds,
     )

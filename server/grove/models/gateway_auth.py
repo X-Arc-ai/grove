@@ -108,4 +108,6 @@ def verify(secret: bytes, catalog: Catalog, token: str) -> RunClaims:
         raise Unauthenticated("the run token's cap is malformed")
     if "profile" in claims and (profile != IMPORT_PROFILE or job != "update_pass"):
         raise Unauthenticated("the run token's profile is malformed")
-    return RunClaims(world_id=world_id, run_id=run_id, job=job, expires=expires, token_cap=cap, profile=profile)
+    return RunClaims(
+        world_id=world_id, run_id=run_id, job=job, expires=expires, token_cap=cap, profile=profile
+    )

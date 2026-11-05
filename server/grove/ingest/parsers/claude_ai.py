@@ -195,9 +195,15 @@ def _attachments(record: dict[str, Any]) -> list[object]:
         name, size, kind = (item.get(key) for key in ("file_name", "file_size", "file_type"))
         metadata = None
         if (
-            not ambiguous and isinstance(name, str) and name.strip() and len(name) <= 1024
-            and isinstance(kind, str) and kind.strip() and len(kind) <= 1024
-            and type(size) is int and 0 < size <= 2**63 - 1
+            not ambiguous
+            and isinstance(name, str)
+            and name.strip()
+            and len(name) <= 1024
+            and isinstance(kind, str)
+            and kind.strip()
+            and len(kind) <= 1024
+            and type(size) is int
+            and 0 < size <= 2**63 - 1
         ):
             metadata = (name, size, kind)
             matches[metadata].append((container, uuid))

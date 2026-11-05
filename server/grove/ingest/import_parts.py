@@ -43,9 +43,12 @@ def screen_import_parts(
     size = 2
     for message in messages:
         row = {
-            "key": message.key, "sender": message.sender, "text": message.text,
+            "key": message.key,
+            "sender": message.sender,
+            "text": message.text,
             "at": message.at.isoformat() if message.at is not None else None,
-            "speaker_kind": message.speaker_kind, "modality": message.modality,
+            "speaker_kind": message.speaker_kind,
+            "modality": message.modality,
         }
         length = len(json.dumps(row, sort_keys=True, ensure_ascii=False).encode("utf-8"))
         if group and (len(group) == MAX_PART_MESSAGES or size + 2 + length > MAX_PART_BYTES):

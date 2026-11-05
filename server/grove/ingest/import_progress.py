@@ -34,7 +34,11 @@ def _selected_host(driver, world_id, user_id, client_id):
     if client_id is None:
         raise ProgressUnavailable("muse_selection_required")
     try:
-        bounded = isinstance(client_id, str) and bool(client_id) and len(client_id.encode("utf-8")) <= 2048
+        bounded = (
+            isinstance(client_id, str)
+            and bool(client_id)
+            and len(client_id.encode("utf-8")) <= 2048
+        )
     except UnicodeError:
         bounded = False
     if not bounded:
@@ -52,7 +56,8 @@ def _selected_host(driver, world_id, user_id, client_id):
 
 def _generation(driver, world_id):
     rows = PlatformQuery(driver).read(
-        "MATCH (w:World {id: $id}) RETURN w.read_generation AS generation", id=world_id,
+        "MATCH (w:World {id: $id}) RETURN w.read_generation AS generation",
+        id=world_id,
     )
     if len(rows) != 1 or type(rows[0]["generation"]) is not int or rows[0]["generation"] < 0:
         raise ProgressUnavailable("progress_unavailable")
@@ -84,12 +89,16 @@ def _contributions(query, requests):
         return {}
     rows = query.read(
         "MATCH (e:ChangeEntry) WHERE e.request_id IN $ids "
-        "RETURN e.request_id AS request_id, e.commit_id AS commit_id, e.change_set_id AS change_set_id, "
-        "count(e) AS effects, "
-        "count(DISTINCT CASE WHEN e.entity_type = 'item' AND e.field = 'row' THEN e.entity_id END) AS items_created, "
-        "count(DISTINCT CASE WHEN e.entity_type = 'item' AND e.field <> 'row' THEN e.entity_id END) AS items_changed, "
-        "count(DISTINCT CASE WHEN e.entity_type = 'link' AND e.field = 'row' THEN e.entity_id END) AS links_created, "
-        "count(DISTINCT CASE WHEN e.entity_type = 'link' AND e.field <> 'row' THEN e.entity_id END) AS links_changed",
+        "RETURN e.request_id AS request_id, e.commit_id AS commit_id, "
+        "e.change_set_id AS change_set_id, count(e) AS effects, "
+        "count(DISTINCT CASE WHEN e.entity_type = 'item' AND e.field = 'row' "
+        "THEN e.entity_id END) AS items_created, "
+        "count(DISTINCT CASE WHEN e.entity_type = 'item' AND e.field <> 'row' "
+        "THEN e.entity_id END) AS items_changed, "
+        "count(DISTINCT CASE WHEN e.entity_type = 'link' AND e.field = 'row' "
+        "THEN e.entity_id END) AS links_created, "
+        "count(DISTINCT CASE WHEN e.entity_type = 'link' AND e.field <> 'row' "
+        "THEN e.entity_id END) AS links_changed",
         ids=list(saved),
     )
     return {
@@ -100,7 +109,9 @@ def _contributions(query, requests):
     }
 
 
-def source_state(source: dict, connector: dict, request: dict | None, now, *, effects=0, import_profile=True):
+def source_state(
+    source: dict, connector: dict, request: dict | None, now, *, effects=0, import_profile=True
+):
     """Return (state, safe reason, retry time); saved alone is never completion proof."""
     if import_profile:
         reason = input_status(source, connector, request)
@@ -132,11 +143,15 @@ def source_state(source: dict, connector: dict, request: dict | None, now, *, ef
         except (ValueError, TypeError):
             receipt = None
         if (
-            isinstance(receipt, dict) and receipt.get("state") == "saved"
+            isinstance(receipt, dict)
+            and receipt.get("state") == "saved"
             and {"commit_id", "change_set_id"} <= receipt.keys()
-            and receipt.get("request_id") == request["id"] and receipt.get("lines") == []
-            and receipt.get("commit_id") is None and request.get("commit_id") is None
-            and receipt.get("change_set_id") is None and request.get("change_set_id") is None
+            and receipt.get("request_id") == request["id"]
+            and receipt.get("lines") == []
+            and receipt.get("commit_id") is None
+            and request.get("commit_id") is None
+            and receipt.get("change_set_id") is None
+            and request.get("change_set_id") is None
         ):
             return "held_nothing", None, None
         return "unavailable", "completion_unavailable", None
@@ -147,7 +162,11 @@ def source_state(source: dict, connector: dict, request: dict | None, now, *, ef
         return "failed", _code(error), None
     if retry is not None and retry > now:
         return "retry_wait", _code(error) if error else None, _iso(retry)
-    if status == "applying" and request.get("lease_until") is not None and request["lease_until"] > now:
+    if (
+        status == "applying"
+        and request.get("lease_until") is not None
+        and request["lease_until"] > now
+    ):
         return "processing", None, None
     if status in {"queued", "applying", "failed"}:
         return "queued", _code(error) if error else None, _iso(retry)
@@ -172,8 +191,14 @@ def _aggregate(states: Counter) -> str:
     return "complete" if complete else "idle"
 
 
-def read_import_progress(driver, world_id: str, provider: str, *, after=None, limit=50, client_id=None, user_id=None) -> dict:
-    if provider not in IMPORT_PROVIDERS | {"muse"} or type(limit) is not int or not 1 <= limit <= 50:
+def read_import_progress(
+    driver, world_id: str, provider: str, *, after=None, limit=50, client_id=None, user_id=None
+) -> dict:
+    if (
+        provider not in IMPORT_PROVIDERS | {"muse"}
+        or type(limit) is not int
+        or not 1 <= limit <= 50
+    ):
         raise ValueError("invalid import progress selection")
     muse = provider == "muse"
     if not muse and client_id is not None:
@@ -189,13 +214,18 @@ def read_import_progress(driver, world_id: str, provider: str, *, after=None, li
         "AND r.source_id IS NOT NULL AND NOT EXISTS { "
         "MATCH (s:Source {id: r.source_id}) "
         "MATCH (c:Connector {id: s.connector_id, type: $type, provider: $provider}) } "
-        "RETURN r.id AS id LIMIT 1", caller=caller, provider=selected_provider, type=connector_type,
+        "RETURN r.id AS id LIMIT 1",
+        caller=caller,
+        provider=selected_provider,
+        type=connector_type,
     )
     if missing:
         raise ProgressUnavailable("source_unavailable")
     connectors = query.read(
         "MATCH (c:Connector {type: $type, provider: $provider}) "
-        "RETURN c.id AS id, c.type AS type, c.provider AS provider", provider=selected_provider, type=connector_type,
+        "RETURN c.id AS id, c.type AS type, c.provider AS provider",
+        provider=selected_provider,
+        type=connector_type,
     )
     by_connector = {row["id"]: row for row in connectors}
     cursor = ""
@@ -212,14 +242,18 @@ def read_import_progress(driver, world_id: str, provider: str, *, after=None, li
             "substring(s.content, 0, $cap) AS content, s.received_at AS received_at, "
             "substring(s.speakers, 0, $cap) AS speakers, s.parser_version AS parser_version, "
             "s.forget_state AS forget_state ORDER BY s.id LIMIT $limit",
-            connectors=list(by_connector), cursor=cursor,
-            cap=4 * MAX_PART_BYTES + 4096 if muse else MAX_PART_BYTES + 1, limit=READ_PAGE,
+            connectors=list(by_connector),
+            cursor=cursor,
+            cap=4 * MAX_PART_BYTES + 4096 if muse else MAX_PART_BYTES + 1,
+            limit=READ_PAGE,
         )
         if not rows:
             break
         requests = query.read(
-            "MATCH (r:Request {caller: $caller}) WHERE r.source_id IN $ids AND r.protocol IS NULL RETURN r",
-            caller=caller, ids=[source["id"] for source in rows],
+            "MATCH (r:Request {caller: $caller}) "
+            "WHERE r.source_id IN $ids AND r.protocol IS NULL RETURN r",
+            caller=caller,
+            ids=[source["id"] for source in rows],
         )
         by_request = {row["r"]["source_id"]: row["r"] for row in requests}
         if len(by_request) != len(requests):
@@ -241,7 +275,12 @@ def read_import_progress(driver, world_id: str, provider: str, *, after=None, li
             request_total += int(request is not None)
             contribution, effects = contributions.get(request_id, (_empty_graph(), 0))
             state, reason, retry = source_state(
-                source, by_connector[source["connector_id"]], request, now, effects=effects, import_profile=not muse,
+                source,
+                by_connector[source["connector_id"]],
+                request,
+                now,
+                effects=effects,
+                import_profile=not muse,
             )
             states[state] += 1
             if state in {"unavailable", "held"}:
@@ -253,23 +292,37 @@ def read_import_progress(driver, world_id: str, provider: str, *, after=None, li
                 if at is not None and (oldest is None or at < oldest):
                     oldest = at
             if (after is None or source["id"] > after) and len(selected) <= limit:
-                selected.append({
-                    "source_id": source["id"], "connector_id": source["connector_id"],
-                    "request_id": request_id if request else None, "state": state,
-                    "reason_code": reason, "retry_at": retry, "graph": contribution,
-                })
+                selected.append(
+                    {
+                        "source_id": source["id"],
+                        "connector_id": source["connector_id"],
+                        "request_id": request_id if request else None,
+                        "state": state,
+                        "reason_code": reason,
+                        "retry_at": retry,
+                        "graph": contribution,
+                    }
+                )
     if _generation(driver, world_id) != generation:
         raise ProgressUnavailable("progress_changed")
     if muse:
         # Revocation during the paged read invalidates the entire answer.
         _selected_host(driver, world_id, user_id, client_id)
     return {
-        "contract": "import_progress.v1", "provider": provider, "state": _aggregate(states),
-        "sources_total": source_total, "requests_total": request_total,
-        "queued_count": states["queued"], "processing_count": states["processing"],
-        "retry_wait_count": states["retry_wait"], "extracted_count": states["extracted"],
-        "held_nothing_count": states["held_nothing"], "held_count": states["held"],
-        "failed_count": states["failed"], "oldest_unprocessed_item": _iso(oldest),
-        "graph": graph, "sources": selected[:limit],
+        "contract": "import_progress.v1",
+        "provider": provider,
+        "state": _aggregate(states),
+        "sources_total": source_total,
+        "requests_total": request_total,
+        "queued_count": states["queued"],
+        "processing_count": states["processing"],
+        "retry_wait_count": states["retry_wait"],
+        "extracted_count": states["extracted"],
+        "held_nothing_count": states["held_nothing"],
+        "held_count": states["held"],
+        "failed_count": states["failed"],
+        "oldest_unprocessed_item": _iso(oldest),
+        "graph": graph,
+        "sources": selected[:limit],
         "next": selected[limit - 1]["source_id"] if len(selected) > limit else None,
     }
