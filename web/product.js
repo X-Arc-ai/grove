@@ -155,7 +155,7 @@
       return '<section data-import-provider="'+id+'"><strong>'+esc(PROVIDERS[id].label)+'</strong>'+(upload.error&&upload.result?'<p role="alert">'+esc(upload.error)+'</p>':'')+uploadResult(upload.result)+(moving?'<p>Read '+read+' of '+plural(value.requests_total,'part')+'.</p>':'')+(failed?'<p>Grove could not read the import status. Try again.</p>':'')+(note?'<p class="gp-import-note" role="status">'+esc(note)+'</p>':'')+counts+(upload.file||note?'<button class="gp-text" data-import-review="'+id+'">Review import</button> ':'')+'<button class="gp-text" data-import-refresh>Check status</button></section>';
     }).join('');
   }
-  function clearSourceState(){ui.appsOff={};ui.sourceNotice='';ui.sourceError='';ui.sourceBusy=null;if(api.setSourceItems)api.setSourceItems({});}
+  function clearSourceState(){ui.appsOff={};ui.sourceNotice='';ui.sourceError='';ui.sourceBusy=null;if(api.setSourceItems)api.setSourceItems({});if(refreshNote)refreshNote.hidden=true;}
   function coverageMessage(){return liveData.pending?'Check in progress':liveData.sources===null?'Source information could not be read. Try again.':'';}
   // Every ordinary world holds one connector with no provider: Grove's record of what a person
   // types in the views. It is no source, so Settings and Health never list it.
@@ -252,7 +252,7 @@
     if(api.bindAccount(body.account)){
       if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
       if(previousAccount&&previousAccount!==body.account)live.notifySessionChange();
-      resetImportProgress();liveUploads={};ui.reminderRequest=null;ui.reminderError='';clearSourceState();
+      resetImportProgress();liveUploads={};ui.reminderRequest=null;ui.reminderError='';ui.confirm=null;clearSourceState();
       ui.step=0;ui.guideStage=0;ui.editName=false;ui.nameDraft='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};ui.requestDrafts={};ui.uploadFile=null;ui.connecting={};ui.query='';ui.notice='';
       if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
     }
@@ -677,10 +677,12 @@
   // An answer that lands after the session changed belongs to nobody on this page.
   function trackSource(id,work,good,bad){
     var ticket=authEpoch;ui.sourceBusy=id;ui.sourceNotice='';ui.sourceError='';render(true);
+    // A failed logout moves the ticket too, and the session stands: the row reads its true state.
+    function stale(){if(ui.sourceBusy===id){ui.sourceBusy=null;refreshLiveData(true);render(true);}}
     work().then(function(res){
-      if(ticket!==authEpoch)return;
+      if(ticket!==authEpoch)return stale();
       if(res.ok)sourceDone(good);else sourceFailed(live.errorText(res.body,bad));
-    },function(error){if(ticket===authEpoch)sourceFailed(error&&error.message||bad);});
+    },function(error){if(ticket===authEpoch)sourceFailed(error&&error.message||bad);else stale();});
   }
   function removeLiveSource(id){
     var label=liveSourceName(id);
