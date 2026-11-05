@@ -31,6 +31,7 @@ from grove.api.errors import (
 )
 from grove.api.session import current_session
 from grove.api.views import check_json_type, read_json_body
+from grove.api.world_activity import world_write
 from grove.config import ConfigError
 from grove.demo_policy import is_demo_world
 from grove.ingest.connector import NotAnExport, Upload, providers
@@ -303,6 +304,12 @@ async def post_upload(request: Request) -> dict[str, Any]:
     """Parse, screen and store one export. Nothing is read from the body until the caller, the
     type, the provider and the screening settings have passed."""
     world_id = await _upload_world(request)
+    with world_write(world_id):
+        await _upload_world(request)
+        return await _take_upload(request, world_id)
+
+
+async def _take_upload(request: Request, world_id: str) -> dict[str, Any]:
     if await run_in_threadpool(is_demo_world, request.app.state.driver, world_id):
         raise ApiError(403, "scope_denied", "source imports are unavailable for this demo")
     _check_upload_type(request)

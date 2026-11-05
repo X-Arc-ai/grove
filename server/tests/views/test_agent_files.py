@@ -36,7 +36,9 @@ def client(tmp_path, monkeypatch):
     install_error_handlers(app)
     app.include_router(agent_files.router)
     app.state.driver = None
-    app.dependency_overrides[current_session] = lambda: ViewSession("user-one", "world-one", None)
+    session = ViewSession("user-one", "world-one", None)
+    app.dependency_overrides[current_session] = lambda: session
+    monkeypatch.setattr(agent_files, "current_session", lambda request: session)
     return TestClient(app)
 
 

@@ -18,11 +18,13 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from neo4j.exceptions import ServiceUnavailable
+from starlette.concurrency import run_in_threadpool
 
 from grove import clock
-from grove.api import pipedream
+from grove.api import agent_files, pipedream, uploads
 from grove.api.app import create_app
 from grove.api.config import ApiSettings
+from grove.api.world_activity import world_deleting, world_write
 from grove.ids import new_id
 from grove.store.catalogue import WORLD_LABELS
 from grove.store.connection import DATABASE
@@ -41,6 +43,8 @@ from grove.writer.restore import load_snapshot, restore, restore_loaded, take_sn
 from grove.writer.testing import plant_link, plant_node, purge_test_account, purge_test_world
 from grove.writer.tx import WorldWriter
 from tests.auth.conftest import Accounts, CaptureMailer
+from tests.ingest.conftest import make_screener
+from tests.ingest.test_upload_api import JSON_TYPE, UPLOAD_PATH, export_of
 from tests.writer.helpers import raw, world_dump
 from tests.writer.test_restore import purge_world_rows
 
@@ -752,11 +756,18 @@ def test_the_writer_refuses_a_world_of_another_owner(stack):
 # The ledger --------------------------------------------------------------------------------------
 
 
-def test_the_ledger_holds_ids_and_times_only_and_comes_first(stack, configured):
+def test_the_ledger_holds_ids_and_times_only_and_comes_before_the_files(
+    stack, configured, monkeypatch
+):
     alice = stack.person()
     stack.use_fake_for(alice)
-    stack.fake.fail = "GET"
-    assert alice.delete().status_code == 502
+
+    def no_files(world_id):
+        raise writer().FilesUnavailable("the files folder is not available")
+
+    with monkeypatch.context() as patched:
+        patched.setattr("grove.api.world_delete.remove_world_files", no_files)
+        assert alice.delete().status_code == 503
     (intent,) = ledger_rows(stack, alice.world)
     assert set(intent) == {
         "id",
@@ -773,7 +784,6 @@ def test_the_ledger_holds_ids_and_times_only_and_comes_first(stack, configured):
     erased = datetime.fromisoformat(intent["erased_at"])
     assert date.fromisoformat(intent["backups_clear_after"]) == erased.date() + timedelta(days=30)
 
-    stack.fake.fail = None
     response = alice.delete()
 
     assert response.status_code == 200
@@ -980,15 +990,32 @@ def test_a_dump_taken_while_the_delete_ran_is_erased_too(stack):
     assert world_gone(stack, alice.world)
 
 
-def test_an_intent_with_no_finish_still_erases_an_older_snapshot(stack, configured):
-    """As with D14: a person's approved intent is applied at recovery, finished or not."""
+def test_a_failed_pipedream_call_leaves_no_record_that_a_restore_would_act_on(stack, configured):
+    """The page says the Grove was not removed, and the person goes on using it."""
     alice = stack.person()
     stack.use_fake_for(alice)
     before = clock.now()
     stack.fake.fail = "GET"
     assert alice.delete().status_code == 502
 
+    assert (
+        writer().replay_world_erasures(stack.driver, stack.ledger, snapshot_taken_at=before) == []
+    )
+    assert sum(label_counts(stack.driver, alice.world).values()) > 0
+
+
+def test_an_intent_with_no_finish_still_erases_an_older_snapshot(stack, monkeypatch):
+    """As with D14: once removing began, the intent is applied at recovery, finished or not."""
+    alice = stack.person()
+    before = clock.now()
     module = writer()
+
+    def no_files(world_id):
+        raise module.FilesUnavailable("the files folder is not available")
+
+    monkeypatch.setattr("grove.api.world_delete.remove_world_files", no_files)
+    assert alice.delete().status_code == 503
+
     assert (
         module.replay_world_erasures(stack.driver, stack.ledger, snapshot_taken_at=clock.now())
         == []
@@ -998,6 +1025,115 @@ def test_an_intent_with_no_finish_still_erases_an_older_snapshot(stack, configur
         alice.world
     ]
     assert world_gone(stack, alice.world)
+
+
+def test_a_running_upload_holds_the_delete_back(stack, monkeypatch):
+    """The new world keeps the old id, so the upload would land the old chats in the new world."""
+    alice = stack.person()
+    other = stack.client()
+    other.cookies.set(SESSION_COOKIE, alice.cookie)
+    monkeypatch.setattr(uploads, "screener_for_upload", lambda world: make_screener())
+    real, seen = uploads._spool_body, {}
+
+    async def spool_then_delete(request, cap):
+        result = await real(request, cap)
+        seen["answer"] = await run_in_threadpool(
+            lambda: other.post(ROUTE, json=CONFIRM, headers=SAME_SITE)
+        )
+        return result
+
+    monkeypatch.setattr(uploads, "_spool_body", spool_then_delete)
+    taken = alice.client.post(UPLOAD_PATH, content=export_of(), headers=JSON_TYPE)
+    monkeypatch.setattr(uploads, "_spool_body", real)
+
+    assert taken.status_code == 200
+    assert seen["answer"].status_code == 409
+    assert seen["answer"].json()["error"]["retryable"] is True
+    assert alice.folder.exists()
+    held = "MATCH (s:Source) WHERE s.content CONTAINS 'greenhouse' RETURN s.id AS id"
+    assert WorldQuery(stack.driver, alice.world).read(held)
+
+    assert alice.delete().status_code == 200
+    assert not WorldQuery(stack.driver, alice.world).read(held)
+
+
+def test_nothing_of_the_old_world_starts_while_the_delete_runs(stack):
+    alice = stack.person()
+    with world_deleting(alice.world):
+        upload = alice.client.post(UPLOAD_PATH, content=export_of(), headers=JSON_TYPE)
+        note = alice.client.post(
+            agent_files.PREFIX + "/notes", json={"title": "Late", "body": "Late text"}
+        )
+        added = alice.client.post(
+            agent_files.PREFIX + "?name=late.txt",
+            content=b"late",
+            headers={"content-type": agent_files.FILE_TYPE},
+        )
+    assert [upload.status_code, note.status_code, added.status_code] == [409, 409, 409]
+    assert not (alice.folder / "late.txt").exists()
+
+
+def test_a_second_delete_waits_for_the_first(stack):
+    alice = stack.person()
+    with world_deleting(alice.world):
+        assert alice.delete().status_code == 409
+    assert alice.folder.exists()
+
+
+def test_a_guard_on_one_world_leaves_the_others_alone(stack):
+    alice, bob = stack.person(), stack.person()
+    with world_write(alice.world):
+        assert bob.delete().status_code == 200
+    with world_deleting(alice.world):
+        answer = bob.client.post(
+            agent_files.PREFIX + "/notes", json={"title": "Mine", "body": "My text"}
+        )
+    assert answer.status_code == 200
+
+
+@pytest.mark.parametrize("route", ["upload", "note", "file"])
+def test_a_request_that_lost_the_race_to_the_delete_stops(stack, monkeypatch, route):
+    """The caller was checked, then the delete ended, then the guard was free. It looks again."""
+    alice = stack.person()
+    module = uploads if route == "upload" else agent_files
+    real = module.world_write
+
+    def delete_finished_first(world_id):
+        write(stack.driver, "MATCH (s:Session {user_id: $id}) DETACH DELETE s", id=alice.user_id)
+        return real(world_id)
+
+    monkeypatch.setattr(module, "world_write", delete_finished_first)
+    if route == "upload":
+        answer = alice.client.post(UPLOAD_PATH, content=export_of(), headers=JSON_TYPE)
+    elif route == "note":
+        answer = alice.client.post(
+            agent_files.PREFIX + "/notes", json={"title": "Late", "body": "Late text"}
+        )
+    else:
+        answer = alice.client.post(
+            agent_files.PREFIX + "?name=late.txt",
+            content=b"late",
+            headers={"content-type": agent_files.FILE_TYPE},
+        )
+    assert answer.status_code == 401
+    assert not (alice.folder / "late.txt").exists()
+
+
+def test_a_ledger_failure_past_the_first_step_never_says_nothing_went(stack, monkeypatch):
+    """Files and rows may be gone by then, so the page must offer a retry."""
+    alice = stack.person()
+    real = writer().erase_world_rows
+
+    def ledger_down(driver, world_id, user_id, **kwargs):
+        raise LedgerUnavailable("the disk is full")
+
+    monkeypatch.setattr("grove.api.world_delete.erase_world_rows", ledger_down)
+    failed = alice.delete()
+    monkeypatch.setattr("grove.api.world_delete.erase_world_rows", real)
+
+    assert failed.status_code == 503
+    assert failed.json()["error"]["retryable"] is True
+    assert alice.delete().status_code == 200
 
 
 def test_the_replay_covers_every_erased_world_and_only_them(stack):

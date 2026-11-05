@@ -133,6 +133,12 @@ def _standing(rows: list[dict]) -> list[dict]:
     return kept
 
 
+def check_ledger(path: Path | str | None, world_id: str) -> None:
+    """Refuses a ledger that a later append would refuse: unsafe, unset or damaged."""
+    with locked_ledger(path) as root:
+        _read(root, world_id, missing=True)
+
+
 def read_ledger(path: Path | str, world_id: str) -> list[dict]:
     with locked_ledger(path) as root:
         return _standing(_read(root, world_id))

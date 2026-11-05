@@ -519,6 +519,7 @@ def check_delete(page, base, server, shots, label, expect, theme):
             {"code": "unavailable", "retryable": True},
             "connected app could not be reached",
         ),
+        (409, {"code": "busy", "retryable": True}, "import is still running"),
         (503, {"code": "unavailable", "retryable": True}, "may already be gone"),
         (
             403,
@@ -535,11 +536,20 @@ def check_delete(page, base, server, shots, label, expect, theme):
     server.delete_answer = None
     server.posts = []
 
+    other_tab = page.context.new_page()
+    other_tab.goto(base + "/")
+    other_tab.wait_for_function("GroveSimulation.getState().onboardingComplete")
+    other_tab.evaluate("GroveSimulation.saveGrowth({focus:'Kept in the other tab'})")
+
     submit.click()
     expect(
         page.get_by_role("heading", name="Start with your conversations")
     ).to_be_visible()
     assert server.posts == [("/v1/world/delete", {"confirm": "DELETE"})], server.posts
+    # The other tab heard the change: it cannot save the old world's state back.
+    other_tab.wait_for_function("!GroveSimulation.getState().onboardingComplete")
+    assert other_tab.evaluate("GroveSimulation.getState().growth.focus") == ""
+    other_tab.close()
     assert not page.evaluate("GroveSimulation.getState().onboardingComplete")
     # A reload stays in the new empty Grove: no stored progress brings the old map back.
     page.reload()

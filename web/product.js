@@ -710,7 +710,8 @@
     var error=res.body&&res.body.error||{};
     if(res.status===503&&error.retryable===false)return 'Delete is not available on this server yet. Nothing was removed.';
     if(res.status===503)return 'Part of your Grove may already be gone. Try again to finish.';
-    if(res.status===502)return 'A connected app could not be reached. Nothing was removed. Try again.';
+    if(res.status===502)return 'A connected app could not be reached. Your Grove was not removed. Try again.';
+    if(res.status===409)return 'An import is still running. Your Grove was not removed. Try again when it ends.';
     if(res.status===403&&error.code==='scope_denied')return 'This prepared demo account cannot be deleted.';
     return live.errorText(res.body,'Your Grove could not be deleted. Try again.');
   }
@@ -722,6 +723,8 @@
       if(!res.ok||!res.body||res.body.deleted!==true)return failed(deleteFailure(res));
       // The page starts over from the server: no memory of the old world stays in this browser.
       api.clearGrove();api.saveGrowth({focus:'',reading:'',avoid:'',confirm:true});
+      // Another tab of this browser holds the old world in memory, and could save it back.
+      live.notifySessionChange();
       window.location.assign(res.body.signed_in?live.PAGES.home:live.PAGES.login);
     },function(){if(ticket===authEpoch)failed('Grove could not be reached. Check your Grove before you try again.');else ui.deleteBusy=false;});
   }

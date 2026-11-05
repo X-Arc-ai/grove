@@ -1,8 +1,10 @@
 """Delete my Grove: the one place that removes a real world. docs/forget-api.md has the contract.
 
 The steps run in a fixed order and each one can run again, so a retry after a failure finishes
-the job: the ledger record, the person's Pipedream accounts (grove.api.world_delete calls them),
-the world's files, then the store. Sign-in then makes the new, empty world.
+the job: the person's Pipedream accounts (grove.api.world_delete calls them), the ledger record,
+the world's files, then the store. Sign-in then makes the new, empty world. The record comes after
+the accounts because a record decides a restore: an attempt that stopped at Pipedream removed
+nothing of the world, and the person goes on using it.
 
 The ledger record is the write-ahead intent, as in D14: a failed attempt can leave an extra
 record, never removed rows with no record. A second record, written when the rows are gone and
@@ -34,6 +36,7 @@ from grove.writer.forget_ledger import (
     WORLD_TARGET,
     LedgerUnavailable,
     append_intent,
+    check_ledger,
     locked_ledger,
     world_erasures,
 )
@@ -84,10 +87,10 @@ def _erasure_row(world_id: str, user_id: str, state: str) -> dict[str, Any]:
     }
 
 
-def begin_erasure(
+def check_erasure(
     driver: Driver, world_id: str, user_id: str, *, ledger_dir: Path | str | None = None
 ) -> str:
-    """Step 1. Refuses a demo world and any world this user does not own, then fsyncs the record.
+    """Refuses a demo world, any world this user does not own, and an unsafe ledger. Writes nothing.
     Returns the address hash that sign-in needs to make the new world."""
     rows = PlatformQuery(driver).read(DESIGNATION_QUERY, world_id=world_id)
     if (
@@ -97,9 +100,18 @@ def begin_erasure(
         or has_designation(rows[0])
     ):
         raise ErasureRefused("this account cannot delete this world")
+    check_ledger(ledger_dir, world_id)
+    return rows[0]["email_hash"]
+
+
+def begin_erasure(
+    driver: Driver, world_id: str, user_id: str, *, ledger_dir: Path | str | None = None
+) -> str:
+    """The record, fsynced before anything of the world goes. Returns what check_erasure returns."""
+    hashed = check_erasure(driver, world_id, user_id, ledger_dir=ledger_dir)
     with locked_ledger(ledger_dir) as root:
         append_intent(root, world_id, _erasure_row(world_id, user_id, ERASURE_STARTED), [])
-    return rows[0]["email_hash"]
+    return hashed
 
 
 def remove_world_files(world_id: str) -> None:

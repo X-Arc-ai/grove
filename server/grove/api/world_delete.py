@@ -15,6 +15,7 @@ from grove.api.errors import ApiError, invalid_arguments, store_unavailable, una
 from grove.api.forget import _origin
 from grove.api.session import current_session
 from grove.api.views import read_json_body
+from grove.api.world_activity import world_deleting
 from grove.views.session import ViewSession
 from grove.writer.accounts import METHODS
 from grove.writer.forget_ledger import LedgerUnavailable
@@ -22,6 +23,7 @@ from grove.writer.world_delete import (
     ErasureRefused,
     FilesUnavailable,
     begin_erasure,
+    check_erasure,
     erase_world_rows,
     remove_world_files,
 )
@@ -55,18 +57,24 @@ async def delete_world(request: Request, client: pipedream.Http) -> JSONResponse
         raise invalid_arguments("type DELETE to confirm", "confirm")
     driver = request.app.state.driver
     world_id, user_id = session.world_id, session.user_id
+    # Past the check something may already be gone, so a ledger failure must not say otherwise.
+    checked = False
     try:
-        hashed = await run_in_threadpool(begin_erasure, driver, world_id, user_id)
-        await _remove_accounts(client, session)
-        await run_in_threadpool(remove_world_files, world_id)
-        clear_after = await run_in_threadpool(erase_world_rows, driver, world_id, user_id)
-        # Sessions are gone by now. With no answer here the next sign-in makes the same new world.
-        method = session.method if session.method in METHODS else "email"
-        token = await run_in_threadpool(_sign_in, request, hashed, method=method)
+        with world_deleting(world_id):
+            hashed = await run_in_threadpool(check_erasure, driver, world_id, user_id)
+            checked = True
+            # No intent yet: a failure here removed nothing of the world, and the person keeps it.
+            await _remove_accounts(client, session)
+            await run_in_threadpool(begin_erasure, driver, world_id, user_id)
+            await run_in_threadpool(remove_world_files, world_id)
+            clear_after = await run_in_threadpool(erase_world_rows, driver, world_id, user_id)
+            # Sessions are gone by now. With no answer the next sign-in makes the same new world.
+            method = session.method if session.method in METHODS else "email"
+            token = await run_in_threadpool(_sign_in, request, hashed, method=method)
     except ErasureRefused:
         raise ApiError(403, "scope_denied", "This account cannot delete its Grove.") from None
     except LedgerUnavailable:
-        raise ApiError(503, "unavailable", "Delete is not available.", retryable=False) from None
+        raise ApiError(503, "unavailable", "Delete is not available.", retryable=checked) from None
     except FilesUnavailable:
         raise unavailable("Your files could not be removed. Try again.") from None
     except _STORE_FAILURES:

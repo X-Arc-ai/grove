@@ -23,6 +23,7 @@ from grove import clock
 from grove.api.errors import ApiError, invalid_arguments, unauthenticated, unavailable
 from grove.api.session import current_session
 from grove.api.views import read_json_body
+from grove.api.world_activity import world_write
 from grove.demo_policy import is_demo_world
 from grove.instruction_names import TEMP_PREFIX, is_instruction_name
 from grove.views.session import ViewSession
@@ -197,6 +198,12 @@ async def list_files(request: Request, session: Session) -> dict[str, Any]:
 
 @router.post("")
 async def add_file(request: Request, session: Session) -> dict[str, Any]:
+    with world_write(session.world_id):
+        await run_in_threadpool(current_session, request)
+        return await _take_file(request, session)
+
+
+async def _take_file(request: Request, session: ViewSession) -> dict[str, Any]:
     await _eligible(request, session)
     _no_query(request, frozenset({"name"}))
     name = _allowed(clean_name(request.query_params.get("name", "")))
@@ -228,6 +235,12 @@ async def add_file(request: Request, session: Session) -> dict[str, Any]:
 
 @router.post("/notes")
 async def add_note(request: Request, session: Session) -> dict[str, Any]:
+    with world_write(session.world_id):
+        await run_in_threadpool(current_session, request)
+        return await _take_note(request, session)
+
+
+async def _take_note(request: Request, session: ViewSession) -> dict[str, Any]:
     await _eligible(request, session)
     _no_query(request)
     body = await read_json_body(request, MAX_NOTE_BYTES)

@@ -40,15 +40,23 @@ The answer sets a new `grove_session` cookie, uses `Cache-Control: no-store`, an
 | 401 | `unauthenticated` | No valid session | Nothing |
 | 403 | `scope_denied` | Any Authorization header, or a demo world | Nothing |
 | 403 | `forbidden_origin` | A foreign `Origin`, or `Sec-Fetch-Site: cross-site` | Nothing |
-| 502 | `unavailable`, retryable | A Pipedream call failed | Nothing of the world |
-| 503 | `unavailable`, not retryable | `GROVE_FORGET_LEDGER_DIR` is unset or unsafe | Nothing |
-| 503 | `unavailable`, retryable | The files or the store failed | Perhaps a part: send it again |
+| 409 | `busy`, retryable | An upload or a file add of this world is running | Nothing |
+| 502 | `unavailable`, retryable | A Pipedream call failed. No ledger record is written yet | Nothing of the world. Some connected apps may be gone |
+| 503 | `unavailable`, not retryable | `GROVE_FORGET_LEDGER_DIR` is unset or unsafe, seen before any step | Nothing |
+| 503 | `unavailable`, retryable | The ledger, the files or the store failed after the first step | Perhaps a part: send it again |
 
 The steps run in this order, and each one can run again, so a retry finishes the job:
 
-1. **Ledger.** An fsynced `started` row goes to the forget ledger, with ids and times only.
-2. **Pipedream.** Every account of this person goes, for any app, with the calls of disconnect,
-   and the list is read again. With no Pipedream settings this step makes no call.
+A delete refuses while an upload or a file add of this world runs, and none starts while it runs.
+The new world keeps the old id, so such a request would land the old content in the new world. The
+guard is in the memory of the one API process (`grove.api.world_activity`). A second API process
+needs a store-level guard first.
+
+1. **Pipedream.** Every account of this person goes, for any app, with the calls of disconnect,
+   and the list is read again. With no Pipedream settings this step makes no call. This step comes
+   before the ledger row, because a restore acts on that row: an attempt that stops here removed
+   nothing of the world, and the person goes on using it.
+2. **Ledger.** An fsynced `started` row goes to the forget ledger, with ids and times only.
 3. **Files.** `GROVE_AGENT_FILES_DIR/<world id>` goes. A link inside it is unlinked and its target
    stays. With the variable unset this step is skipped. A root that is set and absent is a 503.
 4. **Store.** The world's lock is held from the first batch to the commit, so no pass writes
