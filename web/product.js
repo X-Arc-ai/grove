@@ -712,13 +712,14 @@
     var ticket=authEpoch;ui.sourceNotice='';ui.sourceError='';
     window.GrovePipedream.connect(provider).then(function(){if(ticket===authEpoch){ui.sourceNotice='Finish the connection in the new tab.';render(true);}},function(error){if(ticket===authEpoch)sourceFailed(error.message);});
   }
-  // Each answer of POST /v1/world/delete says what is left. A 401 goes to the sign-in card by itself.
+  // Each sentence speaks for this attempt only: an earlier attempt may have removed a part, and a
+  // retry cannot know. Only the 200 says the Grove is gone. A 401 goes to the sign-in card by itself.
   function deleteFailure(res){
     var error=res.body&&res.body.error||{};
-    if(res.status===503&&error.retryable===false)return 'Delete is not available on this server yet. Nothing was removed.';
+    if(res.status===503&&error.retryable===false)return 'Delete is not available on this server yet, so this delete did not start.';
     if(res.status===503)return 'Part of your Grove may already be gone. Try again to finish.';
-    if(res.status===502)return 'A connected app could not be reached. Your Grove was not removed. Try again.';
-    if(res.status===409)return 'An import is still running. Your Grove was not removed. Try again when it ends.';
+    if(res.status===502)return 'A connected app could not be reached, so the delete did not finish. Try again.';
+    if(res.status===409)return 'An import or another delete is still running, so this delete did not start. Try again when it ends.';
     if(res.status===403&&error.code==='scope_denied')return 'This prepared demo account cannot be deleted.';
     return live.errorText(res.body,'Your Grove could not be deleted. Try again.');
   }

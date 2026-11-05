@@ -47,6 +47,8 @@ The answer sets a new `grove_session` cookie, uses `Cache-Control: no-store`, an
 
 The steps run in this order, and each one can run again, so a retry finishes the job:
 
+The "What was removed" column holds for a first attempt. After a 503 retryable, a part of the world may be gone and a `started` row stands, so a later 409, 502 or 503 says nothing about what is left. Only a 200 ends the delete. The page therefore speaks for the attempt alone and never says that the Grove is intact.
+
 A delete refuses while an upload or a file add of this world runs, and none starts while it runs.
 The new world keeps the old id, so such a request would land the old content in the new world. The
 guard is in the memory of the one API process (`grove.api.world_activity`). A second API process

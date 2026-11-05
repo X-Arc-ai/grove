@@ -511,15 +511,16 @@ def check_delete(page, base, server, shots, label, expect, theme):
     assert not server.posts, server.posts
     shot(page, shots, label, "delete")
 
-    # Each refusal says what is left, and the dialog stays open for a retry.
+    # Each refusal speaks for this attempt, and the dialog stays open for a retry. None may say that
+    # the Grove is intact: an earlier attempt can have removed a part.
     answers = (
-        (503, {"code": "unavailable", "retryable": False}, "Nothing was removed"),
+        (503, {"code": "unavailable", "retryable": False}, "this delete did not start"),
         (
             502,
             {"code": "unavailable", "retryable": True},
             "connected app could not be reached",
         ),
-        (409, {"code": "busy", "retryable": True}, "import is still running"),
+        (409, {"code": "busy", "retryable": True}, "another delete is still running"),
         (503, {"code": "unavailable", "retryable": True}, "may already be gone"),
         (
             403,
@@ -533,6 +534,8 @@ def check_delete(page, base, server, shots, label, expect, theme):
         expect(submit).to_be_enabled()
         submit.click()
         expect(dialog).to_contain_text(words)
+        expect(dialog).not_to_contain_text("was not removed")
+        expect(dialog).not_to_contain_text("Nothing was removed")
     server.delete_answer = None
     server.posts = []
 
