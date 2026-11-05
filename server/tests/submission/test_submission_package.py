@@ -23,7 +23,9 @@ DOCUMENTS = (
     "docs/architecture.md",
     "docs/submission-status.md",
 )
-RELEASE_DOCUMENTS = tuple(name for name in DOCUMENTS if name not in ("README.md", "CONTRIBUTING.md"))
+RELEASE_DOCUMENTS = tuple(
+    name for name in DOCUMENTS if name not in ("README.md", "CONTRIBUTING.md")
+)
 
 
 @pytest.mark.parametrize("name", RELEASE_DOCUMENTS)
