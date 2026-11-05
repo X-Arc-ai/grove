@@ -478,6 +478,14 @@ def test_a_refused_world_folder_leaves_a_line_with_a_count_and_no_name(tmp_path,
     assert "Context" not in out
 
 
+def test_a_refused_world_folder_counts_every_refused_name(tmp_path, capsys):
+    settings, grant, work, folder = _world(tmp_path)
+    (folder / "notes" / "Context.md").write_text("a note", encoding="utf-8")
+    (folder / "tsconfig.json").write_text("{}", encoding="utf-8")
+    assert pass_folder(settings, grant, work) == work
+    assert "refused=2" in capsys.readouterr().out
+
+
 def test_a_used_world_folder_leaves_no_refusal_line(tmp_path, capsys):
     settings, grant, work, folder = _world(tmp_path)
     (folder / "plan.txt").write_text("added file text", encoding="utf-8")
@@ -531,6 +539,9 @@ def test_an_instruction_name_on_disk_from_an_earlier_build_is_caught(tmp_path, n
         "my-AGENTS.md",
         "opencode.json.md",
         "package.json.md",
+        "head.txt",
+        "heads",
+        "commondir.txt",
         ".upload-0123abcd",
     ],
 )
