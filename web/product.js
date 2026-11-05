@@ -14,6 +14,8 @@
     google: 'Google sign-in did not finish. Try again.',
     tooMany: 'Please wait a few minutes before you request another code.'
   };
+  // The life of a code: CODE_LIFETIME in server/grove/api/auth.py.
+  var EMAIL_CARD_KEY = 'grove-email-code', EMAIL_CARD_MS = 600000;
   var icons = window.GroveIcons || {};
   var ui = { step: api.getState().onboardingStep || 0, panel: null, guide: null, guideStep:0, tour: 0, tourNode: null, error: '', host: null, hostStage: 0 };
   var liveUploads = {};
@@ -142,15 +144,31 @@
     ui.error='';ui.email=email;ui.code='';
     var epoch=++authEpoch;
     if(!live){ui.authStage='code';render(true);return Promise.resolve();}
-    return live.emailStart(email).then(function(res){if(epoch!==authEpoch)return;if(res.ok){ui.authStage='code';}else{ui.error=res.status===429?SIGNIN_COPY.tooMany:SIGNIN_COPY.email;}render(true);},function(){if(epoch!==authEpoch)return;ui.error=SIGNIN_COPY.offline;render(true);});
+    dropEmailCard();
+    return live.emailStart(email).then(function(res){if(epoch!==authEpoch)return;if(res.ok){ui.authStage='code';holdEmailCard(email);}else{ui.error=res.status===429?SIGNIN_COPY.tooMany:SIGNIN_COPY.email;}render(true);},function(){if(epoch!==authEpoch)return;ui.error=SIGNIN_COPY.offline;render(true);});
   }
   function verifyEmail(code){
     code=String(code||'').trim();
     var epoch=++authEpoch;
     if(!live){if(/^[0-9]{6}$/.test(code))finishSignIn('email');else{ui.error=SIGNIN_COPY.code;render(true);}return Promise.resolve();}
     // A sign-in that the consent page asked for goes back to it (live.js checks the next).
-    return live.emailVerify(ui.email,code).then(function(res){if(epoch!==authEpoch||res.stale)return;if(res.ok){if(!live.returnToNext())finishSignIn('email',res.body);}else{ui.error=SIGNIN_COPY.code;render(true);}},function(){if(epoch!==authEpoch)return;ui.error=SIGNIN_COPY.offline;render(true);});
+    return live.emailVerify(ui.email,code).then(function(res){if(epoch!==authEpoch||res.stale)return;if(res.ok){dropEmailCard();if(!live.returnToNext())finishSignIn('email',res.body);}else{ui.error=SIGNIN_COPY.code;render(true);}},function(){if(epoch!==authEpoch)return;ui.error=SIGNIN_COPY.offline;render(true);});
   }
+  // The code card outlives a reload or a trip to another page in this tab: the typed address waits
+  // in this tab's session storage for the life of a code. The code itself is never stored.
+  function holdEmailCard(email){try{window.sessionStorage.setItem(EMAIL_CARD_KEY,JSON.stringify({email:email,sent:Date.now()}));}catch(_){/* a blocked store: the card lasts as long as the page */}}
+  function dropEmailCard(){try{window.sessionStorage.removeItem(EMAIL_CARD_KEY);}catch(_){/* a blocked store holds nothing */}}
+  function heldEmailCard(){
+    try{
+      var held=JSON.parse(window.sessionStorage.getItem(EMAIL_CARD_KEY));
+      var age=held?Date.now()-held.sent:NaN;
+      if(held&&typeof held.email==='string'&&held.email&&age>=0&&age<EMAIL_CARD_MS)return held.email;
+    }catch(_){/* a value that cannot be read holds no card */}
+    dropEmailCard();
+    return '';
+  }
+  // Where an anonymous check ends: the code card when this tab holds one, else the sign-in card.
+  function showCard(){var held=heldEmailCard();if(held)ui.email=held;ui.authStage=held?'code':'signin';}
   // Live mode, on load, the way back from a Google sign-in that did not finish: the query leaves the
   // address, and the error waits for the card (a session check that succeeds drops it).
   function readSigninError(){
@@ -168,7 +186,7 @@
   // shows. With no local sign-in the card shows it, and no graph of an unknown session stays behind.
   function sessionUnknown(){
     if(api.getState().auth)ui.offline=true;
-    else if(ui.authStage==='checking'){endSession();ui.authStage='signin';ui.error=SIGNIN_COPY.offline;}
+    else if(ui.authStage==='checking'){endSession();showCard();ui.error=SIGNIN_COPY.offline;}
     else return;
     render(true);
   }
@@ -177,6 +195,7 @@
     return live.session().then(function(res){
       if(epoch!==authEpoch||res.stale)return;
       if(res.ok&&res.body&&res.body.signed_in){
+        dropEmailCard();
         // Signed in already on a sign-in page the consent page sent here: straight back to it.
         if(live.returnToNext())return;
         var resumed=arrive(res.body),waiting=ui.authStage==='checking';
@@ -185,9 +204,13 @@
         return;
       }
       if(res.status!==401){sessionUnknown();return;}
+      // An expected anonymous focus check must not reset the email card or cancel its request.
+      // Initial checks and any locally known account still take the full expiry cleanup below.
+      var state=api.getState();
+      if(!state.auth&&!state.account&&!liveSessionReady&&(ui.authStage==='signin'||ui.authStage==='code'))return;
       if(api.getState().auth)live.notifySessionChange();
       endSession();
-      ui.authStage='signin';showSigninError();render(true);
+      showCard();showSigninError();render(true);
     },sessionUnknown);
   }
   // Live mode, the session is over (a confirmed logout, or a 401 from a live call): the local
@@ -204,7 +227,7 @@
     ui.noteDraft={title:'',body:''};ui.requestDrafts={};ui.uploadFile=null;ui.connecting={};ui.query='';ui.notice='';
     if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
     if(!live.isAuthPage())setAddress(live.PAGES.login);
-    if(onCard){if(ui.authStage==='checking')ui.authStage='signin';showSigninError();render(true);return;}
+    if(onCard){if(ui.authStage==='checking')showCard();showSigninError();render(true);return;}
     endTour();ui.panel=null;ui.guide=null;ui.confirm=null;ui.host=null;ui.authStage='signin';ui.error='';ui.email='';ui.code='';ui.logoutError='';ui.offline=false;showSigninError();
     render(true);
   }
@@ -599,8 +622,8 @@
   function handle(action){
     if(action==='refresh-live-data'){refreshLiveData(true);if(ui.panel==='health'&&live&&window.GroveCare&&window.GroveCare.refresh)window.GroveCare.refresh();render(true);}
     else if(action==='start')move(function(){setStep(1);});
-    else if(action==='auth-close'){authEpoch++;ui.authStage=null;render(true);}
-    else if(action==='auth-back'){authEpoch++;ui.error='';ui.authStage='signin';ui.code='';render(true);}
+    else if(action==='auth-close'){authEpoch++;dropEmailCard();ui.authStage=null;render(true);}
+    else if(action==='auth-back'){authEpoch++;dropEmailCard();ui.error='';ui.authStage='signin';ui.code='';render(true);}
     else if(action==='edit-name'){ui.editName=true;ui.nameDraft=api.getState().name||(live?'':'Anas');render(true);focus('#gp-name');}
     else if(action==='cancel-name'){ui.editName=false;render(true);}
     else if(action==='request-prev'||action==='request-next'){var items=api.getState().requests.filter(function(r){return r.status==='open';}),i=items.findIndex(function(r){return r.id===ui.requestId;});var next=Math.max(0,Math.min(items.length-1,i+(action==='request-prev'?-1:1)));if(items[next])ui.requestId=items[next].id;render(true);}
