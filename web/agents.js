@@ -6,11 +6,14 @@
 (function () {
   'use strict';
 
-  // Live accounts show stored run metadata only. The display never starts work.
+  // Live accounts show stored records only. The display never starts work, and nothing here moves
+  // the camera or fills a bar without a record behind it.
   if (window.GroveSimulation && window.GroveSimulation.isLive && window.GroveSimulation.isLive()) {
     var liveApi=window.GroveLive, liveState=window.GroveSimulation;
     var livePanel=document.createElement('aside'), liveToggle=document.getElementById('agents-toggle');
     var liveOwner=null, liveRequest=0, liveStatus='unavailable', liveSnapshot=null;
+    var liveRecord=null, recordStatus='idle', renderedPanel=null, recentOpen=false;
+    var followed=null, followHead=null, followTrail=[], followTimer=null, followBusy=false;
     var workerNames={learner:'Learner',curator:'Curator',connector:'Connector',unknown:'Unknown worker'};
     var activityText={recorded_running:'Run recorded as active',stale:'Last run needs a status update',idle:'No active run recorded',unknown:'Activity is unknown'};
     var policyText={ordinary_world_policy:'Allowed for this account',demo_learner_only:'Demo requests only',demo_autonomous_disabled:'Off in this demo'};
@@ -46,7 +49,67 @@
       })&&body.recent_runs.every(function(row){return keys(row,['agent','outcome','started_at','finished_at'])&&member(row.agent,workerNames)&&member(row.outcome,outcomeText)&&
         (row.started_at===null||timestamp(row.started_at))&&(row.finished_at===null||timestamp(row.finished_at));});
     }
+    function runFields(row){return member(row.outcome,outcomeText)&&(row.started_at===null||timestamp(row.started_at))&&(row.finished_at===null||timestamp(row.finished_at));}
+    function validTrail(row){
+      return keys(row,['outcome','started_at','finished_at','changed_items','item_ids','has_more'])&&runFields(row)&&count(row.changed_items)&&typeof row.has_more==='boolean'&&
+        Array.isArray(row.item_ids)&&row.item_ids.length>=1&&row.item_ids.length<=50&&row.changed_items>=row.item_ids.length&&
+        row.item_ids.every(function(id,i){return typeof id==='string'&&id.length>=1&&id.length<=200&&row.item_ids.indexOf(id)===i;});
+    }
+    function validFreshness(row){
+      return keys(row,['total_items','dated_items','window_days','fresh_items','newest_change_at','oldest_change_at'])&&row.window_days===30&&
+        count(row.total_items)&&count(row.dated_items)&&count(row.fresh_items)&&row.fresh_items<=row.dated_items&&row.dated_items<=row.total_items&&
+        (row.newest_change_at===null||timestamp(row.newest_change_at))&&(row.oldest_change_at===null||timestamp(row.oldest_change_at))&&
+        (row.dated_items===0)===(row.newest_change_at===null)&&(row.dated_items===0)===(row.oldest_change_at===null);
+    }
+    function validRecord(body){
+      if(!keys(body,['schema','observed_at','observation_kind','agents','freshness'])||body.schema!=='grove.worker-record.v1'||body.observation_kind!=='stored_change_entries'||
+        !timestamp(body.observed_at)||!Array.isArray(body.agents)||body.agents.length!==3||!validFreshness(body.freshness)||JSON.stringify(body).length>32768)return false;
+      var order=['learner','curator','connector'];
+      return body.agents.every(function(row,i){
+        return keys(row,['agent','last_run','trail'])&&row.agent===order[i]&&
+          (row.last_run===null||keys(row.last_run,['outcome','started_at','finished_at'])&&runFields(row.last_run))&&
+          (row.trail===null||row.last_run!==null&&validTrail(row.trail));
+      });
+    }
     function displayTime(value){return value===null?'—':new Date(value).toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'});}
+    function itemWords(total){return total+(total===1?' item':' items');}
+    function recordRow(agent){return liveRecord&&liveRecord.agents.filter(function(row){return row.agent===agent;})[0]||null;}
+    function feedState(agent){var row=liveSnapshot&&liveSnapshot.agents.filter(function(entry){return entry.agent===agent;})[0];return row?row.activity.state:null;}
+    // Record ids that are on the map now, as the map names them: the account's own item is grove-self there.
+    function onMap(ids){
+      var view=window.GroveView,graph=view&&view.graph(),shown=Object.create(null);
+      if(!graph)return [];
+      graph.graphData().nodes.forEach(function(node){var real=liveState.realId(node.id);if(real!==null)shown[real]=node.id;});
+      return ids.filter(function(id){return id in shown;}).map(function(id){return shown[id];});
+    }
+    function followable(agent){var row=recordRow(agent);return !!(row&&row.trail)&&onMap(row.trail.item_ids).length>0;}
+    function recordWords(agent){
+      if(recordStatus==='loading')return 'Checking recorded work…';
+      var row=recordRow(agent);
+      if(!row)return 'Recorded work could not be read.';
+      if(!row.last_run)return 'No run recorded yet. Nothing to follow.';
+      if(!row.trail)return 'Last run recorded no item changes. Nothing to follow.';
+      var moment=row.trail.finished_at||row.trail.started_at;
+      return 'Last recorded change: '+itemWords(row.trail.changed_items)+(moment?', '+displayTime(moment):'')+'.'+(followable(agent)?'':' Those items are not on your map.');
+    }
+    function freshnessNow(){
+      if(recordStatus==='loading')return {percent:null,text:'Checking freshness…'};
+      if(recordStatus==='idle')return {percent:null,text:'Freshness has not been read yet.'};
+      if(!liveRecord)return {percent:null,text:'Freshness could not be read.'};
+      var row=liveRecord.freshness,total=row.total_items,undated=total-row.dated_items;
+      if(!total)return {percent:null,text:'No items recorded yet, so freshness has no value.'};
+      return {percent:Math.round(row.fresh_items/total*100),text:row.fresh_items+' of '+itemWords(total)+' updated in the last 30 days.'+
+        (row.newest_change_at?' Latest update '+displayTime(row.newest_change_at)+'.':'')+
+        (undated?' '+(undated===1?'1 item has':undated+' items have')+' no update time.':'')};
+    }
+    function freshnessPanel(){
+      var fresh=freshnessNow(),bar=fresh.percent===null?'':'<div class="gp-freshness-track" role="img" aria-label="'+fresh.percent+'% of items updated in the last 30 days"><i style="width:'+fresh.percent+'%"></i></div><div class="hood-freshness-labels" aria-hidden="true"><span>Fresh</span><span>Older than 30 days</span></div>';
+      return '<section class="hood-live-freshness" data-worker-freshness><h3>Grove freshness</h3>'+bar+'<p>'+safeText(fresh.text)+'</p></section>';
+    }
+    function followButton(agent){
+      var on=followed===agent,word=on?'Following':'Follow';
+      return '<button type="button" data-worker-follow="'+agent+'" aria-pressed="'+on+'" aria-label="'+word+' '+workerNames[agent]+'"'+(on||followable(agent)?'':' disabled')+'>'+word+'</button>';
+    }
     function summaries(){
       var values={};
       ['learner','curator','connector'].forEach(function(name,i){
@@ -57,52 +120,166 @@
     }
     function renderLive(){
       liveToggle.setAttribute('aria-expanded',String(liveToggle.checked));
+      var opened=livePanel.querySelector('.hood-live-recent');
+      if(opened)recentOpen=!!opened.open;
       var buttonText=liveStatus==='loading'?'Refresh again':liveStatus==='error'?'Retry':'Refresh';
-      var content='<div class="hood-panel-heading"><h2>Your Grove workers</h2><button type="button" class="hood-live-refresh" data-worker-refresh>'+buttonText+'</button><button type="button" class="hood-live-close" data-worker-close aria-label="Close worker activity">×</button></div>';
+      var content='<div class="hood-panel-heading"><h2>Your Grove workers</h2>'+(followed?'<button type="button" class="hood-live-refresh" data-worker-overview>Overview</button>':'')+'<button type="button" class="hood-live-refresh" data-worker-refresh>'+buttonText+'</button><button type="button" class="hood-live-close" data-worker-close aria-label="Close worker activity">×</button></div>';
       content+='<p class="hood-live-intro">Recorded worker activity.</p>';
       if(liveStatus==='loading')content+='<p role="status" class="hood-live-message">Checking worker status…</p>';
       else if(liveStatus==='error'||!liveSnapshot)content+='<p role="status" class="hood-live-message">Worker status could not be read. Try again.</p>';
       else{
         content+='<p class="hood-live-observed" role="status">Last checked '+safeText(displayTime(liveSnapshot.observed_at))+'</p>';
-        content+=liveSnapshot.agents.map(function(row){return '<section class="hood-live-worker" data-worker="'+row.agent+'"><div class="hood-live-worker-head"><span class="hood-score-dot gp-worker-'+row.agent+'" aria-hidden="true"></span><h3>'+workerNames[row.agent]+'</h3><button type="button" disabled>Follow</button></div><p class="hood-live-activity">'+activityText[row.activity.state]+'</p></section>';}).join('');
-        content+='<details class="hood-live-recent"><summary>Recent activity'+(liveSnapshot.recent_has_more?' · latest 20':'')+'</summary>';
+        content+=liveSnapshot.agents.map(function(row){return '<section class="hood-live-worker" data-worker="'+row.agent+'"><div class="hood-live-worker-head"><span class="hood-score-dot gp-worker-'+row.agent+'" aria-hidden="true"></span><h3>'+workerNames[row.agent]+'</h3>'+followButton(row.agent)+'</div><p class="hood-live-activity">'+activityText[row.activity.state]+'</p><p class="hood-live-record">'+safeText(recordWords(row.agent))+'</p></section>';}).join('');
+        content+='<details class="hood-live-recent"'+(recentOpen?' open':'')+'><summary>Recent activity'+(liveSnapshot.recent_has_more?' · latest 20':'')+'</summary>';
         content+=liveSnapshot.recent_runs.length?'<ol>'+liveSnapshot.recent_runs.map(function(row){return '<li><strong>'+workerNames[row.agent]+' · '+outcomeText[row.outcome]+'</strong><span>Started '+safeText(displayTime(row.started_at))+'</span><span>'+(row.finished_at===null?'No finish time recorded':'Finished '+safeText(displayTime(row.finished_at)))+'</span></li>';}).join('')+'</ol>':'<p>No recent activity recorded.</p>';
         content+='</details>';
       }
-      var focused=livePanel.contains(document.activeElement)&&document.activeElement.hasAttribute('data-worker-refresh');
-      livePanel.innerHTML=content;
-      livePanel.querySelector('[data-worker-refresh]').addEventListener('click',refreshWorkers);
-      livePanel.querySelector('[data-worker-close]').addEventListener('click',function(){liveToggle.checked=false;liveToggle.dispatchEvent(new Event('change',{bubbles:true}));liveToggle.focus();});
-      if(focused)livePanel.querySelector('[data-worker-refresh]').focus();
+      content+=freshnessPanel();
+      document.body.classList.toggle('hood-following',!!followed);
+      // A read with the same words leaves the panel alone: no lost click, focus, scroll or text selection.
+      if(content!==renderedPanel){
+        var scroll=livePanel.scrollTop,focus=panelFocus();
+        renderedPanel=content;livePanel.innerHTML=content;livePanel.scrollTop=scroll;
+        livePanel.querySelector('[data-worker-refresh]').addEventListener('click',refreshWorkers);
+        livePanel.querySelector('[data-worker-close]').addEventListener('click',function(){liveToggle.checked=false;liveToggle.dispatchEvent(new Event('change',{bubbles:true}));liveToggle.focus();});
+        var overview=livePanel.querySelector('[data-worker-overview]');
+        if(overview)overview.addEventListener('click',function(){var agent=followed;endFollow(true);focusPanel('[data-worker-follow="'+agent+'"]');});
+        Array.prototype.forEach.call(livePanel.querySelectorAll('[data-worker-follow]'),function(button){button.addEventListener('click',function(){toggleFollow(button.getAttribute('data-worker-follow'));});});
+        if(focus)focusPanel(focus);
+      }
+      syncFollowTimer();
       window.dispatchEvent(new CustomEvent('grove:worker-status'));
     }
+    function panelFocus(){
+      var active=document.activeElement;
+      if(!active||!livePanel.contains(active))return null;
+      if(active.hasAttribute('data-worker-follow'))return '[data-worker-follow="'+active.getAttribute('data-worker-follow')+'"]';
+      return active.hasAttribute('data-worker-refresh')?'[data-worker-refresh]':active.hasAttribute('data-worker-overview')?'[data-worker-overview]':active.tagName==='SUMMARY'?'.hood-live-recent summary':null;
+    }
+    // A control can leave the panel or turn disabled as it renders: focus then rests on Refresh.
+    function focusPanel(selector){
+      var target=livePanel.querySelector(selector);
+      (target&&!target.disabled?target:livePanel.querySelector('[data-worker-refresh]')).focus();
+    }
+    function syncFollowTimer(){
+      var wanted=!!followed&&!document.hidden&&feedState(followed)==='recorded_running';
+      if(wanted&&followTimer===null)followTimer=setInterval(rereadFollowed,5000);
+      if(!wanted&&followTimer!==null){clearInterval(followTimer);followTimer=null;}
+    }
+    function showTrail(){
+      var ids=onMap(followTrail);
+      return ids.length?window.GroveView.followItems(ids,workerNames[followed]+': '+ids.length+' recorded item'+(ids.length===1?'':'s')):0;
+    }
+    function startFollow(agent){
+      var row=recordRow(agent),trail=row&&row.trail;
+      if(!trail||!onMap(trail.item_ids).length){renderLive();return;}
+      window.GroveView.close();
+      followed=agent;followHead=trail.item_ids[0];followTrail=trail.item_ids;
+      if(!showTrail()){followed=null;followHead=null;followTrail=[];}
+      renderLive();
+    }
+    function endFollow(overview){
+      if(!followed)return;
+      followed=null;followHead=null;followTrail=[];
+      window.GroveView.clearFollow();
+      if(overview)window.GroveView.fit(800);
+      renderLive();
+    }
+    function toggleFollow(agent){if(followed===agent)endFollow(true);else startFollow(agent);}
+    // Only a new newest item moves the camera. Any other record only updates what is kept.
+    function settleFollow(){
+      if(!followed)return;
+      var row=recordRow(followed),trail=row&&row.trail;
+      if(!trail||!onMap(trail.item_ids).length){endFollow(false);return;}
+      var moved=trail.item_ids[0]!==followHead;
+      followHead=trail.item_ids[0];followTrail=trail.item_ids;
+      if(moved&&!showTrail())endFollow(false);
+    }
+    // The map changed under a follow. The camera stays on the same item, or the follow ends.
+    function holdFollow(){if(followed&&!showTrail())endFollow(false);}
+    function mapChanged(){
+      if(followed&&!onMap(followTrail).length)endFollow(false);
+      else if(recordStatus==='ready')renderLive();
+    }
+    function takeRecord(res){
+      if(res.ok&&validRecord(res.body)){recordStatus='ready';liveRecord=res.body;settleFollow();}
+      else{recordStatus='error';liveRecord=null;}
+    }
+    function answer(read){return Promise.resolve().then(read).catch(function(){return {ok:false,status:0,body:null};});}
+    function readRecord(){return answer(function(){return liveApi.workerRecord();});}
+    // Only while a followed worker's run is recorded as active. The feed tells when that run ends.
+    function rereadFollowed(){
+      var account=ownerNow(),agent=followed,request=liveRequest;
+      if(!account||!agent||followBusy||document.hidden)return Promise.resolve();
+      followBusy=true;
+      return Promise.all([answer(function(){return liveApi.workers();}),readRecord()]).then(function(answers){
+        followBusy=false;
+        if(request!==liveRequest||account!==liveOwner||account!==ownerNow()||agent!==followed||document.hidden||answers[0].stale||answers[1].stale)return;
+        if(answers[0].ok&&validPayload(answers[0].body))liveSnapshot=answers[0].body;
+        takeRecord(answers[1]);
+        renderLive();
+      });
+    }
+    function abandonReads(){
+      liveRequest++;
+      if(liveStatus!=='loading'&&recordStatus!=='loading')return;
+      if(liveStatus==='loading')liveStatus='unavailable';
+      if(recordStatus==='loading')recordStatus='idle';
+      renderLive();
+    }
     function clearWorkers(nextOwner){
-      liveRequest++;liveOwner=nextOwner||null;liveSnapshot=null;liveStatus='unavailable';
+      endFollow(false);
+      liveRequest++;liveOwner=nextOwner||null;liveSnapshot=null;liveStatus='unavailable';liveRecord=null;recordStatus='idle';recentOpen=false;
       liveToggle.checked=false;document.body.classList.remove('hood-on');renderLive();
     }
     function refreshWorkers(){
       var account=ownerNow();
       if(!account){clearWorkers(null);return Promise.resolve();}
       if(document.hidden)return Promise.resolve();
-      if(liveOwner!==account){liveRequest++;liveOwner=account;liveSnapshot=null;}
-      var request=++liveRequest;liveStatus='loading';liveSnapshot=null;renderLive();
+      if(liveOwner!==account){liveRequest++;liveOwner=account;liveSnapshot=null;liveRecord=null;}
+      var request=++liveRequest;liveStatus='loading';liveSnapshot=null;recordStatus='loading';liveRecord=null;renderLive();
       function current(){return request===liveRequest&&account===liveOwner&&account===ownerNow()&&!document.hidden;}
-      return liveApi.workers().then(function(res){
+      // Two separate reads: a failed record never costs the status feed, and the reverse.
+      var feed=liveApi.workers().then(function(res){
         if(!current()||res.stale)return;
         if(!res.ok||!validPayload(res.body)){liveStatus='error';liveSnapshot=null;}else{liveStatus='ready';liveSnapshot=res.body;}
         renderLive();
       }).catch(function(){if(current()){liveStatus='error';liveSnapshot=null;renderLive();}});
+      var record=readRecord().then(function(res){
+        if(!current()||res.stale)return;
+        takeRecord(res);renderLive();
+      });
+      return Promise.all([feed,record]).then(function(){});
     }
     liveToggle.addEventListener('change',function(){
       document.body.classList.toggle('hood-on',liveToggle.checked);
       liveToggle.setAttribute('aria-expanded',String(liveToggle.checked));
-      if(liveToggle.checked)refreshWorkers();else{liveRequest++;if(liveStatus==='loading'){liveStatus='unavailable';renderLive();}}
+      if(liveToggle.checked)refreshWorkers();else{endFollow(false);abandonReads();}
     });
     window.addEventListener('grove:change',function(){var account=ownerNow();if(account!==liveOwner)clearWorkers(account);});
     ['grove:unauthenticated','grove:session-changed','grove:graph-cleared'].forEach(function(name){window.addEventListener(name,function(){clearWorkers(null);});});
-    document.addEventListener('visibilitychange',function(){if(document.hidden){liveRequest++;if(liveStatus==='loading'){liveStatus='unavailable';renderLive();}}});
-    window.GroveCare={refresh:refreshWorkers,summary:function(){return {updated:null,connections:null,tended:null,fresh:null,areas:null,working:null,enabled:liveToggle.checked,running:false,workers:summaries()};}};
-    window.__hood={agents:function(){return {};},at:function(){return {t:0,total:0,turn:null,cycle:0,ready:false};},turns:function(){return [];},score:function(){return {};},following:function(){return null;}};
+    document.addEventListener('visibilitychange',function(){if(document.hidden)abandonReads();syncFollowTimer();});
+    // The person takes the camera. Only Overview and Escape bring the map back to its overview.
+    var liveCanvas=document.getElementById('canvas');
+    liveCanvas.addEventListener('pointerdown',function(){endFollow(false);});
+    // The zoom handler stops the wheel event on the inner canvas, so only the capture phase sees it.
+    liveCanvas.addEventListener('wheel',function(){endFollow(false);},{passive:true,capture:true});
+    // Capture: the search and the dialogs keep their own Escape, and the map's handler would clear the selection first.
+    document.addEventListener('keydown',function(e){
+      var search=document.getElementById('search-overlay');
+      if(e.key!=='Escape'||!followed||(search&&!search.hasAttribute('hidden'))||document.querySelector('.gp-dialog')||/input|textarea/i.test((e.target&&e.target.tagName)||''))return;
+      endFollow(true);
+    },true);
+    // Any other way the map drops the selection (its clear button, a node, a filter) ends the follow.
+    var followPill=document.getElementById('selection-pill');
+    if(window.MutationObserver&&followPill)new MutationObserver(function(){if(followPill.hasAttribute('hidden'))endFollow(false);}).observe(followPill,{attributes:true,attributeFilter:['hidden']});
+    // A reload drops the highlight and a resize reframes the map: both give way to the same item.
+    window.addEventListener('grove:graph-rendered',function(){holdFollow();if(recordStatus==='ready')renderLive();});
+    window.addEventListener('resize',holdFollow);
+    document.getElementById('active-only').addEventListener('change',mapChanged);
+    document.addEventListener('click',function(e){if(e.target&&e.target.closest&&e.target.closest('.legend-row'))mapChanged();});
+    window.GroveCare={refresh:refreshWorkers,summary:function(){return {updated:null,connections:null,tended:null,fresh:null,areas:null,working:null,enabled:liveToggle.checked,running:false,workers:summaries(),freshness:freshnessNow()};}};
+    window.__hood={agents:function(){return {};},at:function(){return {t:0,total:0,turn:null,cycle:0,ready:false};},turns:function(){return [];},score:function(){return {};},following:function(){return followed;}};
     renderLive();
     return;
   }
