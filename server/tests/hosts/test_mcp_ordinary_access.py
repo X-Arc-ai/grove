@@ -124,6 +124,40 @@ def test_two_ordinary_worlds_cannot_read_each_other_over_mcp(pair, web):
         assert foreign_text not in str(answer)
 
 
+def test_another_worlds_words_do_not_move_the_order_of_own_results(driver, hosts_plant, web):
+    """All worlds share the text indexes, so a Lucene score carries their word counts. A reader
+    could plant a guessed word and read its count in other worlds from its own result order."""
+    first, second = hosts_plant.person(), hosts_plant.person(SECOND_TITLE)
+    guess, reference = f"gq{uuid4().hex[:10]}", f"rf{uuid4().hex[:10]}"
+    plant_item(driver, first, f"{guess} target")
+    for index in range(3):
+        plant_item(driver, first, f"{reference} filler {index}")
+    token = issue(driver, first, hosts_plant.client())
+    about = {"about": f"{guess} {reference}"}
+    before = titles(recall(web, token.access, about))
+    assert len(before) == 4
+
+    for index in range(8):
+        plant_item(driver, second, f"{guess} foreign {index}")
+
+    assert titles(recall(web, token.access, about)) == before
+
+
+def test_recall_ranks_by_own_text_and_has_no_close_spelling_search(driver, hosts_plant, web):
+    person = hosts_plant.person()
+    plant_item(driver, person, "Anchor notes", summary="The Quillon quay is deep.")
+    plant_item(driver, person, "Quillon quay plan")
+    plant_item(driver, person, "Quillon list")
+    token = issue(driver, person, hosts_plant.client())
+
+    assert titles(recall(web, token.access, {"about": "Quillon quay"})) == [
+        "Quillon quay plan",
+        "Quillon list",
+        "Anchor notes",
+    ]
+    assert titles(recall(web, token.access, {"about": "Quillion"})) == []
+
+
 def test_a_foreign_item_id_and_a_world_argument_reach_nothing(driver, pair, web):
     first, second, first_token, _ = pair
     foreign = WorldQuery(driver, second.world_id).read(
@@ -191,6 +225,19 @@ def test_a_demo_world_gets_nothing_general_once_its_configuration_is_removed(
             assert refused.json()["error"]["code"] == "demo_access_refused"
 
 
+def test_recall_checks_the_account_again_when_it_reads(driver, demo, hosts_plant, monkeypatch):
+    token = issue(driver, demo, hosts_plant.client())
+    monkeypatch.delenv("GROVE_DEMO_EMAIL_HASH")
+    monkeypatch.delenv("GROVE_DEMO_GUARD_FILE")
+    monkeypatch.setattr("grove.mcp.demo.require_general_access", lambda *_, **__: None)
+
+    with TestClient(create_app(ApiSettings(BASE), driver=driver), base_url=BASE) as client:
+        refused = recall(client, token.access, {"about": "Cedar"})
+
+    assert refused["isError"] is True
+    assert refused["structuredContent"]["error"]["code"] == "demo_access_refused"
+
+
 def test_the_general_store_handler_refuses_a_demo_world_by_its_real_cause(
     driver, demo, hosts_plant
 ):
@@ -228,9 +275,10 @@ def test_two_authorization_headers_never_open_the_general_tools_for_a_demo_world
 
 
 def test_a_token_whose_account_does_not_own_the_world_is_refused(driver, hosts_plant, web):
-    owner = hosts_plant.person()
+    owner, other = hosts_plant.person(), hosts_plant.person(SECOND_TITLE)
     plant_item(driver, owner, OWN)
-    intruder = Person(str(uuid4()), owner.world_id, "unused", owner.self_item_id, "Nobody")
+    # A real second account, with a real User row and a grant on a world it does not own.
+    intruder = Person(other.user_id, owner.world_id, "unused", owner.self_item_id, "Nobody")
     token = issue(driver, intruder, hosts_plant.client())
 
     refused = web.post(
@@ -388,11 +436,11 @@ def test_recall_shows_the_cited_message_only_and_skips_a_forgotten_source(driver
         driver,
         person.world_id,
         "Source",
-        content='[{"key":"m-1","text":"The quay is north."},{"key":"m-2","text":"Private words."}]',
+        content='[{"key":"m-1","text":"Private words."},{"key":"m-2","text":"The quay is north."}]',
         forget_state="kept",
     )
     gone = plant_node(driver, person.world_id, "Source", content="[]", forget_state="forgotten")
-    for source, key in ((kept, "m-1"), (gone, "m-9")):
+    for source, key in ((kept, "m-2"), (gone, "m-9")):
         plant_node(
             driver,
             person.world_id,
@@ -445,7 +493,7 @@ def test_the_own_item_and_a_pointer_source_do_not_break_an_answer(driver, hosts_
     [
         ({"about": "Quillon", "hops": {"depth": 2}}, "hops"),
         ({"about": "Quillon", "cursor": "x" * 43}, "cursor"),
-        ({"about": "a " * 400}, "about"),
+        ({"about": "quay " * 400}, "about"),
     ],
 )
 def test_a_mode_this_release_lacks_is_a_typed_refusal(driver, hosts_plant, web, arguments, field):
