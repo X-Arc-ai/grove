@@ -91,6 +91,10 @@ class SettingsHandler(OnboardingHandler):
         if path == "/v1/sources/connectors":
             return self.send({"connectors": self.server.rows})
         if path == "/v1/views/health":
+            if self.server.health_status != 200:
+                return self.send(
+                    {"error": {"code": "unavailable"}}, self.server.health_status
+                )
             return self.send(self.server.health)
         if path == "/v1/views/workers":
             return self.send(workers())
@@ -126,6 +130,10 @@ class SettingsHandler(OnboardingHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        if path == "/v1/auth/logout" and self.server.logout_status != 200:
+            return self.send(
+                {"error": {"code": "unavailable"}}, self.server.logout_status
+            )
         if path in ("/v1/forget/approve", "/v1/forget") or path.endswith(
             ("/gmail/disconnect", "/gmail/connect")
         ):
@@ -135,6 +143,11 @@ class SettingsHandler(OnboardingHandler):
             if path == "/v1/forget/approve":
                 return self.send({"approval_token": "gfa_synthetic", "one_use": True})
             if path == "/v1/forget":
+                # A check holds this answer open, so it lands at an exact moment.
+                self.server.forget_gate.wait(15)
+                if self.server.forget_status != 200:
+                    message = {"code": "busy", "message": "Try again."}
+                    return self.send({"error": message}, self.server.forget_status)
                 self.server.rows = [SELF_ROW]
                 return self.send({"receipt_id": "r1", "counts": {"sources": 3}})
             account = self.server.account
@@ -175,6 +188,11 @@ def reset(server, has_items=True):
         "additions": {"nodes": 7, "edges": 9, "since": "2026-11-03T23:00:00Z"},
     }
     server.gmail = "connected"
+    server.forget_gate = threading.Event()
+    server.forget_gate.set()
+    server.forget_status = 200
+    server.logout_status = 200
+    server.health_status = 200
     server.gets = []
     server.posts = []
     server.graph_delay = 0
@@ -351,6 +369,86 @@ def check_account_change(page, base, server, shots, label, expect, theme):
     assert not errors, errors
 
 
+def second_person_signs_in(page, server):
+    expect_email = page.locator("#gp-email")
+    expect_email.wait_for()
+    server.account = "synthetic-second-account"
+    server.rows = [SELF_ROW]
+    page.fill("#gp-email", "second.person@example.test")
+    page.get_by_role("button", name="Continue with email", exact=True).click()
+    page.fill("#gp-code", "246810")
+    page.locator("[data-code-form] button").click()
+    page.wait_for_function(
+        "GroveSimulation.getState().account==='synthetic-second-account'"
+    )
+    page.wait_for_function("GroveSimulation.getState().onboardingComplete")
+    page.evaluate("GroveSimulation.completeTour&&GroveSimulation.completeTour()")
+    page.keyboard.press("Escape")
+
+
+def check_late_answer(page, base, server, shots, label, expect, theme):
+    """An answer that lands after the session moved says nothing to the next account."""
+    errors = opened(page, base, theme)
+    server.forget_gate.clear()
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="sources"]').click()
+    page.get_by_role("button", name="Remove ChatGPT", exact=True).click()
+    page.locator('.gp-confirm-actions [data-action="confirm-delete"]').click()
+    expect(page.locator('[data-live-row="chatgpt"]')).to_contain_text("Working")
+    page.locator('[data-settings-tab="account"]').click()
+    page.locator('.gp-settings [data-action="logout"]').click()
+    second_person_signs_in(page, server)
+    server.forget_gate.set()
+    page.wait_for_timeout(500)
+    # A new person holds no history, so the button opens Sources with no click on the tab.
+    page.locator("#profile-button").click()
+    settings = page.locator(".gp-settings")
+    expect(settings).to_contain_text("Your conversations can start here")
+    expect(settings).not_to_contain_text("was removed")
+    assert not errors, errors
+
+
+def check_failed_logout(page, base, server, shots, label, expect, theme):
+    """A logout that fails keeps the session, so a source action in flight must not stick."""
+    errors = opened(page, base, theme)
+    server.forget_gate.clear()
+    server.forget_status = 409
+    server.logout_status = 503
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="sources"]').click()
+    page.get_by_role("button", name="Remove ChatGPT", exact=True).click()
+    page.locator('.gp-confirm-actions [data-action="confirm-delete"]').click()
+    row = page.locator('[data-live-row="chatgpt"]')
+    expect(row).to_contain_text("Working")
+    page.locator('[data-settings-tab="account"]').click()
+    page.locator('.gp-settings [data-action="logout"]').click()
+    expect(page.locator(".gp-settings")).to_contain_text("could not sign you out")
+    server.forget_gate.set()
+    page.wait_for_timeout(500)
+    page.locator('[data-settings-tab="sources"]').click()
+    expect(row).not_to_contain_text("Working")
+    expect(
+        page.get_by_role("button", name="Remove ChatGPT", exact=True)
+    ).to_be_visible()
+    assert not errors, errors
+
+
+def check_partial_refresh(page, base, server, shots, label, expect, theme):
+    """The note speaks for every read: a failed Health read is not up to date."""
+    errors = opened(page, base, theme)
+    server.health_status = 503
+    page.locator("#refresh-data").click()
+    note = page.locator("#gp-refresh-note")
+    expect(note).to_contain_text("Some details could not be read", timeout=6000)
+    # A note about one account never stays over the sign-in card.
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="account"]').click()
+    page.locator('.gp-settings [data-action="logout"]').click()
+    expect(page.locator("#gp-email")).to_be_visible()
+    expect(note).to_be_hidden()
+    assert not errors, errors
+
+
 def check_refresh(page, base, server, shots, label, expect, theme):
     errors = opened(page, base, theme)
     button = page.locator("#refresh-data")
@@ -417,6 +515,9 @@ CHECKS = (
     ("health", check_health),
     ("sources", check_sources),
     ("account change", check_account_change),
+    ("late answer", check_late_answer),
+    ("failed logout", check_failed_logout),
+    ("partial refresh", check_partial_refresh),
     ("refresh", check_refresh),
     ("three onboarding steps", check_three_steps),
 )

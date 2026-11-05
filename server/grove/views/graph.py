@@ -101,11 +101,12 @@ _POSITIONS = (
 )
 _POSITION = "MATCH (p:MapPosition {item_id: $id}) RETURN p.x AS x, p.y AS y"
 # The health counts and the health growth share these two filters, so the last point of the growth
-# equals the totals. An active item has no end class: a done task is still active, a refuted one
-# is not. This counts rows and says nothing on what is current, which is grove.store.current's.
-_ACTIVE_ITEM_ROWS = "MATCH (i:Item) WHERE i.end_class IS NULL"
+# equals the totals. They count what the map draws, so Health and the toolbar show one number: the
+# map draws every item, a refuted one too, and only active links. This counts rows and says nothing
+# on what is current, which is grove.store.current's.
+_ITEM_ROWS = "MATCH (i:Item) WHERE i.id IS NOT NULL"
 _ACTIVE_LINK_ROWS = _LINK_MATCH + "WHERE l.active_key IS NOT NULL"
-_KIND_COUNTS = _ACTIVE_ITEM_ROWS + " RETURN i.kind AS kind, count(i) AS n"
+_KIND_COUNTS = _ITEM_ROWS + " RETURN i.kind AS kind, count(i) AS n"
 _ACTIVE_LINK_COUNT = _ACTIVE_LINK_ROWS + " RETURN count(l) AS n"
 
 
@@ -126,11 +127,15 @@ def _change_days(rows: str, row: str, field: str) -> str:
 
 
 _CHANGE_DAYS = (
-    _change_days(_ACTIVE_ITEM_ROWS, "i", "nodes")
+    _change_days(_ITEM_ROWS, "i", "nodes")
     + " UNION ALL "
     + _change_days(_ACTIVE_LINK_ROWS, "l", "edges")
 )
-_FAILED_CONNECTORS = "MATCH (c:Connector) WHERE c.last_outcome = 'failed' RETURN count(c) AS n"
+# A person who disconnected a source has nothing to do about its last read.
+_FAILED_CONNECTORS = (
+    "MATCH (c:Connector) WHERE c.last_outcome = 'failed' "
+    "AND coalesce(c.connection_status, '') <> 'disconnected' RETURN count(c) AS n"
+)
 
 
 @dataclass(frozen=True)
@@ -413,7 +418,8 @@ def _growth(rows: list[dict], nodes: int, edges: int, now: datetime) -> list[dic
 
     It starts from the totals and walks back, taking off what each day added, so the last point
     equals them and a row older than the oldest point still counts in it. A world with no dated
-    row has one point: its totals today.
+    row has one point: its totals today. The totals and the days are two reads, so a write between
+    them can take off more than the totals hold: a point stops at zero.
     """
     added: dict[date, dict[str, int]] = {}
     for row in rows:
@@ -423,8 +429,8 @@ def _growth(rows: list[dict], nodes: int, edges: int, now: datetime) -> list[dic
     points = []
     for day in sorted(added, reverse=True)[:GROWTH_DAYS]:
         points.append(_growth_point(day, nodes, edges))
-        nodes -= added[day]["nodes"]
-        edges -= added[day]["edges"]
+        nodes = max(0, nodes - added[day]["nodes"])
+        edges = max(0, edges - added[day]["edges"])
     return points[::-1]
 
 
