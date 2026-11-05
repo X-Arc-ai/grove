@@ -92,7 +92,7 @@ function page(initialStore = {}, tab = {}) {
     const original = box.live[name];
     box.live[name] = (...args) => { counts[counter]++; return original(...args); };
   }
-  vm.runInContext(between('  var SIGNIN_COPY =', '  var icons =') + authSource + '\n' + lifecycle + unauthenticated,
+  vm.runInContext('function clearSourceState(){}\n' + between('  var SIGNIN_COPY =', '  var icons =') + authSource + '\n' + lifecycle + unauthenticated,
     box, { filename: 'product-auth.js', timeout: 1000 });
   function take(url) {
     const index = requests.findIndex(request => request.url === url);
