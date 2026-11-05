@@ -21,6 +21,8 @@
     agentFiles: '/v1/agent-files',
     agentNotes: '/v1/agent-files/notes',
     pendingExports: '/v1/sources/pending-exports',
+    importProgress: '/v1/sources/import-progress',
+    approvedConnections: '/v1/views/connections',
     sourceCoverage: '/v1/sources/connectors',
     sourceConnections: '/v1/connectors',
     pipedreamAccounts: '/v1/views/pipedream/accounts',
@@ -264,6 +266,29 @@
       });
     },
     deleteWorld: function () { return postJSON(ENDPOINTS.worldDelete, { confirm: 'DELETE' }); },
+    approvedConnections: function () {
+      var sentIn = sessionsBegun;
+      return request('GET', ENDPOINTS.approvedConnections).then(function (res) {
+        if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
+        return watchSession(sentIn, res);
+      });
+    },
+    // One provider's import_progress.v1. An answer sent for an earlier session is stale, and its
+    // 401 ends nothing. A Muse read names the approved connection it was chosen under.
+    importProgress: function (provider, clientId) {
+      var code = {chatgpt: 'chatgpt', claude: 'claude_ai', muse: 'muse'}[provider];
+      if (typeof code !== 'string') return Promise.reject(new Error('Unknown import provider.'));
+      if (provider === 'muse' ? typeof clientId !== 'string' || !clientId || new TextEncoder().encode(clientId).length > 2048 : clientId != null) {
+        return Promise.reject(new Error('Choose an approved connection for Muse only.'));
+      }
+      var sentIn = sessionsBegun;
+      var selection = provider === 'muse' ? '&client_id=' + encodeURIComponent(clientId) : '';
+      return request('GET', ENDPOINTS.importProgress + '?provider=' + code + '&limit=1' + selection).then(function (res) {
+        if (sentIn !== sessionsBegun) return {ok: false, status: 409, stale: true, body: null};
+        return watchSession(sentIn, res);
+      });
+    },
+    pendingExports: function () { return getJSON(ENDPOINTS.pendingExports); },
     disconnectConnection: function (id) { return postJSON(ENDPOINTS.sourceConnections + '/' + encodeURIComponent(id) + '/disconnect', {}); },
     errorText: errorText,
     agentFiles: function () {

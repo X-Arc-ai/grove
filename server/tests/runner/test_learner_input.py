@@ -1,6 +1,7 @@
 """D10 regressions: exact retained metadata and explicit pending source work."""
 
 import json
+from contextlib import nullcontext
 from datetime import UTC, datetime
 
 import pytest
@@ -230,6 +231,8 @@ def test_finish_checks_pending_source_inside_its_transaction(monkeypatch, rows, 
 
     monkeypatch.setattr(requests, "_worked", lambda driver, world, key, work: work(Tx()))
     monkeypatch.setattr(requests, "_full_state", lambda driver, world, state: state)
+    # This double has no store, and the guard reads one before each finish.
+    monkeypatch.setattr(requests, "material_request_guard", lambda *_args: nullcontext())
     caller = Caller(kind="update", scopes=frozenset({"grove.propose"}), actor="agent:learner")
     if refused:
         with pytest.raises(BatchDeclined) as caught:

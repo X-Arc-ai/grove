@@ -1,4 +1,4 @@
-<p><a href="https://app.grove.x-arc.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-top-dark.svg"><img src="docs/readme/hero-top-light.svg" width="100%" align="top" alt="grove. A live representation of your world. Grove builds a live, time-aware map of your world from the sources you bring, so your AI knows what is true now and where it came from."></picture></a><a href="https://app.grove.x-arc.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-open-dark.svg"><img src="docs/readme/hero-open-light.svg" width="20.3%" align="top" alt="Open Grove"></picture></a><a href="VIDEO_LINK"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-demo-dark.svg"><img src="docs/readme/hero-demo-light.svg" width="17%" align="top" alt="Watch the demo"></picture></a><a href="https://app.grove.x-arc.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-rest-dark.svg"><img src="docs/readme/hero-rest-light.svg" width="62.7%" align="top" alt=""></picture></a></p>
+<p><a href="https://app.grove.x-arc.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-top-dark.svg"><img src="docs/readme/hero-top-light.svg" width="100%" align="top" alt="grove. A live representation of your world. Grove builds a live, time-aware map of your world from the sources you bring, so your AI knows what is true now and where it came from."></picture></a><a href="https://app.grove.x-arc.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-open-dark.svg"><img src="docs/readme/hero-open-light.svg" width="20.3%" align="top" alt="Open Grove"></picture></a><a href="https://www.youtube.com/watch?v=Pf75lnB7-mI"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-demo-dark.svg"><img src="docs/readme/hero-demo-light.svg" width="17%" align="top" alt="Watch the demo"></picture></a><a href="https://app.grove.x-arc.ai"><picture><source media="(prefers-color-scheme: dark)" srcset="docs/readme/hero-rest-dark.svg"><img src="docs/readme/hero-rest-light.svg" width="62.7%" align="top" alt=""></picture></a></p>
 
 <p>
 <picture>
@@ -191,7 +191,7 @@ As of November 4, 2026, the deployed service runs the parts marked as running. T
 | What you can do | Today |
 |---|---|
 | Sign in with Google or an email code | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs |
-| Bring in your ChatGPT and Claude conversations, screened in code | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs. They are kept as sources and not added to your map yet. |
+| Bring in your ChatGPT and Claude conversations, screened in code | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs. Each kept part enters the Learner queue, and a Learner pass adds what it finds to your map. |
 | Explore your map and every item's panel | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs |
 | Connect Muse or another AI host, with your consent | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs |
 | Ask your AI and have it remember (`recall` and `store`) | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs on the prepared account |
@@ -267,4 +267,4 @@ Grove began as the memory behind the AI PA we use at X-Arc. For months it kept t
 
 #### License
 
-[Apache-2.0](LICENSE)
+[Apache-2.0](LICENSE). Third-party code and fonts keep their own licences: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

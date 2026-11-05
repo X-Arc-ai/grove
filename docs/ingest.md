@@ -196,10 +196,67 @@ provider APIs and the D5 contract.
 `GET /v1/sources/connectors` (session only) lists the world's connector rows with their coverage.
 
 Successful retention creates screened Sources, Episodes, ScreeningReceipts and connector
-coverage through the same `take_in` pipeline. Re-imports remain idempotent. It does not itself
-create graph Items, links or Requests, or call a model. Graph extraction and worker runtime
-acceptance are separate. A future personal-policy interface must bind explicit rules to the
+coverage through the same `take_in` pipeline. Re-imports remain idempotent. For Claude and
+ChatGPT, the same chat transaction also creates legacy Requests for new retained parts.
+The upload does not itself create graph Items or links or call a model. Graph extraction and
+worker runtime acceptance are separate. A future personal-policy interface must bind explicit rules to the
 same World and refuse invalid rules, rather than silently fall back to this baseline.
+
+### Legacy import handoff and progress
+
+New Claude and ChatGPT input uses whole-message parts of at most 32768 UTF-8 bytes and 64
+messages after screening. A single oversized message remains intact and held. Unknown times
+or speakers remain held; the upload time never replaces a missing message time. More than
+512 new parts refuses the upload before any Source write. Logical episode ranges remain independent
+of these storage parts. Existing historical sources are not backfilled.
+
+Each nonempty part has one deterministic `import:<source_id>` Request. Source, screening receipt,
+episode, Request and watermark commit together. Held parts use terminal `import_hold:<reason>`
+Request errors without a retry. Empty screened parts create no Request. `requests_added` counts
+all new Requests, including holds; `held_sources` counts their held subset. Replay and overlapping
+exports reuse the existing retained message keys and create no duplicate work.
+
+The runner reserves at most one import slot in each five-Request Learner pass. Ordinary interactive
+requests take the other slots. Available import providers alternate through durable prior run input
+IDs. Within a chat, earlier unresolved parts block later parts. The selector pages old rows instead
+of abandoning a provider after a fixed history window. Claims retain the existing five-attempt retry
+limit and lease recovery. The protected durable extraction protocol remains inactive.
+Existing Request `said_at` records the earliest actual message time only for complete selected input.
+It orders parts across overlapping episode ranges; equal or unknown times retain episode/source order.
+Each message keeps its own provenance timestamp. The receipt time is never substituted for that timestamp.
+
+An import pass has no per-pass token limit. The world's daily budget stops it, and the general
+600-second time cap ends a hung pass. Its run record and gateway token hold no token cap. The API signs
+`import_progress.v1` into its gateway token. That profile restricts complete outgoing JSON to
+131072 bytes, prohibits images, and limits the output request to 8192 tokens. One import call
+can be active in the current single gateway process; its slot stays held through provider drain
+and meter recording. These are bounds on one request, not on a pass.
+
+`GET /v1/sources/import-progress?provider=claude_ai|chatgpt&limit=1..50&after=<source-id>` is
+session-only. Every Authorization header is refused. Counts describe that world's provider;
+the source list uses an opaque cursor and at most 50 rows. The response contains no message text,
+file names or raw locators and uses `Cache-Control: no-store`. A scan above 4096 sources,
+missing request source, or concurrent world change returns unavailable rather than incomplete zero counts.
+
+`queued`, `processing`, `retry_wait`, `held`, `failed` and `unavailable` remain distinct.
+Only a saved Request with matching committed ChangeEntry rows is `extracted`. A verified saved
+empty receipt is `held_nothing`. The graph fields count distinct item/link identities per request
+operation class; they describe historical contribution, not current graph size. Unrelated writes do
+not contribute. Connection alone creates no work or memories.
+
+For `provider=muse`, the owner selects an exact `client_id` from `/v1/views/connections`.
+The optional parameter is valid only for Muse and is bounded to 2048 UTF-8 bytes before use.
+The endpoint verifies a current grant for the session world and user with `grove.read` before and
+after the progress read. It selects only the corresponding `ai_host` connector and existing
+StoreHandler Requests. The client name is display metadata, not a product identity. No selection
+returns 503 `muse_selection_required`; foreign, invalid or revoked selection returns 403.
+A valid empty selection returns `idle` and zero contribution. This read creates no new grant or source.
+
+The existing erasure fence suppresses forgotten input before claim and rechecks provenance before
+graph commit and replay. Opaque Requests remain in the existing world snapshot coverage; no new
+private text store exists. An already active legacy pass may retain an earlier packet. This source
+change does not claim full D14 physical deletion or deployment acceptance. Tests and actual ordinary
+Learner extraction require separate evidence.
 
 ## Upload-only tokens
 

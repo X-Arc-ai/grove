@@ -19,6 +19,10 @@
   var icons = window.GroveIcons || {};
   var ui = { step: api.getState().onboardingStep || 0, panel: null, guide: null, guideStep:0, tour: 0, tourNode: null, error: '', host: null, hostStage: 0 };
   var liveUploads = {};
+  // The providers with a real upload path. A new provider joins here and in live.js.
+  var IMPORT_CODES = {chatgpt:'chatgpt',claude:'claude_ai'};
+  var importProgressState={owner:null,values:{},errors:{},signatures:{},tracked:{},request:0,pending:false};
+  var importProgressTimer=null,lastImportMarks='';
   var liveData = {owner:null};
   var LIVE_SOURCE_IDS = {claude_ai:'claude',whatsapp:'chats',google_calendar:'calendar',slack_v2:'slack'};
   var liveSessionReady = false;
@@ -36,6 +40,7 @@
     }).catch(function(){
       if(current()&&api.isPendingExportContext(reminderContext)){ui.reminderError='Grove could not load your export reminders. Try again.';render(true);}
     });
+    refreshImportProgress(force);
     var reads=[['sources',live.ENDPOINTS.sourceCoverage,'connectors'],['connections',live.ENDPOINTS.sourceConnections,'connections'],['health',live.ENDPOINTS.health,null],['apps',live.ENDPOINTS.pipedreamAccounts,'providers'],['files',live.ENDPOINTS.agentFiles,'files'],['materials',live.ENDPOINTS.materials,'materials']];
     Promise.all(reads.map(function(row){return live.getJSON(row[1]).then(function(res){
       if(!current())return;
@@ -48,6 +53,107 @@
       if(api.setSourceItems)api.setSourceItems(items);
       render(true);
     });
+  }
+  function resetImportProgress(){
+    clearTimeout(importProgressTimer);importProgressTimer=null;
+    importProgressState={owner:null,values:{},errors:{},signatures:{},tracked:{},request:0,pending:false};
+    if(window.GroveImportGrowth)window.GroveImportGrowth.clear();
+  }
+  function parsedImportProgress(body,id){
+    if(!body||body.contract!=='import_progress.v1'||body.provider!==IMPORT_CODES[id]||!['idle','queued','processing','retry_wait','complete','partial','held','failed','unavailable'].includes(body.state))return null;
+    var keys=['sources_total','requests_total','queued_count','processing_count','retry_wait_count','extracted_count','held_nothing_count','held_count','failed_count'];
+    if(!keys.every(function(key){return Number.isSafeInteger(body[key])&&body[key]>=0;}))return null;
+    var graph=body.graph,graphKeys=['items_created','items_changed','links_created','links_changed'];
+    if(!graph||!graphKeys.every(function(key){return Number.isSafeInteger(graph[key])&&graph[key]>=0;}))return null;
+    var completed=body.extracted_count+body.held_nothing_count;
+    if(completed+body.queued_count+body.processing_count+body.retry_wait_count+body.failed_count>body.requests_total)return null;
+    if(body.state==='complete'&&(completed!==body.requests_total||body.held_count||body.failed_count))return null;
+    var value={state:body.state,graph:{}};
+    keys.forEach(function(key){value[key]=body[key];});
+    graphKeys.forEach(function(key){value.graph[key]=graph[key];});
+    return value;
+  }
+  function importMoving(value){return !!value&&!!(value.queued_count||value.processing_count||value.retry_wait_count);}
+  // The share of the server's work that has ended, in any way. A held source can have no Request.
+  function importShare(value){return value&&value.requests_total?Math.min(1,(value.extracted_count+value.held_nothing_count+value.failed_count+value.held_count)/value.requests_total):null;}
+  function refreshImportProgress(force){
+    if(!live||!liveSessionReady||typeof live.importProgress!=='function')return;
+    var state=api.getState(),owner=state.auth&&state.account;
+    if(importProgressState.owner!==owner){resetImportProgress();importProgressState.owner=owner;}
+    if(!owner||importProgressState.pending&&!force)return;
+    clearTimeout(importProgressTimer);importProgressTimer=null;
+    var snapshot=importProgressState,request=++snapshot.request,changedGraph=false;
+    snapshot.pending=true;
+    function current(){var now=api.getState();return snapshot===importProgressState&&snapshot.request===request&&now.auth&&now.account===owner;}
+    return Promise.all(Object.keys(IMPORT_CODES).map(function(id){
+      return live.importProgress(id).then(function(res){
+        if(!current()||res.stale)return;
+        var value=res.ok&&parsedImportProgress(res.body,id);
+        if(!value){snapshot.errors[id]=true;return;}
+        snapshot.values[id]=value;delete snapshot.errors[id];
+        if(importMoving(value))snapshot.tracked[id]=true;
+        var signature=JSON.stringify([value.extracted_count,value.graph]),previous=snapshot.signatures[id];
+        if(previous!==undefined&&previous!==signature)changedGraph=true;
+        snapshot.signatures[id]=signature;
+      }).catch(function(){if(current())snapshot.errors[id]=true;});
+    })).then(function(){
+      if(!current())return;
+      snapshot.pending=false;
+      var growth=window.GroveImportGrowth,moving=Object.keys(snapshot.values).some(function(id){return importMoving(snapshot.values[id]);});
+      // A failed read says nothing about the end of the work: only a full read can end the growth.
+      if(growth&&(moving||!Object.keys(snapshot.errors).length))growth.observe(moving);
+      if(changedGraph&&!(growth&&growth.active())&&window.reloadGrove)window.reloadGrove();
+      updateLive();
+      importProgressTimer=setTimeout(function(){
+        if(document.hidden){importProgressTimer=setTimeout(function(){refreshImportProgress(true);},15000);return;}
+        refreshImportProgress(true);
+      },moving?4000:15000);
+    });
+  }
+  function plural(count,word){count=Number(count)||0;return count+' '+word+(count===1?'':'s');}
+  function chatFailure(result){return result&&result.failed_chats>0?'Some chats failed: '+result.failed_chats+'. Keep this export and retry the upload.':'';}
+  function progressFailure(value){
+    if(!value)return '';
+    if(value.state==='unavailable')return 'Grove could not read the status of this import.';
+    if(!['partial','failed','held'].includes(value.state))return '';
+    var parts=[];
+    if(value.failed_count)parts.push(plural(value.failed_count,'part')+' failed');
+    if(value.held_count)parts.push(plural(value.held_count,'part')+' held');
+    return 'Not all of this import finished'+(parts.length?': '+parts.join(', '):'')+'.';
+  }
+  // The persistent line of a partial failure. It says only what the counts prove.
+  function importNote(id,skipChats){
+    if(!IMPORT_CODES[id])return '';
+    return [skipChats?'':chatFailure(liveUpload(id).result),progressFailure(importProgressState.values[id])].filter(Boolean).join(' ');
+  }
+  function importNoteSlot(tag,id,skipChats){
+    if(!IMPORT_CODES[id])return '';
+    var text=importNote(id,skipChats);
+    return '<'+tag+' class="gp-import-note" data-import-note="'+id+'"'+(skipChats?' data-skip-chats':'')+' role="status"'+(text?'':' hidden')+'>'+esc(text)+'</'+tag+'>';
+  }
+  // One tile's state. The check marks an accepted upload or a stored read; the ring is the server's.
+  function importView(id){
+    var upload=IMPORT_CODES[id]?liveUpload(id):{},result=upload.result,value=IMPORT_CODES[id]?importProgressState.values[id]:null;
+    var read=liveSourceAccounts().some(function(a){return a.id===id&&a.readCount>0;}),accepted=!!result&&result.state==='taken_in',share=importShare(value);
+    var warned=!!chatFailure(result)||!!progressFailure(value);
+    var label=upload.pending?'Adding':result&&result.state==='failed'||value&&value.state==='failed'?'Import failed':value&&['held','unavailable'].includes(value.state)?'Needs attention':warned?'Partial import':accepted||read?'Added':'';
+    return {added:accepted||read,warned:warned,share:share,ring:share===null?(!accepted&&read?1:0):share,label:label};
+  }
+  function importMark(id){
+    var value=importProgressState.values[id],share=importShare(value);
+    if(share===null||!importProgressState.tracked[id])return '';
+    var complete=share>=1&&!importMoving(value)&&!importView(id).warned,name=PROVIDERS[id].label;
+    return '<span class="gp-account-progress '+(complete?'is-ready':'')+'" data-import-mark="'+id+'" role="status" aria-label="'+esc(complete?name+' import complete':name+' import, '+Math.round(share*100)+' percent')+'" style="--progress:'+share+'"><svg class="gp-mini-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18"/></svg><span class="gp-mini-mark">'+icon(id)+'</span>'+(complete?'<i class="gp-complete-check" aria-hidden="true">✓</i>':'')+'</span>';
+  }
+  function importPanel(){return live?'<div class="gp-import-status" data-live-imports aria-live="polite"></div>':'';}
+  function importPanelMarkup(){
+    return Object.keys(IMPORT_CODES).map(function(id){
+      var upload=liveUpload(id),value=importProgressState.values[id],moving=importMoving(value),note=importNote(id,!!upload.result),failed=!!importProgressState.errors[id]&&!!importProgressState.tracked[id];
+      if(!upload.result&&!note&&!moving&&!failed)return '';
+      var read=value?value.extracted_count+value.held_nothing_count:0;
+      var counts=value?'<details><summary>Processing details</summary><p>Stored source parts: '+value.sources_total+'. Completed with changes: '+value.extracted_count+'. Completed without changes: '+value.held_nothing_count+'. Waiting: '+value.queued_count+'. Active: '+value.processing_count+'. Retry scheduled: '+value.retry_wait_count+'. Held: '+value.held_count+'. Failed: '+value.failed_count+'.</p><p>Stored contribution: '+value.graph.items_created+' items created, '+value.graph.items_changed+' items changed, '+value.graph.links_created+' links created, '+value.graph.links_changed+' links changed.</p></details>':'';
+      return '<section data-import-provider="'+id+'"><strong>'+esc(PROVIDERS[id].label)+'</strong>'+(upload.error&&upload.result?'<p role="alert">'+esc(upload.error)+'</p>':'')+uploadResult(upload.result)+(moving?'<p>Read '+read+' of '+plural(value.requests_total,'part')+'.</p>':'')+(failed?'<p>Grove could not read the import status. Try again.</p>':'')+(note?'<p class="gp-import-note" role="status">'+esc(note)+'</p>':'')+counts+(upload.file||note?'<button class="gp-text" data-import-review="'+id+'">Review import</button> ':'')+'<button class="gp-text" data-import-refresh>Check status</button></section>';
+    }).join('');
   }
   function clearSourceState(){ui.deleteDraft='';ui.deleteError='';ui.deleteBusy=false;ui.appsOff={};ui.sourceNotice='';ui.sourceError='';ui.sourceBusy=null;if(api.setSourceItems)api.setSourceItems({});if(refreshNote)refreshNote.hidden=true;}
   function coverageMessage(){return liveData.pending?'Check in progress':liveData.sources===null?'Source information could not be read. Try again.':'';}
@@ -146,7 +252,7 @@
     if(api.bindAccount(body.account)){
       if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
       if(previousAccount&&previousAccount!==body.account)live.notifySessionChange();
-      liveUploads={};ui.reminderRequest=null;ui.reminderError='';ui.confirm=null;clearSourceState();
+      resetImportProgress();liveUploads={};ui.reminderRequest=null;ui.reminderError='';ui.confirm=null;clearSourceState();
       ui.step=0;ui.guideStage=0;ui.editName=false;ui.nameDraft='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};ui.requestDrafts={};ui.uploadFile=null;ui.connecting={};ui.query='';ui.notice='';
       if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
     }
@@ -244,7 +350,7 @@
     if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
     authEpoch++;live.invalidateSession();
     liveSessionReady=false;liveData={owner:null};clearSourceState();
-    liveUploads={};ui.reminderRequest=null;ui.reminderError='';
+    resetImportProgress();liveUploads={};ui.reminderRequest=null;ui.reminderError='';
     var onCard=!api.getState().auth&&!!ui.authStage;
     api.signOut();
     ui.step=0;ui.guideStage=0;ui.editName=false;ui.nameDraft='';ui.growthDraft=null;
@@ -286,7 +392,7 @@
   function integrationChoices(){if(live)return '<div data-pipedream-apps></div>';if(!window.GroveIntegrations&&window.GroveDeferred){loadViewAsset('catalog');return assetNotice('catalog');}if(live)return '<div data-pipedream-apps></div>';return '<label class="gp-integration-search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input type="search" placeholder="Search 3,000+ integrations" aria-label="Search 3,000+ integrations" data-integration-search value="'+esc(ui.query)+'"></label><div class="gp-integrations" id="gp-integration-results">'+integrationResults()+'</div><div id="gp-inline-auth"></div>';}
   function hostChoices(){var hosts=live||demo?[]:api.getState().connectedHosts;return '<div class="gp-host-choices">'+HOST_ORDER.map(function(id){var done=hosts.includes(id);return '<button class="gp-host-choice '+(done?'is-connected':'')+'" data-host-inline="'+id+'" aria-label="'+(live?'Set up Grove in ':demo?'View setup guide for ':done?'Disconnect Grove from ':'Connect Grove to ')+PROVIDERS[id].label+'"><span class="gp-provider-icon">'+icon(id)+'</span><span><strong>'+PROVIDERS[id].label+'</strong><small>'+(live||demo?'View setup directions':done?'Grove is connected':'Connect Grove')+'</small></span><span class="gp-host-status">'+(ui.connecting['host:'+id]?'…':done?'✓':'+')+'</span></button>';}).join('')+'</div>';}
   function stepContent(){
-    if(ui.step===1)return heading('','Start with your conversations','Give Grove the context behind how you think')+'<div class="gp-source-choices">'+AI_PROVIDERS.map(function(id){return sourceChoice(id,PROVIDERS[id].label);}).join('')+'</div>';
+    if(ui.step===1)return heading('','Start with your conversations','Give Grove the context behind how you think')+'<div class="gp-source-choices">'+AI_PROVIDERS.map(function(id){return sourceChoice(id,PROVIDERS[id].label);}).join('')+'</div>'+importPanel();
     if(ui.step===2)return heading('','Bring your world closer','Keep your Grove in step with your everyday life')+integrationChoices();
     return heading('','Add what matters','The knowledge and ideas you want your AI to know')+filesComposer();
   }
@@ -308,20 +414,26 @@
     if(!result)return '';
     var labels={taken_in:'Import accepted',nothing_new:'No new messages',kept_out:'No retained messages',failed:'Import failed'};
     var counts=[['chats','Chats read'],['chats_new','New chats'],['sources_added','Sources added'],['episodes_added','Episodes added'],['messages_read','Messages read'],['messages_kept','Messages kept'],['failed_chats','Failed chats']];
-    return '<div class="gp-upload-result" role="status"><p><strong>'+esc(labels[result.state]||'Upload result')+'</strong></p>'+(result.failed_chats?'<p>Some chats failed. Keep this export and retry the upload.</p>':'')+'<p>'+counts.map(function(row){return row[1]+': '+esc(result[row[0]]);}).join(' · ')+'</p>'+Object.keys(result.screened||{}).map(function(key){return '<p>Screened '+esc(key)+': '+esc(result.screened[key])+'</p>';}).join('')+'<p>Your graph has not changed from this upload.</p></div>';
+    var work=result.processing||{},summary={taken_in:'Grove accepted '+plural(result.messages_kept,'message')+' from '+plural(result.chats_new,'new chat')+'.'+(work.requests_added>0?' '+plural(work.requests_added,'part')+' added to the queue.':'')+(work.held_sources>0?' '+plural(work.held_sources,'part')+' held.':''),nothing_new:'Grove already holds everything in this export.',kept_out:'Grove kept no messages from this export.',failed:'Grove stored nothing from this export.'}[result.state]||'';
+    return '<div class="gp-upload-result" role="status"><p><strong>'+esc(labels[result.state]||'Upload result')+'</strong></p>'+(summary?'<p>'+esc(summary)+'</p>':'')+(result.failed_chats?'<p>'+esc(chatFailure(result))+'</p>':'')+'<details><summary>Import details</summary><p>'+counts.map(function(row){return row[1]+': '+esc(result[row[0]]);}).join(' · ')+'</p>'+Object.keys(result.screened||{}).map(function(key){return '<p>Screened '+esc(key)+': '+esc(result.screened[key])+'</p>';}).join('')+'</details></div>';
   }
-  function canUpload(id){return !live||id==='chatgpt'||id==='claude';}
+  function canUpload(id){return !live||!!IMPORT_CODES[id];}
   function exportPicker(id){
     var p=PROVIDERS[id],state=live?liveUpload(id):{file:ui.uploadFile},ready=canUpload(id);
     var input=live&&ready?'<input type="file" accept="'+p.accept+'" data-pick-export="'+id+'" aria-label="'+p.label+' export file" hidden>':'';
-    return (live&&ready&&id==='claude'?'<p class="gp-section-copy">The Claude example uses invented conversations. Your file will not be uploaded or saved.</p>':'')+input+'<button class="gp-upload-zone" data-action="pick-export"'+(!ready||state.pending?' disabled':'')+'><span>'+icon('notes')+'</span><strong>'+(state.file?esc(state.file.name):id==='notes'?'Choose a file':demo?'Use sample export':'Choose your export')+'</strong><small>'+(state.pending?'Upload in progress':state.file?'Ready to upload':id==='notes'?'Notes and documents':'Your conversations, ready for Grove')+'</small></button>'+(live&&state.pending?'<p class="gp-section-copy" role="status" aria-live="polite">Upload in progress</p>':'')+(live&&state.error?'<p class="gp-section-copy" role="alert">'+esc(state.error)+'</p>':'')+(live?uploadResult(state.result):'');
+    return input+'<button class="gp-upload-zone" data-action="pick-export"'+(!ready||state.pending?' disabled':'')+'><span>'+icon('notes')+'</span><strong>'+(state.file?esc(state.file.name):id==='notes'?'Choose a file':demo?'Use sample export':'Choose your export')+'</strong><small>'+(state.pending?'Upload in progress':state.file?'Ready to upload':id==='notes'?'Notes and documents':'Your conversations, ready for Grove')+'</small></button>'+(live&&state.pending?'<p class="gp-section-copy" role="status" aria-live="polite">Upload in progress</p>':'')+(live&&state.error?'<p class="gp-section-copy" role="alert">'+esc(state.error)+'</p>':'')+(live?uploadResult(state.result):'');
   }
   function guide(){
     var id=ui.guide,p=PROVIDERS[id],walk=WALKS[id],upload=ui.guideStage===1||id==='notes';
     if(id==='google'||['notion','linear','slack','microsoft'].includes(id))return integrationGuide(id);
-    var title=upload?'Upload your '+(id==='notes'?'files':p.label+' history'):id==='muse'?'Connect Muse':'Export your '+p.label+' history';
-    var help=!upload&&HELP[id]?'<a class="gp-help" href="'+HELP[id]+'" target="_blank" rel="noreferrer" aria-label="Official '+p.label+' export instructions" title="Official instructions">↗</a>':'';
+    var whatsappOff=live&&id==='chats';
+    var title=whatsappOff?'WhatsApp is not available yet':upload?'Upload your '+(id==='notes'?'files':p.label+' history'):id==='muse'?'Connect Muse':'Export your '+p.label+' history';
+    var help=!upload&&!whatsappOff&&HELP[id]?'<a class="gp-help" href="'+HELP[id]+'" target="_blank" rel="noreferrer" aria-label="Official '+p.label+' export instructions" title="Official instructions">↗</a>':'';
     var header='<header class="gp-guide-heading"><span class="gp-provider-icon" style="color:'+p.color+'">'+icon(id)+'</span><h1 id="gp-title" tabindex="-1">'+title+help+'</h1><button class="gp-icon" data-action="guide-back" aria-label="Close guide">×</button></header>';
+    if(whatsappOff){
+      var off='<p class="gp-section-copy" role="status" data-whatsapp-off>Grove does not import WhatsApp exports yet, so nothing from WhatsApp reaches your graph.</p><footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">Back</button></footer>';
+      return api.getState().onboardingComplete?settingsFrame(off,'sources',sourceTrail(id,false)):shell(header+off,'gp-guide gp-visual-guide',false);
+    }
     if(!window.GroveAppScreens&&window.GroveDeferred){
       loadViewAsset('guides');
       var pending=assetNotice('guides')+'<footer class="gp-guide-footer"><button class="gp-text" data-action="guide-back">Back</button></footer>';
@@ -334,7 +446,7 @@
     var frameSeconds=id==='chats'&&!upload?5:!upload&&(id==='chatgpt'||id==='claude')?2.2:3.6,duration=frames.length*frameSeconds,css=window.GroveAppScreenCSS+(window.GroveWhatsAppGuide?window.GroveWhatsAppGuide.css:'')+filmCSS(frames.length,duration)+(upload?'html,body,.film-stage,.film-transfer{height:360px}':'');
     var doc='<!doctype html><html><head><meta charset="utf-8"><style>'+css+'</style></head><body><div class="film-stage" data-frame-seconds="'+frameSeconds+'" data-frame-count="'+frames.length+'">'+frames.map(function(f,i){return '<section class="film-frame" style="animation-delay:-'+(duration-i*frameSeconds).toFixed(2)+'s">'+f.html+'</section>';}).join('')+'</div></body></html>';
     var film='<div class="gp-app-frame" aria-label="Animated guide: '+esc(frames.map(function(f){return f.label;}).join('. '))+'"><iframe title="Automatic '+p.label+' guide" tabindex="-1" aria-hidden="true" inert sandbox srcdoc="'+esc(doc)+'"></iframe></div>';
-    var picker=upload?exportPicker(id):'';
+    var picker=(upload?exportPicker(id):'')+(live?importNoteSlot('p',id,upload):'');
     var selected=live?liveUpload(id):{file:ui.uploadFile};
     var primary=upload?'<button class="gp-primary" data-action="upload-export"'+(!canUpload(id)||!selected.file||selected.pending?' disabled':'')+'>'+(selected.pending?'Upload in progress':'Upload '+(id==='notes'?'file':'export'))+'</button>':id==='muse'?'<button class="gp-primary" data-import="muse">Connect Muse</button>':'<button class="gp-primary" data-action="export-requested"'+(live&&ui.reminderRequest?' disabled':'')+'>'+(id==='chats'?'I have my export':'I’ve requested it')+'</button>';
     var devices=id==='chats'&&!upload?'<div class="gp-device-choice" aria-label="WhatsApp device">'+[['iphone','iPhone'],['android','Android']].map(function(d){return '<button data-guide-device="'+d[0]+'" aria-pressed="'+(ui.guideDevice===d[0])+'">'+d[1]+'</button>';}).join('')+'</div>':'';
@@ -419,7 +531,7 @@
     var words={took_in:'Import accepted',nothing_new:'No new messages',kept_out:'No retained messages',failed:'Import failed'};
     var off=a.status==='disconnected',empty=!a.app&&a.contribution&&!a.contribution.sources&&a.outcome==='took_in';
     var detail=a.app?(a.status==='attention'?'Needs attention. Reconnect to continue':off?'Disconnected · memories retained':'Connected · Grove reads no content from it yet'):empty?'Removed from your Grove. Upload it again to bring it back':words[a.outcome]||'No read status recorded';
-    return '<div class="gp-source-row '+(off?'is-disconnected':'')+'" data-live-row="'+esc(a.id)+'"><span class="gp-provider-icon">'+appMark(a.id)+'</span><div class="gp-source-name"><strong>'+esc(a.label)+'</strong><small>'+esc(detail)+'</small>'+(!a.app&&off?'<small>Disconnected · memories retained</small>':'')+'</div>'+liveSourceValue(a)+'<div class="gp-source-actions">'+(ui.sourceBusy===(a.connectorId||a.provider)?'<small role="status">Working…</small>':liveSourceActions(a))+'</div></div>';
+    return '<div class="gp-source-row '+(off?'is-disconnected':'')+'" data-live-row="'+esc(a.id)+'"><span class="gp-provider-icon">'+appMark(a.id)+'</span><div class="gp-source-name"><strong>'+esc(a.label)+'</strong><small>'+esc(detail)+'</small>'+importNoteSlot('small',a.id)+(!a.app&&off?'<small>Disconnected · memories retained</small>':'')+'</div>'+liveSourceValue(a)+'<div class="gp-source-actions">'+(ui.sourceBusy===(a.connectorId||a.provider)?'<small role="status">Working…</small>':liveSourceActions(a))+'</div></div>';
   }
   function sourceRow(a){
     if(a.live)return liveSourceRow(a);
@@ -562,7 +674,7 @@
       return settingsFrame('<div class="gp-host-guide"><p class="gp-section-copy">'+(demo?'Illustration only. No app is connected here.':'Complete the connection in your AI app')+'</p>'+visual+'<div class="gp-mcp-body"><ol class="gp-section-copy">'+steps.map(function(step){return '<li>'+esc(step[1])+'</li>';}).join('')+'</ol>'+(demo?'<a class="gp-text" href="/">Return to live Grove for actual access</a>':mcpLink())+'<p class="gp-section-copy">Review access in Grove before approval.</p></div></div>','connections',[['Connections','host-back'],['Use Grove in '+name]]);
     }
     var id=ui.host,label=PROVIDERS[id].label,connected=(api.getState().connectedHosts||[]).includes(id);return shell('<header class="gp-popup-top"><button class="gp-text" data-action="host-back">← Back</button>'+close()+'</header>'+heading('',connected?'Grove is with you':'Use Grove in '+label,connected?'Your context is ready in '+label:'Your brain, wherever you think')+'<div class="gp-connection-route"><span class="gp-grove-mini">g<span></span></span><i></i><span>'+icon(id)+'</span></div><button class="gp-primary gp-wide" data-action="host-connect">'+(connected?'Done':'Connect Grove to '+label)+'</button>','gp-connect-dialog',true);}
-  function sourcesPanel(){var tab=ui.sourceTab;return settingsFrame('<div class="gp-source-tabs" role="tablist">'+[['chats','Chats'],['apps','Synced apps'],['files','Files & notes']].map(function(t){return '<button role="tab" aria-selected="'+(tab===t[0])+'" data-source-tab="'+t[0]+'">'+t[1]+'</button>';}).join('')+'</div><div class="gp-add-content">'+(tab==='chats'?'<p class="gp-section-copy">Bring the conversations that know you</p><div class="gp-source-choices">'+AI_PROVIDERS.map(function(id){return sourceChoice(id,PROVIDERS[id].label);}).join('')+'</div>':tab==='apps'?integrationChoices():filesComposer())+'</div>','sources',[['Sources','sources-back'],['Add a source']]);}
+  function sourcesPanel(){var tab=ui.sourceTab;return settingsFrame('<div class="gp-source-tabs" role="tablist">'+[['chats','Chats'],['apps','Synced apps'],['files','Files & notes']].map(function(t){return '<button role="tab" aria-selected="'+(tab===t[0])+'" data-source-tab="'+t[0]+'">'+t[1]+'</button>';}).join('')+'</div><div class="gp-add-content">'+(tab==='chats'?'<p class="gp-section-copy">Bring the conversations that know you</p><div class="gp-source-choices">'+AI_PROVIDERS.map(function(id){return sourceChoice(id,PROVIDERS[id].label);}).join('')+'</div>'+importPanel():tab==='apps'?integrationChoices():filesComposer())+'</div>','sources',[['Sources','sources-back'],['Add a source']]);}
   // Live Sources: each action ends in a fresh read, so a row shows only what the server holds.
   function sourceDone(notice){ui.sourceBusy=null;ui.sourceNotice=notice;ui.sourceError='';refreshLiveData(true);if(window.reloadGrove)Promise.resolve(window.reloadGrove()).catch(function(){});render(true);}
   function sourceFailed(error){ui.sourceBusy=null;ui.sourceNotice='';ui.sourceError=error;render(true);}
@@ -616,20 +728,6 @@
   function setStep(n){ui.step=n;ui.guide=null;if(api.setStep)api.setStep(n);render(true);if(window.GroveView)window.GroveView.fit();}
   function finish(){ui.guide=null;ui.panel=null;var duration=reduceMotion.matches?0:1300;document.body.classList.add('gp-arriving');tourAfter=performance.now()+duration+900;api.completeOnboarding();render(true);if(window.GroveView)window.GroveView.fit(duration);clearTimeout(arrivalTimer);arrivalTimer=setTimeout(function(){document.body.classList.remove('gp-arriving');},duration);setTimeout(maybeTour,duration+950);}
   function importSource(id,file,provider){
-    // The Claude example changes only the graph in page memory. Keep every setup step
-    // and the live session, provider consent, files, and AI connections on this page.
-    if(live&&file&&provider==='claude'){
-      var previewUpload=liveUpload(provider),previewContext=api.pendingExportContext();
-      if(previewUpload.pending)return;
-      previewUpload.pending=true;previewUpload.error='';render(true);
-      window.GroveConversationPreview.start().then(function(){
-        if(!api.isPendingExportContext(previewContext))return;
-        previewUpload.file=null;ui.guide=null;render(true);
-      }).catch(function(error){
-        if(api.isPendingExportContext(previewContext))previewUpload.error=error.message||'The Claude example could not load. Try again.';
-      }).finally(function(){previewUpload.pending=false;if(api.isPendingExportContext(previewContext))render(true);});
-      return;
-    }
     if(live){
       if(!canUpload(provider))return;
       var upload=liveUpload(provider);
@@ -641,12 +739,18 @@
         if(!current())return;
         if(!res.ok){upload.error='HTTP '+res.status+': '+live.errorText(res.body,'The upload failed. Please try again.');return;}
         var result=res.body;
-        if(!result||!['taken_in','nothing_new','kept_out','failed'].includes(result.state)){upload.error='The server returned an unrecognized upload result. Keep this export and try again.';return;}
+        if(!result||!['taken_in','nothing_new','kept_out','failed'].includes(result.state)||!Number.isSafeInteger(result.failed_chats)||result.failed_chats<0){upload.error='The server returned an unrecognized upload result. Keep this export and try again.';return;}
         upload.result=result;
-        if((result.state==='taken_in'||result.state==='nothing_new')&&result.failed_chats===0){
-          upload.file=null;
-          if(result.reminder&&result.reminder.status==='updated'&&result.reminder.snapshot)api.applyPendingExports(result.reminder.snapshot,context);
-          if(result.reminder&&result.reminder.status==='unavailable')upload.error='The import succeeded. Grove could not update the export reminder. Keep the export and retry to clear it.';
+        if(result.state==='taken_in'||result.state==='nothing_new'){
+          // A clean answer closes the guide. A partial one stays there, with its file for the retry.
+          if(result.failed_chats===0){
+            upload.file=null;
+            if(result.reminder&&result.reminder.status==='updated'&&result.reminder.snapshot)api.applyPendingExports(result.reminder.snapshot,context);
+            if(result.reminder&&result.reminder.status==='unavailable')upload.error='The import succeeded. Grove could not update the export reminder. Keep the export and retry to clear it.';
+            if(ui.guide===provider){ui.guide=null;ui.guideStage=0;}
+          }
+          delete importProgressState.values[provider];delete importProgressState.errors[provider];delete importProgressState.signatures[provider];
+          if(result.state==='taken_in'){importProgressState.tracked[provider]=true;if(window.GroveImportGrowth)window.GroveImportGrowth.accept();}
           refreshLiveData(true);
         }
       }).catch(function(error){if(current())upload.error=error.message||'The upload could not reach Grove. Please try again.';}).finally(function(){upload.pending=false;if(current())render(true);});
@@ -701,16 +805,20 @@
   function updateLive(){
     if(live){
       document.getElementById('learning-slot').innerHTML='';
-      var state=api.getState(),preview=state.conversationPreview;
-      var complete=!!preview&&preview.status==='ready';
-      progress.innerHTML=preview?'<span class="gp-account-progress '+(complete?'is-ready':'')+'" role="status" aria-label="'+(complete?'Claude conversation preview complete':'Claude example, '+preview.progress+' percent')+'" style="--progress:'+preview.progress/100+'"><svg class="gp-mini-ring" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18"/></svg><span class="gp-mini-mark">'+icon('claude')+'</span>'+(complete?'<i class="gp-complete-check" aria-hidden="true">✓</i>':'')+'</span>':'';
+      var state=api.getState(),marks=Object.keys(IMPORT_CODES).map(importMark).join('');
+      if(marks!==lastImportMarks){lastImportMarks=marks;progress.innerHTML=marks;}
       root.querySelectorAll('[data-source-choice]').forEach(function(el){
-        var id=el.dataset.sourceChoice,added=liveSourceAccounts().some(function(a){return a.id===id&&a.readCount>0;}),pending=!!state.pendingExports[id];
-        var example=id==='claude'&&preview;
-        // The check marks the upload itself. The ring follows the graph as it grows.
-        el.classList.toggle('is-added',added||!!example);el.classList.remove('is-learning');el.style.setProperty('--source-progress',example?preview.progress/100:added?1:0);
-        var label=el.querySelector('strong small');if(label)label.textContent=example?'':added?'Added':pending?'Upload':'Connect';
-        el.setAttribute('aria-label',example?'Claude added':(added?'Added ':pending?'Upload ':'Connect ')+(PROVIDERS[id]||{label:id}).label);
+        var id=el.dataset.sourceChoice,view=importView(id),text=view.label||(id==='chats'?'Not available':state.pendingExports[id]?'Upload':'Connect');
+        // The check marks the accepted upload and stays. The ring follows the server's counts.
+        el.classList.toggle('is-added',view.added);el.classList.toggle('is-partial',view.warned);el.classList.remove('is-learning');el.style.setProperty('--source-progress',view.ring);
+        var label=el.querySelector('strong small');if(label)label.textContent=text;
+        el.setAttribute('aria-label',text+' '+(PROVIDERS[id]||{label:id}).label+(view.share!==null&&view.share<1?', '+Math.round(view.share*100)+' percent':''));
+      });
+      root.querySelectorAll('[data-import-note]').forEach(function(el){var text=importNote(el.dataset.importNote,el.hasAttribute('data-skip-chats'));el.textContent=text;el.hidden=!text;});
+      root.querySelectorAll('[data-live-imports]').forEach(function(el){
+        var markup=importPanelMarkup();if(el.groveMarkup===markup)return;el.groveMarkup=markup;el.innerHTML=markup;
+        el.querySelectorAll('[data-import-review]').forEach(function(button){button.onclick=function(){ui.host=null;ui.guide=button.dataset.importReview;ui.guideStage=1;render(true);};});
+        el.querySelectorAll('[data-import-refresh]').forEach(function(button){button.onclick=function(){refreshImportProgress(true);};});
       });
       return;
     }
@@ -944,7 +1052,7 @@
     window.addEventListener('grove:session-changed',function(){endSession();ui.authStage='checking';render(true);checkSession();});
     window.addEventListener('pagehide',function(){
       if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
-      authEpoch++;live.invalidateSession();
+      authEpoch++;live.invalidateSession();resetImportProgress();
       if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
       document.body.classList.add('gp-session-hidden');
     });
