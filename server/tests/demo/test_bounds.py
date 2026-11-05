@@ -38,6 +38,13 @@ def test_topic_capture_is_scoped_before_bounded_materialization():
     assert scoped.count("world_id") >= 10
 
 
+def test_a_graph_past_its_caps_keeps_the_newest_rows():
+    # Ids sort by time, so a read past a cap must order them newest first.
+    assert "ORDER BY i.id DESC LIMIT $item_cap" in graph._ITEMS
+    assert "ORDER BY l.id DESC LIMIT $link_cap" in graph._ACTIVE_LINKS
+    assert "ORDER BY l.id DESC LIMIT $link_cap" in graph._ALL_LINKS
+
+
 def test_graph_payload_bounds_and_endpoints(monkeypatch):
     monkeypatch.setattr(graph, "MAX_GRAPH_ITEMS", 4)
     monkeypatch.setattr(graph, "MAX_GRAPH_LINKS", 5)

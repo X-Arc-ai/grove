@@ -1,7 +1,7 @@
 // Growth (ruling R4): a later read adds to the map in small steps and moves nothing that is drawn.
 // The first read of a session is the map itself, so it draws at once.
 const assert=require('assert');
-const {signedIn,settle,drawn,item,link}=require('./lib/graph-sandbox.cjs');
+const {signedIn,settle,drawn,item,link,forceRuns}=require('./lib/graph-sandbox.cjs');
 
 const READ='2026-11-04T12:00:00Z';
 function world(leaves){
@@ -66,6 +66,18 @@ function grow(data,count,tag){
   assert(spent<8000,'A read of 1,500 new nodes takes '+spent+' ms');
   const spots=big.box.GroveView.nodes().map(n=>n.x+','+n.y);
   assert.equal(new Set(spots).size,spots.length,'No two nodes of a large arrival share a spot');
+
+  // A large map skips the forces. A small account in the same tab gets them back.
+  const tick=g=>['charge','collide','link','hubX','hubY'].forEach(name=>g.d3Force(name)(.5));
+  const before2=forceRuns.count;tick(big.box.GroveView.graph());
+  assert.equal(forceRuns.count,before2,'A map above 1,500 nodes runs no structural force');
+  const smallData=world(20);
+  big.box.GroveView.clear();
+  Object.assign(bigData,smallData);
+  await big.box.reloadGrove();await settle();
+  assert.equal(big.box.GroveView.nodes().length,22,'The small account reads its own map');
+  const before3=forceRuns.count;tick(big.box.GroveView.graph());
+  assert.equal(forceRuns.count,before3+5,'A small map in the same tab runs the forces again');
 
   // A new session on the same page draws its first read at once.
   box.GroveView.clear();
