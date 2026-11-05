@@ -14,7 +14,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
-from onboarding_sequence import OnboardingHandler
+from onboarding_sequence import OnboardingHandler, reset_import
 from ui_fidelity import Preview
 
 SELF_ROW = {
@@ -168,6 +168,7 @@ class SettingsHandler(OnboardingHandler):
 
 def reset(server, has_items=True):
     Preview.reset(server)
+    reset_import(server)
     server.signed_in = True
     server.has_items = has_items
     server.connections = 0
