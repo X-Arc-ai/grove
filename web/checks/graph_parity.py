@@ -1,11 +1,12 @@
 """Browser proof of the live map, with invented data on a local check server.
 
 Records every canvas text call in a real page at every zoom, on a graph of about 400 nodes and one
-of about 5,000, at 1440 and 390 px, light and dark. Only the owner's name may be written at rest, and
-it sits below the owner's disc. Then it proves the +X count over a read and a reload, and its click.
+of about 5,000, at 1440 and 390 px, light and dark. Only the owner's name may be written at rest.
+Then it proves the +X count over a read and a reload, and its click.
 
 Run from web/checks:
-    uv run --no-project --python 3.12 --with playwright==1.58.0 python graph_parity.py --shots <folder>
+    uv run --no-project --python 3.12 --with playwright==1.58.0 python graph_parity.py \
+        --shots <folder>
 """
 
 import argparse

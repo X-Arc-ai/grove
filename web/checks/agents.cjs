@@ -118,7 +118,7 @@ function drawn(page,type,scale){
     assert.deepEqual(drawn(page,kind,1),drawn(page,style,1),kind+' draws as '+style);
   }
   for(const hub of ['organisation','plan']){
-    assert(drawn(page,hub,1).text.length>0,hub+' draws its name in the disc, in hub style');
+    assert.equal(drawn(page,hub,1).text.length,0,hub+' draws no text inside its disc (ruling R5)');
     assert(t3.nodeR({type:hub})>=38,hub+' takes a hub size');
   }
   assert.equal(drawn(page,'place',1).text.length,0,'A kind that is no hub draws no name in its disc');
