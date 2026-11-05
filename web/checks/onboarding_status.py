@@ -3,6 +3,7 @@
 import argparse
 from pathlib import Path
 from urllib.parse import urlparse
+
 from onboarding_sequence import OnboardingHandler, progress_body, serve
 
 original_get = OnboardingHandler.do_GET
@@ -142,30 +143,43 @@ def main(shots):
                 )
                 == "rgb(22, 163, 74)"
             )
-            page.screenshot(
-                path=str(shots / "claude-complete.png"), animations="disabled"
-            )
+            page.screenshot(path=str(shots / "claude-complete.png"), animations="disabled")
             page.get_by_role("button", name="Next step", exact=True).click()
             expect(page.locator(".gp-complete-check")).to_be_visible()
             # Six fixed rows, Gmail first, with no catalog dump and none of the old copy.
             names = page.locator("[data-pipedream-select] strong").all_inner_texts()
             assert names == [
-                "Gmail", "Google Calendar", "Notion", "Slack", "Linear", "Dropbox",
+                "Gmail",
+                "Google Calendar",
+                "Notion",
+                "Slack",
+                "Linear",
+                "Dropbox",
             ], names
-            for text in ("Check connections", "apps in the catalog", "Connect your accounts", "All apps", "0codekit"):
+            for text in (
+                "Check connections",
+                "apps in the catalog",
+                "Connect your accounts",
+                "All apps",
+                "0codekit",
+            ):
                 expect(page.get_by_text(text)).to_have_count(0)
             # A search ranks apps with a logo first, and shows no app without an account.
             page.get_by_role("searchbox").fill("code")
             expect(page.locator("[data-pipedream-select]").first).to_contain_text("Gmail")
+            # A catalog name may start with an underscore, and its row stays usable.
+            for name in ("Connect 0codekit", "Connect 1msg"):
+                expect(page.get_by_role("button", name=name, exact=True)).to_be_enabled()
             page.get_by_role("searchbox").fill("")
             expect(page.locator("[data-pipedream-select]")).to_have_count(6)
-            page.screenshot(
-                path=str(shots / "pipedream-catalog.png"), animations="disabled"
-            )
+            # A failed status read leaves the Connect control usable.
+            expect(page.get_by_role("button", name="Connect Gmail", exact=True)).to_be_enabled()
+            page.screenshot(path=str(shots / "pipedream-catalog.png"), animations="disabled")
             assert not errors, errors
             assert [row["provider"] for row in server.uploads] == ["claude_ai"]
             print(
-                "PASS green check on acceptance, real ring, paced real nodes, six fixed rows with Gmail first, logo ranking, no old copy"
+                "PASS green check on acceptance, real ring, paced real nodes, six fixed rows with "
+                "Gmail first, logo ranking, underscore catalog rows, Gmail control, no old copy"
             )
             browser.close()
     finally:

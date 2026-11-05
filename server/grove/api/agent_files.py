@@ -10,6 +10,7 @@ send application/octet-stream without a preflight, and the session cookie is Sam
 
 import os
 import re
+import stat
 import unicodedata
 from pathlib import Path
 from typing import Annotated, Any
@@ -18,10 +19,12 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, Request
 from starlette.concurrency import run_in_threadpool
 
+from grove import clock
 from grove.api.errors import ApiError, invalid_arguments, unauthenticated, unavailable
 from grove.api.session import current_session
 from grove.api.views import read_json_body
 from grove.demo_policy import is_demo_world
+from grove.instruction_names import TEMP_PREFIX, is_instruction_name
 from grove.views.session import ViewSession
 
 PREFIX = "/v1/agent-files"
@@ -32,26 +35,61 @@ MAX_FILE_BYTES = 32 * 1024 * 1024
 MAX_NOTE_BYTES = 70 * 1024
 MAX_TITLE_CHARS = 100
 MAX_NAME_BYTES = 200
+NOTE_SUFFIX = ".md"
+# An earlier build added the suffix after the cut, so a stored note name can be this long.
+MAX_STORED_NAME_BYTES = MAX_NAME_BYTES + len(NOTE_SUFFIX)
 MAX_WORLD_BYTES = 1024 * 1024 * 1024
 MAX_WORLD_FILES = 200
 NOTES = "notes"
-TEMP_PREFIX = ".upload-"
+# Longer than any upload runs, so a temporary file of this age is what a killed API left.
+TEMP_MAX_AGE_SECONDS = 3600
 KINDS = {"file": "", "note": NOTES}
 
 router = APIRouter(prefix=PREFIX)
 Session = Annotated[ViewSession, Depends(current_session)]
 
 
-def clean_name(raw: str) -> str:
-    """One plain file name: no folder, no control character, no hidden or reserved name."""
-    name = unicodedata.normalize("NFC", raw).replace("\\", "/").rsplit("/", 1)[-1]
-    name = "".join(char for char in name if char.isprintable()).strip().lstrip(".").strip()
+def _utf8(text: str, field: str) -> bytes:
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:  # a lone surrogate, which JSON can carry
+        raise invalid_arguments("The text holds a broken character.", field) from None
+
+
+def clean_name(raw: str, room: int = 0) -> str:
+    """One plain file name: no folder, no control character, no hidden or reserved name.
+
+    `room` is the bytes of a suffix that the caller adds after. A URL's decoder turns a lone
+    surrogate into U+FFFD, so that character is refused as the surrogate is."""
+    _utf8(raw, "name")
+    if "\ufffd" in raw:
+        raise invalid_arguments("The text holds a broken character.", "name")
+    name = "".join(char for char in raw if char.isprintable())
+    name = unicodedata.normalize("NFC", name).replace("\\", "/").rsplit("/", 1)[-1]
+    name = name.lstrip(". ").rstrip(" ")
     if not name or name == NOTES:
         raise invalid_arguments("The file needs a name.", "name")
-    while len(name.encode("utf-8")) > MAX_NAME_BYTES:
+    while len(name.encode("utf-8")) > MAX_NAME_BYTES - room:
         stem, dot, suffix = name.rpartition(".")
         name = stem[:-1] + dot + suffix if dot and len(suffix) <= 16 and stem else name[:-1]
+    return name.rstrip(" ")
+
+
+def _allowed(name: str) -> str:
+    """The name, unless OpenCode would act on a file of that name in the world's folder."""
+    if is_instruction_name(name):
+        raise invalid_arguments("This name is kept for the agent. Choose another name.", "name")
     return name
+
+
+def _listable(name: str) -> bool:
+    """A name the listing could give. It is never cleaned: a stored name comes off as it is."""
+    return (
+        name.isprintable()
+        and not name.startswith(".")
+        and not {"/", "\\"} & set(name)
+        and len(name.encode("utf-8")) <= MAX_STORED_NAME_BYTES
+    )
 
 
 def world_folder(session: ViewSession, *, create: bool) -> Path:
@@ -88,13 +126,36 @@ def _listing(folder: Path) -> list[dict[str, Any]]:
     return _rows(folder, "file") + _rows(folder, "note")
 
 
-def _check_room(folder: Path, size: int, name: str, kind: str) -> None:
-    rows = _listing(folder)
-    others = [row for row in rows if (row["kind"], row["name"]) != (kind, name)]
-    if (
-        len(others) >= MAX_WORLD_FILES
-        or sum(row["bytes"] for row in others) + size > MAX_WORLD_BYTES
-    ):
+def _disk_use(folder: Path, temp: Path | None) -> dict[Path, int]:
+    """Every file on disk under the world's folder and its size, hidden ones too.
+
+    `temp` is the running request's own upload, which the caller counts by size. The temporary
+    file of another request counts while it runs. One that is older than any upload is what a
+    killed API left: no listing shows it and no DELETE reaches it, so it goes here."""
+    oldest = clock.now().timestamp() - TEMP_MAX_AGE_SECONDS
+    found = {}
+    for path in folder.rglob("*"):
+        try:
+            info = path.lstat()
+            if path == temp or stat.S_ISDIR(info.st_mode):
+                continue
+            if (
+                path.parent == folder
+                and path.name.startswith(TEMP_PREFIX)
+                and info.st_mtime < oldest
+            ):
+                path.unlink(missing_ok=True)
+                continue
+        except FileNotFoundError:  # another request finished with it
+            continue
+        found[path] = info.st_size
+    return found
+
+
+def _check_room(folder: Path, size: int, name: str, kind: str, temp: Path | None = None) -> None:
+    others = _disk_use(folder, temp)
+    others.pop(folder / KINDS[kind] / name, None)
+    if len(others) >= MAX_WORLD_FILES or sum(others.values()) + size > MAX_WORLD_BYTES:
         raise ApiError(413, "too_large", "Your Grove has no room for this file.")
 
 
@@ -105,7 +166,11 @@ def _write(folder: Path, kind: str, name: str, data: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as out:
             out.write(data)
-        os.replace(temp, target)
+        # A link never replaces a file, so of two requests for one name only one gets it.
+        os.link(temp, target)
+    except FileExistsError:
+        message = "A note with this title already exists. Choose another title."
+        raise ApiError(409, "conflict", message) from None
     finally:
         temp.unlink(missing_ok=True)
 
@@ -134,7 +199,7 @@ async def list_files(request: Request, session: Session) -> dict[str, Any]:
 async def add_file(request: Request, session: Session) -> dict[str, Any]:
     await _eligible(request, session)
     _no_query(request, frozenset({"name"}))
-    name = clean_name(request.query_params.get("name", ""))
+    name = _allowed(clean_name(request.query_params.get("name", "")))
     media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     if media_type != FILE_TYPE:
         raise invalid_arguments(f"the body must be {FILE_TYPE}", "content-type")
@@ -154,7 +219,7 @@ async def add_file(request: Request, session: Session) -> dict[str, Any]:
                 out.write(chunk)
         if size == 0:
             raise invalid_arguments("The file is empty.", "body")
-        _check_room(folder, size, name, "file")
+        _check_room(folder, size, name, "file", temp)
         os.replace(temp, folder / name)
     finally:
         temp.unlink(missing_ok=True)
@@ -171,8 +236,10 @@ async def add_note(request: Request, session: Session) -> dict[str, Any]:
     title, text = body["title"], body["body"]
     if not isinstance(title, str) or not isinstance(text, str) or not text.strip():
         raise invalid_arguments("A note needs a title and some text.", "body")
-    name = clean_name(title[:MAX_TITLE_CHARS]) + ".md"
-    data = f"# {title.strip()}\n\n{text.strip()}\n".encode()
+    data = _utf8(f"# {title.strip()}\n\n{text.strip()}\n", "body")
+    # A slash in a title is text, not a folder: Q1/plan and Q2/plan are two notes.
+    stem = re.sub(r"[/\\]", "-", title[:MAX_TITLE_CHARS])
+    name = _allowed(clean_name(stem, len(NOTE_SUFFIX)) + NOTE_SUFFIX)
     folder = world_folder(session, create=True)
     _check_room(folder, len(data), name, "note")
     _write(folder, "note", name, data)
@@ -183,7 +250,7 @@ async def add_note(request: Request, session: Session) -> dict[str, Any]:
 async def remove_file(request: Request, session: Session, kind: str, name: str) -> dict[str, Any]:
     await _eligible(request, session)
     _no_query(request)
-    if kind not in KINDS or clean_name(name) != name:
+    if kind not in KINDS or not _listable(name):
         raise invalid_arguments("Choose a file from the list.", "name")
     target = world_folder(session, create=False) / KINDS[kind] / name
     if target.is_symlink() or not target.is_file():

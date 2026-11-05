@@ -24,6 +24,7 @@ from grove.runner.loop import (
     LoopSettings,
     PassRun,
     Runner,
+    pass_folder,
     prepare_home,
     run_pass,
     summarise,
@@ -419,6 +420,113 @@ def test_with_no_runner_token_the_service_waits_and_stops_cleanly(tmp_path):
     assert process.returncode == 0
     assert "grove-runner not_configured missing=GROVE_RUNNER_TOKEN" in output
     assert "Traceback" not in output
+
+
+# Written out here, not read from the rule, so a name dropped from the rule fails this test.
+INSTRUCTION_NAMES = [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "CONTEXT.md",
+    "opencode.json",
+    "opencode.jsonc",
+    "tui.json",
+    "tui.jsonc",
+    "tsconfig.json",
+    "jsconfig.json",
+    "bunfig.toml",
+    "package.json",
+    "node_modules",
+    "bun.lock",
+    "bun.lockb",
+    ".env.local",
+    ".env.production",
+    ".bunfig.toml",
+    ".npmrc",
+    ".opencode",
+    ".claude",
+    ".agents",
+    ".git",
+    ".env",
+]
+
+
+def _world(tmp_path: Path) -> tuple[LoopSettings, dict, Path, Path]:
+    settings = LoopSettings(
+        api_url="http://api",
+        runner_token="t",
+        gateway_url="http://gateway",
+        home=tmp_path,
+        config_dir=Path("/config"),
+        opencode_bin="opencode",
+        brain_bin="brain",
+        shell_bin="sh",
+    )
+    folder = tmp_path / "worlds" / "world-one"
+    (folder / "notes").mkdir(parents=True)
+    grant = {"world_id": "world-one", "agent": "learner"}
+    return settings, grant, tmp_path / "passes" / "run", folder
+
+
+@pytest.mark.parametrize("agent", ["connector", "curator", "grove", ""])
+def test_a_pass_with_no_read_tool_runs_in_the_folder_with_no_person_file(tmp_path, agent):
+    settings, grant, work, folder = _world(tmp_path)
+    (folder / "plan.txt").write_text("added file text", encoding="utf-8")
+    assert pass_folder(settings, {**grant, "agent": agent}, work) == work
+    assert pass_folder(settings, grant, work) == folder
+
+
+@pytest.mark.parametrize("name", INSTRUCTION_NAMES)
+@pytest.mark.parametrize("case", [str, str.lower, str.upper, str.title], ids=lambda c: c.__name__)
+@pytest.mark.parametrize("depth", [".", "notes", "notes/a", "notes/a/b/c", "other"])
+def test_a_folder_that_holds_an_instruction_name_is_not_used(tmp_path, name, case, depth):
+    settings, grant, work, folder = _world(tmp_path)
+    assert pass_folder(settings, grant, work) == folder
+    (folder / depth).mkdir(parents=True, exist_ok=True)
+    (folder / depth / case(name)).write_text("planted")
+    assert pass_folder(settings, grant, work) == work
+
+
+@pytest.mark.parametrize("name", [".opencode", ".claude", "AGENTS.md"])
+def test_a_folder_of_an_instruction_name_is_refused_as_a_file_of_it_is(tmp_path, name):
+    settings, grant, work, folder = _world(tmp_path)
+    (folder / "notes" / name / "inside").mkdir(parents=True)
+    assert pass_folder(settings, grant, work) == work
+
+
+@pytest.mark.parametrize("name", ["AGENTS.md", "OPENCODE.JSON", "AGENT\u017f.md"])
+def test_an_instruction_name_on_disk_from_an_earlier_build_is_caught(tmp_path, name):
+    settings, grant, work, folder = _world(tmp_path)
+    (folder / "plan.pdf").write_text("plain")
+    (folder / "notes" / name).write_text("planted")
+    assert pass_folder(settings, grant, work) == work
+    (folder / "notes" / name).unlink()
+    assert pass_folder(settings, grant, work) == folder
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "plan.pdf",
+        "agents",
+        "agents.txt",
+        "AGENTS.md.md",
+        "my-AGENTS.md",
+        "opencode.json.md",
+        "package.json.md",
+        ".upload-0123abcd",
+    ],
+)
+def test_a_plain_name_and_a_running_upload_keep_the_world_folder(tmp_path, name):
+    settings, grant, work, folder = _world(tmp_path)
+    (folder / name).write_text("plain")
+    (folder / "notes" / name).write_text("plain")
+    assert pass_folder(settings, grant, work) == folder
+
+
+def test_a_link_still_refuses_the_folder(tmp_path):
+    settings, grant, work, folder = _world(tmp_path)
+    os.symlink(tmp_path / "other", folder / "notes" / "link.txt")
+    assert pass_folder(settings, grant, work) == work
 
 
 def test_a_restart_removes_every_pass_folder_a_killed_runner_left(tmp_path):

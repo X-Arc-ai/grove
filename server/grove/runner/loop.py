@@ -25,6 +25,7 @@ from typing import Any
 import httpx
 
 from grove import clock
+from grove.instruction_names import is_instruction_name
 
 # The isolation flags (models lane, opencode-capture): with no PROJECT_CONFIG flag, a run outside
 # git walks up to a real ~/.opencode; with no CLAUDE_CODE flags it reads Claude Code's files.
@@ -196,16 +197,28 @@ def opencode_env(
     return env
 
 
+READER = "learner"
+
+
 def pass_folder(settings: LoopSettings, grant: dict[str, Any], work: Path) -> Path:
-    """OpenCode's working folder: the world's added files, once it has any.
+    """OpenCode's working folder: for the Learner, the world's added files, once it has any.
+
+    Only the Learner has the read tool (runner/agents/learner.md). Every other pass has no use for
+    a person's files, so it runs in `work`, which holds none.
 
     The API writes that folder (grove.api.agent_files) and it outlives the pass. OpenCode's own
     session store and logs stay in `work`, so the pass's folder still goes when the pass ends.
 
     OpenCode's read tool follows a link out of its working folder, and the API never makes one,
-    so a folder that holds a link is not used: it would reach another world's files."""
+    so a folder that holds a link is not used: it would reach another world's files. A folder that
+    holds an instruction name at any depth is not used either, also when an earlier build let the
+    name in: its text would reach the model as instructions (grove.instruction_names)."""
     folder = settings.home / "worlds" / grant["world_id"]
-    if not folder.is_dir() or any(path.is_symlink() for path in folder.rglob("*")):
+    if (
+        grant["agent"] != READER
+        or not folder.is_dir()
+        or any(path.is_symlink() or is_instruction_name(path.name) for path in folder.rglob("*"))
+    ):
         return work
     return folder
 
