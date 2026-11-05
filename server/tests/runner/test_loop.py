@@ -436,6 +436,8 @@ INSTRUCTION_NAMES = [
     "bunfig.toml",
     "package.json",
     "node_modules",
+    "HEAD",
+    "commondir",
     "bun.lock",
     "bun.lockb",
     ".env.local",
@@ -465,6 +467,22 @@ def _world(tmp_path: Path) -> tuple[LoopSettings, dict, Path, Path]:
     (folder / "notes").mkdir(parents=True)
     grant = {"world_id": "world-one", "agent": "learner"}
     return settings, grant, tmp_path / "passes" / "run", folder
+
+
+def test_a_refused_world_folder_leaves_a_line_with_a_count_and_no_name(tmp_path, capsys):
+    settings, grant, work, folder = _world(tmp_path)
+    (folder / "notes" / "Context.md").write_text("a note", encoding="utf-8")
+    assert pass_folder(settings, grant, work) == work
+    out = capsys.readouterr().out
+    assert "grove-runner world_folder_refused world=world-one refused=1" in out
+    assert "Context" not in out
+
+
+def test_a_used_world_folder_leaves_no_refusal_line(tmp_path, capsys):
+    settings, grant, work, folder = _world(tmp_path)
+    (folder / "plan.txt").write_text("added file text", encoding="utf-8")
+    assert pass_folder(settings, grant, work) == folder
+    assert "world_folder_refused" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("agent", ["connector", "curator", "grove", ""])
