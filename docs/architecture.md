@@ -59,10 +59,11 @@ authentication. OAuth provides scoped grants, PKCE, dynamic registration, consen
 and revocation. The anonymous root redirects to `/login`; that route also exposes signup.
 See [sign-in](signin.md) and [hosts](hosts.md).
 
-The general registry still has `DEFAULT_TOOLS = ()`. A separate authority-checked pair exposes
-restricted Cedar `store` and `recall` for prepared synthetic data. The rehearsal uses recall
-only. General store/read acceptance does not follow from this pair. At the dated snapshot, owner
-login and Muse acceptance were **NOT RUN**. The
+The general registry, `DEFAULT_TOOLS`, holds `store` and `recall` for the owner of an ordinary
+world. Recall is a bounded current read, without the D14 owner lease and filter. A separate
+authority-checked pair exposes restricted Cedar `store` and `recall` for prepared synthetic data.
+The rehearsal uses recall only. General store/read acceptance does not follow from this pair or
+from that source. At the dated snapshot, owner login and Muse acceptance were **NOT RUN**. The
 [later Muse update](submission-status.md#prepared-account-muse-update) records the Muse run.
 The source refuses mixed read/write MCP batches.
 

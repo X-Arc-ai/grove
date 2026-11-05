@@ -145,7 +145,7 @@ At that time, the natural Muse questions and automatic Grove use were unverified
 | Storage, writer, history, and time | Source components exist with scoped tests; a queued request is not a saved receipt |
 | Ordinary chat uploads | PR #58 supports screened ChatGPT/Claude JSON and ZIP retention; the dated real Claude ZIP and exact repeat passed on PR60; no graph Items or links result from retention alone |
 | Restricted demo | Prepared synthetic Cedar/project data supports restricted recall; the upload does not create that graph |
-| General MCP | `DEFAULT_TOOLS = ()`; the restricted pair does not establish general `store`/`recall` acceptance |
+| General MCP | `DEFAULT_TOOLS` holds `store` and `recall` for the owner of an ordinary world; recall is a bounded current read without the D14 owner lease and filter; no general `store`/`recall` acceptance is recorded, and the restricted pair does not establish it |
 | Calendar/Git | Read-only connector source exists; actual consent and configured live-source acceptance remain open |
 | Pipedream | Authorization, status, catalog, and disconnect source; no content import or synchronization |
 | Files and notes | Merged PR #61 supplies screened storage and ordinary note Requests; files remain `held_provenance` with no file Request; typed-file graph admission remains separate |
