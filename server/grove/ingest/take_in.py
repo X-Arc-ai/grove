@@ -25,6 +25,12 @@ from grove.ingest.connector import (
     spec_for,
 )
 from grove.ingest.connector import chat_locator as _chat_locator
+from grove.ingest.import_parts import (
+    IMPORT_PROVIDERS,
+    MAX_IMPORT_PARTS,
+    ImportLimit,
+    screen_import_parts,
+)
 from grove.screening import Message, ScreenedSource, Screener
 from grove.store.connection import Driver
 from grove.store.query import WorldQuery
@@ -73,10 +79,12 @@ class TakeInResult:
     screened: dict[str, int] = field(default_factory=dict)
     source_ids: list[str] = field(default_factory=list)
     episode_ids: list[str] = field(default_factory=list)
+    requests_added: int = 0
+    held_sources: int = 0
 
     def to_api(self) -> dict[str, Any]:
         """Counts and ids only: never text, never a key."""
-        return {
+        answer = {
             "state": self.state,
             "provider": self.provider,
             "connector_id": self.connector_id,
@@ -89,6 +97,15 @@ class TakeInResult:
             "failed_chats": self.failed_chats,
             "screened": dict(sorted(self.screened.items())),
         }
+        if self.provider in IMPORT_PROVIDERS:
+            answer["processing"] = {
+                "contract": "import_progress.v1",
+                "provider": self.provider,
+                "requests_added": self.requests_added,
+                "held_sources": self.held_sources,
+                "status_url": f"/v1/sources/import-progress?provider={self.provider}",
+            }
+        return answer
 
 
 def _messages(delta: list[ParsedMessage]) -> list[Message]:
@@ -177,6 +194,29 @@ def parts_of(delta: list[ParsedMessage]) -> list[list[ParsedMessage]]:
     return parts
 
 
+@dataclass(repr=False)
+class _PreparedChat:
+    delta: list[ParsedMessage]
+    parts: list[ScreenedSource]
+    kept: list[ParsedMessage]
+
+
+def _prepare_chat(driver, world_id, spec, connector_id, chat, screener) -> _PreparedChat:
+    locator = _chat_locator(spec.key_prefix, chat.chat_id)
+    query = WorldQuery(driver, world_id)
+    stored, _ = stored_keys(query, connector_id, locator)
+    blocked = blocked_message_keys(query, locator, (message.key for message in chat.messages))
+    delta = [message for message in chat.messages if message.key not in stored | blocked]
+    if spec.provider in IMPORT_PROVIDERS:
+        parts = screen_import_parts(screener, locator, _messages(delta))
+    else:
+        parts = [screener.screen_source(locator, _messages(part)) for part in parts_of(delta)]
+    kept = []
+    for part in parts:
+        kept.extend(_kept(part, locator, delta))
+    return _PreparedChat(delta, parts, kept)
+
+
 def _take_chat(
     driver: Driver,
     world_id: str,
@@ -186,23 +226,19 @@ def _take_chat(
     screener: Screener,
     result: TakeInResult,
     sync_owner: str | None = None,
+    prepared: _PreparedChat | None = None,
 ) -> None:
     """Screen bounded source parts, cut episodes over the whole delta, then commit atomically.
     Source storage limits must not inflate the episode count used by evidence thresholds."""
-    locator = _chat_locator(spec.key_prefix, chat.chat_id)
-    query = WorldQuery(driver, world_id)
+    part_budget = len(prepared.parts) if prepared is not None else None
     for _ in range(MAX_TRIES):
-        stored, _sources = stored_keys(query, connector_id, locator)
-        blocked = blocked_message_keys(query, locator, (message.key for message in chat.messages))
-        delta = [message for message in chat.messages if message.key not in stored | blocked]
+        current = prepared or _prepare_chat(driver, world_id, spec, connector_id, chat, screener)
+        prepared = None
+        delta, screened_parts, kept = current.delta, current.parts, current.kept
+        if part_budget is not None and len(screened_parts) > part_budget:
+            raise DeltaMoved()
         if not delta:
             return
-        screened_parts = []
-        kept = []
-        for part in parts_of(delta):
-            screened = screener.screen_source(locator, _messages(part))
-            kept.extend(_kept(screened, locator, part))
-            screened_parts.append(screened)
         cuts = cut_episodes(spec, chat, kept, clock.now(world_id))
         moments = [message.at for message in delta if message.at is not None]
         events = {
@@ -241,6 +277,8 @@ def _take_chat(
         result.messages_kept += written["kept_messages"]
         result.source_ids.extend(written["source_ids"])
         result.episode_ids.extend(written["episode_ids"])
+        result.requests_added += written.get("requests_added", 0)
+        result.held_sources += written.get("held_sources", 0)
         for cls, count in written["counts"].items():
             result.screened[cls] = result.screened.get(cls, 0) + count
         return
@@ -307,9 +345,29 @@ def take_parsed(
     attempted = attempted_at or clock.now(world_id)
     result = TakeInResult(state=NOTHING_NEW, provider=spec.provider, connector_id=connector_id)
     result.chats = len(chats)
-    for chat in chats:
+    prepared_chats = None
+    if spec.provider in IMPORT_PROVIDERS:
+        prepared_chats = []
+        total_parts = 0
+        for chat in chats:
+            try:
+                prepared = _prepare_chat(driver, world_id, spec, connector_id, chat, screener)
+            except (KeyChanged, DeltaMoved, InvalidRecord):
+                prepared_chats.append(None)
+                continue
+            total_parts += len(prepared.parts)
+            if total_parts > MAX_IMPORT_PARTS:
+                raise ImportLimit()
+            prepared_chats.append(prepared)
+    for index, chat in enumerate(chats):
+        prepared = prepared_chats[index] if prepared_chats is not None else None
+        if prepared_chats is not None and prepared is None:
+            result.failed_chats += 1
+            continue
         try:
-            _take_chat(driver, world_id, spec, connector_id, chat, screener, result, sync_owner)
+            _take_chat(
+                driver, world_id, spec, connector_id, chat, screener, result, sync_owner, prepared
+            )
         except (KeyChanged, DeltaMoved, InvalidRecord):
             result.failed_chats += 1
     if result.messages_kept:

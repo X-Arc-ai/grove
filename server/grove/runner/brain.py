@@ -13,6 +13,7 @@ from typing import Any
 
 from grove.learner_input import select_input
 from grove.prompts import DataBlock, render_blocks
+from grove.store.current import TERMINAL_ROLES
 from grove.store.enums import ENUMS
 from grove.store.query import WorldQuery
 from grove.views.registry import read_registry
@@ -199,6 +200,7 @@ def _pass_input(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str,
         "agent": record["agent"],
         "requests": entries,
         "job": job,
+        "world_items": query.read("MATCH (i:Item) RETURN count(i) AS n")[0]["n"],
         "kinds": kinds,
         "meanings": meanings,
         "statement_classes": list(ENUMS["statement_class"]),
@@ -209,8 +211,10 @@ def _pass_input(driver: Any, world_id: str, record: dict[str, Any]) -> dict[str,
 
 FIELD_GUIDE = {
     "create_item": "op_id, kind, title, became_true, evidence_refs, reason; optional temp_id "
-    "(a new id that starts with the dollar sign, for later ops of the batch), summary, status "
-    "(required for task, plan, problem and assumption), recheck_by (required with a live status)",
+    "(a new id that starts with the dollar sign, for later ops of the batch), summary, "
+    "search_terms (a list of short strings, never written into the summary), status (required "
+    "for task, plan, problem and assumption), recheck_by (an ISO time, such as a week ahead, "
+    "required with a status that its kind lists in recheck_statuses)",
     "create_link": "op_id, from, meaning, to, became_true, evidence_refs, reason; from and to are "
     "item ids or temp ids of this batch; meaning is one of meanings, and its ends take the kinds "
     "it lists; recheck_by (an ISO time, such as a week ahead) when the meaning has "
@@ -254,10 +258,24 @@ def vocabulary(query: WorldQuery) -> tuple[list[dict], list[dict]]:
     kind_list = []
     for row in sorted(kinds.values(), key=lambda r: r["name"]):
         try:
-            words = [entry.get("status") for entry in json.loads(row["vocabulary"] or "[]")]
+            entries = json.loads(row["vocabulary"] or "[]")
+            words = [entry.get("status") for entry in entries]
+            live = [
+                entry.get("status")
+                for entry in entries
+                if row["class"] == "work_with_state" and entry.get("role") not in TERMINAL_ROLES
+            ]
         except (ValueError, AttributeError):
-            words = []
-        kind_list.append({"name": row["name"], "class": row["class"], "statuses": words})
+            words, live = [], []
+        kind_list.append(
+            {
+                "name": row["name"],
+                "class": row["class"],
+                "statuses": words,
+                # The writer refuses a live status with no re-check date (missing_recheck).
+                "recheck_statuses": live,
+            }
+        )
     meanings = [
         {
             "name": row["name"],

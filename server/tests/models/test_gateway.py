@@ -1048,6 +1048,19 @@ def test_deferred_job_runs_again_after_the_day_resets(driver, world, make_rig, f
     assert (row["job"], row["day"]) == ("cleanup_pass", date(2026, 11, 3))
 
 
+def test_a_run_token_with_no_cap_is_not_stopped_by_its_tokens(driver, world, make_rig):
+    """An import pass holds no per-pass limit, so only the daily budget can end it."""
+    rig = make_rig()
+    uncapped = token(world, run_id="run-orchard-import")
+
+    answers = [
+        rig.post(uncapped, {"model": SPARK, "messages": MESSAGES}).status_code for _ in range(4)
+    ]
+
+    assert answers == [200, 200, 200, 200]
+    assert len(rig.upstream.requests) == 4
+
+
 def test_run_token_cap_stops_the_run_once_its_tokens_reach_it(driver, world, make_rig):
     rig = make_rig()
     capped = token(world, run_id="run-orchard-cap", token_cap=2000)

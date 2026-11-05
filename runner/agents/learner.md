@@ -34,16 +34,23 @@ Do these steps in this order:
 1. Run brain pass. Read each request's input_complete flag and input_reasons before its data blocks. If input_complete is false, stop that request. Do not propose or finish it. Held source work must remain pending.
 2. Read every eligible message in the supplied order. Keep its own message key, locator, source time, speaker, modality and original author. A source read time or an episode boundary never replaces a message time. Never select a timezone or a speaker that the packet does not establish.
 3. Capture each distinct decision, assignment, promise, report and incident, including facts stated in passing, forwarded messages and pasted output. A decision needs no later artifact to count as a statement. Machine text stays in the machine's voice. A forwarded message keeps its original author.
-4. Before a new item, use brain recall for the name and for the claim's content. Read plausible matches with brain get. Prefer the smallest supported change to existing structure. Attach restated facts as evidence. Never merge existing items. Never guess between plausible people or merge successive document revisions. If a required identity remains unresolved, leave the request pending and state the reason.
+4. If world_items is 0 in the brain pass answer, the world holds nothing yet, so skip brain recall. Otherwise, before a new item, use brain recall for the name and for the claim's content. Read plausible matches with brain get. Prefer the smallest supported change to existing structure. Attach restated facts as evidence. Never merge existing items. Never guess between plausible people or merge successive document revisions. If a required identity remains unresolved, leave the request pending and state the reason.
 5. Use the batch_form field guide. Its example operations are examples, not facts. Cite only the messages that support each operation. Split a digest into separate facts. Preserve the exact provenance of each cited message. Use became_true unknown when no time is established. Never calculate a date from a relative expression yourself.
 6. A statement is not a completion. A promise stays said. A report of completion stays reported done until an eligible artifact confirms it. A future Calendar entry stays planned after its date passes. Only the writer derives source types. Use the artifact statement class only when the supplied source is itself the artifact.
-7. Every new item needs search terms for retrieval. A changed title or summary needs fresh search terms. They are search aids, not facts or evidence. Reuse the packet's kinds and meanings. Do not invent registry words or bypass a refused ontology proposal.
+7. Every new item needs search terms for retrieval, in its search_terms list and never in its summary. A changed title or summary needs fresh search terms. They are search aids, not facts or evidence. Give recheck_by to each item with a status that its kind lists in recheck_statuses, and to each link whose meaning has needs_recheck_by. Reuse the packet's kinds and meanings. Do not invent registry words or bypass a refused ontology proposal.
 8. Propose one atomic batch with brain propose --request REQUEST_ID and a quoted EOF heredoc. A saved response needs the writer's receipt. If the writer declines it, read the reasons and repair it once. After a second decline, stop the request and report the failure.
 9. Run brain finish REQUEST_ID only when the complete eligible input contains nothing to save. An unsupported operation, an unresolved name, a failed model call or held input is not an empty request. Never finish one of those requests.
 10. End with each request's actual state: saved with a receipt, finished with nothing to save, declined, or pending with its reason.
 
 Rules for every step:
 - Run one brain command in each bash call. Pipes, redirects, a second command, and any command other than brain are refused by the runner.
+- The commands take exactly these forms: brain pass, brain recall WORDS (the words with no option), brain get ITEM_ID, brain finish REQUEST_ID. Never run a help option. Each call spends the pass's token limit, so make no call that a step does not need.
+- A proposal is one bash call of exactly these three lines, with the JSON batch as the middle line:
+
+brain propose --request REQUEST_ID <<'EOF'
+THE BATCH AS JSON
+EOF
+
 - Write nothing to a file. Fetch nothing from the web. These tools are not given to you.
 - Use only what the data blocks state. Never invent a name, a date, a status or an id.
 - Prose names other things by their titles. A title or a reason never holds an id.

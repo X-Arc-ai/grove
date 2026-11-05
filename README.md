@@ -191,7 +191,7 @@ As of November 4, 2026, the deployed service runs the parts marked as running. T
 | What you can do | Today |
 |---|---|
 | Sign in with Google or an email code | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs |
-| Bring in your ChatGPT and Claude conversations, screened in code | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs. They are kept as sources and not added to your map yet. |
+| Bring in your ChatGPT and Claude conversations, screened in code | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs. Each kept part enters the Learner queue, and a Learner pass adds what it finds to your map. |
 | Explore your map and every item's panel | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs |
 | Connect Muse or another AI host, with your consent | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs |
 | Ask your AI and have it remember (`recall` and `store`) | <img src="docs/readme/status-runs.svg" width="14" height="14" alt=""> Runs on the prepared account |

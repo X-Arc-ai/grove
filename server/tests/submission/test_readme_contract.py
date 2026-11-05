@@ -44,7 +44,8 @@ def test_readme_does_not_claim_available_tools_when_registry_is_empty():
 def test_readme_separates_retained_upload_from_prepared_recall():
     """The public demo must not imply that the upload produced the prepared graph."""
     text = (ROOT / "README.md").read_text()
-    assert "They are kept as sources and not added to your map yet." in text
+    assert "not added to your map yet" not in text
+    assert "Each kept part enters the Learner queue" in text
     assert "a prepared account that holds an invented world" in text
     assert "Use Grove store to remember" not in text
 

@@ -512,7 +512,7 @@ def test_an_instruction_name_on_disk_from_an_earlier_build_is_caught(tmp_path, n
         "AGENTS.md.md",
         "my-AGENTS.md",
         "opencode.json.md",
-        "package.json",
+        "package.json.md",
         ".upload-0123abcd",
     ],
 )

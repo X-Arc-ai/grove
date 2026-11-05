@@ -1,10 +1,10 @@
-"""Focused local UI proof: completion check plus a valid underscore-prefixed catalog."""
+"""Focused local UI proof: the accepted check, the real ring, and a valid underscore-prefixed catalog."""
 
 import argparse
 from pathlib import Path
 from urllib.parse import urlparse
 
-from onboarding_sequence import OnboardingHandler, serve
+from onboarding_sequence import OnboardingHandler, progress_body, serve
 
 original_get = OnboardingHandler.do_GET
 
@@ -62,18 +62,13 @@ def main(shots):
                     else route.abort()
                 ),
             )
-            # Control only the 1.5-second illustration timer, without waiting for 54 seconds.
+            # Control only the 1.5-second pacer timer, so a step of the growth is one call here.
             context.add_init_script("""(() => {
                 const original = window.setTimeout; const ticks = [];
-                window.setTimeout = (fn, ms, ...args) => ms === 1500
-                    ? (ticks.push(() => fn(...args)), -ticks.length)
-                    : original(fn, ms, ...args);
-                window.advanceClaudeTick = () => {
-                    const fn = ticks.shift();
-                    if (!fn) throw Error('No preview tick');
-                    fn();
-                };
+                window.setTimeout = (fn, ms, ...args) => ms === 1500 ? (ticks.push(() => fn(...args)), -ticks.length) : original(fn, ms, ...args);
+                window.advanceGrowthTick = () => { const fn = ticks.shift(); if (fn) fn(); return !!fn; };
             })();""")
+            server.auto_import = False
             page = context.new_page()
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
@@ -92,19 +87,54 @@ def main(shots):
             expect(
                 page.get_by_role("heading", name="Start with your conversations")
             ).to_be_visible()
-            # The green check marks the upload, before the graph finishes growing.
-            check = page.locator('[data-source-choice="claude"] .gp-source-check')
+            # The green check marks the accepted upload, before any item exists.
+            tile = page.locator('[data-source-choice="claude"]')
+            check = tile.locator(".gp-source-check")
             expect(check).to_have_css("opacity", "1")
-            assert (
-                check.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(22, 163, 74)"
-            )
+            assert check.evaluate("el => getComputedStyle(el).backgroundColor") == "rgb(22, 163, 74)"
+            expect(tile.locator("strong small")).to_have_text("Added")
             expect(page.locator(".gp-complete-check")).to_have_count(0)
-            for step in range(1, 37):
-                page.evaluate("advanceClaudeTick()")
-                page.wait_for_function(
-                    "step => GroveConversationPreview.view().step === step", arg=step
-                )
-            expect(page.locator('[data-source-choice="claude"] strong small')).to_have_text("")
+            assert page.evaluate("GroveImportGrowth.active()")
+            # The ring is the server's count, and the check stays beside it.
+            server.progress["claude_ai"] = progress_body(
+                "claude_ai", state="processing", sources_total=4, requests_total=4,
+                extracted_count=1, processing_count=1, queued_count=2,
+            )
+            page.locator("[data-import-refresh]").click()
+            page.wait_for_function(
+                "() => document.querySelector('[data-source-choice=claude]').style.getPropertyValue('--source-progress') === '0.25'"
+            )
+            expect(page.locator('[data-import-mark="claude"]')).to_have_attribute("aria-label", "Claude import, 25 percent")
+            expect(check).to_have_css("opacity", "1")
+            # Twelve real items arrive. The view shows a few per step, in the order of the growth.
+            server.graph_limit = 13
+            page.wait_for_timeout(5200)
+            page.evaluate("advanceGrowthTick()")
+            page.wait_for_function("() => GroveSimulation.getState().totalNodeCount === 13")
+            page.evaluate("advanceGrowthTick()")
+            page.wait_for_function("() => GroveView.nodes().length > 1")
+            shown = page.evaluate("GroveView.nodes().length")
+            assert 1 < shown < 13, shown
+            assert page.evaluate("GroveSimulation.getState().currentNodeCount") == shown
+            # A revealed node opens the server's detail.
+            revealed = page.evaluate("GroveView.nodes().find(n => n.id !== 'grove-self').id")
+            with page.expect_request(lambda request: urlparse(request.url).path == "/v1/views/node/" + revealed):
+                page.evaluate("id => GroveView.openNode(id)", revealed)
+            expect(page.locator("#detail-body")).not_to_be_empty()
+            page.evaluate("GroveView.close()")
+            server.progress["claude_ai"] = progress_body(
+                "claude_ai", state="complete", sources_total=4, requests_total=4, extracted_count=4,
+            )
+            page.locator("[data-import-refresh]").click()
+            expect(page.locator('[data-import-mark="claude"] .gp-complete-check')).to_be_visible()
+            for _ in range(120):
+                if not page.evaluate("GroveImportGrowth.active()"):
+                    break
+                page.evaluate("advanceGrowthTick()")
+                page.wait_for_timeout(100)
+            assert not page.evaluate("GroveImportGrowth.active()")
+            page.wait_for_function("() => GroveView.nodes().length === 13")
+            expect(tile.locator("strong small")).to_have_text("Added")
             expect(check).to_have_css("opacity", "1")
             expect(page.locator(".gp-complete-check")).to_be_visible()
             assert (
@@ -146,10 +176,10 @@ def main(shots):
             expect(page.get_by_role("button", name="Connect Gmail", exact=True)).to_be_enabled()
             page.screenshot(path=str(shots / "pipedream-catalog.png"), animations="disabled")
             assert not errors, errors
-            assert not server.uploads
+            assert [row["provider"] for row in server.uploads] == ["claude_ai"]
             print(
-                "PASS green check on upload, six fixed rows with Gmail first, logo ranking, "
-                "underscore catalog rows, Gmail control, no old copy"
+                "PASS green check on acceptance, real ring, paced real nodes, six fixed rows with "
+                "Gmail first, logo ranking, underscore catalog rows, Gmail control, no old copy"
             )
             browser.close()
     finally:
