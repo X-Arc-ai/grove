@@ -276,7 +276,7 @@ function legendRows(elements){
   // and Health stayed on a dash. It is no source, so no panel lists it.
   {
     const selfRow={connector_id:'c-self',type:'person_in_views',provider:null,read_count:0,failed_count:0,last_outcome:null};
-    const upload={connector_id:'c-chat',type:'past_ai_conversations',provider:'chatgpt',read_count:3,failed_count:0,last_outcome:'took_in',contribution:{sources:3,nodes:12,edges:30,item_ids:['p002']}};
+    const upload={connector_id:'c-chat',type:'past_ai_conversations',provider:'chatgpt',read_count:3,failed_count:0,last_outcome:'took_in',contribution:{sources:3,nodes:12,edges:30,item_ids:['p002'],removable:true}};
     const w=Object.assign(liveWorld(),{connectors:[upload,selfRow]}),sv=makeServer(w);
     const stored={'grove-minimal-codex-v3':JSON.stringify({version:3,schema:4,account:'acct-default',auth:{provider:'email',email:'robin@example.test'},onboardingComplete:true,onboardingStep:3,tourComplete:true})};
     const pg=page(sv,stored,AUTH_FILES,HOOK),p=pg.sandbox.productTest;await settle();
@@ -285,7 +285,9 @@ function legendRows(elements){
     p.ui.settingsTab='sources';p.render(true);
     assert(p.html().includes('data-live-row="chatgpt"'),'Sources lists the upload');
     assert(/data-contribution-nodes="chatgpt">12</.test(p.html())&&/data-contribution-edges="chatgpt">30</.test(p.html()),'Sources shows stored contributions');
-    assert(p.html().includes('data-source-remove="c-chat"'),'An upload that holds sources can be removed');
+    assert(p.html().includes('data-source-remove="c-chat"'),'A source the server can forget offers Remove');
+    upload.contribution.removable=false;await p.handle('refresh-live-data');await settle();
+    assert(!p.html().includes('data-source-remove='),'A source the server cannot forget offers no Remove');
     assert(!p.html().includes('c-self'),'The row of the person is no source');
     p.ui.panel=null;p.render(true);
     pg.elements['health-link'].onclick({preventDefault(){}});await settle();

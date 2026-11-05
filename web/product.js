@@ -385,7 +385,8 @@
     if(a.app){var back=a.status!=='connected';return sourceAction(back?'reconnect':'disconnect',(back?'Reconnect ':'Disconnect ')+a.label,'data-app-toggle="'+esc(a.provider)+'"');}
     var c=a.contribution,again=canUpload(a.id)?sourceAction('update','Upload '+a.label+' export again','data-upload-provider="'+esc(a.id)+'"'):'';
     if(a.connected&&a.status==='connected')again+=sourceAction('disconnect','Disconnect '+a.label,'data-connection-off="'+esc(a.connectorId)+'"');
-    return again+(c&&c.sources?sourceAction('remove','Remove '+a.label,'data-source-remove="'+esc(a.connectorId)+'"'):'');
+    // Remove appears only when the server says that it can forget this connector.
+    return again+(c&&c.removable?sourceAction('remove','Remove '+a.label,'data-source-remove="'+esc(a.connectorId)+'"'):'');
   }
   function liveSourceRow(a){
     var words={took_in:'Import accepted',nothing_new:'No new messages',kept_out:'No retained messages',failed:'Import failed'};

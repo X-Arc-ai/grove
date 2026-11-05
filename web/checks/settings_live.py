@@ -50,6 +50,7 @@ def chatgpt_row():
             "nodes": 12,
             "edges": 30,
             "item_ids": ["p002", "p003"],
+            "removable": True,
         },
     }
 
