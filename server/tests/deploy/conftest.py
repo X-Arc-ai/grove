@@ -190,8 +190,11 @@ base = f"{parts.scheme}://{parts.netloc}"
 hdr = ["HTTP/1.1 200 OK"]
 if agent == os.environ.get("FAKE_REFUSE_AGENT"):
     status, body = 403, {}
+elif parts.path == "/" and "/" not in os.environ.get("FAKE_NO_PAGE", "").split():
+    status, body = 303, {}
+    hdr = ["HTTP/1.1 303 See Other", "location: /login", "cache-control: no-store"]
 elif (
-    parts.path in ("/", "/signin", "/privacy")
+    parts.path in ("/signin", "/privacy")
     and parts.path not in os.environ.get("FAKE_NO_PAGE", "").split()
 ):
     status, body = 200, {}
@@ -233,8 +236,14 @@ sys.exit(int(status))
 """
 
 # install as root sets owners; the tests run unprivileged, so the owner options are dropped.
+# The call is written down first, owners included, in its own log: the order tests read calls().
+# FAKE_INSTALL_RECORD_ONLY names a real host path that a test must see and never create.
 _FAKE_INSTALL = r"""
 import os, sys
+with open(os.path.join(os.environ["FAKE_STATE"], "install.log"), "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+if sys.argv[-1] == os.environ.get("FAKE_INSTALL_RECORD_ONLY"):
+    sys.exit(0)
 args, skip = [], False
 for arg in sys.argv[1:]:
     if skip:
@@ -447,6 +456,11 @@ class Box:
         path = Path(self.env["FAKE_LOG"])
         return path.read_text().splitlines() if path.exists() else []
 
+    def installs(self) -> list[str]:
+        """Every install call with the arguments the script gave it, owner options included."""
+        path = Path(self.env["FAKE_STATE"]) / "install.log"
+        return path.read_text().splitlines() if path.exists() else []
+
     def index(self, fragment: str, start: int = 0) -> int:
         """The position of the first call at or after start that holds fragment."""
         for position, line in enumerate(self.calls()[start:], start):
@@ -618,6 +632,7 @@ def box(tmp_path: Path) -> Box:
         "GROVE_ETC": str(root / "etc"),
         "GROVE_STATE": str(root / "state"),
         "GROVE_FORGET_LEDGER_HOST_DIR": str(journal),
+        "GROVE_RUNNER_HOME": str(root / "runner-home"),
         "GROVE_LOG_DIR": str(root / "log"),
         "GROVE_BACKUP_DIR": str(root / "backups"),
         "GROVE_LOCK_FILE": str(root / "lock" / "grove-deploy.lock"),

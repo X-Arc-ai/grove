@@ -83,7 +83,7 @@ fi
 "$here/install-host.sh"
 
 # setgid: every world folder and file the API makes here takes the runner's group (10002).
-install -d -o 10001 -g 10002 -m 2750 /var/lib/grove-runner/worlds
+install -d -o 10001 -g 10002 -m 2750 "${GROVE_RUNNER_HOME:-/var/lib/grove-runner}/worlds"
 
 export GROVE_BUILD_SHA=$sha
 previous=$(served_sha)
