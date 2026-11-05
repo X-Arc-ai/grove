@@ -4,6 +4,7 @@ import re
 
 import yaml
 
+from grove.api.agent_files import MAX_FILE_BYTES
 from grove.api.uploads import (
     DEFAULT_MAX_BYTES,
     MAX_BYTES_VAR,
@@ -127,7 +128,7 @@ def test_nginx_passes_everything_to_the_api_and_reads_no_user_agent():
         assert "$http_user_agent" not in text
         assert "deny " not in text
     assert "location / {" in https
-    assert https.count("proxy_pass http://127.0.0.1:8000;") == 11
+    assert https.count("proxy_pass http://127.0.0.1:8000;") == 12
     assert "root /var/www/grove-acme;" in http
     assert "return 301 https://$host$request_uri;" in http
 
@@ -208,6 +209,7 @@ def test_the_api_drops_every_capability_and_mounts_the_oauth_file_and_the_screen
     assert api["cap_drop"] == ["ALL"]
     assert api["security_opt"] == ["no-new-privileges:true"]
     assert [mount["source"] for mount in api["volumes"]] == [
+        "/var/lib/grove-runner/worlds",
         "${GROVE_FORGET_LEDGER_HOST_DIR:?set the existing private journal directory}",
         "/etc/grove/google-oauth.json",
         "/etc/grove/screening",
@@ -260,10 +262,12 @@ def test_only_explicit_upload_routes_take_large_bodies():
         "70k",
         "70k",
         "4k",
+        "32m",
         "256m",
     ]
     assert "client_max_body_size 256m;" in _location(https, f"location = {UPLOAD_PATH} {{")
     assert "client_max_body_size 16m;" in _location(https, "location = /v1/materials/files {")
+    assert "client_max_body_size 32m;" in _location(https, "location = /v1/agent-files {")
 
 
 # ---- review round five ------------------------------------------------------------------------
@@ -370,6 +374,7 @@ def test_nginx_has_exact_locations_and_no_rule_that_can_answer_for_the_api():
         "    location = /v1/materials/notes {",
         "    location ^~ /v1/materials/notes/ {",
         "    location /v1/materials/ {",
+        "    location = /v1/agent-files {",
         "    location = /v1/sources/upload {",
     ]
     for word in (
@@ -552,7 +557,7 @@ def test_the_upload_location_is_the_route_the_api_serves():
 def test_every_other_path_keeps_the_10m_limit_and_request_buffering():
     https = _https()
     blocks = _location_blocks(https)
-    assert len(blocks) == 12
+    assert len(blocks) == 13
     materials = {
         "= /v1/materials/files": "16m",
         "= /v1/materials/notes": "70k",
@@ -565,8 +570,17 @@ def test_every_other_path_keeps_the_10m_limit_and_request_buffering():
             "proxy_request_buffering off;",
             "proxy_pass http://127.0.0.1:8000;",
         ]
+    agent_files = "= /v1/agent-files"
+    assert [line.strip() for line in blocks[agent_files].splitlines() if line.strip()] == [
+        "client_max_body_size 32m;",
+        "proxy_request_buffering off;",
+        "proxy_read_timeout 120s;",
+        "proxy_send_timeout 120s;",
+        "proxy_pass http://127.0.0.1:8000;",
+    ]
+    assert _size_bytes("32m") == MAX_FILE_BYTES
     for match, block in blocks.items():
-        if match == f"= {UPLOAD_PATH}" or match in materials:
+        if match in (f"= {UPLOAD_PATH}", agent_files) or match in materials:
             continue
         for directive in ("client_max_body_size", "proxy_request_buffering", "proxy_send_timeout"):
             assert directive not in block, (match, directive)
