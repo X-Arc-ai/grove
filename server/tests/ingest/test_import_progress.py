@@ -136,7 +136,7 @@ def test_ineligible_input_is_retained_and_never_claimed(
 
 def test_over_limit_export_has_no_partial_source_or_request_write(driver, seeded_world, test_clock):
     docs = [json.loads(export(chat=f"orchard-{n}"))[0] for n in range(MAX_IMPORT_PARTS + 1)]
-    with pytest.raises(ImportLimit):
+    with pytest.raises(ImportLimit, match="too large for one upload"):
         take_in(
             driver,
             seeded_world,
@@ -515,6 +515,20 @@ def test_only_a_part_that_can_still_run_holds_the_parts_after_it(
     )
     _, grant = grant_for(driver, seeded_world)
     assert grant is not None and grant.input_ids == [ids[1]]
+
+
+def test_every_conversation_of_a_large_export_is_taken_in(driver, seeded_world, test_clock):
+    """Each conversation is at least one part, so a small limit refuses a real account."""
+    docs = [json.loads(export(chat=f"orchard-{n}"))[0] for n in range(513)]
+    result = take_in(
+        driver,
+        seeded_world,
+        "claude_ai",
+        upload_of(json.dumps(docs).encode()),
+        screener=make_screener(),
+    )
+    assert result.sources_added == result.requests_added == 513
+    assert result.failed_chats == 0
 
 
 def test_a_held_message_does_not_stop_the_rest_of_its_conversation(

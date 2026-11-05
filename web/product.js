@@ -70,12 +70,17 @@
     if(body.state==='complete'&&(completed!==body.requests_total||body.held_count||body.failed_count))return null;
     var value={state:body.state,graph:{}};
     keys.forEach(function(key){value[key]=body[key];});
+    // A source stored before the queue has no Request, and the server counts it as held.
+    // It is no failed work, so only a held part with a Request counts here.
+    var ended=completed+body.queued_count+body.processing_count+body.retry_wait_count+body.failed_count;
+    value.held_count=Math.min(body.held_count,body.requests_total-ended);
+    if(body.held_count&&ended===body.requests_total&&!body.failed_count&&['held','partial'].includes(body.state))value.state=body.queued_count||body.processing_count||body.retry_wait_count?'processing':completed?'complete':'idle';
     graphKeys.forEach(function(key){value.graph[key]=graph[key];});
     return value;
   }
   function importMoving(value){return !!value&&!!(value.queued_count||value.processing_count||value.retry_wait_count);}
-  // The share of the server's work that has ended, in any way. A held source can have no Request.
-  function importShare(value){return value&&value.requests_total?Math.min(1,(value.extracted_count+value.held_nothing_count+value.failed_count+value.held_count)/value.requests_total):null;}
+  // The share of the server's Requests that have ended, in any way.
+  function importShare(value){return value&&value.requests_total?Math.max(0,1-(value.queued_count+value.processing_count+value.retry_wait_count)/value.requests_total):null;}
   function refreshImportProgress(force){
     if(!live||!liveSessionReady||typeof live.importProgress!=='function')return;
     var state=api.getState(),owner=state.auth&&state.account;
@@ -104,6 +109,8 @@
       if(growth&&(moving||!Object.keys(snapshot.errors).length))growth.observe(moving);
       if(changedGraph&&!(growth&&growth.active())&&window.reloadGrove)window.reloadGrove();
       updateLive();
+      // Reads stop when no work moves. A failed read of tracked work tries again.
+      if(!moving&&!Object.keys(snapshot.errors).some(function(id){return snapshot.tracked[id];}))return;
       importProgressTimer=setTimeout(function(){
         if(document.hidden){importProgressTimer=setTimeout(function(){refreshImportProgress(true);},15000);return;}
         refreshImportProgress(true);
