@@ -162,5 +162,24 @@
   });}
   ['grove:change','grove:unauthenticated','grove:session-changed'].forEach(function(event){window.addEventListener(event,function(){instances.forEach(function(reset){reset(event!=='grove:change');});});});
   window.addEventListener('focus',function(){returns.forEach(function(refresh){refresh();});});
-  window.GrovePipedream={mount:mount};
+  // The Sources rows of Settings use the same calls and the same checks as the setup rows.
+  async function connectOne(provider){
+    var popup=window.open('about:blank','_blank');
+    if(!popup)throw new Error('Allow popups for Grove, then try again.');
+    popup.opener=null;
+    try{
+      var owner=account(),res=await window.GroveLive.postJSON('/v1/views/pipedream/'+encodeURIComponent(provider)+'/connect',{});
+      if(!res.ok)throw new Error(error(res,'Could not start the connection. Try again.'));
+      if(!res.body||res.body.account!==owner||res.body.provider!==provider)throw new Error('Could not start the connection. Try again.');
+      var url=new URL(res.body.connect_url);
+      if(url.protocol!=='https:'||url.username||url.password||!(url.hostname==='pipedream.com'||url.hostname.endsWith('.pipedream.com')))throw new Error('Could not start the connection. Try again.');
+      popup.location.href=url.href;
+    }catch(err){popup.close();throw err;}
+  }
+  async function disconnectOne(provider){
+    var owner=account(),res=await window.GroveLive.postJSON('/v1/views/pipedream/'+encodeURIComponent(provider)+'/disconnect',{confirm:true});
+    if(!res.ok)throw new Error(error(res,'Could not disconnect. Try again.'));
+    if(!res.body||res.body.account!==owner||res.body.provider!==provider||res.body.status!=='not_connected')throw new Error('Could not disconnect. Try again.');
+  }
+  window.GrovePipedream={mount:mount,connect:connectOne,disconnect:disconnectOne};
 }());

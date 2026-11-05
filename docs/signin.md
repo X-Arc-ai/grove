@@ -46,6 +46,8 @@ A missing page file is the typed 404.
 
 The account menu exposes Log out. Logout clears the active identity, graph payloads, rendered graph, local names, draft content, source caches and pending request state. The server account and world remain. Back navigation rechecks the session; a page hidden in the browser history clears its rendered graph before it can return.
 
+The email code card survives a window focus, a reload and a return to the page in the same tab. An anonymous focus check changes nothing on the card. For a reload or a return, the typed address and its send time wait in this tab's session storage, for at most the 10-minute life of a code. A successful sign-in, "Use another email" and closing the tab remove them. The code is never stored.
+
 Only minimal onboarding preferences survive on this browser: a step from 0 to 4 and completion/tour booleans, bound to an identity returned by the server. The preference list holds at most eight accounts. It holds no email, name, source text, draft, token, code or graph. Anonymous browser values never establish the identity used to save a preference. These preferences do not provide cross-device onboarding progress. Pending export reminders still come from their existing account API.
 
 A content-free browser storage signal causes other tabs to clear active state and read the current server session. Delayed responses from an earlier session cannot restore it. A provider or mail failure shows a neutral error; an accepted email request is not proof of delivery. Apple is disabled and explicitly unavailable.

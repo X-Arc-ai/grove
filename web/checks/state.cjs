@@ -28,7 +28,7 @@ async function main(){
  api.resetOnboarding();await api.importSource('chats',{provider:'chats',name:'WhatsApp'});api.disconnectSource('chats');const paused=api.getState().sources.find(s=>s.id==='chats');assert.equal(paused.status,'paused');await new Promise(r=>setTimeout(r,50));assert.equal(api.getState().sources.find(s=>s.id==='chats').loadedCount,paused.loadedCount);await api.importSource('chats',{provider:'chats',name:'WhatsApp'});assert.equal(api.getState().sources.find(s=>s.id==='chats').status,'importing');
  api.resetOnboarding();assert.equal(api.getState().currentNodeCount,0);assert.equal(api.getState().currentEdgeCount,0);await new Promise(r=>setTimeout(r,50));assert.equal(api.getState().currentNodeCount,0);
  // Provenance, deduplication, file lifecycle and growth settings.
- api.signIn('google','anas@example.com');api.setStep(4);assert.equal(api.getState().onboardingStep,4);
+ api.signIn('google','anas@example.com');api.setStep(4);assert.equal(api.getState().onboardingStep,3,'Setup has three steps');
  api.saveGrowth({focus:'Decisions and durable preferences',reading:'Keep the original source',avoid:'Temporary details',confirm:true});
  assert.equal(api.getState().growth.focus,'Decisions and durable preferences');
  await api.importSource('notes',{provider:'notion',label:'Notion'});
@@ -67,6 +67,6 @@ async function main(){
  api.signIn('google','anas@example.com');
  api.clearGrove();assert.equal(api.getState().auth.provider,'google');assert.equal(api.getState().growth.focus,'Decisions and durable preferences');assert.equal(api.getState().currentNodeCount,1);assert.equal(Object.keys(api.getState().files).length,0);
  api.resetOnboarding();assert.equal(api.getState().requests.length,0);assert.equal(api.getState().auth,null);assert.equal(api.getState().growth.focus,'');
- assert.equal(Object.keys(api.getState().pendingExports).length,0);assert.equal(Object.keys(api.getState().accountImports).length,0);assert(reloads>3);console.log('PASS: logout persistence and returning sign-in, input inbox lifecycle, distinct file/note kinds, source contributions, shared-memory retention, file deduplication/removal, history updates, four-step onboarding, growth guidance, local deletion, simulated authentication, source disconnect/reconnect and retained memories, paused job cancellation, host disconnect, identity seed, first import, pending export persistence and completion, retained providers, independent account progress, Google connection, concurrent growth, valid edges, outbound connection and reset cancellation');
+ assert.equal(Object.keys(api.getState().pendingExports).length,0);assert.equal(Object.keys(api.getState().accountImports).length,0);assert(reloads>3);console.log('PASS: logout persistence and returning sign-in, input inbox lifecycle, distinct file/note kinds, source contributions, shared-memory retention, file deduplication/removal, history updates, three-step onboarding, growth guidance, local deletion, simulated authentication, source disconnect/reconnect and retained memories, paused job cancellation, host disconnect, identity seed, first import, pending export persistence and completion, retained providers, independent account progress, Google connection, concurrent growth, valid edges, outbound connection and reset cancellation');
 }
 main().catch(e=>{console.error(e);process.exitCode=1;});
