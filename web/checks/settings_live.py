@@ -314,6 +314,41 @@ def check_sources(page, base, server, shots, label, expect, theme):
     assert not errors, errors
 
 
+def check_account_change(page, base, server, shots, label, expect, theme):
+    """Sign-out keeps the page, so nothing of account A's Sources may reach account B."""
+    errors = opened(page, base, theme)
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="sources"]').click()
+    page.get_by_role("button", name="Disconnect Gmail", exact=True).click()
+    page.locator('.gp-confirm-actions [data-action="confirm-delete"]').click()
+    expect(
+        page.get_by_role("button", name="Reconnect Gmail", exact=True)
+    ).to_be_visible()
+    page.locator('[data-settings-tab="account"]').click()
+    page.locator('.gp-settings [data-action="logout"]').click()
+    expect(page.locator("#gp-email")).to_be_visible()
+    server.account = "synthetic-second-account"
+    server.rows = [SELF_ROW]
+    page.fill("#gp-email", "second.person@example.test")
+    page.get_by_role("button", name="Continue with email", exact=True).click()
+    page.fill("#gp-code", "246810")
+    page.locator("[data-code-form] button").click()
+    page.wait_for_function(
+        "GroveSimulation.getState().account==='synthetic-second-account'"
+    )
+    page.wait_for_function("GroveSimulation.getState().onboardingComplete")
+    page.evaluate("GroveSimulation.completeTour&&GroveSimulation.completeTour()")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(400)
+    page.locator("#profile-button").click()
+    page.locator('[data-settings-tab="sources"]').click()
+    settings = page.locator(".gp-settings")
+    expect(settings).to_contain_text("Connect the places your work lives")
+    expect(settings).not_to_contain_text("Gmail")
+    expect(settings).not_to_contain_text("was disconnected")
+    assert not errors, errors
+
+
 def check_refresh(page, base, server, shots, label, expect, theme):
     errors = opened(page, base, theme)
     button = page.locator("#refresh-data")
@@ -379,6 +414,7 @@ CHECKS = (
     ("account icon and click", check_account_icon),
     ("health", check_health),
     ("sources", check_sources),
+    ("account change", check_account_change),
     ("refresh", check_refresh),
     ("three onboarding steps", check_three_steps),
 )

@@ -47,6 +47,7 @@
       render(true);
     });
   }
+  function clearSourceState(){ui.appsOff={};ui.sourceNotice='';ui.sourceError='';ui.sourceBusy=null;if(api.setSourceItems)api.setSourceItems({});}
   function coverageMessage(){return liveData.pending?'Check in progress':liveData.sources===null?'Source information could not be read. Try again.':'';}
   // Every ordinary world holds one connector with no provider: Grove's record of what a person
   // types in the views. It is no source, so Settings and Health never list it.
@@ -143,7 +144,7 @@
     if(api.bindAccount(body.account)){
       if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
       if(previousAccount&&previousAccount!==body.account)live.notifySessionChange();
-      liveUploads={};ui.reminderRequest=null;ui.reminderError='';
+      liveUploads={};ui.reminderRequest=null;ui.reminderError='';clearSourceState();
       ui.step=0;ui.guideStage=0;ui.editName=false;ui.nameDraft='';ui.growthDraft=null;ui.noteDraft={title:'',body:''};ui.requestDrafts={};ui.uploadFile=null;ui.connecting={};ui.query='';ui.notice='';
       if(window.GroveView&&window.GroveView.clear)window.GroveView.clear();
     }
@@ -219,7 +220,7 @@
   function endSession(){
     if(window.GroveMaterials)window.GroveMaterials.reset();if(window.GroveAgentFiles)window.GroveAgentFiles.reset();
     authEpoch++;live.invalidateSession();
-    liveSessionReady=false;liveData={owner:null};
+    liveSessionReady=false;liveData={owner:null};clearSourceState();
     liveUploads={};ui.reminderRequest=null;ui.reminderError='';
     var onCard=!api.getState().auth&&!!ui.authStage;
     api.signOut();
@@ -528,25 +529,29 @@
   function sourceDone(notice){ui.sourceBusy=null;ui.sourceNotice=notice;ui.sourceError='';refreshLiveData(true);if(window.reloadGrove)Promise.resolve(window.reloadGrove()).catch(function(){});render(true);}
   function sourceFailed(error){ui.sourceBusy=null;ui.sourceNotice='';ui.sourceError=error;render(true);}
   function liveSourceName(id){var a=liveSourceAccounts().find(function(row){return row.connectorId===id||row.provider===id;});return a?a.label:'This source';}
+  // An answer that lands after the session changed belongs to nobody on this page.
+  function trackSource(id,work,good,bad){
+    var ticket=authEpoch;ui.sourceBusy=id;ui.sourceNotice='';ui.sourceError='';render(true);
+    work().then(function(res){
+      if(ticket!==authEpoch)return;
+      if(res.ok)sourceDone(good);else sourceFailed(live.errorText(res.body,bad));
+    },function(error){if(ticket===authEpoch)sourceFailed(error&&error.message||bad);});
+  }
   function removeLiveSource(id){
-    var label=liveSourceName(id);ui.sourceBusy=id;ui.sourceNotice='';ui.sourceError='';render(true);
-    live.forget({type:'connector',connector_id:id}).then(function(res){
-      if(res.ok)sourceDone(label+' was removed from your Grove.');else sourceFailed(live.errorText(res.body,label+' could not be removed. Try again.'));
-    },function(){sourceFailed('Grove could not be reached. Check your sources before you try again.');});
+    var label=liveSourceName(id);
+    trackSource(id,function(){return live.forget({type:'connector',connector_id:id});},label+' was removed from your Grove.',label+' could not be removed. Try again.');
   }
   function disconnectLiveConnection(id){
-    var label=liveSourceName(id);ui.sourceBusy=id;ui.sourceNotice='';ui.sourceError='';render(true);
-    live.disconnectConnection(id).then(function(res){
-      if(res.ok)sourceDone(label+' was disconnected. Your memories stay.');else sourceFailed(live.errorText(res.body,label+' could not be disconnected. Try again.'));
-    },function(){sourceFailed('Grove could not be reached. Try again.');});
+    var label=liveSourceName(id);
+    trackSource(id,function(){return live.disconnectConnection(id);},label+' was disconnected. Your memories stay.',label+' could not be disconnected. Try again.');
   }
   function disconnectLiveApp(provider){
-    var label=liveSourceName(provider);ui.sourceBusy=provider;ui.sourceNotice='';ui.sourceError='';render(true);
-    window.GrovePipedream.disconnect(provider).then(function(){ui.appsOff[provider]=label;sourceDone(label+' was disconnected. Your memories stay.');},function(error){sourceFailed(error.message);});
+    var label=liveSourceName(provider),ticket=authEpoch;
+    trackSource(provider,function(){return window.GrovePipedream.disconnect(provider).then(function(){if(ticket===authEpoch)ui.appsOff[provider]=label;return {ok:true};});},label+' was disconnected. Your memories stay.',label+' could not be disconnected. Try again.');
   }
   function reconnectLiveApp(provider){
-    ui.sourceNotice='';ui.sourceError='';
-    window.GrovePipedream.connect(provider).then(function(){delete ui.appsOff[provider];ui.sourceNotice='Finish the connection in the new tab.';render(true);},function(error){sourceFailed(error.message);});
+    var ticket=authEpoch;ui.sourceNotice='';ui.sourceError='';
+    window.GrovePipedream.connect(provider).then(function(){if(ticket===authEpoch){ui.sourceNotice='Finish the connection in the new tab.';render(true);}},function(error){if(ticket===authEpoch)sourceFailed(error.message);});
   }
   function setStep(n){ui.step=n;ui.guide=null;if(api.setStep)api.setStep(n);render(true);if(window.GroveView)window.GroveView.fit();}
   function finish(){ui.guide=null;ui.panel=null;var duration=reduceMotion.matches?0:1300;document.body.classList.add('gp-arriving');tourAfter=performance.now()+duration+900;api.completeOnboarding();render(true);if(window.GroveView)window.GroveView.fit(duration);clearTimeout(arrivalTimer);arrivalTimer=setTimeout(function(){document.body.classList.remove('gp-arriving');},duration);setTimeout(maybeTour,duration+950);}
@@ -835,11 +840,14 @@
   // this part adds the other reads and shows the person that it ran and what it found.
   var refreshButton=document.getElementById('refresh-data'),refreshNote=document.createElement('p'),refreshStarted=0,refreshTimer=null;
   refreshNote.id='gp-refresh-note';refreshNote.setAttribute('role','status');refreshNote.hidden=true;document.body.appendChild(refreshNote);
-  function finishRefresh(){
+  function finishRefresh(tries){
+    tries=tries||0;
+    if(live&&liveData.pending&&tries<40){clearTimeout(refreshTimer);refreshTimer=setTimeout(function(){finishRefresh(tries+1);},100);return;}
     var status=document.getElementById('graph-status'),failed=!!status&&status.dataset.state==='error',s=api.getState();
+    var partial=!failed&&live&&(liveData.sources===null||liveData.health===null);
     refreshStarted=0;refreshButton.classList.remove('is-refreshing');
-    refreshNote.dataset.state=failed?'error':'ready';
-    refreshNote.textContent=failed?'Refresh failed. Your last graph stays visible. Try again.':'Your Grove is up to date · '+s.currentNodeCount.toLocaleString()+(s.currentNodeCount===1?' node':' nodes')+' · '+s.currentEdgeCount.toLocaleString()+(s.currentEdgeCount===1?' connection':' connections');
+    refreshNote.dataset.state=failed||partial?'error':'ready';
+    refreshNote.textContent=failed?'Refresh failed. Your last graph stays visible. Try again.':partial?'Your graph is up to date. Some details could not be read. Try again.':'Your Grove is up to date · '+s.currentNodeCount.toLocaleString()+(s.currentNodeCount===1?' node':' nodes')+' · '+s.currentEdgeCount.toLocaleString()+(s.currentEdgeCount===1?' connection':' connections');
     refreshNote.hidden=false;clearTimeout(refreshTimer);refreshTimer=setTimeout(function(){refreshNote.hidden=true;},6000);
   }
   if(refreshButton.addEventListener)refreshButton.addEventListener('click',function(){
